@@ -6,6 +6,7 @@ mXterm 是一个个人桌面 SSH/SFTP 客户端项目，首版目标是提供连
 
 - [需求文档](docs/requirements/m-xterm-requirements.md)
 - [宽松协议开源项目参考](docs/research/permissive-open-source-references.md)
+- [MVP 工程基座与 SSH Spike 计划](docs/plans/2026-06-05-mxterm-mvp-foundation-and-ssh-spike.md)
 
 ## Trellis
 
