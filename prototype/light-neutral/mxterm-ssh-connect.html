@@ -1,0 +1,802 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>mXterm SSH Connect Prototype</title>
+  <style>
+    :root {
+      --bg: #ffffff;
+      --top: #ffffff;
+      --panel: #ffffff;
+      --panel-warm: #f8f9fb;
+      --line: #e2e8f0;
+      --line-soft: #f1f1f1;
+      --text: #242424;
+      --muted: #717171;
+      --subtle: #9a9a9a;
+      --accent: #2374c6;
+      --accent-strong: #202020;
+      --accent-soft: rgba(156, 163, 175, 0.14);
+      --warn: #9a6a2f;
+      --danger: #d33a31;
+      --font-ui: -apple-system, BlinkMacSystemFont, "Segoe UI Variable Text", "Segoe UI Variable Display", "Segoe UI", Roboto, "Helvetica Neue", Arial, "Microsoft YaHei UI", system-ui, sans-serif;
+      --font-mono: "JetBrains Mono", "Cascadia Mono", Consolas, monospace;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html,
+    body {
+      margin: 0;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--font-ui);
+      letter-spacing: 0;
+    }
+
+    button,
+    input,
+    select {
+      font: inherit;
+    }
+
+    button,
+    a {
+      cursor: pointer;
+    }
+
+    a {
+      color: inherit;
+      text-decoration: none;
+    }
+
+    .app {
+      height: 100vh;
+      display: grid;
+      grid-template-rows: 46px 1fr;
+      background: var(--panel);
+    }
+
+    .topbar {
+      min-width: 0;
+      display: grid;
+      grid-template-columns: auto minmax(0, 1fr) auto;
+      align-items: stretch;
+      background: var(--top);
+      border-bottom: 1px solid #eeeeee;
+    }
+
+    .window-brand {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      padding: 0 12px 0 14px;
+      color: var(--muted);
+      border-right: 1px solid #eeeeee;
+    }
+
+    .brand-mark {
+      width: 24px;
+      height: 24px;
+      display: grid;
+      place-items: center;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      color: #4f535a;
+      background: #f5f7fa;
+      font-weight: 800;
+      font-size: 13px;
+    }
+
+    .connection-tabs {
+      min-width: 0;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding-left: 8px;
+      overflow: hidden;
+    }
+
+    .session-tab {
+      width: 245px;
+      min-width: 180px;
+      height: 30px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 12px;
+      color: var(--muted);
+      border-radius: 9px;
+      border-right: 0;
+      font-weight: 650;
+      white-space: nowrap;
+    }
+
+    .session-tab.active {
+      color: var(--text);
+      background: rgba(156, 163, 175, 0.12);
+      box-shadow: none;
+    }
+
+    .session-tab .close {
+      color: var(--subtle);
+      font-weight: 500;
+    }
+
+    .add-tab {
+      width: 42px;
+      min-width: 42px;
+      border: 0;
+      border-right: 0;
+      background: transparent;
+      color: var(--muted);
+      font-size: 24px;
+      line-height: 30px;
+      border-radius: 9px;
+      text-align: center;
+    }
+
+    .connection-tabs .add-tab {
+      width: 30px;
+      min-width: 30px;
+      height: 30px;
+      line-height: 28px;
+      font-size: 23px;
+    }
+
+    .connection-tabs .add-tab:hover,
+    .title-btn:hover {
+      background: rgba(156, 163, 175, 0.12);
+      color: var(--text);
+    }
+
+    .top-actions {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 0 14px;
+      color: var(--muted);
+    }
+
+    .title-btn,
+    .tool-btn {
+      display: grid;
+      place-items: center;
+      padding: 0;
+      color: inherit;
+      background: transparent;
+    }
+
+    .title-btn {
+      width: 30px;
+      height: 30px;
+      border: 0;
+    }
+
+    .shell {
+      min-height: 0;
+      display: grid;
+      grid-template-columns: 224px minmax(0, 1fr);
+      background: var(--panel);
+    }
+
+    .pane {
+      min-width: 0;
+      min-height: 0;
+      overflow: hidden;
+      background: var(--panel);
+    }
+
+    .left {
+      display: grid;
+      grid-template-rows: 38px 1fr;
+      border-right: 1px solid var(--line);
+      background: var(--panel-warm);
+    }
+
+    .pane-head {
+      height: 38px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 6px;
+      padding: 0 8px;
+      border-bottom: 1px solid var(--line);
+      background: var(--panel-warm);
+    }
+
+    .head-title {
+      min-width: 0;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 14px;
+      font-weight: 680;
+    }
+
+    .left .head-title {
+      width: 30px;
+      height: 30px;
+      justify-content: center;
+      border-radius: 9px;
+      color: var(--muted);
+    }
+
+    .left .head-title:hover {
+      background: rgba(156, 163, 175, 0.12);
+      color: var(--text);
+    }
+
+    .head-title span {
+      overflow: hidden;
+      white-space: nowrap;
+      text-overflow: ellipsis;
+    }
+
+    .tool-btn {
+      width: 30px;
+      height: 30px;
+      border: 1px solid transparent;
+      border-radius: 7px;
+    }
+
+    .tool-btn:hover {
+      border-color: transparent;
+      background: rgba(156, 163, 175, 0.12);
+      color: var(--text);
+    }
+
+    .side-scroll {
+      min-height: 0;
+      overflow: auto;
+      padding: 8px;
+    }
+
+    .side-title {
+      height: 24px;
+      display: flex;
+      align-items: center;
+      color: var(--subtle);
+      font-size: 11px;
+      font-weight: 680;
+    }
+
+    .group-row {
+      height: 30px;
+      display: grid;
+      grid-template-columns: 18px minmax(0, 1fr) auto;
+      align-items: center;
+      gap: 6px;
+      padding: 0 7px;
+      border-radius: 8px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .group-row.active {
+      background: var(--accent-soft);
+      color: var(--accent-strong);
+      font-weight: 680;
+    }
+
+    .count {
+      color: var(--subtle);
+      font-size: 12px;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .center {
+      min-height: 0;
+      display: grid;
+      grid-template-rows: 42px 44px 1fr;
+    }
+
+    .protocols {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 0 10px;
+      border-bottom: 1px solid #f1f1f1;
+      background: #ffffff;
+    }
+
+    .protocol {
+      height: 30px;
+      min-width: 96px;
+      display: grid;
+      place-items: center;
+      border-radius: 9px;
+      border-right: 0;
+      color: var(--muted);
+      font-weight: 650;
+    }
+
+    .protocol.active {
+      color: var(--text);
+      background: rgba(156, 163, 175, 0.12);
+      box-shadow: none;
+    }
+
+    .list-toolbar {
+      display: grid;
+      grid-template-columns: minmax(260px, 420px) 1fr auto;
+      align-items: center;
+      gap: 10px;
+      padding: 0 12px;
+      border-bottom: 1px solid var(--line-soft);
+      background: var(--panel);
+    }
+
+    .search {
+      height: 30px;
+      width: 100%;
+      padding: 0 10px;
+      border: 1px solid #eeeeee;
+      border-radius: 10px;
+      outline: none;
+      background: #ffffff;
+      color: var(--text);
+    }
+
+    .ghost-btn,
+    .primary-btn {
+      height: 30px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      padding: 0 12px;
+      border-radius: 8px;
+      font-weight: 680;
+      white-space: nowrap;
+    }
+
+    .ghost-btn {
+      border: 1px solid #e6e7eb;
+      color: var(--muted);
+      background: #ffffff;
+    }
+
+    .primary-btn {
+      border: 1px solid var(--accent-strong);
+      color: #ffffff;
+      background: var(--accent);
+    }
+
+    .table-wrap {
+      min-height: 0;
+      overflow: auto;
+      background: var(--panel);
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 14px;
+    }
+
+    th {
+      height: 34px;
+      padding: 0 12px;
+      border-bottom: 1px solid #f1f1f1;
+      color: var(--subtle);
+      background: #ffffff;
+      text-align: left;
+      font-size: 12px;
+      font-weight: 720;
+      white-space: nowrap;
+    }
+
+    td {
+      height: 56px;
+      padding: 0 12px;
+      border-bottom: 1px solid var(--line-soft);
+      color: var(--text);
+      white-space: nowrap;
+    }
+
+    tbody tr.active td {
+      background: var(--accent-soft);
+    }
+
+    .host {
+      display: flex;
+      align-items: center;
+      gap: 9px;
+      font-weight: 720;
+    }
+
+    .os {
+      width: 30px;
+      height: 30px;
+      display: grid;
+      place-items: center;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #f5f7fa;
+      color: var(--accent-strong);
+      font-size: 11px;
+      font-weight: 800;
+    }
+
+    .latency {
+      color: var(--accent-strong);
+      font-weight: 720;
+    }
+
+    .tag {
+      height: 24px;
+      display: inline-flex;
+      align-items: center;
+      padding: 0 8px;
+      margin-right: 5px;
+      border: 1px solid var(--line);
+      border-radius: 7px;
+      color: var(--muted);
+      background: #f5f7fa;
+      font-size: 12px;
+    }
+
+    .row-actions {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .form {
+      min-height: 0;
+      overflow: auto;
+      padding: 14px;
+    }
+
+    .form-section {
+      padding: 0 0 14px;
+      margin-bottom: 14px;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .form-section-title {
+      height: 28px;
+      display: flex;
+      align-items: center;
+      color: var(--text);
+      font-weight: 720;
+    }
+
+    .field {
+      display: grid;
+      gap: 6px;
+      margin-top: 10px;
+    }
+
+    label {
+      color: var(--muted);
+      font-size: 13px;
+      font-weight: 650;
+    }
+
+    input,
+    select {
+      width: 100%;
+      height: 34px;
+      padding: 0 10px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      outline: none;
+      background: var(--panel);
+      color: var(--text);
+    }
+
+    .field-row {
+      display: grid;
+      grid-template-columns: 1fr 92px;
+      gap: 10px;
+    }
+
+    .hint {
+      margin-top: 8px;
+      color: var(--subtle);
+      font-size: 12px;
+      line-height: 1.5;
+    }
+
+    .form-footer {
+      height: 56px;
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      gap: 10px;
+      padding: 0 14px;
+      border-top: 1px solid var(--line);
+      background: var(--panel);
+    }
+
+    .modal-backdrop {
+      position: fixed;
+      inset: 0;
+      z-index: 20;
+      display: none;
+      place-items: center;
+      padding: 24px;
+      background: rgba(36, 34, 31, 0.18);
+    }
+
+    .modal-backdrop:target {
+      display: grid;
+    }
+
+    .modal {
+      width: min(520px, calc(100vw - 48px));
+      max-height: calc(100vh - 80px);
+      display: grid;
+      grid-template-rows: 42px minmax(0, 1fr) auto;
+      overflow: hidden;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: var(--panel);
+      box-shadow: 0 24px 70px rgba(36, 34, 31, 0.2);
+    }
+
+    .modal-head {
+      height: 42px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      padding: 0 12px;
+      border-bottom: 1px solid var(--line);
+      background: var(--panel-warm);
+      font-weight: 720;
+    }
+
+    .modal-close {
+      width: 30px;
+      height: 30px;
+      display: grid;
+      place-items: center;
+      border-radius: 7px;
+      color: var(--muted);
+    }
+
+    .settings-fab {
+      position: fixed;
+      left: 18px;
+      bottom: 16px;
+      width: 44px;
+      height: 44px;
+      display: grid;
+      place-items: center;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: rgba(255, 255, 255, 0.96);
+      color: var(--muted);
+      box-shadow: 0 10px 24px rgba(15, 23, 42, 0.08);
+      z-index: 5;
+    }
+
+    .glyph {
+      width: 18px;
+      height: 18px;
+      stroke: currentColor;
+      stroke-width: 1.8;
+      fill: none;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+      flex: 0 0 auto;
+    }
+
+    @media (max-width: 1100px) {
+      .shell {
+        grid-template-columns: 216px minmax(0, 1fr);
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <header class="topbar">
+      <div class="window-brand">
+        <span class="brand-mark">M</span>
+        <span>mXterm</span>
+      </div>
+      <nav class="connection-tabs" aria-label="终端连接标签">
+        <a class="session-tab" href="mxterm-light-neutral.html"><span>203.0.113.70</span><span class="close">×</span></a>
+        <div class="session-tab active"><span>新建 SSH</span><span class="close">×</span></div>
+        <a class="add-tab" href="mxterm-ssh-connect.html" aria-label="新建连接">+</a>
+      </nav>
+      <div class="top-actions" aria-label="窗口操作">
+        <button class="title-btn" aria-label="搜索">
+          <svg class="glyph" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M16 16l4 4"/></svg>
+        </button>
+        <button class="title-btn" aria-label="最小化">−</button>
+        <button class="title-btn" aria-label="最大化">□</button>
+        <button class="title-btn" aria-label="关闭">×</button>
+      </div>
+    </header>
+
+    <main class="shell">
+      <aside class="pane left">
+        <header class="pane-head">
+          <div class="head-title" aria-label="连接仓库" title="连接仓库">
+            <svg class="glyph" viewBox="0 0 24 24"><path d="M4 6h16v5H4zM4 15h16v5H4z"/></svg>
+          </div>
+          <button class="tool-btn" aria-label="刷新">
+            <svg class="glyph" viewBox="0 0 24 24"><path d="M20 12a8 8 0 1 1-2.3-5.6"/><path d="M20 4v6h-6"/></svg>
+          </button>
+        </header>
+        <div class="side-scroll">
+          <div class="side-title">固定</div>
+          <div class="group-row active"><span>▣</span><span>最近连接</span><span class="count">9</span></div>
+          <div class="group-row"><span>☆</span><span>收藏</span><span class="count">6</span></div>
+          <div class="side-title">分组</div>
+          <div class="group-row"><span>▸</span><span>开发环境</span><span class="count">12</span></div>
+          <div class="group-row"><span>▸</span><span>测试环境</span><span class="count">8</span></div>
+          <div class="group-row"><span>▸</span><span>生产跳板</span><span class="count">4</span></div>
+          <div class="group-row"><span>▸</span><span>云主机</span><span class="count">5</span></div>
+          <div class="side-title">快速访问</div>
+          <div class="group-row"><span>•</span><span>203.0.113.70</span><span></span></div>
+          <div class="group-row"><span>•</span><span>203.0.113.131</span><span></span></div>
+          <div class="group-row"><span>•</span><span>100.93.140.33</span><span></span></div>
+        </div>
+      </aside>
+
+      <section class="pane center">
+        <nav class="protocols" aria-label="连接协议">
+          <div class="protocol active">SSH</div>
+          <div class="protocol">RDP</div>
+          <div class="protocol">Telnet</div>
+          <div class="protocol">隧道</div>
+          <div class="protocol">VNC</div>
+        </nav>
+        <div class="list-toolbar">
+          <input class="search" aria-label="搜索连接" value="" placeholder="搜索主机、用户名、地址">
+          <span></span>
+          <a class="primary-btn" href="#connection-modal">+ SSH</a>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>系统</th>
+                <th>延迟</th>
+                <th>名称</th>
+                <th>地址</th>
+                <th>信息</th>
+                <th>操作</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr class="active">
+                <td><div class="host"><span class="os">OS</span>CentOS</div></td>
+                <td><span class="latency">4 ms</span></td>
+                <td>203.0.113.70</td>
+                <td>203.0.113.70</td>
+                <td><span class="tag">8 核</span><span class="tag">31G 内存</span><span class="tag">100K 硬盘</span></td>
+                <td><div class="row-actions"><a class="primary-btn" href="mxterm-light-neutral.html">连接</a><a class="ghost-btn" href="#connection-modal">编辑</a></div></td>
+              </tr>
+              <tr>
+                <td><div class="host"><span class="os">LX</span>Linux</div></td>
+                <td><span class="latency">22 ms</span></td>
+                <td>203.0.113.131-221</td>
+                <td>203.0.113.131</td>
+                <td><span class="tag">8 核</span><span class="tag">4G 内存</span><span class="tag">197G 硬盘</span></td>
+                <td><div class="row-actions"><a class="primary-btn" href="mxterm-light-neutral.html">连接</a><a class="ghost-btn" href="#connection-modal">编辑</a></div></td>
+              </tr>
+              <tr>
+                <td><div class="host"><span class="os">OS</span>CentOS</div></td>
+                <td><span class="latency">5 ms</span></td>
+                <td>203.0.113.16[K8s-node2]</td>
+                <td>203.0.113.16</td>
+                <td><span class="tag">16 核</span><span class="tag">16G 内存</span><span class="tag">190G 硬盘</span></td>
+                <td><div class="row-actions"><a class="primary-btn" href="mxterm-light-neutral.html">连接</a><a class="ghost-btn" href="#connection-modal">编辑</a></div></td>
+              </tr>
+              <tr>
+                <td><div class="host"><span class="os">LX</span>Linux</div></td>
+                <td><span class="latency">38 ms</span></td>
+                <td>100.93.140.33[M4-TS]</td>
+                <td>100.93.140.33</td>
+                <td><span class="tag">跳板</span><span class="tag">Tailscale</span></td>
+                <td><div class="row-actions"><a class="primary-btn" href="mxterm-light-neutral.html">连接</a><a class="ghost-btn" href="#connection-modal">编辑</a></div></td>
+              </tr>
+              <tr>
+                <td><div class="host"><span class="os">UB</span>Ubuntu</div></td>
+                <td><span class="latency">6 ms</span></td>
+                <td>203.0.113.73[lulu]</td>
+                <td>203.0.113.73</td>
+                <td><span class="tag">8 核</span><span class="tag">63G 内存</span><span class="tag">135G 硬盘</span></td>
+                <td><div class="row-actions"><a class="primary-btn" href="mxterm-light-neutral.html">连接</a><a class="ghost-btn" href="#connection-modal">编辑</a></div></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+    </main>
+
+    <section class="modal-backdrop" id="connection-modal" aria-label="SSH 连接弹窗">
+      <div class="modal">
+        <header class="modal-head">
+          <span>SSH 连接</span>
+          <a class="modal-close" href="#" aria-label="关闭">×</a>
+        </header>
+        <form class="form">
+          <section class="form-section">
+            <div class="form-section-title">连接参数</div>
+            <div class="field">
+              <label for="modal-name">名称</label>
+              <input id="modal-name" value="203.0.113.70">
+            </div>
+            <div class="field-row">
+              <div class="field">
+                <label for="modal-host">主机</label>
+                <input id="modal-host" value="203.0.113.70">
+              </div>
+              <div class="field">
+                <label for="modal-port">端口</label>
+                <input id="modal-port" value="22">
+              </div>
+            </div>
+            <div class="field">
+              <label for="modal-user">用户名</label>
+              <input id="modal-user" value="root">
+            </div>
+          </section>
+
+          <section class="form-section">
+            <div class="form-section-title">认证</div>
+            <div class="field">
+              <label for="modal-auth">方式</label>
+              <select id="modal-auth">
+                <option>密码</option>
+                <option>私钥</option>
+                <option>本次输入</option>
+              </select>
+            </div>
+            <div class="field">
+              <label for="modal-secret">密码或私钥路径</label>
+              <input id="modal-secret" value="">
+              <div class="hint">原型只表达输入位置；实际开发时不要在前端持久化敏感信息。</div>
+            </div>
+          </section>
+
+          <section class="form-section">
+            <div class="form-section-title">会话选项</div>
+            <div class="field">
+              <label for="modal-path">初始目录</label>
+              <input id="modal-path" value="/opt/edgs">
+            </div>
+            <div class="field-row">
+              <div class="field">
+                <label for="modal-encoding">编码</label>
+                <select id="modal-encoding">
+                  <option>UTF-8</option>
+                  <option>GBK</option>
+                </select>
+              </div>
+              <div class="field">
+                <label for="modal-timeout">超时</label>
+                <input id="modal-timeout" value="15s">
+              </div>
+            </div>
+          </section>
+        </form>
+        <footer class="form-footer">
+          <a class="ghost-btn" href="#">取消</a>
+          <button class="ghost-btn">测试连接</button>
+          <a class="primary-btn" href="mxterm-light-neutral.html">连接</a>
+        </footer>
+      </div>
+    </section>
+
+    <button class="settings-fab" aria-label="设置">
+      <svg class="glyph" viewBox="0 0 24 24"><path d="M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8z"/><path d="M4 12h2M18 12h2M12 4v2M12 18v2"/></svg>
+    </button>
+  </div>
+</body>
+</html>
