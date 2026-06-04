@@ -10,19 +10,21 @@ mXterm 是一个个人桌面 SSH/SFTP 客户端项目，首版目标是提供连
 
 ## Trellis
 
-后续项目开发使用 Trellis 管理。
+后续项目开发使用 [Trellis](https://docs.trytrellis.app/zh) 管理。
 
-当前仓库已包含 `trellis.hjson`，配置了基础工作流：
+当前仓库已通过 `trellis init --codex -u MNL --yes --skip-existing --workflow native` 初始化：
 
-- `docs-check`：检查需求和研究文档中的占位词。
-- `git-status`：查看当前分支和工作区状态。
+- `.trellis/`：共享工作流、规范、任务和项目记忆。
+- `.codex/`：Codex hooks 和 Trellis agent 配置。
+- `.agents/skills/`：Trellis 技能说明，供 Codex、Cursor、Gemini CLI 等工具读取。
 
-安装并启动 Trellis 后，可以在项目根目录执行：
+常用命令：
 
 ```powershell
-trellis -config trellis.hjson
-trellis-ctl -json workflow list
-trellis-ctl -json workflow run docs-check
+trellis --version
+python ./.trellis/scripts/task.py list
+python ./.trellis/scripts/task.py current --source
+python ./.trellis/scripts/get_context.py --mode packages
 ```
 
-当前项目还没有 Tauri/React 脚手架，开发、检查、测试、打包相关工作流会在脚手架创建后补充。
+Codex hooks 需要用户级 `~/.codex/config.toml` 启用 `features.hooks = true`，并将本项目设置为 trusted。

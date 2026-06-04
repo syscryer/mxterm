@@ -1,6 +1,9 @@
 .superpowers/
 .learnings/
-.trellis/
+.codem-attachments/
+.playwright-cli/
+logs/
+prototype/light-theme/
 node_modules/
 dist/
 target/

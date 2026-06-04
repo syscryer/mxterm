@@ -87,12 +87,12 @@ SSH/SFTP 后端需要进一步在 `russh` 和 `ssh2-rs` 之间做验证。`russh
 
 ### 6.3 后续 Trellis 管理建议
 
-后续接入 Trellis 后，建议至少维护这些工作流：
+后续接入 Trellis 后，建议至少维护这些项目入口：
 
-- `dev`：启动 Tauri 开发环境。
-- `check`：前端类型检查、Rust 检查、格式检查。
-- `test`：运行前端和 Rust 测试。
-- `package-windows`：Windows 打包验证。
-- `docs-check`：检查需求文档和研究文档是否有占位词。
+- `.trellis/tasks/`：按阶段维护工程基座、SSH Spike、连接管理、SFTP、传输队列、远程编辑等任务。
+- `.trellis/spec/`：维护前端、后端、跨层设计和质量规范。
+- `.agents/skills/`：提醒后续 agents 使用 Trellis 任务流和规范。
+- `package.json` scripts：维护 `dev`、`check`、`test`、`package-windows`。
+- `scripts/trellis/docs-check.ps1`：保留文档占位词检查。
 
-当前仓库已加入基础 `trellis.hjson`，用于后续跨电脑开发管理。本机 PATH 中尚未发现 `trellis-ctl`，使用 Trellis 前需要先确认本机安装方式。
+当前仓库使用 trytrellis.app 的 Trellis，入口是 `trellis` CLI 和 `.trellis/` 项目目录，不使用 `trellis-ctl`。

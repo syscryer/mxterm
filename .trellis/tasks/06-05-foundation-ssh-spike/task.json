@@ -1,0 +1,32 @@
+{
+  "id": "foundation-ssh-spike",
+  "name": "foundation-ssh-spike",
+  "title": "工程基座与 SSH Spike",
+  "description": "建立 Tauri + React + TypeScript + Rust 工程基座，并验证 russh + xterm.js 的真实 SSH 终端体验。",
+  "status": "in_progress",
+  "dev_type": "feature",
+  "scope": "工程基座、终端 Spike、Trellis 项目配置",
+  "package": null,
+  "priority": "P2",
+  "creator": "MNL",
+  "assignee": "MNL",
+  "createdAt": "2026-06-05",
+  "completedAt": null,
+  "branch": null,
+  "base_branch": "master",
+  "worktree_path": null,
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [],
+  "parent": null,
+  "relatedFiles": [
+    "docs/requirements/m-xterm-requirements.md",
+    "docs/plans/2026-06-05-mxterm-mvp-foundation-and-ssh-spike.md",
+    "prototype/light-neutral/mxterm-light-neutral.html",
+    ".trellis/spec/frontend/index.md",
+    ".trellis/spec/backend/index.md"
+  ],
+  "notes": "",
+  "meta": {}
+}

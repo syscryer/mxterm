@@ -535,7 +535,7 @@ command 只表达动作，不承载长流程状态。长任务状态必须通过
 
 - 初始化 Tauri + React + TypeScript。
 - 建立 Rust 模块结构。
-- 建立 Trellis `dev`、`check`、`test` 工作流。
+- 建立 Trellis 任务和项目规范，并在脚手架创建后补充 `dev`、`check`、`test` 脚本。
 - 迁入当前原型主布局。
 - 明确运行时不使用 Node/Express 本地后端。
 

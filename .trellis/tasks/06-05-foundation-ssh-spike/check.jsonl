@@ -1,0 +1,5 @@
+{"file":"docs/requirements/m-xterm-requirements.md","reason":"验收标准和安全边界"}
+{"file":"docs/plans/2026-06-05-mxterm-mvp-foundation-and-ssh-spike.md","reason":"验证命令和阶段验收清单"}
+{"file":".trellis/spec/frontend/index.md","reason":"前端质量检查入口"}
+{"file":".trellis/spec/backend/index.md","reason":"后端质量检查入口"}
+{"file":".trellis/spec/guides/index.md","reason":"跨层质量检查入口"}

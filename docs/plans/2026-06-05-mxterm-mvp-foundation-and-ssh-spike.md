@@ -18,9 +18,9 @@
 - 不引入 Node/Express 运行时后端。
 - Node、npm、pnpm 和 `node_modules` 只用于前端构建和依赖管理。
 - 首轮以 Windows 开发验证为主。
-- 后续 agents 进入仓库后先阅读 `AGENTS.md`、`trellis.hjson` 和本计划。
-- 如果本机有 `trellis-ctl`，优先使用 `trellis-ctl -json workflow list` 和 `trellis-ctl -json workflow run <id>`。
-- 如果本机没有 `trellis-ctl`，说明环境缺少 Trellis 命令，再使用等价本地命令。
+- 后续 agents 进入仓库后先阅读 `AGENTS.md`、`.trellis/workflow.md`、`.trellis/config.yaml` 和本计划。
+- 使用 trytrellis.app 的 `trellis` CLI，不使用 `trellis-ctl`。
+- 开发前通过 `python ./.trellis/scripts/task.py current --source` 查看当前任务。
 
 ## 1. 目标文件结构
 
@@ -79,7 +79,8 @@ m-xterm/
 
 **Files:**
 - Read: `AGENTS.md`
-- Read: `trellis.hjson`
+- Read: `.trellis/workflow.md`
+- Read: `.trellis/config.yaml`
 - Read: `docs/requirements/m-xterm-requirements.md`
 
 - [ ] **Step 1: 查看 git 状态**
@@ -103,22 +104,24 @@ Expected:
 Run:
 
 ```powershell
-Get-Command trellis-ctl -ErrorAction SilentlyContinue
+trellis --version
+python ./.trellis/scripts/task.py list
+python ./.trellis/scripts/get_context.py --mode packages
 ```
 
 Expected if installed:
 
 ```text
-CommandType     Name
+输出 Trellis 版本、任务列表和可用规范包
 ```
 
-Expected if not installed:
+Expected if Trellis CLI is not installed:
 
 ```text
-无输出
+trellis 命令不可用
 ```
 
-无输出时继续使用本地命令，不阻塞工程基座。
+如果 `trellis` 命令不可用，先安装 `@mindfoldhq/trellis`，再继续工程基座。
 
 - [ ] **Step 3: 检查 Node、pnpm、Rust**
 
@@ -662,77 +665,82 @@ resize 后 top/vim 布局同步
 关闭连接后 tab 保留并显示断开状态
 ```
 
-## 9. Task 8：补 Trellis 工作流
+## 9. Task 8：补 Trellis 任务和工程脚本
 
 **Files:**
-- Modify: `trellis.hjson`
+- Modify: `.trellis/tasks/`
+- Modify: `package.json`
 - Modify: `README.md`
 
-- [ ] **Step 1: 增加 dev 工作流**
+- [ ] **Step 1: 创建或确认 Trellis 任务**
 
-Add workflow:
-
-```hjson
-{
-  id: "dev"
-  name: "Dev"
-  description: "Start Tauri development server"
-  command: ["pnpm", "tauri", "dev"]
-  timeout: "10m"
-  output_parser: "generic"
-}
-```
-
-- [ ] **Step 2: 增加 check 工作流**
-
-Add workflow:
-
-```hjson
-{
-  id: "check"
-  name: "Check"
-  description: "Run frontend and Rust checks"
-  command: ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", "pnpm check; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }; cargo check --manifest-path src-tauri/Cargo.toml"]
-  timeout: "5m"
-  output_parser: "generic"
-}
-```
-
-- [ ] **Step 3: 增加 test 工作流**
-
-Add workflow:
-
-```hjson
-{
-  id: "test"
-  name: "Test"
-  description: "Run available automated tests"
-  command: ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", "pnpm test -- --run; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }; cargo test --manifest-path src-tauri/Cargo.toml"]
-  timeout: "5m"
-  output_parser: "generic"
-}
-```
-
-If no frontend test runner exists yet, make `pnpm test -- --run` map to a no-op script that prints `frontend tests not configured yet` and exits 0. Replace it with real tests when test files are introduced.
-
-- [ ] **Step 4: 验证工作流列表**
-
-Run if Trellis exists:
+Run:
 
 ```powershell
-trellis-ctl -json workflow list
-```
-
-Run if Trellis does not exist:
-
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts\trellis\docs-check.ps1
+python ./.trellis/scripts/task.py list
+python ./.trellis/scripts/task.py create "工程基座与 SSH Spike" --slug foundation-ssh-spike
+python ./.trellis/scripts/task.py start foundation-ssh-spike
 ```
 
 Expected:
 
 ```text
-Trellis 工作流可列出，或 docs-check 通过
+任务创建并进入 in_progress 状态
+```
+
+- [ ] **Step 2: 增加 dev 脚本**
+
+Modify `package.json` scripts:
+
+```json
+{
+  "scripts": {
+    "dev": "vite",
+    "tauri": "tauri",
+    "tauri:dev": "tauri dev"
+  }
+}
+```
+
+- [ ] **Step 3: 增加 check 脚本**
+
+Modify `package.json` scripts:
+
+```json
+{
+  "scripts": {
+    "check": "tsc --noEmit"
+  }
+}
+```
+
+- [ ] **Step 4: 增加 test 脚本**
+
+Modify `package.json` scripts:
+
+```json
+{
+  "scripts": {
+    "test": "node -e \"console.log('frontend tests not configured yet')\""
+  }
+}
+```
+
+Replace this with real tests when test files are introduced.
+
+- [ ] **Step 5: 验证 Trellis 上下文**
+
+Run:
+
+```powershell
+python ./.trellis/scripts/task.py current --source
+python ./.trellis/scripts/get_context.py --mode packages
+```
+
+Expected:
+
+```text
+输出当前任务和可用规范包
 ```
 
 ## 10. Task 9：最终检查和暂存
@@ -789,7 +797,7 @@ Rust cargo check 通过
 Run:
 
 ```powershell
-git add -- package.json pnpm-lock.yaml index.html src src-tauri trellis.hjson README.md docs
+git add -- package.json pnpm-lock.yaml index.html src src-tauri README.md docs .trellis .codex .agents
 git status --short
 ```
 
@@ -814,4 +822,5 @@ Expected:
 - [ ] 大量输出不冻结 UI。
 - [ ] resize 能同步到远端 PTY。
 - [ ] 断开后终端 tab 不丢历史输出。
-- [ ] Trellis 至少有 `docs-check`、`git-status`、`dev`、`check`、`test` 工作流配置。
+- [ ] Trellis 已有当前任务、项目规范、Codex hooks 和本地技能文件。
+- [ ] `package.json` 至少有 `dev`、`check`、`test` 和 `tauri:dev` 脚本。
