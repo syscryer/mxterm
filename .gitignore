@@ -1,0 +1,10 @@
+.superpowers/
+.learnings/
+.trellis/
+node_modules/
+dist/
+target/
+src-tauri/target/
+.env
+.env.*
+!.env.example
