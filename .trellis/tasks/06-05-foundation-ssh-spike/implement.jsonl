@@ -1,0 +1,5 @@
+{"file":"docs/requirements/m-xterm-requirements.md","reason":"MVP 产品范围、技术红线和 SSH 体验要求"}
+{"file":"docs/plans/2026-06-05-mxterm-mvp-foundation-and-ssh-spike.md","reason":"第一阶段工程基座和 SSH Spike 实施计划"}
+{"file":".trellis/spec/frontend/index.md","reason":"前端开发前置规范入口"}
+{"file":".trellis/spec/backend/index.md","reason":"后端开发前置规范入口"}
+{"file":".trellis/spec/guides/index.md","reason":"跨层思考和复用指南入口"}
