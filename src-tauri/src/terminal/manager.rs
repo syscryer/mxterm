@@ -1,0 +1,229 @@
+use std::collections::HashMap;
+use std::sync::Arc;
+
+use russh::{ChannelMsg, ChannelReadHalf};
+use tauri::{AppHandle, Emitter};
+use tokio::sync::Mutex;
+
+use crate::app_error::AppError;
+use crate::commands::{TerminalConnectRequest, TerminalResizeRequest, TerminalWriteRequest};
+use crate::events::{TerminalOutputEvent, TerminalStateChangedEvent};
+use crate::terminal::session::TerminalSession;
+
+type SessionStore = Arc<Mutex<HashMap<String, Arc<TerminalSession>>>>;
+
+#[derive(Clone, Default)]
+pub struct TerminalManager {
+    sessions: SessionStore,
+}
+
+impl TerminalManager {
+    pub async fn connect(
+        &self,
+        app: AppHandle,
+        request: TerminalConnectRequest,
+    ) -> Result<String, AppError> {
+        validate_connect_request(&request)?;
+
+        let (session, reader) = TerminalSession::open(request).await?;
+        let session_id = session.id.clone();
+        self.sessions
+            .lock()
+            .await
+            .insert(session_id.clone(), Arc::new(session));
+        spawn_reader(app, session_id.clone(), reader, self.sessions.clone());
+
+        Ok(session_id)
+    }
+
+    pub async fn write(&self, request: TerminalWriteRequest) -> Result<(), AppError> {
+        let session = self.session(&request.session_id).await?;
+        session.write(request.data).await
+    }
+
+    pub async fn resize(&self, request: TerminalResizeRequest) -> Result<(), AppError> {
+        validate_session_id(&request.session_id)?;
+        crate::terminal::pty::validate_size(request.cols, request.rows)?;
+
+        let session = self.session(&request.session_id).await?;
+        session.resize(request.cols, request.rows).await
+    }
+
+    pub async fn close(&self, session_id: String) -> Result<(), AppError> {
+        validate_session_id(&session_id)?;
+
+        let session = self.sessions.lock().await.remove(&session_id).ok_or_else(|| {
+            AppError::new(
+                "terminal_session_missing",
+                "终端会话不存在。",
+                format!("session_id={session_id}"),
+                false,
+            )
+        })?;
+
+        session.close().await
+    }
+
+    async fn session(&self, session_id: &str) -> Result<Arc<TerminalSession>, AppError> {
+        validate_session_id(session_id)?;
+        self.sessions
+            .lock()
+            .await
+            .get(session_id)
+            .cloned()
+            .ok_or_else(|| {
+                AppError::new(
+                    "terminal_session_missing",
+                    "终端会话不存在。",
+                    format!("session_id={session_id}"),
+                    false,
+                )
+            })
+    }
+}
+
+pub fn validate_connect_request(request: &TerminalConnectRequest) -> Result<(), AppError> {
+    if request.host.trim().is_empty() {
+        return Err(AppError::new(
+            "terminal_host_missing",
+            "请填写 SSH 主机。",
+            "host is empty",
+            true,
+        ));
+    }
+
+    if request.username.trim().is_empty() {
+        return Err(AppError::new(
+            "terminal_username_missing",
+            "请填写 SSH 用户名。",
+            "username is empty",
+            true,
+        ));
+    }
+
+    if request.port == 0 {
+        return Err(AppError::new(
+            "terminal_port_invalid",
+            "SSH 端口无效。",
+            "port is 0",
+            true,
+        ));
+    }
+
+    let has_password = request
+        .password
+        .as_ref()
+        .is_some_and(|password| !password.trim().is_empty());
+    let has_private_key = request
+        .private_key_path
+        .as_ref()
+        .is_some_and(|path| !path.trim().is_empty());
+    if !has_password && !has_private_key {
+        return Err(AppError::new(
+            "terminal_auth_missing",
+            "请填写密码或选择私钥。",
+            "password and private_key_path are both empty",
+            true,
+        ));
+    }
+
+    crate::terminal::pty::validate_size(request.cols, request.rows)?;
+    Ok(())
+}
+
+fn validate_session_id(session_id: &str) -> Result<(), AppError> {
+    if session_id.trim().is_empty() {
+        return Err(AppError::new(
+            "terminal_session_missing",
+            "终端会话不存在。",
+            "session_id is empty",
+            false,
+        ));
+    }
+
+    Ok(())
+}
+
+fn spawn_reader(
+    app: AppHandle,
+    session_id: String,
+    mut reader: ChannelReadHalf,
+    sessions: SessionStore,
+) {
+    tauri::async_runtime::spawn(async move {
+        let mut exit_status = None;
+
+        while let Some(message) = reader.wait().await {
+            match message {
+                ChannelMsg::Data { data } | ChannelMsg::ExtendedData { data, .. } => {
+                    let _ = app.emit(
+                        crate::events::TERMINAL_OUTPUT,
+                        TerminalOutputEvent {
+                            session_id: session_id.clone(),
+                            data: data.to_vec(),
+                        },
+                    );
+                }
+                ChannelMsg::ExitStatus { exit_status: code } => {
+                    exit_status = Some(code);
+                }
+                ChannelMsg::Eof | ChannelMsg::Close => break,
+                _ => {}
+            }
+        }
+
+        sessions.lock().await.remove(&session_id);
+        let _ = app.emit(
+            crate::events::TERMINAL_STATE_CHANGED,
+            TerminalStateChangedEvent {
+                session_id,
+                state: "closed".to_string(),
+                exit_status,
+            },
+        );
+    });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn valid_request() -> TerminalConnectRequest {
+        TerminalConnectRequest {
+            host: "127.0.0.1".to_string(),
+            port: 22,
+            username: "root".to_string(),
+            password: Some("secret".to_string()),
+            private_key_path: None,
+            private_key_passphrase: None,
+            cols: 80,
+            rows: 24,
+        }
+    }
+
+    #[test]
+    fn connect_rejects_blank_host() {
+        let request = TerminalConnectRequest {
+            host: "  ".to_string(),
+            ..valid_request()
+        };
+
+        let error = validate_connect_request(&request).unwrap_err();
+
+        assert_eq!(error.code, "terminal_host_missing");
+    }
+
+    #[test]
+    fn connect_rejects_missing_auth() {
+        let request = TerminalConnectRequest {
+            password: None,
+            private_key_path: None,
+            private_key_passphrase: None,
+            ..valid_request()
+        };
+
+        let error = validate_connect_request(&request).unwrap_err();
+
+        assert_eq!(error.code, "terminal_auth_missing");
+    }
+}

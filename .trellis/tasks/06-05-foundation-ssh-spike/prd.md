@@ -19,13 +19,13 @@
 
 ## Acceptance Criteria
 
-- [ ] `pnpm install` 可以完成依赖安装。
-- [ ] `pnpm check` 可以执行 TypeScript 检查。
-- [ ] `cargo check --manifest-path src-tauri/Cargo.toml` 可以执行 Rust 检查。
+- [x] `pnpm install` 可以完成依赖安装。
+- [x] `pnpm check` 可以执行 TypeScript 检查。
+- [x] `cargo check --manifest-path src-tauri/Cargo.toml` 可以执行 Rust 检查。
 - [ ] `pnpm tauri dev` 可以启动 Windows 开发版。
-- [ ] 主界面出现连接仓库、编辑器/终端区、右侧工具面板的布局骨架。
-- [ ] Rust 后端存在 terminal command 和 event 边界。
-- [ ] xterm.js 能显示终端区域。
+- [x] 主界面出现连接仓库、编辑器/终端区、右侧工具面板的布局骨架。
+- [x] Rust 后端存在 terminal command 和 event 边界。
+- [x] xterm.js 能显示终端区域。
 - [ ] 真实 SSH 连接可以打开 shell。
 - [ ] 终端输入回显顺畅。
 - [ ] `vim`、`top`、`tail -f` 和大量输出场景可验证。
@@ -38,4 +38,4 @@
 - 不提交真实主机、真实密码、真实私钥或真实环境连接信息。
 - 不提交 `.trellis/.developer`、`.trellis/.runtime/`、Python 缓存、`.superpowers/`、`.learnings/`、日志目录和本地附件目录。
 - 新增代码文件完成后执行 `git add` 暂存。
-- 可以由 agent 在检查通过后提交并推送。
+- 不自动提交 git；检查通过后等待人工审核，再按需要提交并推送。

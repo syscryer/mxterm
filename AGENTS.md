@@ -9,5 +9,5 @@
 - `.trellis/`、`.codex/`、`.agents/` 是 Trellis 项目文件，应随项目维护；不要提交 `.trellis/.runtime/`、`.trellis/.developer`、Python 缓存或敏感配置。
 - 不要提交 `.superpowers/`、`.learnings/` 或敏感配置文件。
 - 本仓库允许直接在 `master` 分支开发，不强制创建隔离 worktree。
-- 当变更范围清楚、检查通过且没有敏感信息时，可以由 agent 自主提交并推送。
-- 提交前必须检查 `git status --short`，并确认没有敏感信息。
+- 不自动提交或推送 git；所有更改先暂存并等待人工审核。
+- 提交前必须检查 `git status --short` 和 staged diff，并确认没有敏感信息。

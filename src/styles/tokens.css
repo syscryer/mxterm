@@ -1,0 +1,20 @@
+:root {
+  --mx-bg: #f5f6f8;
+  --mx-panel: #ffffff;
+  --mx-panel-soft: #f8f9fb;
+  --mx-line: #dde1e7;
+  --mx-line-strong: #c9ced6;
+  --mx-text: #20242a;
+  --mx-muted: #626b78;
+  --mx-subtle: #8a93a0;
+  --mx-active: rgba(156, 163, 175, 0.12);
+  --mx-primary: #2563eb;
+  --mx-danger: #dc2626;
+  color: var(--mx-text);
+  background: var(--mx-bg);
+  font-family:
+    "Inter",
+    "Segoe UI",
+    system-ui,
+    sans-serif;
+}
