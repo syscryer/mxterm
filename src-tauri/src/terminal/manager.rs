@@ -25,11 +25,13 @@ impl TerminalManager {
     ) -> Result<String, AppError> {
         validate_connect_request(&request)?;
 
-        let progress = request
+        let request_id = request
             .request_id
             .as_ref()
             .map(|value| value.trim().to_string())
-            .filter(|value| !value.is_empty())
+            .filter(|value| !value.is_empty());
+        let progress = request_id
+            .clone()
             .map(|request_id| {
                 let progress_app = app.clone();
                 OpenProgress::new(move |stage, message| {
@@ -49,7 +51,13 @@ impl TerminalManager {
             .lock()
             .await
             .insert(session_id.clone(), Arc::new(session));
-        spawn_reader(app, session_id.clone(), reader, self.sessions.clone());
+        spawn_reader(
+            app,
+            session_id.clone(),
+            request_id,
+            reader,
+            self.sessions.clone(),
+        );
 
         Ok(session_id)
     }
@@ -170,6 +178,7 @@ fn validate_session_id(session_id: &str) -> Result<(), AppError> {
 fn spawn_reader(
     app: AppHandle,
     session_id: String,
+    request_id: Option<String>,
     mut reader: ChannelReadHalf,
     sessions: SessionStore,
 ) {
@@ -183,6 +192,7 @@ fn spawn_reader(
                         crate::events::TERMINAL_OUTPUT,
                         TerminalOutputEvent {
                             session_id: session_id.clone(),
+                            request_id: request_id.clone(),
                             data: data.to_vec(),
                         },
                     );
@@ -200,6 +210,7 @@ fn spawn_reader(
             crate::events::TERMINAL_STATE_CHANGED,
             TerminalStateChangedEvent {
                 session_id,
+                request_id,
                 state: "closed".to_string(),
                 exit_status,
             },

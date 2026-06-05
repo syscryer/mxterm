@@ -13,11 +13,13 @@ export interface TerminalConnectRequest {
 
 export interface TerminalOutputEvent {
   session_id: string;
+  request_id: string | null;
   data: number[];
 }
 
 export interface TerminalStateChangedEvent {
   session_id: string;
+  request_id: string | null;
   state: "closed";
   exit_status: number | null;
 }
