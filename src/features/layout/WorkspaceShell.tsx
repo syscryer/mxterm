@@ -1,10 +1,12 @@
 import { useCallback, useMemo, useState } from "react";
+import { FileText, Folder, Plus, X } from "lucide-react";
 
 import { ConnectionDialog } from "../connections/ConnectionDialog";
 import { ConnectionPane } from "../connections/ConnectionPane";
 import type { ConnectionProfile, ConnectionProfileInput } from "../connections/connectionTypes";
 import { useConnections } from "../connections/useConnections";
 import { TerminalPanel } from "../terminal/TerminalPanel";
+import { Tooltip } from "../../shared/ui/Tooltip";
 
 const files = ["logs", "config", "app.log", "nginx.conf"];
 
@@ -18,6 +20,7 @@ interface TerminalTab {
 
 export function WorkspaceShell() {
   const { connections, error, loading, reload, remove, upsert } = useConnections();
+  const [activeConnectionId, setActiveConnectionId] = useState<string | null>(null);
   const [activeTabId, setActiveTabId] = useState<string | null>(null);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editingConnection, setEditingConnection] = useState<ConnectionProfile | null>(null);
@@ -27,11 +30,34 @@ export function WorkspaceShell() {
   const connectionById = useMemo(() => {
     return new Map(connections.map((connection) => [connection.id, connection]));
   }, [connections]);
+
   const selectedConnection = selectedConnectionId
     ? connectionById.get(selectedConnectionId) || null
     : null;
-  const visibleTerminalTabs = selectedConnectionId
-    ? terminalTabs.filter((tab) => tab.connectionId === selectedConnectionId)
+  const activeConnection = activeConnectionId
+    ? connectionById.get(activeConnectionId) || null
+    : null;
+  const terminalTabsByConnection = useMemo(() => {
+    const groups = new Map<string, TerminalTab[]>();
+
+    terminalTabs.forEach((tab) => {
+      const group = groups.get(tab.connectionId) || [];
+      group.push(tab);
+      groups.set(tab.connectionId, group);
+    });
+
+    return groups;
+  }, [terminalTabs]);
+  const connectionSessions = useMemo(
+    () =>
+      Array.from(terminalTabsByConnection.entries()).map(([connectionId, tabs]) => ({
+        connectionId,
+        tabs,
+      })),
+    [terminalTabsByConnection],
+  );
+  const activeConnectionTabs = activeConnectionId
+    ? terminalTabsByConnection.get(activeConnectionId) || []
     : [];
 
   const updateTabStatus = useCallback((tabId: string, status: string) => {
@@ -62,8 +88,12 @@ export function WorkspaceShell() {
       if (!nextTabs.some((tab) => tab.id === activeTabId)) {
         setActiveTabId(nextTabs[0]?.id || null);
       }
+      if (!nextTabs.some((tab) => tab.connectionId === activeConnectionId)) {
+        setActiveConnectionId(nextTabs[0]?.connectionId || null);
+      }
       return nextTabs;
     });
+
     if (selectedConnectionId === connection.id) {
       setSelectedConnectionId(null);
     }
@@ -80,28 +110,37 @@ export function WorkspaceShell() {
       id: `terminal-${connection.id}-${Date.now().toString()}-${nextIndex.toString()}`,
       connectionId: connection.id,
       index: nextIndex,
-      status: "待连接",
+      status: "等待连接",
       title: nextIndex === 0 ? "终端" : `终端 ${nextIndex.toString()}`,
     };
   }
 
   function selectConnection(connection: ConnectionProfile) {
     setSelectedConnectionId(connection.id);
-    setTerminalTabs((tabs) => {
-      const existingTab = tabs.find((tab) => tab.connectionId === connection.id);
-      if (existingTab) {
-        setActiveTabId(existingTab.id);
-        return tabs;
-      }
 
-      const tab = buildTerminalTab(tabs, connection);
-      setActiveTabId(tab.id);
-      return [...tabs, tab];
-    });
+    const existingTab = terminalTabs.find((tab) => tab.connectionId === connection.id);
+    if (existingTab) {
+      setActiveConnectionId(connection.id);
+      setActiveTabId(existingTab.id);
+    }
+  }
+
+  function openConnectionSession(connection: ConnectionProfile) {
+    setSelectedConnectionId(connection.id);
+
+    const existingTab = terminalTabs.find((tab) => tab.connectionId === connection.id);
+    if (existingTab) {
+      setActiveConnectionId(connection.id);
+      setActiveTabId(existingTab.id);
+      return;
+    }
+
+    openTerminal(connection);
   }
 
   function openTerminal(connection: ConnectionProfile) {
     setSelectedConnectionId(connection.id);
+    setActiveConnectionId(connection.id);
     setTerminalTabs((tabs) => {
       const tab = buildTerminalTab(tabs, connection);
       setActiveTabId(tab.id);
@@ -111,24 +150,47 @@ export function WorkspaceShell() {
 
   function closeTerminal(tabId: string) {
     setTerminalTabs((tabs) => {
+      const closingTab = tabs.find((tab) => tab.id === tabId);
       const nextTabs = tabs.filter((tab) => tab.id !== tabId);
       if (activeTabId === tabId) {
-        const nextConnectionTab =
-          selectedConnectionId === null
-            ? null
-            : nextTabs.find((tab) => tab.connectionId === selectedConnectionId);
-        setActiveTabId(nextConnectionTab?.id || null);
+        const nextActiveTab =
+          (closingTab
+            ? nextTabs.find((tab) => tab.connectionId === closingTab.connectionId)
+            : null) ||
+          nextTabs[0] ||
+          null;
+
+        setActiveTabId(nextActiveTab?.id || null);
+        setActiveConnectionId(nextActiveTab?.connectionId || null);
+      } else if (
+        closingTab &&
+        activeConnectionId === closingTab.connectionId &&
+        !nextTabs.some((tab) => tab.connectionId === closingTab.connectionId)
+      ) {
+        setActiveConnectionId(nextTabs[0]?.connectionId || null);
       }
       return nextTabs;
     });
   }
 
-  function openSelectedConnection() {
-    if (selectedConnection) {
-      openTerminal(selectedConnection);
-      return;
+  function closeConnectionSession(connectionId: string) {
+    setTerminalTabs((tabs) => {
+      const nextTabs = tabs.filter((tab) => tab.connectionId !== connectionId);
+
+      if (activeConnectionId === connectionId) {
+        const nextActiveTab = nextTabs[0] || null;
+        setActiveTabId(nextActiveTab?.id || null);
+        setActiveConnectionId(nextActiveTab?.connectionId || null);
+      }
+
+      return nextTabs;
+    });
+  }
+
+  function openTerminalInActiveConnection() {
+    if (activeConnection) {
+      openTerminal(activeConnection);
     }
-    createConnection();
   }
 
   return (
@@ -137,39 +199,88 @@ export function WorkspaceShell() {
         connections={connections}
         error={error}
         loading={loading}
+        onConnect={openConnectionSession}
         onCreate={createConnection}
+        onDelete={deleteConnection}
         onEdit={editConnection}
-        onOpen={selectConnection}
+        onOpen={openTerminal}
         onRefresh={reload}
+        onSelect={selectConnection}
         selectedId={selectedConnectionId}
       />
 
       <section className="main-workbench" aria-label="编辑器和终端">
-        <nav className="top-tabs" aria-label="终端连接标签">
-          {visibleTerminalTabs.map((tab) => (
-            <div className={`tab-shell ${tab.id === activeTabId ? "active" : ""}`} key={tab.id}>
-              <button className="tab" type="button" onClick={() => setActiveTabId(tab.id)}>
-                <span>{tab.title}</span>
+        <nav className="top-tabs connection-session-tabs" aria-label="连接会话列表">
+          {connectionSessions.map((session) => (
+            <div
+              className={`tab-shell ${session.connectionId === activeConnectionId ? "active" : ""}`}
+              key={session.connectionId}
+            >
+              <button
+                className="tab"
+                type="button"
+                onClick={() => {
+                  const nextTab = session.tabs[0];
+                  setActiveConnectionId(session.connectionId);
+                  setActiveTabId(nextTab?.id || null);
+                  setSelectedConnectionId(session.connectionId);
+                }}
+              >
+                <span className="tab-label">{connectionName(session.connectionId, connectionById)}</span>
               </button>
               <button
                 className="tab-close"
                 type="button"
-                aria-label={`关闭 ${tab.title}`}
-                onClick={() => closeTerminal(tab.id)}
+                aria-label={`关闭 ${connectionName(session.connectionId, connectionById)}`}
+                onClick={() => closeConnectionSession(session.connectionId)}
               >
-                ×
+                <X className="ui-icon" aria-hidden="true" />
               </button>
             </div>
           ))}
-          <button className="add-tab" type="button" aria-label="新建终端" onClick={openSelectedConnection}>
-            +
-          </button>
+        </nav>
+
+        <nav className="terminal-subtabs" aria-label="当前连接的终端会话">
+          {activeConnectionTabs.map((tab) => (
+            <div className={`subtab-shell ${tab.id === activeTabId ? "active" : ""}`} key={tab.id}>
+              <button
+                className="subtab"
+                type="button"
+                onClick={() => {
+                  setActiveTabId(tab.id);
+                  setSelectedConnectionId(tab.connectionId);
+                }}
+              >
+                <span>{tab.title}</span>
+              </button>
+              <button
+                className="subtab-close"
+                type="button"
+                aria-label={`关闭 ${tab.title}`}
+                onClick={() => closeTerminal(tab.id)}
+              >
+                <X className="ui-icon" aria-hidden="true" />
+              </button>
+            </div>
+          ))}
+          {activeConnection ? (
+            <Tooltip label="新建同连接终端">
+              <button
+                className="add-subtab"
+                type="button"
+                aria-label="新建同连接终端"
+                onClick={openTerminalInActiveConnection}
+              >
+              <Plus className="ui-icon" aria-hidden="true" />
+              </button>
+            </Tooltip>
+          ) : null}
         </nav>
 
         <section className="terminal-stack" aria-label="终端会话">
-          {visibleTerminalTabs.length === 0 ? (
+          {terminalTabs.length === 0 ? (
             <div className="terminal-empty">
-              {selectedConnection ? "点击 + 新开终端。" : "从左侧连接仓库选择连接。"}
+              {selectedConnection ? "双击左侧连接打开会话。" : "先从左侧连接仓库选择一条连接。"}
             </div>
           ) : null}
           {terminalTabs.map((tab) => (
@@ -196,12 +307,16 @@ export function WorkspaceShell() {
         </nav>
         <div className="path-bar">/ &gt; root &gt; app</div>
         <section className="file-list" aria-label="远程文件列表">
-          {files.map((file) => (
-            <button className="file-row" type="button" key={file}>
-              <span aria-hidden="true">{file.includes(".") ? "□" : "▣"}</span>
-              <span>{file}</span>
-            </button>
-          ))}
+          {files.map((file) => {
+            const FileIcon = file.includes(".") ? FileText : Folder;
+
+            return (
+              <button className="file-row" type="button" key={file}>
+                <FileIcon className="ui-icon" aria-hidden="true" />
+                <span>{file}</span>
+              </button>
+            );
+          })}
         </section>
       </aside>
 
@@ -214,4 +329,11 @@ export function WorkspaceShell() {
       />
     </main>
   );
+}
+
+function connectionName(
+  connectionId: string,
+  connectionById: Map<string, ConnectionProfile>,
+) {
+  return connectionById.get(connectionId)?.name || "连接已删除";
 }

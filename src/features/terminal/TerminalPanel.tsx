@@ -40,6 +40,7 @@ export function TerminalPanel({
   const startedRef = useRef(false);
   const decoderRef = useRef(new TextDecoder());
   const [sessionId, setSessionId] = useState<string | null>(null);
+  const [listenersReady, setListenersReady] = useState(!hasTauriRuntime());
   const [status, setStatus] = useState(connection ? "待连接" : "空闲");
 
   useEffect(() => {
@@ -75,6 +76,7 @@ export function TerminalPanel({
     terminal.loadAddon(new WebLinksAddon());
     terminal.open(hostRef.current);
     fitAddon.fit();
+    startedRef.current = false;
     terminal.writeln("终端已就绪。");
 
     const dataDisposable = terminal.onData((data) => {
@@ -105,18 +107,18 @@ export function TerminalPanel({
     let stopOutputListener: (() => void) | undefined;
     let stopStateListener: (() => void) | undefined;
     let stopProgressListener: (() => void) | undefined;
+    let disposed = false;
     if (hasTauriRuntime()) {
-      void listenTerminalOutput((event) => {
-        if (event.session_id !== sessionIdRef.current) {
+      setListenersReady(false);
+      const outputListener = listenTerminalOutput((event) => {
+        if (!matchesTerminalEvent(event, tabId, sessionIdRef.current)) {
           return;
         }
         terminal.write(decoderRef.current.decode(Uint8Array.from(event.data), { stream: true }));
-      }).then((unlisten) => {
-        stopOutputListener = unlisten;
       });
 
-      void listenTerminalStateChanged((event) => {
-        if (event.session_id !== sessionIdRef.current) {
+      const stateListener = listenTerminalStateChanged((event) => {
+        if (!matchesTerminalEvent(event, tabId, sessionIdRef.current)) {
           return;
         }
         setSessionId(null);
@@ -124,21 +126,39 @@ export function TerminalPanel({
           event.exit_status === null ? "" : `，退出码 ${event.exit_status.toString()}`;
         setStatus(`已断开${suffix}`);
         terminal.writeln(`\r\n[会话已断开${suffix}]`);
-      }).then((unlisten) => {
-        stopStateListener = unlisten;
       });
 
-      void listenTerminalConnectProgress((event) => {
+      const progressListener = listenTerminalConnectProgress((event) => {
         if (event.request_id !== tabId) {
           return;
         }
         terminal.writeln(`\r\n${event.message}`);
-      }).then((unlisten) => {
-        stopProgressListener = unlisten;
+      });
+
+      void Promise.all([outputListener, stateListener, progressListener]).then(
+        ([unlistenOutput, unlistenState, unlistenProgress]) => {
+          if (disposed) {
+            unlistenOutput();
+            unlistenState();
+            unlistenProgress();
+            return;
+          }
+          stopOutputListener = unlistenOutput;
+          stopStateListener = unlistenState;
+          stopProgressListener = unlistenProgress;
+          setListenersReady(true);
+        },
+      ).catch((error: unknown) => {
+        if (disposed) {
+          return;
+        }
+        setStatus("事件监听失败");
+        terminal.writeln(`\r\n事件监听初始化失败: ${formatError(error)}`);
       });
     }
 
     return () => {
+      disposed = true;
       const activeSessionId = sessionIdRef.current;
       if (activeSessionId) {
         void terminalClose(activeSessionId).catch(() => {});
@@ -158,7 +178,7 @@ export function TerminalPanel({
   useEffect(() => {
     const terminal = terminalRef.current;
     const fitAddon = fitAddonRef.current;
-    if (!terminal || !fitAddon || !connection || startedRef.current) {
+    if (!terminal || !fitAddon || !connection || !listenersReady || startedRef.current) {
       return;
     }
 
@@ -187,6 +207,7 @@ export function TerminalPanel({
       username: connection.username,
     })
       .then((nextSessionId) => {
+        sessionIdRef.current = nextSessionId;
         setSessionId(nextSessionId);
         setStatus("已连接");
         terminal.focus();
@@ -196,7 +217,7 @@ export function TerminalPanel({
         setStatus("连接失败");
         terminal.writeln(`\r\n连接失败: ${formatError(error)}`);
       });
-  }, [connection, tabId]);
+  }, [connection, listenersReady, tabId]);
 
   useEffect(() => {
     if (active) {
@@ -220,4 +241,12 @@ function formatError(error: unknown) {
     return String((error as { message: unknown }).message);
   }
   return String(error);
+}
+
+function matchesTerminalEvent(
+  event: { request_id: string | null; session_id: string },
+  tabId: string,
+  sessionId: string | null,
+) {
+  return event.session_id === sessionId || event.request_id === tabId;
 }
