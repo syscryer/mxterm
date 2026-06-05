@@ -1,4 +1,6 @@
 export interface TerminalConnectRequest {
+  request_id?: string;
+  connection_id?: string;
   host: string;
   port: number;
   username: string;
@@ -18,4 +20,10 @@ export interface TerminalStateChangedEvent {
   session_id: string;
   state: "closed";
   exit_status: number | null;
+}
+
+export interface TerminalConnectProgressEvent {
+  request_id: string;
+  stage: string;
+  message: string;
 }
