@@ -1,80 +1,188 @@
-import { TerminalPanel } from "../terminal/TerminalPanel";
+import { useCallback, useMemo, useState } from "react";
 
-const connections = [
-  { name: "203.0.113.70", group: "开发环境" },
-  { name: "203.0.113.131", group: "测试环境" },
-  { name: "prod-jump-01", group: "生产跳板" },
-];
+import { ConnectionDialog } from "../connections/ConnectionDialog";
+import { ConnectionPane } from "../connections/ConnectionPane";
+import type { ConnectionProfile, ConnectionProfileInput } from "../connections/connectionTypes";
+import { useConnections } from "../connections/useConnections";
+import { TerminalPanel } from "../terminal/TerminalPanel";
 
 const files = ["logs", "config", "app.log", "nginx.conf"];
 
+interface TerminalTab {
+  id: string;
+  connectionId: string;
+  index: number;
+  status: string;
+  title: string;
+}
+
 export function WorkspaceShell() {
+  const { connections, error, loading, reload, remove, upsert } = useConnections();
+  const [activeTabId, setActiveTabId] = useState<string | null>(null);
+  const [dialogOpen, setDialogOpen] = useState(false);
+  const [editingConnection, setEditingConnection] = useState<ConnectionProfile | null>(null);
+  const [selectedConnectionId, setSelectedConnectionId] = useState<string | null>(null);
+  const [terminalTabs, setTerminalTabs] = useState<TerminalTab[]>([]);
+
+  const connectionById = useMemo(() => {
+    return new Map(connections.map((connection) => [connection.id, connection]));
+  }, [connections]);
+  const selectedConnection = selectedConnectionId
+    ? connectionById.get(selectedConnectionId) || null
+    : null;
+  const visibleTerminalTabs = selectedConnectionId
+    ? terminalTabs.filter((tab) => tab.connectionId === selectedConnectionId)
+    : [];
+
+  const updateTabStatus = useCallback((tabId: string, status: string) => {
+    setTerminalTabs((tabs) =>
+      tabs.map((tab) => (tab.id === tabId && tab.status !== status ? { ...tab, status } : tab)),
+    );
+  }, []);
+
+  function createConnection() {
+    setEditingConnection(null);
+    setDialogOpen(true);
+  }
+
+  function editConnection(connection: ConnectionProfile) {
+    setEditingConnection(connection);
+    setDialogOpen(true);
+  }
+
+  async function saveConnection(input: ConnectionProfileInput) {
+    const saved = await upsert(input);
+    setSelectedConnectionId(saved.id);
+  }
+
+  async function deleteConnection(connection: ConnectionProfile) {
+    await remove(connection.id);
+    setTerminalTabs((tabs) => {
+      const nextTabs = tabs.filter((tab) => tab.connectionId !== connection.id);
+      if (!nextTabs.some((tab) => tab.id === activeTabId)) {
+        setActiveTabId(nextTabs[0]?.id || null);
+      }
+      return nextTabs;
+    });
+    if (selectedConnectionId === connection.id) {
+      setSelectedConnectionId(null);
+    }
+  }
+
+  function buildTerminalTab(tabs: TerminalTab[], connection: ConnectionProfile): TerminalTab {
+    const nextIndex =
+      Math.max(
+        -1,
+        ...tabs.filter((tab) => tab.connectionId === connection.id).map((tab) => tab.index),
+      ) + 1;
+
+    return {
+      id: `terminal-${connection.id}-${Date.now().toString()}-${nextIndex.toString()}`,
+      connectionId: connection.id,
+      index: nextIndex,
+      status: "待连接",
+      title: nextIndex === 0 ? "终端" : `终端 ${nextIndex.toString()}`,
+    };
+  }
+
+  function selectConnection(connection: ConnectionProfile) {
+    setSelectedConnectionId(connection.id);
+    setTerminalTabs((tabs) => {
+      const existingTab = tabs.find((tab) => tab.connectionId === connection.id);
+      if (existingTab) {
+        setActiveTabId(existingTab.id);
+        return tabs;
+      }
+
+      const tab = buildTerminalTab(tabs, connection);
+      setActiveTabId(tab.id);
+      return [...tabs, tab];
+    });
+  }
+
+  function openTerminal(connection: ConnectionProfile) {
+    setSelectedConnectionId(connection.id);
+    setTerminalTabs((tabs) => {
+      const tab = buildTerminalTab(tabs, connection);
+      setActiveTabId(tab.id);
+      return [...tabs, tab];
+    });
+  }
+
+  function closeTerminal(tabId: string) {
+    setTerminalTabs((tabs) => {
+      const nextTabs = tabs.filter((tab) => tab.id !== tabId);
+      if (activeTabId === tabId) {
+        const nextConnectionTab =
+          selectedConnectionId === null
+            ? null
+            : nextTabs.find((tab) => tab.connectionId === selectedConnectionId);
+        setActiveTabId(nextConnectionTab?.id || null);
+      }
+      return nextTabs;
+    });
+  }
+
+  function openSelectedConnection() {
+    if (selectedConnection) {
+      openTerminal(selectedConnection);
+      return;
+    }
+    createConnection();
+  }
+
   return (
     <main className="workspace-shell">
-      <aside className="connection-pane" aria-label="连接仓库">
-        <header className="pane-head">
-          <button className="icon-button" type="button" aria-label="连接仓库">
-            <span aria-hidden="true">≡</span>
-          </button>
-          <button className="icon-button" type="button" aria-label="刷新连接">
-            <span aria-hidden="true">↻</span>
-          </button>
-        </header>
-        <section className="pane-scroll">
-          <h2 className="section-title">最近连接</h2>
-          {connections.map((connection) => (
-            <button className="connection-row" type="button" key={connection.name}>
-              <span className="dot" aria-hidden="true" />
-              <span>{connection.name}</span>
-              <small>{connection.group}</small>
-            </button>
-          ))}
-        </section>
-        <footer className="settings-foot">
-          <button className="icon-button" type="button" aria-label="设置">
-            <span aria-hidden="true">⚙</span>
-          </button>
-        </footer>
-      </aside>
+      <ConnectionPane
+        connections={connections}
+        error={error}
+        loading={loading}
+        onCreate={createConnection}
+        onEdit={editConnection}
+        onOpen={selectConnection}
+        onRefresh={reload}
+        selectedId={selectedConnectionId}
+      />
 
       <section className="main-workbench" aria-label="编辑器和终端">
         <nav className="top-tabs" aria-label="终端连接标签">
-          <button className="tab active" type="button">
-            203.0.113.70
-          </button>
-          <button className="tab" type="button">
-            prod-jump-01
-          </button>
-          <button className="add-tab" type="button" aria-label="新建连接">
+          {visibleTerminalTabs.map((tab) => (
+            <div className={`tab-shell ${tab.id === activeTabId ? "active" : ""}`} key={tab.id}>
+              <button className="tab" type="button" onClick={() => setActiveTabId(tab.id)}>
+                <span>{tab.title}</span>
+              </button>
+              <button
+                className="tab-close"
+                type="button"
+                aria-label={`关闭 ${tab.title}`}
+                onClick={() => closeTerminal(tab.id)}
+              >
+                ×
+              </button>
+            </div>
+          ))}
+          <button className="add-tab" type="button" aria-label="新建终端" onClick={openSelectedConnection}>
             +
           </button>
         </nav>
 
-        <section className="editor-area" aria-label="远程编辑器">
-          <div className="editor-tabs">
-            <button className="file-tab active" type="button">
-              .bash_profile
-            </button>
-            <button className="file-tab" type="button">
-              nginx.conf
-            </button>
-          </div>
-          <div className="editor-toolbar" aria-label="编辑工具栏">
-            <button type="button">↶</button>
-            <button type="button">↷</button>
-            <button type="button">↻</button>
-            <button type="button">⌕</button>
-            <span>LF</span>
-            <span>UTF-8</span>
-          </div>
-          <pre className="code-preview">{`# .bash_profile
-
-if [ -f ~/.bashrc ]; then
-  . ~/.bashrc
-fi`}</pre>
+        <section className="terminal-stack" aria-label="终端会话">
+          {visibleTerminalTabs.length === 0 ? (
+            <div className="terminal-empty">
+              {selectedConnection ? "点击 + 新开终端。" : "从左侧连接仓库选择连接。"}
+            </div>
+          ) : null}
+          {terminalTabs.map((tab) => (
+            <TerminalPanel
+              active={tab.id === activeTabId}
+              connection={connectionById.get(tab.connectionId) || null}
+              key={tab.id}
+              onStatusChange={updateTabStatus}
+              tabId={tab.id}
+              title={tab.title}
+            />
+          ))}
         </section>
-
-        <TerminalPanel />
       </section>
 
       <aside className="tool-pane" aria-label="右侧工具面板">
@@ -96,6 +204,14 @@ fi`}</pre>
           ))}
         </section>
       </aside>
+
+      <ConnectionDialog
+        connection={editingConnection}
+        onClose={() => setDialogOpen(false)}
+        onDelete={deleteConnection}
+        onSave={saveConnection}
+        open={dialogOpen}
+      />
     </main>
   );
 }

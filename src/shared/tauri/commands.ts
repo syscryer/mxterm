@@ -1,5 +1,21 @@
 import { invoke } from "@tauri-apps/api/core";
+import type {
+  ConnectionProfile,
+  ConnectionProfileInput,
+} from "../../features/connections/connectionTypes";
 import type { TerminalConnectRequest } from "../../features/terminal/terminalTypes";
+
+export function connectionList() {
+  return invoke<ConnectionProfile[]>("connection_list");
+}
+
+export function connectionUpsert(request: ConnectionProfileInput) {
+  return invoke<ConnectionProfile>("connection_upsert", { request });
+}
+
+export function connectionDelete(id: string) {
+  return invoke<void>("connection_delete", { id });
+}
 
 export function terminalConnect(request: TerminalConnectRequest) {
   return invoke<string>("terminal_connect", { request });

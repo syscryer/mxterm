@@ -7,8 +7,8 @@ use tokio::sync::Mutex;
 
 use crate::app_error::AppError;
 use crate::commands::{TerminalConnectRequest, TerminalResizeRequest, TerminalWriteRequest};
-use crate::events::{TerminalOutputEvent, TerminalStateChangedEvent};
-use crate::terminal::session::TerminalSession;
+use crate::events::{TerminalConnectProgressEvent, TerminalOutputEvent, TerminalStateChangedEvent};
+use crate::terminal::session::{OpenProgress, TerminalSession};
 
 type SessionStore = Arc<Mutex<HashMap<String, Arc<TerminalSession>>>>;
 
@@ -25,7 +25,25 @@ impl TerminalManager {
     ) -> Result<String, AppError> {
         validate_connect_request(&request)?;
 
-        let (session, reader) = TerminalSession::open(request).await?;
+        let progress = request
+            .request_id
+            .as_ref()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .map(|request_id| {
+                let progress_app = app.clone();
+                OpenProgress::new(move |stage, message| {
+                    let _ = progress_app.emit(
+                        crate::events::TERMINAL_CONNECT_PROGRESS,
+                        TerminalConnectProgressEvent {
+                            request_id: request_id.clone(),
+                            stage: stage.to_string(),
+                            message: message.to_string(),
+                        },
+                    );
+                })
+            });
+        let (session, reader) = TerminalSession::open(request, progress).await?;
         let session_id = session.id.clone();
         self.sessions
             .lock()
@@ -52,14 +70,19 @@ impl TerminalManager {
     pub async fn close(&self, session_id: String) -> Result<(), AppError> {
         validate_session_id(&session_id)?;
 
-        let session = self.sessions.lock().await.remove(&session_id).ok_or_else(|| {
-            AppError::new(
-                "terminal_session_missing",
-                "终端会话不存在。",
-                format!("session_id={session_id}"),
-                false,
-            )
-        })?;
+        let session = self
+            .sessions
+            .lock()
+            .await
+            .remove(&session_id)
+            .ok_or_else(|| {
+                AppError::new(
+                    "terminal_session_missing",
+                    "终端会话不存在。",
+                    format!("session_id={session_id}"),
+                    false,
+                )
+            })?;
 
         session.close().await
     }
@@ -190,6 +213,8 @@ mod tests {
 
     fn valid_request() -> TerminalConnectRequest {
         TerminalConnectRequest {
+            request_id: None,
+            connection_id: None,
             host: "127.0.0.1".to_string(),
             port: 22,
             username: "root".to_string(),

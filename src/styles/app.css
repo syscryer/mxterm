@@ -60,8 +60,11 @@ button {
 
 .icon-button:hover,
 .connection-row:hover,
+.connection-row.active,
 .file-row:hover,
 .tool-tabs button:hover,
+.tab-shell:hover,
+.tab-shell.active,
 .tab:hover,
 .file-tab:hover {
   background: var(--mx-active);
@@ -84,7 +87,6 @@ button {
   font-weight: 680;
 }
 
-.connection-row,
 .file-row {
   width: 100%;
   height: 30px;
@@ -101,16 +103,77 @@ button {
   cursor: pointer;
 }
 
-.connection-row span:nth-child(2),
 .file-row span:nth-child(2) {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
+.connection-row {
+  width: 100%;
+  height: 34px;
+  border-radius: 8px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 28px;
+  align-items: center;
+  color: var(--mx-muted);
+}
+
+.connection-row > button:first-child {
+  min-width: 0;
+  height: 34px;
+  border: 0;
+  display: grid;
+  grid-template-columns: 14px minmax(0, 1fr);
+  grid-template-rows: 16px 14px;
+  align-items: center;
+  gap: 0 6px;
+  padding: 0 0 0 7px;
+  color: inherit;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+}
+
+.connection-row > button:first-child span:nth-child(2),
 .connection-row small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.connection-row small {
+  grid-column: 2;
   color: var(--mx-subtle);
   font-size: 11px;
+}
+
+.row-icon {
+  width: 26px;
+  height: 26px;
+  border: 0;
+  border-radius: 6px;
+  color: var(--mx-subtle);
+  background: transparent;
+  cursor: pointer;
+}
+
+.row-icon:hover {
+  color: var(--mx-text);
+  background: var(--mx-panel);
+}
+
+.pane-note,
+.pane-error {
+  margin: 8px 4px;
+  color: var(--mx-subtle);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.pane-error,
+.form-error {
+  color: #9f1d1d;
 }
 
 .dot {
@@ -122,14 +185,14 @@ button {
 
 .main-workbench {
   min-width: 0;
+  min-height: 0;
   display: grid;
-  grid-template-rows: 44px minmax(0, 1fr) 220px;
+  grid-template-rows: 44px minmax(0, 1fr);
   background: var(--mx-panel);
 }
 
 .top-tabs,
 .editor-tabs,
-.terminal-tabs,
 .tool-tabs {
   display: flex;
   align-items: center;
@@ -146,7 +209,6 @@ button {
 .tab,
 .add-tab,
 .file-tab,
-.terminal-tabs button,
 .tool-tabs button {
   height: 30px;
   border: 0;
@@ -157,7 +219,45 @@ button {
   cursor: pointer;
 }
 
-.tab.active,
+.tab-shell {
+  height: 32px;
+  min-width: 0;
+  border-radius: 8px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 24px;
+  align-items: center;
+  color: var(--mx-muted);
+}
+
+.tab-shell .tab {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  color: inherit;
+}
+
+.tab-shell .tab span {
+  max-width: 118px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tab-close {
+  width: 22px;
+  height: 22px;
+  border: 0;
+  border-radius: 6px;
+  color: var(--mx-subtle);
+  background: transparent;
+  cursor: pointer;
+}
+
+.tab-close:hover {
+  color: var(--mx-text);
+  background: var(--mx-panel);
+}
+
 .file-tab.active,
 .terminal-tabs .active,
 .tool-tabs .active {
@@ -214,60 +314,37 @@ button {
 
 .terminal-panel {
   min-height: 0;
+  overflow: hidden;
   display: grid;
-  grid-template-rows: 36px minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
   background: #111827;
   color: #d1d5db;
 }
 
-.terminal-tabs {
-  gap: 6px;
-  padding: 0 8px;
-  background: #f8f9fb;
+.terminal-panel.is-hidden {
+  visibility: hidden;
+  pointer-events: none;
 }
 
-.terminal-connect-form {
+.terminal-stack {
+  min-height: 0;
+  overflow: hidden;
+  position: relative;
+  display: grid;
+  background: #111827;
+}
+
+.terminal-stack .terminal-panel {
+  grid-area: 1 / 1;
+}
+
+.terminal-empty {
   display: flex;
   align-items: center;
-  gap: 6px;
-  min-width: 0;
-}
-
-.terminal-connect-form input {
-  width: 120px;
-  height: 26px;
-  border: 1px solid var(--mx-line);
-  border-radius: 6px;
-  padding: 0 8px;
-  color: var(--mx-text);
-  background: var(--mx-panel);
-  font-size: 12px;
-}
-
-.terminal-connect-form .port-input {
-  width: 54px;
-}
-
-.terminal-connect-form button {
-  height: 26px;
-  border: 1px solid var(--mx-line-strong);
-  border-radius: 6px;
-  padding: 0 10px;
-  color: var(--mx-text);
-  background: var(--mx-panel);
-  cursor: pointer;
-}
-
-.terminal-connect-form button:disabled {
-  color: var(--mx-subtle);
-  cursor: default;
-}
-
-.terminal-status {
-  margin-left: auto;
-  color: var(--mx-subtle);
-  font-size: 12px;
-  white-space: nowrap;
+  justify-content: center;
+  color: #8a94a6;
+  background: #111827;
+  font-size: 13px;
 }
 
 .terminal-host {
@@ -308,4 +385,88 @@ button {
 
 .file-row {
   grid-template-columns: 18px minmax(0, 1fr);
+}
+
+.dialog-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgb(17 24 39 / 28%);
+}
+
+.connection-dialog {
+  width: 420px;
+  border: 1px solid var(--mx-line);
+  border-radius: 8px;
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  color: var(--mx-text);
+  background: var(--mx-panel);
+  box-shadow: 0 18px 50px rgb(15 23 42 / 16%);
+}
+
+.dialog-head,
+.dialog-actions {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+}
+
+.connection-dialog label {
+  display: grid;
+  gap: 5px;
+  color: var(--mx-muted);
+  font-size: 12px;
+}
+
+.connection-dialog input,
+.connection-dialog select,
+.connection-dialog textarea {
+  width: 100%;
+  border: 1px solid var(--mx-line);
+  border-radius: 6px;
+  padding: 7px 8px;
+  color: var(--mx-text);
+  background: var(--mx-panel);
+  font: inherit;
+  font-size: 13px;
+}
+
+.form-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 86px;
+  gap: 8px;
+}
+
+.dialog-actions {
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
+}
+
+.dialog-actions button {
+  height: 30px;
+  border: 1px solid var(--mx-line);
+  border-radius: 6px;
+  padding: 0 12px;
+  color: var(--mx-text);
+  background: var(--mx-panel);
+  cursor: pointer;
+}
+
+.dialog-actions button:disabled {
+  color: var(--mx-subtle);
+  cursor: default;
+}
+
+.dialog-actions .primary-button {
+  border-color: var(--mx-line-strong);
+  background: var(--mx-active);
+}
+
+.dialog-actions .danger-button {
+  color: #9f1d1d;
 }

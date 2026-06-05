@@ -4,6 +4,7 @@ use std::time::Duration;
 use russh::client;
 use russh::keys::{load_secret_key, PrivateKeyWithHashAlg};
 use russh::{ChannelReadHalf, ChannelWriteHalf, Disconnect};
+use std::future::Future;
 use tokio::sync::Mutex;
 use uuid::Uuid;
 
@@ -35,6 +36,23 @@ enum AuthMethod {
     },
 }
 
+#[derive(Clone)]
+pub struct OpenProgress {
+    emit: Arc<dyn Fn(&str, &str) + Send + Sync>,
+}
+
+impl OpenProgress {
+    pub fn new(emit: impl Fn(&str, &str) + Send + Sync + 'static) -> Self {
+        Self {
+            emit: Arc::new(emit),
+        }
+    }
+
+    fn emit(&self, stage: &str, message: &str) {
+        (self.emit)(stage, message);
+    }
+}
+
 #[allow(dead_code)]
 pub struct TerminalSession {
     pub id: String,
@@ -48,6 +66,7 @@ pub struct TerminalSession {
 impl TerminalSession {
     pub async fn open(
         request: TerminalConnectRequest,
+        progress: Option<OpenProgress>,
     ) -> Result<(Self, ChannelReadHalf), AppError> {
         let host = request.host.trim().to_string();
         let port = request.port;
@@ -61,15 +80,36 @@ impl TerminalSession {
             ..<_>::default()
         });
 
-        let mut client = client::connect(config, (host.as_str(), port), TrustingClient)
-            .await
-            .map_err(|error| {
-                AppError::new("terminal_connect_failed", "SSH 连接失败。", error, true)
-            })?;
+        emit_progress(&progress, "tcp_connecting", "正在建立 SSH TCP 连接...");
+        let mut client = run_with_timeout(
+            "terminal_connect_timeout",
+            "SSH 连接超时。",
+            Duration::from_secs(30),
+            client::connect(config, (host.as_str(), port), TrustingClient),
+        )
+        .await?
+        .map_err(|error| AppError::new("terminal_connect_failed", "SSH 连接失败。", error, true))?;
+        emit_progress(&progress, "tcp_connected", "SSH TCP 已连接。");
 
-        authenticate(&mut client, &username, auth_method).await?;
+        emit_progress(&progress, "authenticating", "SSH 认证中...");
+        run_with_timeout(
+            "terminal_auth_timeout",
+            "SSH 认证超时。",
+            Duration::from_secs(45),
+            authenticate(&mut client, &username, auth_method),
+        )
+        .await??;
+        emit_progress(&progress, "authenticated", "SSH 认证通过。");
 
-        let channel = client.channel_open_session().await.map_err(|error| {
+        emit_progress(&progress, "channel_opening", "正在打开 SSH 终端通道...");
+        let channel = run_with_timeout(
+            "terminal_channel_open_timeout",
+            "SSH 终端通道打开超时。",
+            Duration::from_secs(20),
+            client.channel_open_session(),
+        )
+        .await?
+        .map_err(|error| {
             AppError::new(
                 "terminal_channel_open_failed",
                 "SSH 终端通道打开失败。",
@@ -78,8 +118,12 @@ impl TerminalSession {
             )
         })?;
 
-        channel
-            .request_pty(
+        emit_progress(&progress, "pty_requesting", "正在初始化远程 PTY...");
+        run_with_timeout(
+            "terminal_pty_timeout",
+            "远程终端初始化超时。",
+            Duration::from_secs(20),
+            channel.request_pty(
                 true,
                 "xterm-256color",
                 u32::from(request.cols),
@@ -87,18 +131,23 @@ impl TerminalSession {
                 0,
                 0,
                 &[],
-            )
-            .await
-            .map_err(|error| {
-                AppError::new(
-                    "terminal_pty_failed",
-                    "远程终端初始化失败。",
-                    error,
-                    true,
-                )
-            })?;
+            ),
+        )
+        .await?
+        .map_err(|error| {
+            AppError::new("terminal_pty_failed", "远程终端初始化失败。", error, true)
+        })?;
+        emit_progress(&progress, "pty_ready", "远程 PTY 已就绪。");
 
-        channel.request_shell(true).await.map_err(|error| {
+        emit_progress(&progress, "shell_starting", "正在启动远程 Shell...");
+        run_with_timeout(
+            "terminal_shell_timeout",
+            "远程 Shell 启动超时。",
+            Duration::from_secs(20),
+            channel.request_shell(true),
+        )
+        .await?
+        .map_err(|error| {
             AppError::new(
                 "terminal_shell_failed",
                 "远程 Shell 启动失败。",
@@ -106,6 +155,7 @@ impl TerminalSession {
                 true,
             )
         })?;
+        emit_progress(&progress, "shell_ready", "远程 Shell 已启动。");
 
         let (reader, writer) = channel.split();
 
@@ -151,6 +201,26 @@ impl TerminalSession {
     }
 }
 
+fn emit_progress(progress: &Option<OpenProgress>, stage: &str, message: &str) {
+    if let Some(progress) = progress {
+        progress.emit(stage, message);
+    }
+}
+
+async fn run_with_timeout<T, F>(
+    code: &str,
+    message: &str,
+    duration: Duration,
+    future: F,
+) -> Result<T, AppError>
+where
+    F: Future<Output = T>,
+{
+    tokio::time::timeout(duration, future)
+        .await
+        .map_err(|_| AppError::new(code, message, format!("timeout after {duration:?}"), true))
+}
+
 fn auth_method(request: &TerminalConnectRequest) -> Result<AuthMethod, AppError> {
     if let Some(password) = request.password.as_ref() {
         if !password.trim().is_empty() {
@@ -193,7 +263,12 @@ async fn authenticate(
             })?,
         AuthMethod::PrivateKey { path, passphrase } => {
             let key = load_secret_key(path, passphrase.as_deref()).map_err(|error| {
-                AppError::new("terminal_private_key_invalid", "私钥读取失败。", error, true)
+                AppError::new(
+                    "terminal_private_key_invalid",
+                    "私钥读取失败。",
+                    error,
+                    true,
+                )
             })?;
             let hash_alg = client
                 .best_supported_rsa_hash()
@@ -237,6 +312,27 @@ mod tests {
     use super::*;
 
     #[test]
+    fn ssh_step_timeout_returns_stage_error() {
+        tauri::async_runtime::block_on(async {
+            let result = run_with_timeout(
+                "terminal_auth_timeout",
+                "SSH 认证超时。",
+                Duration::from_millis(1),
+                async {
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                    Ok::<(), AppError>(())
+                },
+            )
+            .await;
+
+            let error = result.unwrap_err();
+
+            assert_eq!(error.code, "terminal_auth_timeout");
+            assert_eq!(error.message, "SSH 认证超时。");
+        });
+    }
+
+    #[test]
     #[ignore = "requires MXTERM_SSH_HOST, MXTERM_SSH_USER and MXTERM_SSH_PASSWORD"]
     fn opens_real_shell_with_password_auth() {
         tauri::async_runtime::block_on(async {
@@ -247,6 +343,8 @@ mod tests {
             let marker = "__MXTERM_SMOKE_READY__";
 
             let request = TerminalConnectRequest {
+                request_id: None,
+                connection_id: None,
                 host,
                 port: 22,
                 username,
@@ -256,7 +354,7 @@ mod tests {
                 cols: 80,
                 rows: 24,
             };
-            let (session, mut reader) = TerminalSession::open(request).await.unwrap();
+            let (session, mut reader) = TerminalSession::open(request, None).await.unwrap();
 
             session.resize(100, 30).await.unwrap();
             session
@@ -277,8 +375,7 @@ mod tests {
                 while !output.contains(marker) {
                     if let Some(message) = reader.wait().await {
                         match message {
-                            ChannelMsg::Data { data }
-                            | ChannelMsg::ExtendedData { data, .. } => {
+                            ChannelMsg::Data { data } | ChannelMsg::ExtendedData { data, .. } => {
                                 output.push_str(&String::from_utf8_lossy(&data));
                             }
                             ChannelMsg::Close | ChannelMsg::Eof => break,
