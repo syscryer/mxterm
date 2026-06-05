@@ -20,8 +20,8 @@
 - `src-tauri/src/events.rs` 定义事件名。
 - `src-tauri/src/commands.rs` 暴露 terminal command。
 - `src-tauri/src/terminal/manager.rs` 管理 session id 到会话的映射。
-- `src-tauri/src/terminal/session.rs` 管理单个 SSH 会话。
-- `src-tauri/src/terminal/pty.rs` 负责 PTY 请求、shell、resize 和读写桥接。
+- `src-tauri/src/terminal/session.rs` 管理单个 SSH 会话、认证、PTY 请求、shell、resize 和写入。
+- `src-tauri/src/terminal/pty.rs` 负责本地 PTY 尺寸校验。
 
 ## Runtime Rules
 
@@ -29,6 +29,7 @@
 - 产品核心能力不通过 Node/Express 本地服务实现。
 - 终端输出从 Rust 批量发送给前端，避免单字符事件风暴。
 - 真实 SSH 测试信息只能在运行时输入，不能写入代码、文档或日志。
+- `russh` 在 Windows 下关闭默认 `aws-lc-rs`，使用 `ring` 后端；`primefield` 固定到 `=0.14.0-rc.9`，避免 RC 依赖漂移。
 
 ## Validation
 
