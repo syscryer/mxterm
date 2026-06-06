@@ -7,6 +7,7 @@ import type { ConnectionProfile, ConnectionProfileInput } from "../connections/c
 import { useConnections } from "../connections/useConnections";
 import { TerminalPanel } from "../terminal/TerminalPanel";
 import { Tooltip } from "../../shared/ui/Tooltip";
+import { AppTitlebar } from "./AppTitlebar";
 
 const files = ["logs", "config", "app.log", "nginx.conf"];
 
@@ -18,6 +19,12 @@ interface TerminalTab {
   title: string;
 }
 
+interface ConnectionPlacementRequest {
+  id: number;
+  connectionId: string;
+  groupId: string;
+}
+
 export function WorkspaceShell() {
   const { connections, error, loading, reload, remove, upsert } = useConnections();
   const [activeConnectionId, setActiveConnectionId] = useState<string | null>(null);
@@ -26,6 +33,12 @@ export function WorkspaceShell() {
   const [editingConnection, setEditingConnection] = useState<ConnectionProfile | null>(null);
   const [selectedConnectionId, setSelectedConnectionId] = useState<string | null>(null);
   const [terminalTabs, setTerminalTabs] = useState<TerminalTab[]>([]);
+  const [leftPaneCollapsed, setLeftPaneCollapsed] = useState(false);
+  const [rightPaneCollapsed, setRightPaneCollapsed] = useState(false);
+  const [createGroupRequest, setCreateGroupRequest] = useState(0);
+  const [pendingConnectionGroupId, setPendingConnectionGroupId] = useState<string | null>(null);
+  const [connectionPlacementRequest, setConnectionPlacementRequest] =
+    useState<ConnectionPlacementRequest | null>(null);
 
   const connectionById = useMemo(() => {
     return new Map(connections.map((connection) => [connection.id, connection]));
@@ -66,12 +79,20 @@ export function WorkspaceShell() {
     );
   }, []);
 
-  function createConnection() {
+  function createConnection(groupId?: string) {
+    setLeftPaneCollapsed(false);
+    setPendingConnectionGroupId(groupId || null);
     setEditingConnection(null);
     setDialogOpen(true);
   }
 
+  function createGroup() {
+    setLeftPaneCollapsed(false);
+    setCreateGroupRequest((request) => request + 1);
+  }
+
   function editConnection(connection: ConnectionProfile) {
+    setPendingConnectionGroupId(null);
     setEditingConnection(connection);
     setDialogOpen(true);
   }
@@ -79,6 +100,14 @@ export function WorkspaceShell() {
   async function saveConnection(input: ConnectionProfileInput) {
     const saved = await upsert(input);
     setSelectedConnectionId(saved.id);
+    if (pendingConnectionGroupId) {
+      setConnectionPlacementRequest((request) => ({
+        id: (request?.id || 0) + 1,
+        connectionId: saved.id,
+        groupId: pendingConnectionGroupId,
+      }));
+      setPendingConnectionGroupId(null);
+    }
   }
 
   async function deleteConnection(connection: ConnectionProfile) {
@@ -194,52 +223,45 @@ export function WorkspaceShell() {
   }
 
   return (
-    <main className="workspace-shell">
-      <ConnectionPane
-        connections={connections}
-        error={error}
-        loading={loading}
-        onConnect={openConnectionSession}
-        onCreate={createConnection}
-        onDelete={deleteConnection}
-        onEdit={editConnection}
-        onOpen={openTerminal}
-        onRefresh={reload}
-        onSelect={selectConnection}
-        selectedId={selectedConnectionId}
+    <div
+      className="app-shell"
+      data-left-collapsed={leftPaneCollapsed}
+      data-right-collapsed={rightPaneCollapsed}
+    >
+      <AppTitlebar
+        activeConnectionId={activeConnectionId}
+        connectionById={connectionById}
+        connectionSessions={connectionSessions}
+        leftPaneCollapsed={leftPaneCollapsed}
+        onCloseConnectionSession={closeConnectionSession}
+        onCreateConnection={createConnection}
+        onCreateGroup={createGroup}
+        onRefreshConnections={reload}
+        onSelectConnectionSession={(connectionId, tabId) => {
+          setActiveConnectionId(connectionId);
+          setActiveTabId(tabId);
+          setSelectedConnectionId(connectionId);
+        }}
+        onToggleLeftPane={() => setLeftPaneCollapsed((collapsed) => !collapsed)}
       />
 
-      <section className="main-workbench" aria-label="编辑器和终端">
-        <nav className="top-tabs connection-session-tabs" aria-label="连接会话列表">
-          {connectionSessions.map((session) => (
-            <div
-              className={`tab-shell ${session.connectionId === activeConnectionId ? "active" : ""}`}
-              key={session.connectionId}
-            >
-              <button
-                className="tab"
-                type="button"
-                onClick={() => {
-                  const nextTab = session.tabs[0];
-                  setActiveConnectionId(session.connectionId);
-                  setActiveTabId(nextTab?.id || null);
-                  setSelectedConnectionId(session.connectionId);
-                }}
-              >
-                <span className="tab-label">{connectionName(session.connectionId, connectionById)}</span>
-              </button>
-              <button
-                className="tab-close"
-                type="button"
-                aria-label={`关闭 ${connectionName(session.connectionId, connectionById)}`}
-                onClick={() => closeConnectionSession(session.connectionId)}
-              >
-                <X className="ui-icon" aria-hidden="true" />
-              </button>
-            </div>
-          ))}
-        </nav>
+      <main className="workspace-shell">
+        <ConnectionPane
+          connections={connections}
+          connectionPlacementRequest={connectionPlacementRequest}
+          createGroupRequest={createGroupRequest}
+          error={error}
+          loading={loading}
+          onConnect={openConnectionSession}
+          onCreate={createConnection}
+          onDelete={deleteConnection}
+          onEdit={editConnection}
+          onOpen={openTerminal}
+          onSelect={selectConnection}
+          selectedId={selectedConnectionId}
+        />
 
+        <section className="main-workbench" aria-label="编辑器和终端">
         <nav className="terminal-subtabs" aria-label="当前连接的终端会话">
           {activeConnectionTabs.map((tab) => (
             <div className={`subtab-shell ${tab.id === activeTabId ? "active" : ""}`} key={tab.id}>
@@ -296,44 +318,72 @@ export function WorkspaceShell() {
         </section>
       </section>
 
-      <aside className="tool-pane" aria-label="右侧工具面板">
-        <nav className="tool-tabs" aria-label="工具标签">
-          <button className="active" type="button">
-            文件
+        <Tooltip label={rightPaneCollapsed ? "展开右侧面板" : "收起右侧面板"}>
+          <button
+            className="right-collapse-button"
+            type="button"
+            aria-label={rightPaneCollapsed ? "展开右侧面板" : "收起右侧面板"}
+            aria-expanded={!rightPaneCollapsed}
+            onClick={() => setRightPaneCollapsed((collapsed) => !collapsed)}
+          >
+            <RightPaneToggleGlyph collapsed={rightPaneCollapsed} />
           </button>
-          <button type="button">搜索</button>
-          <button type="button">传输</button>
-          <button type="button">监控</button>
-        </nav>
-        <div className="path-bar">/ &gt; root &gt; app</div>
-        <section className="file-list" aria-label="远程文件列表">
-          {files.map((file) => {
-            const FileIcon = file.includes(".") ? FileText : Folder;
+        </Tooltip>
 
-            return (
-              <button className="file-row" type="button" key={file}>
-                <FileIcon className="ui-icon" aria-hidden="true" />
-                <span>{file}</span>
-              </button>
-            );
-          })}
-        </section>
-      </aside>
+        <aside className="tool-pane" aria-label="右侧工具面板">
+          <nav className="tool-tabs" aria-label="工具标签">
+            <button className="active" type="button">
+              文件
+            </button>
+            <button type="button">搜索</button>
+            <button type="button">传输</button>
+            <button type="button">监控</button>
+          </nav>
+          <div className="path-bar">/ &gt; root &gt; app</div>
+          <section className="file-list" aria-label="远程文件列表">
+            {files.map((file) => {
+              const FileIcon = file.includes(".") ? FileText : Folder;
 
-      <ConnectionDialog
-        connection={editingConnection}
-        onClose={() => setDialogOpen(false)}
-        onDelete={deleteConnection}
-        onSave={saveConnection}
-        open={dialogOpen}
-      />
-    </main>
+              return (
+                <button className="file-row" type="button" key={file}>
+                  <FileIcon className="ui-icon" aria-hidden="true" />
+                  <span>{file}</span>
+                </button>
+              );
+            })}
+          </section>
+        </aside>
+
+        <ConnectionDialog
+          connection={editingConnection}
+          onClose={closeConnectionDialog}
+          onDelete={deleteConnection}
+          onSave={saveConnection}
+          open={dialogOpen}
+        />
+      </main>
+    </div>
   );
+
+  function closeConnectionDialog() {
+    setDialogOpen(false);
+    setPendingConnectionGroupId(null);
+  }
 }
 
-function connectionName(
-  connectionId: string,
-  connectionById: Map<string, ConnectionProfile>,
-) {
-  return connectionById.get(connectionId)?.name || "连接已删除";
+function RightPaneToggleGlyph({ collapsed }: { collapsed: boolean }) {
+  return (
+    <svg
+      className="title-tool-icon"
+      viewBox="0 0 16 16"
+      fill="none"
+      stroke="currentColor"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d={collapsed ? "M6.2 4.2 10 8l-3.8 3.8" : "M9.8 4.2 6 8l3.8 3.8"} />
+      <path d={collapsed ? "M3.8 3.5v9" : "M12.2 3.5v9"} />
+    </svg>
+  );
 }
