@@ -2,6 +2,7 @@ mod app_error;
 mod commands;
 mod connections;
 mod events;
+mod remote_files;
 mod terminal;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -13,10 +14,12 @@ pub fn run() {
             commands::connection_list,
             commands::connection_upsert,
             commands::connection_delete,
+            commands::connection_probe_latency,
             commands::terminal_connect,
             commands::terminal_write,
             commands::terminal_resize,
             commands::terminal_close,
+            commands::remote_file_list,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

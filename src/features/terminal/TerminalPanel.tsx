@@ -17,18 +17,26 @@ import {
   listenTerminalStateChanged,
 } from "../../shared/tauri/events";
 import { hasTauriRuntime } from "../../shared/tauri/runtime";
+import { extractOsc7Directories } from "./osc7";
+import {
+  applyTerminalInputDirectoryData,
+  createTerminalInputDirectoryState,
+  inferRemoteHomeDirectory,
+} from "./terminalInputDirectory";
 
 interface TerminalPanelProps {
   active: boolean;
   connection: ConnectionProfile | null;
   tabId: string;
   title: string;
+  onCurrentDirectoryChange?: (tabId: string, path: string) => void;
   onStatusChange: (tabId: string, status: string) => void;
 }
 
 export function TerminalPanel({
   active,
   connection,
+  onCurrentDirectoryChange,
   onStatusChange,
   tabId,
   title,
@@ -37,6 +45,8 @@ export function TerminalPanel({
   const terminalRef = useRef<Terminal | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
   const sessionIdRef = useRef<string | null>(null);
+  const osc7BufferRef = useRef("");
+  const inputDirectoryStateRef = useRef(createTerminalInputDirectoryState());
   const startedRef = useRef(false);
   const decoderRef = useRef(new TextDecoder());
   const [sessionId, setSessionId] = useState<string | null>(null);
@@ -50,6 +60,13 @@ export function TerminalPanel({
   useEffect(() => {
     onStatusChange(tabId, status);
   }, [onStatusChange, status, tabId]);
+
+  useEffect(() => {
+    inputDirectoryStateRef.current = createTerminalInputDirectoryState({
+      currentDirectory: null,
+      homeDirectory: inferRemoteHomeDirectory(connection?.username),
+    });
+  }, [connection?.id, connection?.username]);
 
   useEffect(() => {
     if (!hostRef.current) {
@@ -84,6 +101,14 @@ export function TerminalPanel({
       if (!activeSessionId) {
         return;
       }
+      const inputDirectory = applyTerminalInputDirectoryData(
+        inputDirectoryStateRef.current,
+        data,
+      );
+      inputDirectoryStateRef.current = inputDirectory.state;
+      if (inputDirectory.directory) {
+        onCurrentDirectoryChange?.(tabId, inputDirectory.directory);
+      }
       void terminalWrite(activeSessionId, data).catch((error) => {
         terminal.writeln(`\r\n输入发送失败: ${formatError(error)}`);
       });
@@ -114,7 +139,17 @@ export function TerminalPanel({
         if (!matchesTerminalEvent(event, tabId, sessionIdRef.current)) {
           return;
         }
-        terminal.write(decoderRef.current.decode(Uint8Array.from(event.data), { stream: true }));
+        const decoded = decoderRef.current.decode(Uint8Array.from(event.data), { stream: true });
+        const currentDirectory = extractOsc7Directories(`${osc7BufferRef.current}${decoded}`);
+        osc7BufferRef.current = currentDirectory.buffer;
+        currentDirectory.paths.forEach((path) => {
+          inputDirectoryStateRef.current = {
+            ...inputDirectoryStateRef.current,
+            directory: path,
+          };
+          onCurrentDirectoryChange?.(tabId, path);
+        });
+        terminal.write(decoded);
       });
 
       const stateListener = listenTerminalStateChanged((event) => {

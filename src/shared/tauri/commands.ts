@@ -3,6 +3,7 @@ import type {
   ConnectionProfile,
   ConnectionProfileInput,
 } from "../../features/connections/connectionTypes";
+import type { RemoteFileEntry } from "../../features/files/remoteFileTypes";
 import type { TerminalConnectRequest } from "../../features/terminal/terminalTypes";
 
 export function connectionList() {
@@ -15,6 +16,14 @@ export function connectionUpsert(request: ConnectionProfileInput) {
 
 export function connectionDelete(id: string) {
   return invoke<void>("connection_delete", { id });
+}
+
+export function connectionProbeLatency(connectionId: string) {
+  return invoke<{ latency_ms: number | null; reachable: boolean }>("connection_probe_latency", {
+    request: {
+      connection_id: connectionId,
+    },
+  });
 }
 
 export function terminalConnect(request: TerminalConnectRequest) {
@@ -42,4 +51,13 @@ export function terminalResize(sessionId: string, cols: number, rows: number) {
 
 export function terminalClose(sessionId: string) {
   return invoke<void>("terminal_close", { sessionId });
+}
+
+export function remoteFileList(connectionId: string, path?: string) {
+  return invoke<RemoteFileEntry[]>("remote_file_list", {
+    request: {
+      connection_id: connectionId,
+      path,
+    },
+  });
 }

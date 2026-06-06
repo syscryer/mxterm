@@ -19,11 +19,10 @@ interface AppTitlebarProps {
   activeConnectionId: string | null;
   connectionById: Map<string, ConnectionProfile>;
   connectionSessions: TitlebarConnectionSession[];
+  homeActive: boolean;
   leftPaneCollapsed: boolean;
   onCloseConnectionSession: (connectionId: string) => void;
-  onCreateConnection: () => void;
-  onCreateGroup: () => void;
-  onRefreshConnections: () => void;
+  onOpenHome: () => void;
   onSelectConnectionSession: (connectionId: string, tabId: string | null) => void;
   onToggleLeftPane: () => void;
 }
@@ -32,11 +31,10 @@ export function AppTitlebar({
   activeConnectionId,
   connectionById,
   connectionSessions,
+  homeActive,
   leftPaneCollapsed,
   onCloseConnectionSession,
-  onCreateConnection,
-  onCreateGroup,
-  onRefreshConnections,
+  onOpenHome,
   onSelectConnectionSession,
   onToggleLeftPane,
 }: AppTitlebarProps) {
@@ -59,44 +57,26 @@ export function AppTitlebar({
           </button>
         </Tooltip>
 
-        <div className="title-sidebar-tools" aria-label="连接快捷操作">
-          <Tooltip label="刷新连接">
+        <div className="title-sidebar-tools">
+          <Tooltip label="首页">
             <button
-              className="title-tool-button"
+              className={`title-sidebar-home ${homeActive ? "active" : ""}`}
               type="button"
-              aria-label="刷新连接"
-              onClick={onRefreshConnections}
+              aria-label="首页"
+              aria-current={homeActive ? "page" : undefined}
+              onClick={onOpenHome}
             >
-              <RefreshGlyph />
-            </button>
-          </Tooltip>
-          <Tooltip label="新建分组">
-            <button
-              className="title-tool-button"
-              type="button"
-              aria-label="新建分组"
-              onClick={onCreateGroup}
-            >
-              <GroupGlyph />
-            </button>
-          </Tooltip>
-          <Tooltip label="新建 SSH 连接">
-            <button
-              className="title-tool-button"
-              type="button"
-              aria-label="新建 SSH 连接"
-              onClick={onCreateConnection}
-            >
-              <SshGlyph />
+              <HomeGlyph />
+              <span>首页</span>
             </button>
           </Tooltip>
         </div>
       </div>
 
-      <nav className="title-session-tabs" aria-label="连接会话列表">
+      <nav className="title-session-tabs" aria-label="工作区标签">
         {connectionSessions.map((session) => (
           <div
-            className={`tab-shell ${session.connectionId === activeConnectionId ? "active" : ""}`}
+            className={`tab-shell ${!homeActive && session.connectionId === activeConnectionId ? "active" : ""}`}
             key={session.connectionId}
           >
             <button
@@ -268,35 +248,12 @@ function SidebarToggleGlyph({ collapsed }: { collapsed: boolean }) {
   );
 }
 
-function RefreshGlyph() {
+function HomeGlyph() {
   return (
     <GlyphShell>
-      <path d="M12.8 5.1A5 5 0 0 0 4.1 4" />
-      <path d="M12.8 2.8v2.3h-2.3" />
-      <path d="M3.2 10.9A5 5 0 0 0 11.9 12" />
-      <path d="M3.2 13.2v-2.3h2.3" />
-    </GlyphShell>
-  );
-}
-
-function GroupGlyph() {
-  return (
-    <GlyphShell>
-      <rect x="2.6" y="3.2" width="4.2" height="3.4" rx="1" />
-      <rect x="9.2" y="3.2" width="4.2" height="3.4" rx="1" />
-      <rect x="5.9" y="9.4" width="4.2" height="3.4" rx="1" />
-      <path d="M4.7 6.6v1.3h3.3v1.5" />
-      <path d="M11.3 6.6v1.3H8v1.5" />
-    </GlyphShell>
-  );
-}
-
-function SshGlyph() {
-  return (
-    <GlyphShell>
-      <rect x="2.5" y="3.2" width="11" height="9.6" rx="2" />
-      <path d="m5.2 6.2 2 1.8-2 1.8" />
-      <path d="M8.6 10h2.2" />
+      <path d="m3 8 5-4.3L13 8" />
+      <path d="M4.4 7.3v5h7.2v-5" />
+      <path d="M6.8 12.3V9.5h2.4v2.8" />
     </GlyphShell>
   );
 }
