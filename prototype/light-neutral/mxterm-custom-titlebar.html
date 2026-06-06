@@ -1,0 +1,827 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>mXterm Custom Titlebar Prototype</title>
+  <style>
+    :root {
+      --mx-bg: #f5f6f8;
+      --mx-panel: #ffffff;
+      --mx-panel-soft: #f8f9fb;
+      --mx-title: rgba(255, 255, 255, 0.86);
+      --mx-line: #dde1e7;
+      --mx-line-soft: #edf0f4;
+      --mx-text: #20242a;
+      --mx-muted: #626b78;
+      --mx-subtle: #8a93a0;
+      --mx-active: rgba(156, 163, 175, 0.13);
+      --mx-active-strong: rgba(100, 116, 139, 0.16);
+      --mx-primary: #2563eb;
+      --mx-success: #15803d;
+      --mx-danger: #dc2626;
+      --mx-terminal: #111827;
+      --mx-terminal-line: #263241;
+      --font-ui: "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI", system-ui, sans-serif;
+      --font-mono: "Cascadia Mono", Consolas, "Microsoft YaHei UI", monospace;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html,
+    body {
+      margin: 0;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: var(--mx-bg);
+      color: var(--mx-text);
+      font-family: var(--font-ui);
+      letter-spacing: 0;
+    }
+
+    button,
+    input {
+      font: inherit;
+    }
+
+    button {
+      cursor: pointer;
+    }
+
+    .app {
+      --left-pane-width: 336px;
+      --right-pane-width: 360px;
+      width: 100vw;
+      height: 100vh;
+      min-width: 1100px;
+      min-height: 720px;
+      display: grid;
+      grid-template-rows: 36px minmax(0, 1fr);
+      overflow: hidden;
+      background: var(--mx-panel);
+    }
+
+    .custom-titlebar {
+      position: relative;
+      z-index: 20;
+      display: grid;
+      grid-template-columns: 44px calc(var(--left-pane-width) - 44px) minmax(0, 1fr) auto;
+      align-items: stretch;
+      min-width: 0;
+      border-bottom: 1px solid var(--mx-line);
+      background: var(--mx-title);
+      backdrop-filter: blur(14px) saturate(1.18);
+      -webkit-backdrop-filter: blur(14px) saturate(1.18);
+      user-select: none;
+    }
+
+    .title-leading,
+    .title-toolbar,
+    .title-center,
+    .title-trailing {
+      min-width: 0;
+      display: flex;
+      align-items: center;
+    }
+
+    .title-leading {
+      justify-content: center;
+      border-right: 1px solid rgba(221, 225, 231, 0.62);
+    }
+
+    .title-icon-button:hover {
+      color: var(--mx-text);
+      background: var(--mx-active);
+    }
+
+    .title-toolbar {
+      gap: 4px;
+      justify-content: flex-end;
+      padding: 0 10px;
+      border-right: 1px solid rgba(221, 225, 231, 0.62);
+      background: rgba(248, 249, 251, 0.38);
+    }
+
+    .title-center {
+      justify-content: flex-start;
+      gap: 6px;
+      padding: 0 10px;
+      overflow: hidden;
+    }
+
+    .session-tab {
+      flex: 0 1 170px;
+      max-width: 190px;
+      min-width: 112px;
+      height: 28px;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 20px;
+      align-items: center;
+      border-radius: 8px;
+      color: var(--mx-muted);
+      background: transparent;
+    }
+
+    .session-tab.active {
+      color: var(--mx-text);
+      background: var(--mx-active-strong);
+    }
+
+    .session-name {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      padding-left: 10px;
+      font-size: 13px;
+      font-weight: 650;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .tab-close {
+      width: 18px;
+      height: 18px;
+      display: grid;
+      place-items: center;
+      border: 0;
+      border-radius: 5px;
+      color: var(--mx-subtle);
+      background: transparent;
+      opacity: 0;
+    }
+
+    .session-tab:hover .tab-close {
+      opacity: 1;
+    }
+
+    .tab-close:hover {
+      color: var(--mx-text);
+      background: rgba(100, 116, 139, 0.14);
+    }
+
+    .add-session {
+      flex: 0 0 28px;
+      width: 28px;
+      height: 28px;
+      border: 0;
+      border-radius: 8px;
+      color: var(--mx-muted);
+      background: transparent;
+      display: grid;
+      place-items: center;
+      padding: 0;
+    }
+
+    .add-session:hover {
+      color: var(--mx-text);
+      background: var(--mx-active);
+    }
+
+    .title-trailing {
+      justify-content: flex-end;
+      padding-left: 0;
+    }
+
+    .title-icon-button {
+      width: 28px;
+      height: 28px;
+      display: grid;
+      place-items: center;
+      border: 0;
+      border-radius: 8px;
+      color: var(--mx-muted);
+      background: transparent;
+      padding: 0;
+    }
+
+    .window-controls {
+      align-self: stretch;
+      display: flex;
+      align-items: stretch;
+      margin-left: 2px;
+    }
+
+    .window-controls button {
+      width: 46px;
+      height: 100%;
+      display: grid;
+      place-items: center;
+      border: 0;
+      border-radius: 0;
+      color: #1f2937;
+      background: transparent;
+      padding: 0;
+    }
+
+    .window-controls button:hover {
+      background: rgba(15, 23, 42, 0.06);
+    }
+
+    .window-controls button:last-child:hover {
+      color: #ffffff;
+      background: #d83b3b;
+    }
+
+    .workspace-shell {
+      position: relative;
+      min-height: 0;
+      display: grid;
+      grid-template-columns: var(--left-pane-width) minmax(0, 1fr) var(--right-pane-width);
+      overflow: hidden;
+      background: var(--mx-panel);
+    }
+
+    .right-collapse-button {
+      position: absolute;
+      top: 6px;
+      right: calc(var(--right-pane-width) + 13px);
+      z-index: 10;
+      width: 30px;
+      height: 24px;
+      display: grid;
+      place-items: center;
+      border: 1px solid transparent;
+      border-radius: 7px;
+      color: var(--mx-subtle);
+      background: transparent;
+      padding: 0;
+    }
+
+    .right-collapse-button:hover {
+      border-color: var(--mx-line);
+      color: var(--mx-text);
+      background: var(--mx-panel);
+    }
+
+    .connection-pane,
+    .tool-pane {
+      min-width: 0;
+      background: var(--mx-panel-soft);
+    }
+
+    .connection-pane {
+      display: grid;
+      grid-template-rows: minmax(0, 1fr) 44px;
+      border-right: 1px solid var(--mx-line);
+    }
+
+    .tool-tabs,
+    .terminal-subtabs {
+      min-width: 0;
+      display: flex;
+      align-items: center;
+      border-bottom: 1px solid var(--mx-line);
+    }
+
+    .icon-button,
+    .title-tool-button,
+    .tool-tabs button,
+    .file-row,
+    .subtab,
+    .add-subtab {
+      color: var(--mx-muted);
+      background: transparent;
+    }
+
+    .toolbar-actions,
+    .subtab-shell,
+    .tool-tabs {
+      display: flex;
+      align-items: center;
+    }
+
+    .toolbar-actions {
+      gap: 4px;
+    }
+
+    .title-tool-button,
+    .icon-button,
+    .add-subtab {
+      width: 30px;
+      height: 30px;
+      border: 0;
+      border-radius: 8px;
+      display: grid;
+      place-items: center;
+      padding: 0;
+    }
+
+    .title-tool-button {
+      width: 28px;
+      height: 28px;
+      border: 0;
+      border-radius: 8px;
+      display: grid;
+      place-items: center;
+      color: var(--mx-muted);
+      padding: 0;
+    }
+
+    .title-tool-button:hover,
+    .icon-button:hover,
+    .tool-tabs button:hover,
+    .file-row:hover,
+    .add-subtab:hover {
+      color: var(--mx-text);
+      background: var(--mx-active);
+    }
+
+    .pane-scroll {
+      min-height: 0;
+      overflow: auto;
+      padding: 8px;
+    }
+
+    .connection-tree {
+      padding: 10px 8px 16px;
+    }
+
+    .tree-root-row,
+    .tree-folder-row,
+    .tree-connection-row {
+      width: 100%;
+      border: 0;
+      border-radius: 7px;
+      background: transparent;
+    }
+
+    .tree-root-row {
+      height: 30px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 7px;
+      color: var(--mx-text);
+      font-size: 13px;
+    }
+
+    .tree-section-head {
+      height: 28px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-top: 8px;
+      color: var(--mx-subtle);
+      font-size: 12px;
+      font-weight: 680;
+    }
+
+    .tree-block {
+      display: grid;
+      gap: 3px;
+      margin-top: 4px;
+    }
+
+    .tree-folder-row {
+      height: 30px;
+      display: grid;
+      grid-template-columns: 18px minmax(0, 1fr) auto;
+      align-items: center;
+      gap: 6px;
+      padding: 0 6px;
+      color: var(--mx-text);
+      font-size: 13px;
+    }
+
+    .tree-children {
+      position: relative;
+      display: grid;
+      gap: 2px;
+      margin-left: 20px;
+      padding-left: 12px;
+    }
+
+    .tree-children::before {
+      content: "";
+      position: absolute;
+      top: 0;
+      bottom: 8px;
+      left: 0;
+      width: 1px;
+      background: var(--mx-line);
+    }
+
+    .tree-connection-row {
+      min-height: 34px;
+      display: grid;
+      grid-template-columns: 18px minmax(0, 1fr);
+      align-items: center;
+      gap: 6px;
+      padding: 0 6px;
+      color: var(--mx-muted);
+    }
+
+    .tree-root-row:hover,
+    .tree-folder-row:hover,
+    .tree-connection-row:hover,
+    .tree-connection-row.active {
+      color: var(--mx-text);
+      background: var(--mx-active);
+    }
+
+    .tree-connection-row strong,
+    .tree-connection-row small,
+    .tree-folder-row span:nth-child(2) {
+      display: block;
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .tree-connection-row strong {
+      color: var(--mx-text);
+      font-size: 12px;
+      font-weight: 650;
+    }
+
+    .tree-connection-row small {
+      color: var(--mx-subtle);
+      font-size: 10px;
+    }
+
+    .count {
+      color: var(--mx-subtle);
+      font-size: 12px;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .settings-foot {
+      display: flex;
+      align-items: center;
+      padding: 0 8px;
+      border-top: 1px solid var(--mx-line);
+    }
+
+    .main-workbench {
+      min-width: 0;
+      min-height: 0;
+      display: grid;
+      grid-template-rows: 30px minmax(0, 1fr);
+      background: var(--mx-panel);
+    }
+
+    .terminal-subtabs {
+      gap: 4px;
+      overflow: hidden;
+      padding: 0 12px 0 18px;
+      background: #fafbfc;
+    }
+
+    .subtab-shell {
+      flex: 0 0 auto;
+      min-width: 86px;
+      max-width: 138px;
+      height: 26px;
+      border-radius: 8px;
+      color: var(--mx-muted);
+    }
+
+    .subtab-shell.active,
+    .subtab-shell:hover {
+      color: var(--mx-text);
+      background: var(--mx-active);
+    }
+
+    .subtab {
+      min-width: 0;
+      height: 26px;
+      border: 0;
+      border-radius: 7px;
+      padding: 0 9px;
+      font-size: 13px;
+      font-weight: 540;
+    }
+
+    .terminal-stack {
+      min-height: 0;
+      overflow: hidden;
+      background: var(--mx-terminal);
+    }
+
+    .terminal-body {
+      height: 100%;
+      overflow: hidden;
+      padding: 10px 12px;
+      color: #dbe3ec;
+      font-family: var(--font-mono);
+      font-size: 13px;
+      line-height: 1.45;
+      white-space: pre-wrap;
+    }
+
+    .prompt {
+      color: #c6d0dd;
+      font-weight: 700;
+    }
+
+    .cmd {
+      color: #f0f4f8;
+    }
+
+    .keyword {
+      color: #ef4444;
+      font-weight: 800;
+    }
+
+    .tool-pane {
+      display: grid;
+      grid-template-rows: 38px 34px minmax(0, 1fr);
+      border-left: 1px solid var(--mx-line);
+    }
+
+    .tool-tabs {
+      gap: 6px;
+      padding: 0 8px;
+      background: var(--mx-panel);
+    }
+
+    .tool-tabs button {
+      height: 30px;
+      border: 0;
+      border-radius: 9px;
+      padding: 0 10px;
+      font-size: 13px;
+    }
+
+    .tool-tabs .active {
+      color: var(--mx-text);
+      background: var(--mx-active);
+      font-weight: 650;
+    }
+
+    .path-bar {
+      display: flex;
+      align-items: center;
+      padding: 0 10px;
+      border-bottom: 1px solid var(--mx-line);
+      color: var(--mx-muted);
+      font-size: 13px;
+    }
+
+    .file-list {
+      min-height: 0;
+      overflow: auto;
+      padding: 8px;
+    }
+
+    .file-row {
+      width: 100%;
+      height: 30px;
+      border: 0;
+      border-radius: 8px;
+      display: grid;
+      grid-template-columns: 18px minmax(0, 1fr);
+      align-items: center;
+      gap: 6px;
+      padding: 0 7px;
+      text-align: left;
+    }
+
+    .file-row span {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .glyph {
+      width: 16px;
+      height: 16px;
+      flex: 0 0 auto;
+      stroke: currentColor;
+      stroke-width: 1.9;
+      fill: none;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+    }
+
+    .glyph-sm {
+      width: 13px;
+      height: 13px;
+    }
+
+    .title-tool-icon {
+      width: 16px;
+      height: 16px;
+      stroke-width: 1.55;
+    }
+
+    @media (max-width: 1280px) {
+      .app {
+        --left-pane-width: 300px;
+        --right-pane-width: 320px;
+      }
+
+      .custom-titlebar {
+        grid-template-columns: 44px calc(var(--left-pane-width) - 44px) minmax(0, 1fr) auto;
+      }
+
+      .workspace-shell {
+        grid-template-columns: 300px minmax(0, 1fr) var(--right-pane-width);
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <header class="custom-titlebar" aria-label="mXterm 标题栏">
+      <div class="title-leading">
+        <button class="title-icon-button" type="button" aria-label="收缩侧边栏">
+          <svg class="glyph" viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="5" width="16" height="14" rx="2"/><path d="M9 5v14"/><path d="M14 9l-3 3 3 3"/></svg>
+        </button>
+      </div>
+
+      <div class="title-toolbar" aria-label="连接工具">
+        <button class="title-tool-button" type="button" aria-label="刷新连接" title="刷新连接">
+          <svg class="glyph title-tool-icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M12.8 6.1A5.1 5.1 0 1 0 13 9.4"/><path d="M12.8 2.9v3.2H9.6"/></svg>
+        </button>
+        <button class="title-tool-button" type="button" aria-label="新建分组" title="新建分组">
+          <svg class="glyph title-tool-icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M2.6 5.8h3.7l1.1 1.3h6v4.6a1.3 1.3 0 0 1-1.3 1.3H3.9a1.3 1.3 0 0 1-1.3-1.3z"/><path d="M4 3.6h3.4l1 1.2h5"/></svg>
+        </button>
+        <button class="title-tool-button" type="button" aria-label="新建 SSH" title="新建 SSH">
+          <svg class="glyph title-tool-icon" viewBox="0 0 16 16" aria-hidden="true"><rect x="2.7" y="3.2" width="10.6" height="9.6" rx="1.8"/><path d="m5.1 6.2 2 1.8-2 1.8"/><path d="M8.8 10.2h2.1"/></svg>
+        </button>
+      </div>
+
+      <nav class="title-center" aria-label="连接会话">
+        <div class="session-tab active">
+          <span class="session-name">192.168.10.70</span>
+          <button class="tab-close" type="button" aria-label="关闭 192.168.10.70">×</button>
+        </div>
+        <div class="session-tab">
+          <span class="session-name">192.168.20.131</span>
+          <button class="tab-close" type="button" aria-label="关闭 192.168.20.131">×</button>
+        </div>
+        <button class="add-session" type="button" aria-label="新建连接会话">
+          <svg class="glyph" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+        </button>
+      </nav>
+
+      <div class="title-trailing">
+        <div class="window-controls" aria-label="窗口操作">
+          <button type="button" aria-label="最小化">
+            <svg class="glyph glyph-sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14"/></svg>
+          </button>
+          <button type="button" aria-label="最大化或还原">
+            <svg class="glyph glyph-sm" viewBox="0 0 24 24" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="1"/></svg>
+          </button>
+          <button type="button" aria-label="关闭窗口">
+            <svg class="glyph glyph-sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg>
+          </button>
+        </div>
+      </div>
+    </header>
+
+    <main class="workspace-shell">
+      <button class="right-collapse-button" type="button" aria-label="收缩右侧面板">
+        <svg class="glyph" viewBox="0 0 24 24" aria-hidden="true"><path d="M15 5 8 12l7 7"/><path d="M20 5v14"/></svg>
+      </button>
+      <aside class="connection-pane" aria-label="连接仓库">
+        <section class="pane-scroll connection-tree" aria-label="连接树">
+          <button class="tree-root-row" type="button">
+            <span>全部</span>
+            <svg class="glyph" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 13a1 1 0 1 0 0-2 1 1 0 0 0 0 2zM19 13a1 1 0 1 0 0-2 1 1 0 0 0 0 2zM5 13a1 1 0 1 0 0-2 1 1 0 0 0 0 2z"/></svg>
+          </button>
+
+          <div class="tree-block" aria-label="固定分组">
+            <div>
+              <div class="tree-folder-row">
+                <svg class="glyph" viewBox="0 0 24 24" aria-hidden="true"><path d="m12 3 2.7 5.5 6.1.9-4.4 4.3 1 6.1L12 17l-5.4 2.8 1-6.1-4.4-4.3 6.1-.9z"/></svg>
+                <span>收藏</span>
+                <span class="count">0</span>
+              </div>
+            </div>
+            <div>
+              <div class="tree-folder-row">
+                <svg class="glyph" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>
+                <span>最近</span>
+                <span class="count">2</span>
+              </div>
+              <div class="tree-children">
+                <div class="tree-connection-row active">
+                  <svg class="glyph" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16v5H4zM4 15h16v5H4z"/></svg>
+                  <span>
+                    <strong>192.168.10.70</strong>
+                    <small>root@192.168.10.70:22</small>
+                  </span>
+                </div>
+                <div class="tree-connection-row">
+                  <svg class="glyph" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16v5H4zM4 15h16v5H4z"/></svg>
+                  <span>
+                    <strong>192.168.20.131</strong>
+                    <small>root@192.168.20.131:22</small>
+                  </span>
+                </div>
+              </div>
+            </div>
+            <div>
+              <div class="tree-folder-row">
+                <svg class="glyph" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7h6l2 3h10v9H3z"/></svg>
+                <span>常用</span>
+                <span class="count">0</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="tree-section-head">
+            <span>分组</span>
+            <button class="icon-button" type="button" aria-label="新建分组">
+              <svg class="glyph" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+            </button>
+          </div>
+          <p class="count">暂无分组</p>
+
+          <div class="tree-section-head">
+            <span>未分组</span>
+          </div>
+          <div class="tree-block">
+            <div class="tree-connection-row">
+              <svg class="glyph" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16v5H4zM4 15h16v5H4z"/></svg>
+              <span>
+                <strong>192.168.10.70</strong>
+                <small>root@192.168.10.70:22</small>
+              </span>
+            </div>
+            <div class="tree-connection-row">
+              <svg class="glyph" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16v5H4zM4 15h16v5H4z"/></svg>
+              <span>
+                <strong>192.168.20.131</strong>
+                <small>root@192.168.20.131:22</small>
+              </span>
+            </div>
+          </div>
+        </section>
+
+        <footer class="settings-foot">
+          <button class="icon-button" type="button" aria-label="设置">
+            <svg class="glyph" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8z"/><path d="M4 12h2M18 12h2M12 4v2M12 18v2"/></svg>
+          </button>
+        </footer>
+      </aside>
+
+      <section class="main-workbench" aria-label="终端工作区">
+        <nav class="terminal-subtabs" aria-label="当前连接的终端会话">
+          <div class="subtab-shell active">
+            <button class="subtab" type="button">终端</button>
+          </div>
+          <div class="subtab-shell">
+            <button class="subtab" type="button">终端 1</button>
+          </div>
+          <button class="add-subtab" type="button" aria-label="新建同连接终端">
+            <svg class="glyph" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+          </button>
+        </nav>
+
+        <section class="terminal-stack" aria-label="终端内容">
+          <div class="terminal-body"><span class="prompt">[root@server ~]#</span> <span class="cmd">ls</span>
+anaconda-ks.cfg
+<span class="prompt">[root@server ~]#</span> <span class="cmd">pwd</span>
+/root
+<span class="prompt">[root@server ~]#</span> <span class="cmd">ps -ef | grep java</span>
+edgs      1741      1  0 Jun05 ?        00:09:34 <span class="keyword">java</span> -server -Dfile.encoding=UTF-8 -Xmx512m -Xms512m -jar /opt/edgs/lib/edgs-wiki.jar
+edgs      3036      1  1 May21 ?        04:59:54 /opt/edgs/softwares/jdk-17.0.15+6/bin/<span class="keyword">java</span> -Xms512m -Xmx512m -jar /opt/edgs/softwares/nacos-2.3.2-fix/target/nacos-server.jar
+edgs      4429      1  1 Jun05 ?        00:13:29 <span class="keyword">java</span> -server -Dfile.encoding=UTF-8 -Xmx1g -Xms1g -jar /opt/edgs/lib/edgs-api-server.jar
+edgs     10596      1  1 Jun05 ?        00:21:07 <span class="keyword">java</span> -server -Dfile.encoding=UTF-8 -Xmx2g -Xms2g -jar /opt/edgs/lib/edgs-data-catalog.jar
+edgs     11117      1  1 Jun05 ?        00:13:01 <span class="keyword">java</span> -server -Dfile.encoding=UTF-8 -Xmx512m -Xms512m -jar /opt/edgs/lib/edgs-gateway.jar
+root     12916  11775  0 10:01 pts/4    00:00:00 grep --color=auto java
+<span class="prompt">[root@server ~]#</span> 
+<span class="prompt">[root@server ~]#</span> 
+<span class="prompt">[root@server ~]#</span> </div>
+        </section>
+      </section>
+
+      <aside class="tool-pane" aria-label="右侧工具面板">
+        <nav class="tool-tabs" aria-label="工具标签">
+          <button class="active" type="button">文件</button>
+          <button type="button">搜索</button>
+          <button type="button">传输</button>
+          <button type="button">监控</button>
+        </nav>
+        <div class="path-bar">/ &gt; root &gt; app</div>
+        <section class="file-list" aria-label="远程文件列表">
+          <button class="file-row" type="button">
+            <svg class="glyph" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7h6l2 3h10v9H3z"/></svg>
+            <span>logs</span>
+          </button>
+          <button class="file-row" type="button">
+            <svg class="glyph" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7h6l2 3h10v9H3z"/></svg>
+            <span>config</span>
+          </button>
+          <button class="file-row" type="button">
+            <svg class="glyph" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3h8l4 4v14H6z"/><path d="M14 3v5h5"/></svg>
+            <span>app.log</span>
+          </button>
+          <button class="file-row" type="button">
+            <svg class="glyph" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3h8l4 4v14H6z"/><path d="M14 3v5h5"/></svg>
+            <span>nginx.conf</span>
+          </button>
+        </section>
+      </aside>
+    </main>
+  </div>
+</body>
+</html>

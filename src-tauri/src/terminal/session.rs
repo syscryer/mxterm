@@ -1,4 +1,5 @@
-use std::sync::Arc;
+use std::io::Write;
+use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Duration;
 
 use russh::client;
@@ -10,6 +11,24 @@ use uuid::Uuid;
 
 use crate::app_error::AppError;
 use crate::commands::TerminalConnectRequest;
+
+static TRACE_LOCK: StdMutex<()> = StdMutex::new(());
+
+fn trace(stage: &str, message: &str) {
+    let _guard = TRACE_LOCK.lock().ok();
+    let path = std::env::temp_dir().join("mxterm-connect-trace.log");
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    if let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+    {
+        let _ = writeln!(file, "[{now}ms] {stage}: {message}");
+    }
+}
 
 type SshHandle = client::Handle<TrustingClient>;
 type ChannelWriter = ChannelWriteHalf<client::Msg>;
@@ -71,7 +90,20 @@ impl TerminalSession {
         let host = request.host.trim().to_string();
         let port = request.port;
         let username = request.username.trim().to_string();
+        trace(
+            "open.entry",
+            &format!(
+                "host={host} port={port} user={username} cols={} rows={} request_id={:?} connection_id={:?} has_password={} has_key={}",
+                request.cols,
+                request.rows,
+                request.request_id,
+                request.connection_id,
+                request.password.as_ref().is_some(),
+                request.private_key_path.as_ref().is_some(),
+            ),
+        );
         let auth_method = auth_method(&request)?;
+        trace("open.auth_method", "ok");
 
         let config = Arc::new(client::Config {
             keepalive_interval: Some(Duration::from_secs(20)),
@@ -81,35 +113,55 @@ impl TerminalSession {
         });
 
         emit_progress(&progress, "tcp_connecting", "正在建立 SSH TCP 连接...");
-        let mut client = run_with_timeout(
+        trace("tcp.before_connect", "calling client::connect");
+        let client_result = run_with_timeout(
             "terminal_connect_timeout",
             "SSH 连接超时。",
             Duration::from_secs(30),
             client::connect(config, (host.as_str(), port), TrustingClient),
         )
-        .await?
-        .map_err(|error| AppError::new("terminal_connect_failed", "SSH 连接失败。", error, true))?;
+        .await;
+        match &client_result {
+            Ok(Ok(_)) => trace("tcp.after_connect", "tcp+handshake ok"),
+            Ok(Err(e)) => trace("tcp.after_connect", &format!("russh err: {e}")),
+            Err(e) => trace("tcp.after_connect", &format!("outer err: {e:?}")),
+        }
+        let mut client = client_result?
+            .map_err(|error| AppError::new("terminal_connect_failed", "SSH 连接失败。", error, true))?;
         emit_progress(&progress, "tcp_connected", "SSH TCP 已连接。");
 
         emit_progress(&progress, "authenticating", "SSH 认证中...");
-        run_with_timeout(
+        trace("auth.before", "calling authenticate");
+        let auth_result = run_with_timeout(
             "terminal_auth_timeout",
             "SSH 认证超时。",
             Duration::from_secs(45),
             authenticate(&mut client, &username, auth_method),
         )
-        .await??;
+        .await;
+        match &auth_result {
+            Ok(Ok(())) => trace("auth.after", "ok"),
+            Ok(Err(e)) => trace("auth.after", &format!("err: {e:?}")),
+            Err(e) => trace("auth.after", &format!("outer err: {e:?}")),
+        }
+        auth_result??;
         emit_progress(&progress, "authenticated", "SSH 认证通过。");
 
         emit_progress(&progress, "channel_opening", "正在打开 SSH 终端通道...");
+        trace("channel.before", "calling channel_open_session");
         let channel = run_with_timeout(
             "terminal_channel_open_timeout",
             "SSH 终端通道打开超时。",
             Duration::from_secs(20),
             client.channel_open_session(),
         )
-        .await?
-        .map_err(|error| {
+        .await;
+        match &channel {
+            Ok(Ok(_)) => trace("channel.after", "ok"),
+            Ok(Err(e)) => trace("channel.after", &format!("err: {e}")),
+            Err(e) => trace("channel.after", &format!("outer err: {e:?}")),
+        }
+        let channel = channel?.map_err(|error| {
             AppError::new(
                 "terminal_channel_open_failed",
                 "SSH 终端通道打开失败。",
@@ -119,7 +171,11 @@ impl TerminalSession {
         })?;
 
         emit_progress(&progress, "pty_requesting", "正在初始化远程 PTY...");
-        run_with_timeout(
+        trace(
+            "pty.before",
+            &format!("cols={} rows={}", request.cols, request.rows),
+        );
+        let pty_result = run_with_timeout(
             "terminal_pty_timeout",
             "远程终端初始化超时。",
             Duration::from_secs(20),
@@ -133,21 +189,32 @@ impl TerminalSession {
                 &[],
             ),
         )
-        .await?
-        .map_err(|error| {
+        .await;
+        match &pty_result {
+            Ok(Ok(_)) => trace("pty.after", "ok"),
+            Ok(Err(e)) => trace("pty.after", &format!("err: {e}")),
+            Err(e) => trace("pty.after", &format!("outer err: {e:?}")),
+        }
+        pty_result?.map_err(|error| {
             AppError::new("terminal_pty_failed", "远程终端初始化失败。", error, true)
         })?;
         emit_progress(&progress, "pty_ready", "远程 PTY 已就绪。");
 
         emit_progress(&progress, "shell_starting", "正在启动远程 Shell...");
-        run_with_timeout(
+        trace("shell.before", "calling request_shell");
+        let shell_result = run_with_timeout(
             "terminal_shell_timeout",
             "远程 Shell 启动超时。",
             Duration::from_secs(20),
             channel.request_shell(true),
         )
-        .await?
-        .map_err(|error| {
+        .await;
+        match &shell_result {
+            Ok(Ok(_)) => trace("shell.after", "ok"),
+            Ok(Err(e)) => trace("shell.after", &format!("err: {e}")),
+            Err(e) => trace("shell.after", &format!("outer err: {e:?}")),
+        }
+        shell_result?.map_err(|error| {
             AppError::new(
                 "terminal_shell_failed",
                 "远程 Shell 启动失败。",
@@ -158,6 +225,7 @@ impl TerminalSession {
         emit_progress(&progress, "shell_ready", "远程 Shell 已启动。");
 
         let (reader, writer) = channel.split();
+        trace("open.exit", "session ready");
 
         Ok((
             Self {

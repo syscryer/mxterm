@@ -7,18 +7,17 @@ import {
   type CSSProperties,
   type DragEvent,
   type MouseEvent as ReactMouseEvent,
+  type ReactNode,
 } from "react";
 import {
   Check,
   Clock3,
   Folder,
   FolderPlus,
-  Menu,
   MoreHorizontal,
   Pencil,
   Play,
   Plus,
-  RefreshCw,
   Server,
   Settings,
   Star,
@@ -32,14 +31,15 @@ import type { ConnectionProfile } from "./connectionTypes";
 
 interface ConnectionPaneProps {
   connections: ConnectionProfile[];
+  connectionPlacementRequest: ConnectionPlacementRequest | null;
+  createGroupRequest: number;
   error: string | null;
   loading: boolean;
-  onCreate: () => void;
+  onCreate: (groupId?: string) => void;
   onConnect: (connection: ConnectionProfile) => void;
   onDelete: (connection: ConnectionProfile) => void | Promise<void>;
   onEdit: (connection: ConnectionProfile) => void;
   onOpen: (connection: ConnectionProfile) => void;
-  onRefresh: () => void;
   onSelect: (connection: ConnectionProfile) => void;
   selectedId: string | null;
 }
@@ -72,6 +72,13 @@ interface CustomGroup {
   id: string;
   color: string;
   name: string;
+  parentId?: string | null;
+}
+
+interface ConnectionPlacementRequest {
+  id: number;
+  connectionId: string;
+  groupId: string;
 }
 
 const systemFolders: SystemFolder[] = [
@@ -87,6 +94,8 @@ const connectionDragDataType = "application/x-mxterm-connection-id";
 
 export function ConnectionPane({
   connections,
+  connectionPlacementRequest,
+  createGroupRequest,
   error,
   loading,
   onCreate,
@@ -94,7 +103,6 @@ export function ConnectionPane({
   onDelete,
   onEdit,
   onOpen,
-  onRefresh,
   onSelect,
   selectedId,
 }: ConnectionPaneProps) {
@@ -103,6 +111,7 @@ export function ConnectionPane({
     useState<ConnectionGroupAssignments>(readStoredGroupAssignments);
   const [creatingGroup, setCreatingGroup] = useState(false);
   const [editingGroupId, setEditingGroupId] = useState<string | null>(null);
+  const [creatingGroupParentId, setCreatingGroupParentId] = useState<string | null>(null);
   const [groupDraft, setGroupDraft] = useState("");
   const [groupColorDraft, setGroupColorDraft] = useState(groupPalette[0]);
   const [draggingConnectionId, setDraggingConnectionId] = useState<string | null>(null);
@@ -118,6 +127,13 @@ export function ConnectionPane({
   const customGroupIds = useMemo(
     () => new Set(customGroups.map((group) => group.id)),
     [customGroups],
+  );
+  const topLevelCustomGroups = useMemo(
+    () =>
+      customGroups.filter(
+        (group) => !group.parentId || !customGroupIds.has(group.parentId),
+      ),
+    [customGroups, customGroupIds],
   );
   const ungroupedConnections = useMemo(
     () =>
@@ -135,6 +151,21 @@ export function ConnectionPane({
   useEffect(() => {
     writeStoredGroupAssignments(connectionGroups);
   }, [connectionGroups]);
+
+  useEffect(() => {
+    if (createGroupRequest > 0) {
+      beginCreateGroup();
+    }
+  }, [createGroupRequest]);
+
+  useEffect(() => {
+    if (connectionPlacementRequest) {
+      assignConnectionToGroup(
+        connectionPlacementRequest.connectionId,
+        connectionPlacementRequest.groupId,
+      );
+    }
+  }, [connectionPlacementRequest]);
 
   useEffect(() => {
     if (!mouseDrag) {
@@ -192,28 +223,6 @@ export function ConnectionPane({
 
   return (
     <aside className="connection-pane" aria-label="连接仓库">
-      <header className="connection-toolbar">
-        <button className="collapse-button" type="button" aria-label="收起连接仓库">
-          <Menu className="ui-icon" aria-hidden="true" />
-          <span>收起</span>
-        </button>
-        <div className="toolbar-actions">
-          <Tooltip label="刷新连接">
-            <button className="icon-button" type="button" aria-label="刷新连接" onClick={onRefresh}>
-              <RefreshCw className="ui-icon" aria-hidden="true" />
-            </button>
-          </Tooltip>
-          <button className="text-tool-button" type="button" onClick={beginCreateGroup}>
-            <Plus className="ui-icon" aria-hidden="true" />
-            <span>分组</span>
-          </button>
-          <button className="text-tool-button" type="button" onClick={onCreate}>
-            <Plus className="ui-icon" aria-hidden="true" />
-            <span>SSH</span>
-          </button>
-        </div>
-      </header>
-
       <section className="pane-scroll connection-tree" aria-label="连接树">
         <button className="tree-root-row" type="button">
           <span>全部</span>
@@ -235,8 +244,8 @@ export function ConnectionPane({
               onEdit={onEdit}
               onOpen={onOpen}
               onSelect={onSelect}
-              onCreateConnection={onCreate}
-              onCreateGroup={beginCreateGroup}
+              onCreateConnection={() => onCreate()}
+              onCreateGroup={() => beginCreateGroup(null)}
               onConnect={onConnect}
               onDeleteConnection={onDelete}
               onConnectionDragEnd={finishConnectionDrag}
@@ -255,88 +264,21 @@ export function ConnectionPane({
               className="mini-action"
               type="button"
               aria-label="新建分组"
-              onClick={beginCreateGroup}
+              onClick={() => beginCreateGroup(null)}
             >
               <FolderPlus className="ui-icon" aria-hidden="true" />
             </button>
           </Tooltip>
         </div>
 
-        {creatingGroup ? (
-          <form className="group-create-panel" onSubmit={saveGroup}>
-            <input
-              aria-label="分组名称"
-              autoFocus
-              placeholder="分组名称"
-              value={groupDraft}
-              onChange={(event) => setGroupDraft(event.target.value)}
-            />
-            <div className="group-color-row" aria-label="分组颜色">
-              {groupPalette.map((color) => (
-                <button
-                  className={`color-swatch ${groupColorDraft === color ? "active" : ""}`}
-                  key={color}
-                  style={{ "--group-color": color } as CSSProperties}
-                  type="button"
-                  aria-label={`选择颜色 ${color}`}
-                  onClick={() => setGroupColorDraft(color)}
-                />
-              ))}
-            </div>
-            <div className="group-create-actions">
-              <button type="button" onClick={cancelCreateGroup}>
-                <X className="ui-icon" aria-hidden="true" />
-                <span>取消</span>
-              </button>
-              <button type="submit">
-                <Check className="ui-icon" aria-hidden="true" />
-                <span>{editingGroupId ? "更新" : "保存"}</span>
-              </button>
-            </div>
-          </form>
-        ) : null}
+        {creatingGroup && !creatingGroupParentId ? renderGroupCreatePanel() : null}
 
         {customGroups.length === 0 && !creatingGroup ? (
           <p className="pane-note section-note">暂无分组</p>
         ) : null}
 
         <div className="tree-block" aria-label="自定义分组">
-          {customGroups.map((group) => {
-            const folderId: FolderId = `group-${group.id}`;
-
-            return (
-              <TreeFolder
-                color={group.color}
-                expanded={expandedFolders[folderId] ?? true}
-                icon={Folder}
-                key={group.id}
-                label={group.name}
-                folderDropTargetId={folderId}
-                draggingConnectionId={draggingConnectionId}
-                dropTargetId={dropTargetId}
-                onEdit={onEdit}
-                onOpen={onOpen}
-                onSelect={onSelect}
-                onCreateConnection={onCreate}
-                onCreateGroup={beginCreateGroup}
-                onConnect={onConnect}
-                onDeleteConnection={onDelete}
-                onConnectionDragEnd={finishConnectionDrag}
-                onConnectionDragStart={beginConnectionDrag}
-                onMouseConnectionDragStart={beginMouseConnectionDrag}
-                onDragLeave={clearDropTarget}
-                onDragOver={(event) => activateDropTarget(event, `group-${group.id}`)}
-                onDropConnection={(connectionId) => assignConnectionToGroup(connectionId, group.id)}
-                onEditGroup={() => beginEditGroup(group)}
-                onDeleteGroup={() => deleteGroup(group)}
-                onToggle={() => toggleFolder(folderId)}
-                selectedId={selectedId}
-                connections={connections.filter(
-                  (connection) => connectionGroups[connection.id] === group.id,
-                )}
-              />
-            );
-          })}
+          {topLevelCustomGroups.map((group) => renderCustomGroup(group))}
         </div>
 
         {connections.length > 0 ? <div className="tree-section-head standalone-head">未分组</div> : null}
@@ -395,6 +337,84 @@ export function ConnectionPane({
       ) : null}
     </aside>
   );
+
+  function renderGroupCreatePanel() {
+    return (
+      <form className="group-create-panel" onSubmit={saveGroup}>
+        <input
+          aria-label="分组名称"
+          autoFocus
+          placeholder="分组名称"
+          value={groupDraft}
+          onChange={(event) => setGroupDraft(event.target.value)}
+        />
+        <div className="group-color-row" aria-label="分组颜色">
+          {groupPalette.map((color) => (
+            <button
+              className={`color-swatch ${groupColorDraft === color ? "active" : ""}`}
+              key={color}
+              style={{ "--group-color": color } as CSSProperties}
+              type="button"
+              aria-label={`选择颜色 ${color}`}
+              onClick={() => setGroupColorDraft(color)}
+            />
+          ))}
+        </div>
+        <div className="group-create-actions">
+          <button type="button" onClick={cancelCreateGroup}>
+            <X className="ui-icon" aria-hidden="true" />
+            <span>取消</span>
+          </button>
+          <button type="submit">
+            <Check className="ui-icon" aria-hidden="true" />
+            <span>{editingGroupId ? "更新" : "保存"}</span>
+          </button>
+        </div>
+      </form>
+    );
+  }
+
+  function renderCustomGroup(group: CustomGroup): ReactNode {
+    const folderId: FolderId = `group-${group.id}`;
+    const childGroups = customGroups.filter((item) => item.parentId === group.id);
+
+    return (
+      <TreeFolder
+        color={group.color}
+        expanded={expandedFolders[folderId] ?? true}
+        icon={Folder}
+        key={group.id}
+        label={group.name}
+        folderDropTargetId={folderId}
+        draggingConnectionId={draggingConnectionId}
+        dropTargetId={dropTargetId}
+        onEdit={onEdit}
+        onOpen={onOpen}
+        onSelect={onSelect}
+        onCreateConnection={() => onCreate(group.id)}
+        onCreateGroup={() => beginCreateGroup(group.id)}
+        onConnect={onConnect}
+        onDeleteConnection={onDelete}
+        onConnectionDragEnd={finishConnectionDrag}
+        onConnectionDragStart={beginConnectionDrag}
+        onMouseConnectionDragStart={beginMouseConnectionDrag}
+        onDragLeave={clearDropTarget}
+        onDragOver={(event) => activateDropTarget(event, `group-${group.id}`)}
+        onDropConnection={(connectionId) => assignConnectionToGroup(connectionId, group.id)}
+        onEditGroup={() => beginEditGroup(group)}
+        onDeleteGroup={() => deleteGroup(group)}
+        onToggle={() => toggleFolder(folderId)}
+        selectedId={selectedId}
+        connections={connections.filter((connection) => connectionGroups[connection.id] === group.id)}
+        nestedContent={
+          <>
+            {creatingGroup && creatingGroupParentId === group.id ? renderGroupCreatePanel() : null}
+            {childGroups.map((childGroup) => renderCustomGroup(childGroup))}
+          </>
+        }
+      />
+    );
+  }
 
   function toggleFolder(id: FolderId) {
     setExpandedFolders((folders) => ({
@@ -491,15 +511,23 @@ export function ConnectionPane({
     moveConnectionToDropTarget(connectionId, "root");
   }
 
-  function beginCreateGroup() {
+  function beginCreateGroup(parentId: string | null = null) {
     setEditingGroupId(null);
+    setCreatingGroupParentId(parentId);
     setGroupDraft("");
     setGroupColorDraft(groupPalette[0]);
     setCreatingGroup(true);
+    if (parentId) {
+      setExpandedFolders((folders) => ({
+        ...folders,
+        [`group-${parentId}`]: true,
+      }));
+    }
   }
 
   function beginEditGroup(group: CustomGroup) {
     setEditingGroupId(group.id);
+    setCreatingGroupParentId(group.parentId || null);
     setGroupDraft(group.name);
     setGroupColorDraft(group.color);
     setCreatingGroup(true);
@@ -514,7 +542,14 @@ export function ConnectionPane({
     }
 
     setCustomGroups((groups) => {
-      if (groups.some((group) => group.name === name && group.id !== editingGroupId)) {
+      if (
+        groups.some(
+          (group) =>
+            group.name === name &&
+            group.id !== editingGroupId &&
+            (group.parentId || null) === creatingGroupParentId,
+        )
+      ) {
         return groups;
       }
 
@@ -524,7 +559,15 @@ export function ConnectionPane({
         );
       }
 
-      return [...groups, { color: groupColorDraft, id: Date.now().toString(), name }];
+      return [
+        ...groups,
+        {
+          color: groupColorDraft,
+          id: Date.now().toString(),
+          name,
+          parentId: creatingGroupParentId,
+        },
+      ];
     });
     resetGroupForm();
   }
@@ -534,11 +577,12 @@ export function ConnectionPane({
       return;
     }
 
-    setCustomGroups((groups) => groups.filter((item) => item.id !== group.id));
+    const deletingGroupIds = collectGroupAndDescendantIds(customGroups, group.id);
+    setCustomGroups((groups) => groups.filter((item) => !deletingGroupIds.has(item.id)));
     setConnectionGroups((groups) => {
       const nextGroups = { ...groups };
       Object.entries(nextGroups).forEach(([connectionId, groupId]) => {
-        if (groupId === group.id) {
+        if (deletingGroupIds.has(groupId)) {
           delete nextGroups[connectionId];
         }
       });
@@ -555,6 +599,7 @@ export function ConnectionPane({
 
   function resetGroupForm() {
     setEditingGroupId(null);
+    setCreatingGroupParentId(null);
     setGroupDraft("");
     setGroupColorDraft(groupPalette[0]);
     setCreatingGroup(false);
@@ -587,6 +632,7 @@ function TreeFolder({
   onDeleteGroup,
   onToggle,
   selectedId,
+  nestedContent,
 }: {
   color: string;
   connections: ConnectionProfile[];
@@ -616,6 +662,7 @@ function TreeFolder({
   onDeleteGroup?: () => void;
   onToggle: () => void;
   selectedId: string | null;
+  nestedContent?: ReactNode;
 }) {
   const dropTarget = Boolean(folderDropTargetId && dropTargetId === folderDropTargetId);
 
@@ -682,6 +729,7 @@ function TreeFolder({
 
       {expanded ? (
         <div className="tree-children">
+          {nestedContent}
           {connections.map((connection) => (
             <ConnectionTreeLeaf
               connection={connection}
@@ -839,6 +887,23 @@ function timestampOf(value: string) {
   return Number.isNaN(parsed) ? 0 : parsed;
 }
 
+function collectGroupAndDescendantIds(groups: CustomGroup[], groupId: string) {
+  const deletingGroupIds = new Set<string>([groupId]);
+  let changed = true;
+
+  while (changed) {
+    changed = false;
+    groups.forEach((group) => {
+      if (group.parentId && deletingGroupIds.has(group.parentId) && !deletingGroupIds.has(group.id)) {
+        deletingGroupIds.add(group.id);
+        changed = true;
+      }
+    });
+  }
+
+  return deletingGroupIds;
+}
+
 function getDraggedConnectionId(event: DragEvent<HTMLElement>) {
   return (
     event.dataTransfer.getData(connectionDragDataType) ||
@@ -888,6 +953,7 @@ function readStoredGroups() {
         color: group.color,
         id: group.id,
         name: group.name,
+        parentId: typeof group.parentId === "string" ? group.parentId : null,
       }));
   } catch {
     return [];
