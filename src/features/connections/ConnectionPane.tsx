@@ -1,4 +1,5 @@
 import * as ContextMenu from "@radix-ui/react-context-menu";
+import * as Dialog from "@radix-ui/react-dialog";
 import {
   FormEvent,
   useEffect,
@@ -18,6 +19,7 @@ import {
   Pencil,
   Play,
   Plus,
+  RefreshCw,
   Server,
   Settings,
   Star,
@@ -26,20 +28,25 @@ import {
   type LucideIcon,
 } from "lucide-react";
 
+import { ConfirmDialog } from "../../shared/ui/ConfirmDialog";
 import { Tooltip } from "../../shared/ui/Tooltip";
 import type { ConnectionProfile } from "./connectionTypes";
 
 interface ConnectionPaneProps {
   connections: ConnectionProfile[];
   connectionPlacementRequest: ConnectionPlacementRequest | null;
-  createGroupRequest: number;
   error: string | null;
   loading: boolean;
   onCreate: (groupId?: string) => void;
   onConnect: (connection: ConnectionProfile) => void;
   onDelete: (connection: ConnectionProfile) => void | Promise<void>;
   onEdit: (connection: ConnectionProfile) => void;
+  onGroupCatalogChange?: (catalog: {
+    assignments: ConnectionGroupAssignments;
+    groups: CustomGroup[];
+  }) => void;
   onOpen: (connection: ConnectionProfile) => void;
+  onRefresh: () => void;
   onSelect: (connection: ConnectionProfile) => void;
   selectedId: string | null;
 }
@@ -81,6 +88,10 @@ interface ConnectionPlacementRequest {
   groupId: string;
 }
 
+type DeleteRequest =
+  | { type: "connection"; connection: ConnectionProfile }
+  | { type: "group"; group: CustomGroup };
+
 const systemFolders: SystemFolder[] = [
   { id: "favorites", color: "#e0b341", icon: Star, label: "收藏" },
   { id: "recent", color: "#64748b", icon: Clock3, label: "最近" },
@@ -95,14 +106,15 @@ const connectionDragDataType = "application/x-mxterm-connection-id";
 export function ConnectionPane({
   connections,
   connectionPlacementRequest,
-  createGroupRequest,
   error,
   loading,
   onCreate,
   onConnect,
   onDelete,
   onEdit,
+  onGroupCatalogChange,
   onOpen,
+  onRefresh,
   onSelect,
   selectedId,
 }: ConnectionPaneProps) {
@@ -114,6 +126,7 @@ export function ConnectionPane({
   const [creatingGroupParentId, setCreatingGroupParentId] = useState<string | null>(null);
   const [groupDraft, setGroupDraft] = useState("");
   const [groupColorDraft, setGroupColorDraft] = useState(groupPalette[0]);
+  const [deleteRequest, setDeleteRequest] = useState<DeleteRequest | null>(null);
   const [draggingConnectionId, setDraggingConnectionId] = useState<string | null>(null);
   const [dropTargetId, setDropTargetId] = useState<DropTargetId | null>(null);
   const [mouseDrag, setMouseDrag] = useState<MouseDragState | null>(null);
@@ -153,10 +166,11 @@ export function ConnectionPane({
   }, [connectionGroups]);
 
   useEffect(() => {
-    if (createGroupRequest > 0) {
-      beginCreateGroup();
-    }
-  }, [createGroupRequest]);
+    onGroupCatalogChange?.({
+      assignments: connectionGroups,
+      groups: customGroups,
+    });
+  }, [connectionGroups, customGroups, onGroupCatalogChange]);
 
   useEffect(() => {
     if (connectionPlacementRequest) {
@@ -222,155 +236,231 @@ export function ConnectionPane({
   }, [mouseDrag]);
 
   return (
-    <aside className="connection-pane" aria-label="连接仓库">
-      <section className="pane-scroll connection-tree" aria-label="连接树">
-        <button className="tree-root-row" type="button">
-          <span>全部</span>
-          <MoreHorizontal className="ui-icon" aria-hidden="true" />
-        </button>
+    <>
+      <aside className="connection-pane" aria-label="连接仓库">
+        <section className="pane-scroll connection-tree" aria-label="连接树">
+          {loading ? <p className="pane-note">加载连接中...</p> : null}
+          {error ? <p className="pane-error">{error}</p> : null}
 
-        {loading ? <p className="pane-note">加载连接中...</p> : null}
-        {error ? <p className="pane-error">{error}</p> : null}
+          <div className="tree-block" aria-label="固定分组">
+            {systemFolders.map((folder) => (
+              <TreeFolder
+                color={folder.color}
+                connections={catalog[folder.id]}
+                expanded={expandedFolders[folder.id]}
+                icon={folder.icon}
+                key={folder.id}
+                label={folder.label}
+                onEdit={onEdit}
+                onOpen={onOpen}
+                onSelect={onSelect}
+                onCreateConnection={() => onCreate()}
+                onCreateGroup={() => beginCreateGroup(null)}
+                onConnect={onConnect}
+                onDeleteConnection={requestDeleteConnection}
+                onConnectionDragEnd={finishConnectionDrag}
+                onConnectionDragStart={beginConnectionDrag}
+                onMouseConnectionDragStart={beginMouseConnectionDrag}
+                onToggle={() => toggleFolder(folder.id)}
+                selectedId={selectedId}
+              />
+            ))}
+          </div>
 
-        <div className="tree-block" aria-label="固定分组">
-          {systemFolders.map((folder) => (
-            <TreeFolder
-              color={folder.color}
-              connections={catalog[folder.id]}
-              expanded={expandedFolders[folder.id]}
-              icon={folder.icon}
-              key={folder.id}
-              label={folder.label}
-              onEdit={onEdit}
-              onOpen={onOpen}
-              onSelect={onSelect}
-              onCreateConnection={() => onCreate()}
-              onCreateGroup={() => beginCreateGroup(null)}
-              onConnect={onConnect}
-              onDeleteConnection={onDelete}
-              onConnectionDragEnd={finishConnectionDrag}
-              onConnectionDragStart={beginConnectionDrag}
-              onMouseConnectionDragStart={beginMouseConnectionDrag}
-              onToggle={() => toggleFolder(folder.id)}
-              selectedId={selectedId}
-            />
-          ))}
-        </div>
+          <div className="tree-section-head">
+            <span>连接</span>
+            <div className="toolbar-actions">
+              <Tooltip label="刷新连接">
+                <button className="mini-action" type="button" aria-label="刷新连接" onClick={onRefresh}>
+                  <RefreshCw className="ui-icon" aria-hidden="true" />
+                </button>
+              </Tooltip>
+              <Tooltip label="更多">
+                <button className="mini-action" type="button" aria-label="更多">
+                  <MoreHorizontal className="ui-icon" aria-hidden="true" />
+                </button>
+              </Tooltip>
+              <Tooltip label="新增分组">
+                <button
+                  className="mini-action"
+                  type="button"
+                  aria-label="新增分组"
+                  onClick={() => beginCreateGroup(null)}
+                >
+                  <FolderPlus className="ui-icon" aria-hidden="true" />
+                </button>
+              </Tooltip>
+            </div>
+          </div>
 
-        <div className="tree-section-head">
-          <span>分组</span>
-          <Tooltip label="新建分组">
-            <button
-              className="mini-action"
-              type="button"
-              aria-label="新建分组"
-              onClick={() => beginCreateGroup(null)}
-            >
-              <FolderPlus className="ui-icon" aria-hidden="true" />
+          {customGroups.length === 0 ? (
+            <p className="pane-note section-note">暂无分组</p>
+          ) : null}
+
+          <div className="tree-block" aria-label="自定义分组">
+            {topLevelCustomGroups.map((group) => renderCustomGroup(group))}
+          </div>
+
+          <div
+            className={`tree-block root-connections ${dropTargetId === "root" ? "drop-target" : ""}`}
+            aria-label="未分组连接"
+            data-drop-target-id="root"
+            onDragLeave={clearDropTarget}
+            onDragOver={(event) => activateDropTarget(event, "root")}
+            onDrop={dropConnectionToRoot}
+          >
+            {ungroupedConnections.map((connection) => (
+              <ConnectionTreeLeaf
+                connection={connection}
+                key={connection.id}
+                dragging={connection.id === draggingConnectionId}
+                onDelete={requestDeleteConnection}
+                onDragEnd={finishConnectionDrag}
+                onDragStart={beginConnectionDrag}
+                onMouseDragStart={beginMouseConnectionDrag}
+                onConnect={onConnect}
+                onEdit={onEdit}
+                onOpen={onOpen}
+                onSelect={onSelect}
+                selected={connection.id === selectedId}
+              />
+            ))}
+            {ungroupedConnections.length === 0 && draggingConnectionId ? (
+              <div className="drop-empty">拖到这里取消分组</div>
+            ) : null}
+          </div>
+        </section>
+
+        <footer className="settings-foot">
+          <Tooltip label="设置">
+            <button className="icon-button" type="button" aria-label="设置">
+              <Settings className="ui-icon" aria-hidden="true" />
             </button>
           </Tooltip>
-        </div>
+        </footer>
 
-        {creatingGroup && !creatingGroupParentId ? renderGroupCreatePanel() : null}
-
-        {customGroups.length === 0 && !creatingGroup ? (
-          <p className="pane-note section-note">暂无分组</p>
+        {draggedConnection && mouseDrag ? (
+          <div
+            className="connection-drag-preview"
+            style={{
+              transform: `translate(${mouseDrag.currentX - mouseDrag.grabOffsetX}px, ${mouseDrag.currentY - mouseDrag.grabOffsetY}px)`,
+              width: `${mouseDrag.previewWidth}px`,
+            }}
+          >
+            <Server className="ui-icon connection-server-icon" aria-hidden="true" />
+            <span>
+              <strong>{draggedConnection.name}</strong>
+              <small>{formatAddress(draggedConnection)}</small>
+            </span>
+          </div>
         ) : null}
+      </aside>
 
-        <div className="tree-block" aria-label="自定义分组">
-          {topLevelCustomGroups.map((group) => renderCustomGroup(group))}
-        </div>
-
-        {connections.length > 0 ? <div className="tree-section-head standalone-head">未分组</div> : null}
-        <div
-          className={`tree-block root-connections ${dropTargetId === "root" ? "drop-target" : ""}`}
-          aria-label="未分组连接"
-          data-drop-target-id="root"
-          onDragLeave={clearDropTarget}
-          onDragOver={(event) => activateDropTarget(event, "root")}
-          onDrop={dropConnectionToRoot}
-        >
-          {ungroupedConnections.map((connection) => (
-            <ConnectionTreeLeaf
-              connection={connection}
-              key={connection.id}
-              dragging={connection.id === draggingConnectionId}
-              onDelete={onDelete}
-              onDragEnd={finishConnectionDrag}
-              onDragStart={beginConnectionDrag}
-              onMouseDragStart={beginMouseConnectionDrag}
-              onConnect={onConnect}
-              onEdit={onEdit}
-              onOpen={onOpen}
-              onSelect={onSelect}
-              selected={connection.id === selectedId}
-            />
-          ))}
-          {ungroupedConnections.length === 0 && draggingConnectionId ? (
-            <div className="drop-empty">拖到这里取消分组</div>
-          ) : null}
-        </div>
-      </section>
-
-      <footer className="settings-foot">
-        <Tooltip label="设置">
-          <button className="icon-button" type="button" aria-label="设置">
-            <Settings className="ui-icon" aria-hidden="true" />
-          </button>
-        </Tooltip>
-      </footer>
-
-      {draggedConnection && mouseDrag ? (
-        <div
-          className="connection-drag-preview"
-          style={{
-            transform: `translate(${mouseDrag.currentX - mouseDrag.grabOffsetX}px, ${mouseDrag.currentY - mouseDrag.grabOffsetY}px)`,
-            width: `${mouseDrag.previewWidth}px`,
-          }}
-        >
-          <Server className="ui-icon connection-server-icon" aria-hidden="true" />
-          <span>
-            <strong>{draggedConnection.name}</strong>
-            <small>{formatAddress(draggedConnection)}</small>
-          </span>
-        </div>
-      ) : null}
-    </aside>
+      {renderGroupDialog()}
+      {renderDeleteConfirmDialog()}
+    </>
   );
 
-  function renderGroupCreatePanel() {
+  function renderGroupDialog() {
+    const parentGroup = creatingGroupParentId
+      ? customGroups.find((group) => group.id === creatingGroupParentId)
+      : null;
+
     return (
-      <form className="group-create-panel" onSubmit={saveGroup}>
-        <input
-          aria-label="分组名称"
-          autoFocus
-          placeholder="分组名称"
-          value={groupDraft}
-          onChange={(event) => setGroupDraft(event.target.value)}
-        />
-        <div className="group-color-row" aria-label="分组颜色">
-          {groupPalette.map((color) => (
-            <button
-              className={`color-swatch ${groupColorDraft === color ? "active" : ""}`}
-              key={color}
-              style={{ "--group-color": color } as CSSProperties}
-              type="button"
-              aria-label={`选择颜色 ${color}`}
-              onClick={() => setGroupColorDraft(color)}
-            />
-          ))}
-        </div>
-        <div className="group-create-actions">
-          <button type="button" onClick={cancelCreateGroup}>
-            <X className="ui-icon" aria-hidden="true" />
-            <span>取消</span>
-          </button>
-          <button type="submit">
-            <Check className="ui-icon" aria-hidden="true" />
-            <span>{editingGroupId ? "更新" : "保存"}</span>
-          </button>
-        </div>
-      </form>
+      <Dialog.Root
+        open={creatingGroup}
+        onOpenChange={(open) => {
+          if (!open) {
+            resetGroupForm();
+          }
+        }}
+      >
+        <Dialog.Portal>
+          <Dialog.Overlay className="dialog-backdrop" />
+          <Dialog.Content
+            asChild
+            onInteractOutside={(event) => event.preventDefault()}
+            onPointerDownOutside={(event) => event.preventDefault()}
+          >
+            <form className="group-dialog" onSubmit={saveGroup}>
+              <header className="dialog-head">
+                <div className="dialog-title-group">
+                  <Dialog.Title asChild>
+                    <strong>{editingGroupId ? "编辑分组" : "新增分组"}</strong>
+                  </Dialog.Title>
+                  <Dialog.Description className={parentGroup ? "dialog-subtitle" : "sr-only"}>
+                    {parentGroup ? `归入“${parentGroup.name}”` : "创建连接分组"}
+                  </Dialog.Description>
+                </div>
+                <Dialog.Close asChild>
+                  <button className="icon-button dialog-close-button" type="button" aria-label="关闭">
+                    <X className="ui-icon" aria-hidden="true" />
+                  </button>
+                </Dialog.Close>
+              </header>
+
+              <div className="dialog-body group-dialog-body">
+                <label>
+                  <span>名称</span>
+                  <input
+                    aria-label="分组名称"
+                    autoFocus
+                    placeholder="分组名称"
+                    value={groupDraft}
+                    onChange={(event) => setGroupDraft(event.target.value)}
+                  />
+                </label>
+                <div className="group-dialog-colors">
+                  <span>颜色</span>
+                  <div className="group-color-row" aria-label="分组颜色">
+                    {groupPalette.map((color) => (
+                      <button
+                        className={`color-swatch ${groupColorDraft === color ? "active" : ""}`}
+                        key={color}
+                        style={{ "--group-color": color } as CSSProperties}
+                        type="button"
+                        aria-label={`选择颜色 ${color}`}
+                        onClick={() => setGroupColorDraft(color)}
+                      />
+                    ))}
+                  </div>
+                </div>
+              </div>
+
+              <footer className="dialog-actions group-dialog-actions">
+                <span />
+                <Dialog.Close asChild>
+                  <button type="button">
+                    <X className="ui-icon" aria-hidden="true" />
+                    <span>取消</span>
+                  </button>
+                </Dialog.Close>
+                <button className="primary-button" type="submit">
+                  <Check className="ui-icon" aria-hidden="true" />
+                  <span>{editingGroupId ? "更新" : "保存"}</span>
+                </button>
+              </footer>
+            </form>
+          </Dialog.Content>
+        </Dialog.Portal>
+      </Dialog.Root>
+    );
+  }
+
+  function renderDeleteConfirmDialog() {
+    return (
+      <ConfirmDialog
+        confirmLabel="删除"
+        description={deleteRequestDescription(deleteRequest)}
+        open={Boolean(deleteRequest)}
+        title={deleteRequestTitle(deleteRequest)}
+        onConfirm={confirmDeleteRequest}
+        onOpenChange={(open) => {
+          if (!open) {
+            setDeleteRequest(null);
+          }
+        }}
+      />
     );
   }
 
@@ -394,7 +484,7 @@ export function ConnectionPane({
         onCreateConnection={() => onCreate(group.id)}
         onCreateGroup={() => beginCreateGroup(group.id)}
         onConnect={onConnect}
-        onDeleteConnection={onDelete}
+        onDeleteConnection={requestDeleteConnection}
         onConnectionDragEnd={finishConnectionDrag}
         onConnectionDragStart={beginConnectionDrag}
         onMouseConnectionDragStart={beginMouseConnectionDrag}
@@ -402,13 +492,12 @@ export function ConnectionPane({
         onDragOver={(event) => activateDropTarget(event, `group-${group.id}`)}
         onDropConnection={(connectionId) => assignConnectionToGroup(connectionId, group.id)}
         onEditGroup={() => beginEditGroup(group)}
-        onDeleteGroup={() => deleteGroup(group)}
+        onDeleteGroup={() => requestDeleteGroup(group)}
         onToggle={() => toggleFolder(folderId)}
         selectedId={selectedId}
         connections={connections.filter((connection) => connectionGroups[connection.id] === group.id)}
         nestedContent={
           <>
-            {creatingGroup && creatingGroupParentId === group.id ? renderGroupCreatePanel() : null}
             {childGroups.map((childGroup) => renderCustomGroup(childGroup))}
           </>
         }
@@ -572,11 +661,28 @@ export function ConnectionPane({
     resetGroupForm();
   }
 
-  function deleteGroup(group: CustomGroup) {
-    if (!window.confirm(`确认删除分组“${group.name}”吗？`)) {
+  function requestDeleteConnection(connection: ConnectionProfile) {
+    setDeleteRequest({ type: "connection", connection });
+  }
+
+  function requestDeleteGroup(group: CustomGroup) {
+    setDeleteRequest({ type: "group", group });
+  }
+
+  async function confirmDeleteRequest() {
+    if (!deleteRequest) {
       return;
     }
 
+    if (deleteRequest.type === "connection") {
+      await onDelete(deleteRequest.connection);
+      return;
+    }
+
+    deleteGroup(deleteRequest.group);
+  }
+
+  function deleteGroup(group: CustomGroup) {
     const deletingGroupIds = collectGroupAndDescendantIds(customGroups, group.id);
     setCustomGroups((groups) => groups.filter((item) => !deletingGroupIds.has(item.id)));
     setConnectionGroups((groups) => {
@@ -591,10 +697,6 @@ export function ConnectionPane({
     if (editingGroupId === group.id) {
       resetGroupForm();
     }
-  }
-
-  function cancelCreateGroup() {
-    resetGroupForm();
   }
 
   function resetGroupForm() {
@@ -841,16 +943,32 @@ function ConnectionTreeLeaf({
   );
 
   function requestDelete() {
-    if (!window.confirm(`确认删除连接“${connection.name}”吗？`)) {
-      return;
-    }
-
     void onDelete(connection);
   }
 }
 
 function formatAddress(connection: ConnectionProfile) {
   return `${connection.username}@${connection.host}:${connection.port.toString()}`;
+}
+
+function deleteRequestTitle(request: DeleteRequest | null) {
+  if (!request) {
+    return "确认删除";
+  }
+
+  return request.type === "group" ? "删除分组" : "删除连接";
+}
+
+function deleteRequestDescription(request: DeleteRequest | null) {
+  if (!request) {
+    return "";
+  }
+
+  if (request.type === "group") {
+    return `确认删除分组“${request.group.name}”吗？分组内的连接会回到未分组。`;
+  }
+
+  return `确认删除连接“${request.connection.name}”吗？这个操作无法撤销。`;
 }
 
 function buildCatalog(connections: ConnectionProfile[]) {

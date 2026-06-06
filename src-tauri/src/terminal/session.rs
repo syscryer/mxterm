@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use russh::client;
 use russh::keys::{load_secret_key, PrivateKeyWithHashAlg};
-use russh::{ChannelReadHalf, ChannelWriteHalf, Disconnect};
+use russh::{ChannelMsg, ChannelReadHalf, ChannelWriteHalf, Disconnect};
 use std::future::Future;
 use tokio::sync::Mutex;
 use uuid::Uuid;
@@ -82,6 +82,12 @@ pub struct TerminalSession {
     writer: Mutex<ChannelWriter>,
 }
 
+pub struct ExecOutput {
+    pub stdout: Vec<u8>,
+    pub stderr: Vec<u8>,
+    pub exit_status: Option<u32>,
+}
+
 impl TerminalSession {
     pub async fn open(
         request: TerminalConnectRequest,
@@ -126,8 +132,9 @@ impl TerminalSession {
             Ok(Err(e)) => trace("tcp.after_connect", &format!("russh err: {e}")),
             Err(e) => trace("tcp.after_connect", &format!("outer err: {e:?}")),
         }
-        let mut client = client_result?
-            .map_err(|error| AppError::new("terminal_connect_failed", "SSH 连接失败。", error, true))?;
+        let mut client = client_result?.map_err(|error| {
+            AppError::new("terminal_connect_failed", "SSH 连接失败。", error, true)
+        })?;
         emit_progress(&progress, "tcp_connected", "SSH TCP 已连接。");
 
         emit_progress(&progress, "authenticating", "SSH 认证中...");
@@ -266,6 +273,102 @@ impl TerminalSession {
             .map_err(|error| {
                 AppError::new("terminal_close_failed", "终端连接关闭失败。", error, true)
             })
+    }
+
+    pub async fn exec(
+        request: TerminalConnectRequest,
+        command: &str,
+    ) -> Result<ExecOutput, AppError> {
+        let host = request.host.trim().to_string();
+        let port = request.port;
+        let username = request.username.trim().to_string();
+        let auth_method = auth_method(&request)?;
+        let config = Arc::new(client::Config {
+            keepalive_interval: Some(Duration::from_secs(20)),
+            keepalive_max: 1,
+            nodelay: true,
+            ..<_>::default()
+        });
+
+        let mut client = run_with_timeout(
+            "remote_exec_connect_timeout",
+            "SSH 命令连接超时。",
+            Duration::from_secs(30),
+            client::connect(config, (host.as_str(), port), TrustingClient),
+        )
+        .await?
+        .map_err(|error| {
+            AppError::new(
+                "remote_exec_connect_failed",
+                "SSH 命令连接失败。",
+                error,
+                true,
+            )
+        })?;
+
+        run_with_timeout(
+            "remote_exec_auth_timeout",
+            "SSH 命令认证超时。",
+            Duration::from_secs(45),
+            authenticate(&mut client, &username, auth_method),
+        )
+        .await??;
+
+        let mut channel = run_with_timeout(
+            "remote_exec_channel_timeout",
+            "SSH 命令通道打开超时。",
+            Duration::from_secs(20),
+            client.channel_open_session(),
+        )
+        .await?
+        .map_err(|error| {
+            AppError::new(
+                "remote_exec_channel_failed",
+                "SSH 命令通道打开失败。",
+                error,
+                true,
+            )
+        })?;
+
+        run_with_timeout(
+            "remote_exec_start_timeout",
+            "远程命令启动超时。",
+            Duration::from_secs(20),
+            channel.exec(true, command),
+        )
+        .await?
+        .map_err(|error| {
+            AppError::new(
+                "remote_exec_start_failed",
+                "远程命令启动失败。",
+                error,
+                true,
+            )
+        })?;
+
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+        let mut exit_status = None;
+
+        while let Some(message) = channel.wait().await {
+            match message {
+                ChannelMsg::Data { data } => stdout.extend_from_slice(&data),
+                ChannelMsg::ExtendedData { data, .. } => stderr.extend_from_slice(&data),
+                ChannelMsg::ExitStatus { exit_status: code } => exit_status = Some(code),
+                ChannelMsg::Close => break,
+                _ => {}
+            }
+        }
+
+        let _ = client
+            .disconnect(Disconnect::ByApplication, "", "English")
+            .await;
+
+        Ok(ExecOutput {
+            stdout,
+            stderr,
+            exit_status,
+        })
     }
 }
 

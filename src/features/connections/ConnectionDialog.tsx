@@ -2,6 +2,7 @@ import * as Dialog from "@radix-ui/react-dialog";
 import { Eye, EyeOff, X } from "lucide-react";
 import { FormEvent, useEffect, useState } from "react";
 
+import { ConfirmDialog } from "../../shared/ui/ConfirmDialog";
 import type { ConnectionProfile, ConnectionProfileInput } from "./connectionTypes";
 
 interface ConnectionDialogProps {
@@ -36,6 +37,7 @@ export function ConnectionDialog({
   const [error, setError] = useState<string | null>(null);
   const [showPassword, setShowPassword] = useState(false);
   const [showPassphrase, setShowPassphrase] = useState(false);
+  const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
 
   useEffect(() => {
     if (!open) {
@@ -46,6 +48,7 @@ export function ConnectionDialog({
     setError(null);
     setShowPassword(false);
     setShowPassphrase(false);
+    setDeleteConfirmOpen(false);
     setForm(
       connection
         ? {
@@ -87,7 +90,7 @@ export function ConnectionDialog({
   }
 
   async function remove() {
-    if (!connection || !window.confirm(`确认删除连接“${connection.name}”吗？`)) {
+    if (!connection) {
       return;
     }
 
@@ -105,18 +108,23 @@ export function ConnectionDialog({
   }
 
   return (
-    <Dialog.Root
-      open={open}
-      onOpenChange={(nextOpen) => {
-        if (!nextOpen) {
-          onClose();
-        }
-      }}
-    >
-      <Dialog.Portal>
-        <Dialog.Overlay className="dialog-backdrop" />
-        <Dialog.Content asChild>
-          <form className="connection-dialog" onSubmit={submit}>
+    <>
+      <Dialog.Root
+        open={open}
+        onOpenChange={(nextOpen) => {
+          if (!nextOpen) {
+            onClose();
+          }
+        }}
+      >
+        <Dialog.Portal>
+          <Dialog.Overlay className="dialog-backdrop" />
+          <Dialog.Content
+            asChild
+            onInteractOutside={(event) => event.preventDefault()}
+            onPointerDownOutside={(event) => event.preventDefault()}
+          >
+            <form className="connection-dialog" onSubmit={submit}>
         <header className="dialog-head">
           <div className="dialog-title-group">
             <Dialog.Title asChild>
@@ -294,7 +302,12 @@ export function ConnectionDialog({
 
         <footer className="dialog-actions">
           {connection ? (
-            <button className="danger-button" disabled={busy} type="button" onClick={remove}>
+            <button
+              className="danger-button"
+              disabled={busy}
+              type="button"
+              onClick={() => setDeleteConfirmOpen(true)}
+            >
               删除
             </button>
           ) : (
@@ -310,10 +323,22 @@ export function ConnectionDialog({
             {connection ? "保存连接" : "创建连接"}
           </button>
         </footer>
-      </form>
-        </Dialog.Content>
-      </Dialog.Portal>
-    </Dialog.Root>
+        </form>
+          </Dialog.Content>
+        </Dialog.Portal>
+      </Dialog.Root>
+
+      {connection ? (
+        <ConfirmDialog
+          confirmLabel="删除"
+          description={`确认删除连接“${connection.name}”吗？这个操作无法撤销。`}
+          open={deleteConfirmOpen}
+          title="删除连接"
+          onConfirm={remove}
+          onOpenChange={setDeleteConfirmOpen}
+        />
+      ) : null}
+    </>
   );
 }
 

@@ -30,21 +30,19 @@ impl TerminalManager {
             .as_ref()
             .map(|value| value.trim().to_string())
             .filter(|value| !value.is_empty());
-        let progress = request_id
-            .clone()
-            .map(|request_id| {
-                let progress_app = app.clone();
-                OpenProgress::new(move |stage, message| {
-                    let _ = progress_app.emit(
-                        crate::events::TERMINAL_CONNECT_PROGRESS,
-                        TerminalConnectProgressEvent {
-                            request_id: request_id.clone(),
-                            stage: stage.to_string(),
-                            message: message.to_string(),
-                        },
-                    );
-                })
-            });
+        let progress = request_id.clone().map(|request_id| {
+            let progress_app = app.clone();
+            OpenProgress::new(move |stage, message| {
+                let _ = progress_app.emit(
+                    crate::events::TERMINAL_CONNECT_PROGRESS,
+                    TerminalConnectProgressEvent {
+                        request_id: request_id.clone(),
+                        stage: stage.to_string(),
+                        message: message.to_string(),
+                    },
+                );
+            })
+        });
         let (session, reader) = TerminalSession::open(request, progress).await?;
         let session_id = session.id.clone();
         self.sessions
