@@ -46,6 +46,7 @@ interface ConnectionPaneProps {
     groups: CustomGroup[];
   }) => void;
   onOpen: (connection: ConnectionProfile) => void;
+  onOpenSettings: () => void;
   onRefresh: () => void;
   onSelect: (connection: ConnectionProfile) => void;
   selectedId: string | null;
@@ -114,6 +115,7 @@ export function ConnectionPane({
   onEdit,
   onGroupCatalogChange,
   onOpen,
+  onOpenSettings,
   onRefresh,
   onSelect,
   selectedId,
@@ -333,7 +335,12 @@ export function ConnectionPane({
 
         <footer className="settings-foot">
           <Tooltip label="设置">
-            <button className="icon-button" type="button" aria-label="设置">
+            <button
+              className="icon-button settings-entry-button"
+              type="button"
+              aria-label="设置"
+              onClick={onOpenSettings}
+            >
               <Settings className="ui-icon" aria-hidden="true" />
             </button>
           </Tooltip>

@@ -31,3 +31,49 @@ export function remoteFileRank(kind: RemoteFileEntry["type"]) {
   }
   return 3;
 }
+
+export function remotePathParent(path: string | null | undefined) {
+  const normalizedPath = normalizeRemotePath(path);
+  if (normalizedPath === "/") {
+    return "/";
+  }
+
+  const parentPath = normalizedPath.slice(0, normalizedPath.lastIndexOf("/"));
+  return parentPath || "/";
+}
+
+export function remotePathAncestors(path: string | null | undefined) {
+  const normalizedPath = normalizeRemotePath(path);
+  if (normalizedPath === "/") {
+    return [];
+  }
+
+  const segments = normalizedPath.split("/").filter(Boolean);
+  return segments.map((_, index) => (
+    index === 0 ? "/" : `/${segments.slice(0, index).join("/")}`
+  ));
+}
+
+export function isRemotePathStrictDescendant(path: string | null | undefined, ancestor: string | null | undefined) {
+  const normalizedPath = normalizeRemotePath(path);
+  const normalizedAncestor = normalizeRemotePath(ancestor);
+  if (normalizedPath === normalizedAncestor) {
+    return false;
+  }
+  if (normalizedAncestor === "/") {
+    return normalizedPath !== "/";
+  }
+  return normalizedPath.startsWith(`${normalizedAncestor}/`);
+}
+
+export function shouldShowRemoteDirectoryEmptyRow({
+  childCount,
+  loaded,
+  loading,
+}: {
+  childCount: number;
+  loaded: boolean;
+  loading: boolean;
+}) {
+  return loaded && !loading && childCount === 0;
+}

@@ -16,6 +16,24 @@
   --mx-danger: #dc2626;
   --mx-terminal: #111827;
   --mx-terminal-line: #263241;
+  --mx-glass-border: rgb(214 218 224 / 70%);
+  --mx-glass-bg:
+    linear-gradient(145deg, rgb(255 255 255 / 36%), rgb(246 248 250 / 30%)),
+    rgb(248 250 252 / 32%);
+  --mx-glass-bg-strong:
+    linear-gradient(145deg, rgb(255 255 255 / 48%), rgb(246 248 250 / 38%)),
+    rgb(248 250 252 / 40%);
+  --mx-glass-highlight:
+    radial-gradient(ellipse at 18% 0%, rgb(255 255 255 / 16%), transparent 42%),
+    linear-gradient(180deg, rgb(255 255 255 / 10%), transparent 36%);
+  --mx-glass-shadow:
+    0 22px 48px rgb(15 23 42 / 15%),
+    0 8px 20px rgb(15 23 42 / 7%),
+    inset 0 1px 0 rgb(255 255 255 / 94%),
+    inset 0 -1px 0 rgb(148 163 184 / 16%);
+  --mx-glass-hover:
+    linear-gradient(180deg, rgb(255 255 255 / 32%), rgb(255 255 255 / 12%)),
+    rgb(142 142 147 / 16%);
   --font-ui: "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI", system-ui, sans-serif;
   --font-mono: "Cascadia Mono", Consolas, "Microsoft YaHei UI", monospace;
   color: var(--mx-text);

@@ -6,9 +6,11 @@ use tauri::{AppHandle, Manager, State};
 
 use crate::app_error::AppError;
 use crate::connections::{ConnectionProfile, ConnectionProfileInput, ConnectionStore};
-use crate::remote_files::{build_remote_list_command, parse_remote_list_output, RemoteFileEntry};
+use crate::remote_files::{
+    RemoteFileEntry, RemoteFileManager, RemoteFileMetadata, RemoteFileReadResult,
+    RemoteFileWriteResult,
+};
 use crate::terminal::manager::TerminalManager;
-use crate::terminal::session::TerminalSession;
 
 #[derive(Debug, Deserialize)]
 pub struct TerminalConnectRequest {
@@ -47,6 +49,58 @@ pub struct RemoteFileListRequest {
     pub connection_id: String,
     #[serde(default)]
     pub path: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct RemoteFileReadRequest {
+    pub connection_id: String,
+    pub path: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct RemoteFileWriteRequest {
+    pub connection_id: String,
+    pub path: String,
+    pub content: String,
+    pub expected_mtime: u64,
+    pub expected_size: u64,
+    #[serde(default)]
+    pub overwrite: bool,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct RemoteFilePathRequest {
+    pub connection_id: String,
+    pub path: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct RemoteFileRenameRequest {
+    pub connection_id: String,
+    pub path: String,
+    pub new_path: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct RemoteFileDeleteRequest {
+    pub connection_id: String,
+    pub path: String,
+    #[serde(default)]
+    pub recursive: bool,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct RemoteFileUploadFileRequest {
+    pub connection_id: String,
+    pub path: String,
+    pub content: Vec<u8>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct RemoteFileDownloadResult {
+    pub path: String,
+    pub name: String,
+    pub content: Vec<u8>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -111,53 +165,124 @@ pub async fn terminal_close(
 #[tauri::command]
 pub async fn remote_file_list(
     app: AppHandle,
+    manager: State<'_, RemoteFileManager>,
     request: RemoteFileListRequest,
 ) -> Result<Vec<RemoteFileEntry>, AppError> {
-    let connection_id = request.connection_id.trim();
-    if connection_id.is_empty() {
-        return Err(AppError::new(
-            "remote_file_connection_missing",
-            "请选择活动连接。",
-            "connection_id is empty",
-            false,
-        ));
-    }
-
-    let profile = load_connection_profile(&app, connection_id)?;
+    let profile = load_remote_connection_profile(&app, &request.connection_id)?;
     let path = request
         .path
         .as_ref()
         .map(|value| value.trim())
         .filter(|value| !value.is_empty())
         .unwrap_or(".");
-    let output = TerminalSession::exec(
-        TerminalConnectRequest {
-            request_id: None,
-            connection_id: Some(profile.id),
-            host: profile.host,
-            port: profile.port,
-            username: profile.username,
-            password: profile.password,
-            private_key_path: profile.private_key_path,
-            private_key_passphrase: profile.private_key_passphrase,
-            cols: 80,
-            rows: 24,
-        },
-        &build_remote_list_command(path),
-    )
-    .await?;
+    manager.list_directory(profile, path).await
+}
 
-    if output.exit_status != Some(0) {
-        let detail = String::from_utf8_lossy(&output.stderr);
-        return Err(AppError::new(
-            "remote_file_list_failed",
-            "远程目录读取失败。",
-            detail.trim(),
-            true,
-        ));
-    }
+#[tauri::command]
+pub async fn remote_file_read(
+    app: AppHandle,
+    manager: State<'_, RemoteFileManager>,
+    request: RemoteFileReadRequest,
+) -> Result<RemoteFileReadResult, AppError> {
+    let profile = load_remote_connection_profile(&app, &request.connection_id)?;
+    let path = require_remote_path(&request.path)?;
+    manager.read_file(profile, path).await
+}
 
-    Ok(parse_remote_list_output(&output.stdout))
+#[tauri::command]
+pub async fn remote_file_write(
+    app: AppHandle,
+    manager: State<'_, RemoteFileManager>,
+    request: RemoteFileWriteRequest,
+) -> Result<RemoteFileWriteResult, AppError> {
+    let profile = load_remote_connection_profile(&app, &request.connection_id)?;
+    let path = require_remote_path(&request.path)?;
+    manager
+        .write_file(
+            profile,
+            path,
+            &request.content,
+            request.expected_mtime,
+            request.expected_size,
+            request.overwrite,
+        )
+        .await
+}
+
+#[tauri::command]
+pub async fn remote_file_create_file(
+    app: AppHandle,
+    manager: State<'_, RemoteFileManager>,
+    request: RemoteFilePathRequest,
+) -> Result<RemoteFileMetadata, AppError> {
+    let profile = load_remote_connection_profile(&app, &request.connection_id)?;
+    let path = require_remote_path(&request.path)?;
+    manager.create_file(profile, path).await
+}
+
+#[tauri::command]
+pub async fn remote_file_create_directory(
+    app: AppHandle,
+    manager: State<'_, RemoteFileManager>,
+    request: RemoteFilePathRequest,
+) -> Result<(), AppError> {
+    let profile = load_remote_connection_profile(&app, &request.connection_id)?;
+    let path = require_remote_path(&request.path)?;
+    manager.create_directory(profile, path).await
+}
+
+#[tauri::command]
+pub async fn remote_file_rename(
+    app: AppHandle,
+    manager: State<'_, RemoteFileManager>,
+    request: RemoteFileRenameRequest,
+) -> Result<(), AppError> {
+    let profile = load_remote_connection_profile(&app, &request.connection_id)?;
+    let path = require_remote_path(&request.path)?;
+    let new_path = require_remote_path(&request.new_path)?;
+    manager.rename_entry(profile, path, new_path).await
+}
+
+#[tauri::command]
+pub async fn remote_file_delete(
+    app: AppHandle,
+    manager: State<'_, RemoteFileManager>,
+    request: RemoteFileDeleteRequest,
+) -> Result<(), AppError> {
+    let profile = load_remote_connection_profile(&app, &request.connection_id)?;
+    let path = require_remote_path(&request.path)?;
+    manager.delete_entry(profile, path, request.recursive).await
+}
+
+#[tauri::command]
+pub async fn remote_file_upload_file(
+    app: AppHandle,
+    manager: State<'_, RemoteFileManager>,
+    request: RemoteFileUploadFileRequest,
+) -> Result<RemoteFileMetadata, AppError> {
+    let profile = load_remote_connection_profile(&app, &request.connection_id)?;
+    let path = require_remote_path(&request.path)?;
+    manager.upload_file(profile, path, &request.content).await
+}
+
+#[tauri::command]
+pub async fn remote_file_download(
+    app: AppHandle,
+    manager: State<'_, RemoteFileManager>,
+    request: RemoteFilePathRequest,
+) -> Result<RemoteFileDownloadResult, AppError> {
+    let profile = load_remote_connection_profile(&app, &request.connection_id)?;
+    let path = require_remote_path(&request.path)?;
+    let content = manager.download_file(profile, path).await?;
+    Ok(RemoteFileDownloadResult {
+        name: path
+            .rsplit('/')
+            .find(|segment| !segment.is_empty())
+            .unwrap_or(path)
+            .to_string(),
+        path: path.to_string(),
+        content,
+    })
 }
 
 #[tauri::command]
@@ -224,6 +349,37 @@ fn load_connection_profile(
             false,
         )
     })
+}
+
+fn load_remote_connection_profile(
+    app: &AppHandle,
+    connection_id: &str,
+) -> Result<ConnectionProfile, AppError> {
+    let connection_id = connection_id.trim();
+    if connection_id.is_empty() {
+        return Err(AppError::new(
+            "remote_file_connection_missing",
+            "请选择活动连接。",
+            "connection_id is empty",
+            false,
+        ));
+    }
+
+    load_connection_profile(app, connection_id)
+}
+
+fn require_remote_path(path: &str) -> Result<&str, AppError> {
+    let path = path.trim();
+    if path.is_empty() {
+        return Err(AppError::new(
+            "remote_file_path_missing",
+            "请选择远程路径。",
+            "path is empty",
+            true,
+        ));
+    }
+
+    Ok(path)
 }
 
 fn connection_store_path(app: &AppHandle) -> Result<PathBuf, AppError> {

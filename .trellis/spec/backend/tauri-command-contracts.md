@@ -278,3 +278,211 @@ let output = TerminalSession::exec(
 )
 .await?;
 ```
+
+## Scenario: Remote File Edit Commands
+
+### 1. Scope / Trigger
+
+- Trigger: backend code adds or changes remote file read, write, create, rename, delete, upload, download, metadata parsing, stdin exec, or the `remote_file_*` Tauri command registration.
+- Source files: `src-tauri/src/commands.rs`, `src-tauri/src/remote_files.rs`, `src-tauri/src/terminal/session.rs`, and `src-tauri/src/lib.rs`.
+- This is a cross-layer command contract because React owns Monaco/editor state while Rust owns saved SSH credentials, remote command execution, metadata/version checks, and safe content transfer.
+
+### 2. Signatures
+
+- `remote_file_read(app: AppHandle, manager: State<RemoteFileManager>, request: RemoteFileReadRequest) -> Result<RemoteFileReadResult, AppError>`
+- `remote_file_write(app: AppHandle, manager: State<RemoteFileManager>, request: RemoteFileWriteRequest) -> Result<RemoteFileWriteResult, AppError>`
+- `remote_file_create_file(app: AppHandle, manager: State<RemoteFileManager>, request: RemoteFilePathRequest) -> Result<RemoteFileMetadata, AppError>`
+- `remote_file_create_directory(app: AppHandle, manager: State<RemoteFileManager>, request: RemoteFilePathRequest) -> Result<(), AppError>`
+- `remote_file_rename(app: AppHandle, manager: State<RemoteFileManager>, request: RemoteFileRenameRequest) -> Result<(), AppError>`
+- `remote_file_delete(app: AppHandle, manager: State<RemoteFileManager>, request: RemoteFileDeleteRequest) -> Result<(), AppError>`
+- `remote_file_upload_file(app: AppHandle, manager: State<RemoteFileManager>, request: RemoteFileUploadFileRequest) -> Result<RemoteFileMetadata, AppError>`
+- `remote_file_download(app: AppHandle, manager: State<RemoteFileManager>, request: RemoteFilePathRequest) -> Result<RemoteFileDownloadResult, AppError>`
+- `ReusableExecSession::exec_with_stdin(command: &str, stdin: &[u8]) -> Result<ExecOutput, AppError>`
+
+Request fields:
+
+```rust
+RemoteFileReadRequest {
+    connection_id: String,
+    path: String,
+}
+
+RemoteFileWriteRequest {
+    connection_id: String,
+    path: String,
+    content: String,
+    expected_mtime: u64,
+    expected_size: u64,
+    overwrite: bool, // #[serde(default)]
+}
+
+RemoteFilePathRequest {
+    connection_id: String,
+    path: String,
+}
+
+RemoteFileRenameRequest {
+    connection_id: String,
+    path: String,
+    new_path: String,
+}
+
+RemoteFileDeleteRequest {
+    connection_id: String,
+    path: String,
+    recursive: bool, // #[serde(default)]
+}
+
+RemoteFileUploadFileRequest {
+    connection_id: String,
+    path: String,
+    content: Vec<u8>,
+}
+```
+
+Response fields:
+
+```rust
+RemoteFileMetadata {
+    path: String,
+    name: String,
+    size: u64,
+    mtime: u64,
+    mode: Option<String>,
+}
+
+RemoteFileReadResult {
+    content: String,
+    encoding: String, // "utf-8"
+    editable: bool,
+    is_binary: bool,
+    metadata: RemoteFileMetadata,
+    name: String,
+    path: String,
+    size: u64,
+    mtime: u64,
+    mode: Option<String>,
+}
+
+RemoteFileWriteResult {
+    metadata: RemoteFileMetadata,
+    conflict: bool,
+}
+
+RemoteFileDownloadResult {
+    path: String,
+    name: String,
+    content: Vec<u8>,
+}
+```
+
+### 3. Contracts
+
+- Every remote file edit command must load the saved `ConnectionProfile` by `connection_id`; React must not provide raw SSH credentials for these commands.
+- Blank `connection_id` returns `remote_file_connection_missing`. Blank `path` returns `remote_file_path_missing`.
+- All remote paths interpolated into shell commands must use `quote_posix_shell`. Do not interpolate unquoted paths.
+- `remote_file_read` must read metadata before content. Metadata must reject non-regular files through `build_remote_metadata_command`.
+- `REMOTE_FILE_EDIT_LIMIT_BYTES` is `2 * 1024 * 1024`. Files larger than this return `remote_file_too_large` before `cat`.
+- `looks_like_binary` must reject content with NUL bytes in the inspected prefix. UTF-8 decoding failures return `remote_file_not_utf8`.
+- `remote_file_write` must compare current metadata with `expected_mtime` and `expected_size`. If either differs and `overwrite == false`, return `remote_file_conflict` before writing.
+- File content must never be embedded in a shell command string. Save and upload must call `exec_with_reconnect_stdin(..., content.as_bytes())` or `exec_with_reconnect_stdin(..., content)` and send bytes through the SSH channel stdin.
+- `build_remote_write_command` writes stdin to a same-directory hidden temp file, tries to preserve mode from the existing file, then moves the temp file over the target path. Cleanup must remove the temp file on command failure where possible.
+- `ReusableExecSession::exec_with_stdin` must send `channel.data_bytes(stdin)` and then `channel.eof()` before collecting stdout, stderr, and exit status.
+- `RemoteFileManager` may reuse a `ReusableExecSession` per connection signature. If an exec fails, invalidate the handle, reconnect once, and retry the command.
+- `remote_file_upload_file` is a single-file byte upload. Recursive folder upload is not part of this backend contract.
+- `remote_file_delete` with `recursive == true` must refuse to delete `/`; non-recursive delete should not recursively remove directories.
+- All new commands must be registered in `src-tauri/src/lib.rs` through `tauri::generate_handler!`.
+
+### 4. Validation & Error Matrix
+
+| Condition | Error code | Recoverable |
+| --- | --- | --- |
+| `connection_id` is blank | `remote_file_connection_missing` | false |
+| `connection_id` is unknown | `connection_missing` | false |
+| `path` / `new_path` is blank | `remote_file_path_missing` | true |
+| No password or private key is available after loading profile | `terminal_auth_missing` | true |
+| Remote metadata command fails or path is not a regular file | `remote_file_metadata_failed` | true |
+| Remote metadata output cannot parse | `remote_file_metadata_parse_failed` | true |
+| File size exceeds `REMOTE_FILE_EDIT_LIMIT_BYTES` | `remote_file_too_large` | true |
+| Remote read command exits non-zero | `remote_file_read_failed` | true |
+| Read bytes contain NUL | `remote_file_binary` | true |
+| Read bytes are not UTF-8 | `remote_file_not_utf8` | true |
+| Current mtime or size differs from expected values and overwrite is false | `remote_file_conflict` | true |
+| Remote write command exits non-zero | `remote_file_write_failed` | true |
+| SSH stdin send fails | `remote_exec_stdin_failed` | true |
+| SSH stdin EOF fails | `remote_exec_stdin_eof_failed` | true |
+| Create file command exits non-zero | `remote_file_create_failed` | true |
+| Create directory command exits non-zero | `remote_file_create_directory_failed` | true |
+| Rename command exits non-zero | `remote_file_rename_failed` | true |
+| Delete command exits non-zero | `remote_file_delete_failed` | true |
+| Upload command exits non-zero | `remote_file_upload_failed` | true |
+| Download command exits non-zero | `remote_file_download_failed` | true |
+
+### 5. Good / Base / Bad Cases
+
+- Good: `remote_file_write` receives `/opt/app/app.conf`, current metadata still matches `expected_mtime` and `expected_size`, the shell command contains only quoted path/temp-file logic, content is sent over stdin, and the response returns fresh metadata.
+- Base: `remote_file_read` receives a small UTF-8 file, metadata parses with optional mode, content has no NUL bytes, and the response sets `encoding = "utf-8"` and `editable = true`.
+- Bad: write logic builds `format!("cat > {}", content)` or accepts a frontend password field for a remote file command.
+
+### 6. Tests Required
+
+- Unit-test `quote_posix_shell` for normal paths, empty strings, and single quotes.
+- Unit-test `parse_remote_file_metadata` for NUL-delimited path, size, mtime, empty mode, and present mode.
+- Unit-test `looks_like_binary` for plain text and NUL-containing bytes.
+- Unit-test `build_remote_write_command` to assert it creates a temp file, uses `cat > "$tmp"`, moves the temp file to the target, and does not contain literal content.
+- Unit-test the edit limit constant so `REMOTE_FILE_EDIT_LIMIT_BYTES == 2 * 1024 * 1024`.
+- Run `cargo test --manifest-path src-tauri/Cargo.toml remote_files --lib` after changing `src-tauri/src/remote_files.rs`.
+- Run `cargo test --manifest-path src-tauri/Cargo.toml` and `cargo check --manifest-path src-tauri/Cargo.toml` after changing command structs, command registration, or `ReusableExecSession`.
+- Cross-check response fields against `src/features/files/remoteFileTypes.ts` and wrappers in `src/shared/tauri/commands.ts`.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```rust
+let command = format!("cat > {}", content);
+session.exec(&command).await?;
+```
+
+#### Correct
+
+```rust
+let output = self
+    .exec_with_reconnect_stdin(
+        &config,
+        &build_remote_write_command(path),
+        content.as_bytes(),
+    )
+    .await?;
+```
+
+#### Wrong
+
+```rust
+let command = format!("cat {path}");
+let output = self.exec_with_reconnect(&config, &command).await?;
+```
+
+#### Correct
+
+```rust
+let output = self
+    .exec_with_reconnect(&config, &build_remote_read_command(path))
+    .await?;
+```
+
+#### Wrong
+
+```rust
+// Overwrites a file even if it changed after the editor opened it.
+self.exec_with_reconnect_stdin(&config, &build_remote_write_command(path), content).await?;
+```
+
+#### Correct
+
+```rust
+let current = self.metadata(&config, path).await?;
+if (current.mtime != expected_mtime || current.size != expected_size) && !overwrite {
+    return Err(AppError::new("remote_file_conflict", "远端文件已变化。", "...", true));
+}
+```

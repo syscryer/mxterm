@@ -5,13 +5,16 @@ import {
   useRef,
   useState,
   type CSSProperties,
+  type FormEvent,
   type KeyboardEvent as ReactKeyboardEvent,
   type PointerEvent as ReactPointerEvent,
 } from "react";
+import * as Dialog from "@radix-ui/react-dialog";
 import {
   Clock3,
   List,
   Loader2,
+  PanelRightOpen,
   Pencil,
   Play,
   Plus,
@@ -26,11 +29,37 @@ import {
 import { ConnectionDialog } from "../connections/ConnectionDialog";
 import { ConnectionPane } from "../connections/ConnectionPane";
 import type { ConnectionProfile, ConnectionProfileInput } from "../connections/connectionTypes";
+import { RemoteFileEditor } from "../editor/RemoteFileEditor";
+import type { RemoteFileEditorTab } from "../editor/remoteFileEditorTypes";
 import { RemoteFilePanel } from "../files/RemoteFilePanel";
+import {
+  isRemotePathStrictDescendant,
+  normalizeRemotePath,
+  remotePathParent,
+} from "../files/remoteFilePaths";
+import type {
+  RemoteFileEntry,
+  RemoteFileMetadata,
+  RemoteFileReadResult,
+} from "../files/remoteFileTypes";
+import { SettingsView } from "../settings/SettingsView";
+import { getTerminalColorScheme } from "../settings/terminalColorSchemes";
+import { resolveSettingsStyle, resolveTerminalFontFamily } from "../settings/settingsTypes";
+import { useSettings } from "../settings/useSettings";
 import { useConnections } from "../connections/useConnections";
 import { TerminalPanel } from "../terminal/TerminalPanel";
 import { ConfirmDialog } from "../../shared/ui/ConfirmDialog";
-import { connectionProbeLatency } from "../../shared/tauri/commands";
+import {
+  connectionProbeLatency,
+  remoteFileCreateDirectory,
+  remoteFileCreateFile,
+  remoteFileDelete,
+  remoteFileDownload,
+  remoteFileRead,
+  remoteFileRename,
+  remoteFileUploadFile,
+  remoteFileWrite,
+} from "../../shared/tauri/commands";
 import { hasTauriRuntime } from "../../shared/tauri/runtime";
 import { Tooltip } from "../../shared/ui/Tooltip";
 import { AppTitlebar } from "./AppTitlebar";
@@ -61,6 +90,16 @@ interface ConnectionGroupCatalog {
   groups: ConnectionGroupInfo[];
 }
 
+interface RemoteFileRefreshRequest {
+  id: number;
+  path: string;
+}
+
+type RemoteFileTextAction =
+  | { action: "create-directory"; connectionId: string; parentPath: string }
+  | { action: "create-file"; connectionId: string; parentPath: string }
+  | { action: "rename"; connectionId: string; entry: RemoteFileEntry };
+
 type ConnectionFilter = "recent" | "all" | "favorites";
 
 type LatencyProbeState =
@@ -80,13 +119,27 @@ const paneKeyboardResizeStep = 16;
 
 export function WorkspaceShell() {
   const { connections, error, loading, reload, remove, upsert } = useConnections();
+  const { reset, settings, updateAppearance, updateBasic, updateTerminalTheme } = useSettings();
   const [activeConnectionId, setActiveConnectionId] = useState<string | null>(null);
   const [activeTabId, setActiveTabId] = useState<string | null>(null);
+  const [activeTabByConnectionId, setActiveTabByConnectionId] = useState<Record<string, string>>({});
+  const [activeView, setActiveView] = useState<"workspace" | "settings">("workspace");
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editingConnection, setEditingConnection] = useState<ConnectionProfile | null>(null);
   const [selectedConnectionId, setSelectedConnectionId] = useState<string | null>(null);
   const [terminalTabs, setTerminalTabs] = useState<TerminalTab[]>([]);
   const [terminalDirectories, setTerminalDirectories] = useState<Record<string, string>>({});
+  const [remoteFileTabs, setRemoteFileTabs] = useState<RemoteFileEditorTab[]>([]);
+  const [activeWorkspaceTabId, setActiveWorkspaceTabId] = useState<string | null>(null);
+  const [remoteFileRefreshRequest, setRemoteFileRefreshRequest] =
+    useState<RemoteFileRefreshRequest | null>(null);
+  const [pendingRemoteFileCloseId, setPendingRemoteFileCloseId] = useState<string | null>(null);
+  const [pendingRemoteFileConflictId, setPendingRemoteFileConflictId] = useState<string | null>(null);
+  const [remoteFileDeleteTarget, setRemoteFileDeleteTarget] =
+    useState<{ connectionId: string; entry: RemoteFileEntry } | null>(null);
+  const [remoteFileTextAction, setRemoteFileTextAction] = useState<RemoteFileTextAction | null>(null);
+  const [remoteFileTextValue, setRemoteFileTextValue] = useState("");
+  const [remoteFileTextError, setRemoteFileTextError] = useState<string | null>(null);
   const [homeActive, setHomeActive] = useState(true);
   const [leftPaneCollapsed, setLeftPaneCollapsed] = useState(false);
   const [rightPaneCollapsed, setRightPaneCollapsed] = useState(false);
@@ -129,11 +182,30 @@ export function WorkspaceShell() {
   const activeConnectionTabs = activeConnectionId
     ? terminalTabsByConnection.get(activeConnectionId) || []
     : [];
-  const showingHome = homeActive || terminalTabs.length === 0;
-  const hasSessionWorkspace = terminalTabs.length > 0;
+  const activeRemoteFileTabs = activeConnectionId
+    ? remoteFileTabs.filter((tab) => tab.connectionId === activeConnectionId)
+    : [];
+  const hasSessionWorkspace = terminalTabs.length > 0 || remoteFileTabs.length > 0;
+  const showingHome = homeActive || !hasSessionWorkspace;
   const showSessionWorkspace = !showingHome && hasSessionWorkspace;
   const activeTerminalDirectory = activeTabId ? terminalDirectories[activeTabId] || null : null;
+  const remoteFilePanelKey = activeConnection?.id || "no-active-connection";
+  const terminalColorScheme = getTerminalColorScheme(settings.terminalTheme.scheme);
+  const terminalFontFamily = resolveTerminalFontFamily(settings.appearance);
+  const pendingRemoteFileCloseTab = pendingRemoteFileCloseId
+    ? remoteFileTabs.find((tab) => tab.id === pendingRemoteFileCloseId) || null
+    : null;
+  const pendingRemoteFileConflictTab = pendingRemoteFileConflictId
+    ? remoteFileTabs.find((tab) => tab.id === pendingRemoteFileConflictId) || null
+    : null;
+  const remoteFileDeleteAffectedTabs = remoteFileDeleteTarget
+    ? remoteFileTabs.filter((tab) =>
+        isRemoteFileTabUnderEntry(tab, remoteFileDeleteTarget.connectionId, remoteFileDeleteTarget.entry.path),
+      )
+    : [];
+  const remoteFileDeleteDirtyCount = remoteFileDeleteAffectedTabs.filter((tab) => tab.dirty).length;
   const appShellStyle = {
+    ...resolveSettingsStyle(settings),
     "--left-pane-custom-width": `${leftPaneWidth.toString()}px`,
     "--right-pane-custom-width": `${rightPaneWidth.toString()}px`,
   } as CSSProperties;
@@ -149,6 +221,498 @@ export function WorkspaceShell() {
       directories[tabId] === path ? directories : { ...directories, [tabId]: path },
     );
   }, []);
+
+  function remoteFileTabId(connectionId: string, path: string) {
+    return `file:${connectionId}:${normalizeRemotePath(path)}`;
+  }
+
+  function updateRemoteFileTab(
+    tabId: string,
+    updater: (tab: RemoteFileEditorTab) => RemoteFileEditorTab,
+  ) {
+    setRemoteFileTabs((tabs) => tabs.map((tab) => (tab.id === tabId ? updater(tab) : tab)));
+  }
+
+  function triggerRemoteFileRefresh(path: string) {
+    setRemoteFileRefreshRequest((request) => ({
+      id: (request?.id || 0) + 1,
+      path: normalizeRemotePath(path),
+    }));
+  }
+
+  function activateWorkspaceTerminalTab(tab: TerminalTab) {
+    activateTerminalTab(tab);
+    setActiveWorkspaceTabId(tab.id);
+  }
+
+  function activateRemoteFileTab(tab: RemoteFileEditorTab) {
+    setHomeActive(false);
+    setActiveConnectionId(tab.connectionId);
+    setSelectedConnectionId(tab.connectionId);
+    setActiveWorkspaceTabId(tab.id);
+  }
+
+  function nextWorkspaceTabAfterClose(closedTabId: string) {
+    const sameConnectionFileTab = remoteFileTabs.find(
+      (tab) => tab.id !== closedTabId && tab.connectionId === activeConnectionId,
+    );
+    if (sameConnectionFileTab) {
+      activateRemoteFileTab(sameConnectionFileTab);
+      return;
+    }
+
+    const sameConnectionTerminalTab = terminalTabs.find((tab) => tab.connectionId === activeConnectionId);
+    if (sameConnectionTerminalTab) {
+      activateWorkspaceTerminalTab(sameConnectionTerminalTab);
+      return;
+    }
+
+    const anyTerminalTab = terminalTabs[0];
+    if (anyTerminalTab) {
+      activateWorkspaceTerminalTab(anyTerminalTab);
+      return;
+    }
+
+    const anyFileTab = remoteFileTabs.find((tab) => tab.id !== closedTabId);
+    if (anyFileTab) {
+      activateRemoteFileTab(anyFileTab);
+      return;
+    }
+
+    setActiveWorkspaceTabId(null);
+    setActiveConnectionId(null);
+    setSelectedConnectionId(null);
+    setHomeActive(true);
+  }
+
+  function activateWorkspaceFallbackAfterRemoteFileRemoval(
+    nextRemoteFileTabs: RemoteFileEditorTab[],
+    preferredConnectionId: string,
+  ) {
+    const sameConnectionFileTab = nextRemoteFileTabs.find(
+      (tab) => tab.connectionId === preferredConnectionId,
+    );
+    if (sameConnectionFileTab) {
+      activateRemoteFileTab(sameConnectionFileTab);
+      return;
+    }
+
+    const sameConnectionTerminalTab = terminalTabs.find(
+      (tab) => tab.connectionId === preferredConnectionId,
+    );
+    if (sameConnectionTerminalTab) {
+      activateWorkspaceTerminalTab(sameConnectionTerminalTab);
+      return;
+    }
+
+    const anyTerminalTab = terminalTabs[0];
+    if (anyTerminalTab) {
+      activateWorkspaceTerminalTab(anyTerminalTab);
+      return;
+    }
+
+    const anyFileTab = nextRemoteFileTabs[0];
+    if (anyFileTab) {
+      activateRemoteFileTab(anyFileTab);
+      return;
+    }
+
+    setActiveWorkspaceTabId(null);
+    setActiveConnectionId(null);
+    setSelectedConnectionId(null);
+    setHomeActive(true);
+  }
+
+  function openRemoteFile(entry: RemoteFileEntry) {
+    if (!activeConnection || entry.type === "directory") {
+      return;
+    }
+
+    const path = normalizeRemotePath(entry.path);
+    const existingTab = remoteFileTabs.find(
+      (tab) => tab.connectionId === activeConnection.id && tab.path === path,
+    );
+    if (existingTab) {
+      activateRemoteFileTab(existingTab);
+      return;
+    }
+
+    const tab: RemoteFileEditorTab = {
+      connectionId: activeConnection.id,
+      connectionName: activeConnection.name,
+      content: "",
+      dirty: false,
+      error: null,
+      id: remoteFileTabId(activeConnection.id, path),
+      metadata: null,
+      name: entry.name,
+      path,
+      savedContent: "",
+      saveState: "loading",
+      statusMessage: "读取中",
+    };
+
+    setRemoteFileTabs((tabs) => [...tabs, tab]);
+    activateRemoteFileTab(tab);
+
+    void loadRemoteFileTab(activeConnection, path, tab.id);
+  }
+
+  async function loadRemoteFileTab(connection: ConnectionProfile, path: string, tabId: string) {
+    try {
+      const result = hasTauriRuntime()
+        ? await remoteFileRead(connection.id, path)
+        : previewRemoteFileRead(connection, path);
+      updateRemoteFileTab(tabId, (tab) => ({
+        ...tab,
+        content: result.content,
+        dirty: false,
+        error: null,
+        metadata: result.metadata,
+        name: result.name,
+        path: result.path,
+        savedContent: result.content,
+        saveState: "ready",
+        statusMessage: "就绪",
+      }));
+    } catch (error) {
+      updateRemoteFileTab(tabId, (tab) => ({
+        ...tab,
+        content: "",
+        dirty: false,
+        error: formatError(error),
+        saveState: "error",
+        statusMessage: formatError(error),
+      }));
+    }
+  }
+
+  function handleRemoteFileChange(tabId: string, content: string) {
+    updateRemoteFileTab(tabId, (tab) => ({
+      ...tab,
+      content,
+      dirty: content !== tab.savedContent,
+      saveState: content === tab.savedContent ? "ready" : "dirty",
+      statusMessage: content === tab.savedContent ? "就绪" : "已修改",
+    }));
+  }
+
+  function saveRemoteFile(tabId: string, overwrite = false) {
+    const tab = remoteFileTabs.find((item) => item.id === tabId);
+    if (!tab || !tab.metadata || tab.saveState === "saving") {
+      return;
+    }
+
+    updateRemoteFileTab(tabId, (item) => ({
+      ...item,
+      error: null,
+      saveState: "saving",
+      statusMessage: "保存中",
+    }));
+
+    void (hasTauriRuntime()
+      ? remoteFileWrite({
+          connectionId: tab.connectionId,
+          content: tab.content,
+          expectedMtime: tab.metadata.mtime,
+          expectedSize: tab.metadata.size,
+          overwrite,
+          path: tab.path,
+        })
+      : Promise.resolve({
+          conflict: false,
+          metadata: {
+            ...tab.metadata,
+            mtime: Date.now(),
+            size: new TextEncoder().encode(tab.content).length,
+          },
+        }))
+      .then((result) => {
+        updateRemoteFileTab(tabId, (item) => ({
+          ...item,
+          dirty: false,
+          error: null,
+          metadata: result.metadata,
+          savedContent: item.content,
+          saveState: "saved",
+          statusMessage: "已保存",
+        }));
+        triggerRemoteFileRefresh(remotePathParent(tab.path));
+      })
+      .catch((error: unknown) => {
+        if (isRemoteFileConflict(error)) {
+          updateRemoteFileTab(tabId, (item) => ({
+            ...item,
+            error: formatError(error),
+            saveState: "conflict",
+            statusMessage: "远端已变化",
+          }));
+          setPendingRemoteFileConflictId(tabId);
+          return;
+        }
+
+        updateRemoteFileTab(tabId, (item) => ({
+          ...item,
+          error: formatError(error),
+          saveState: "error",
+          statusMessage: formatError(error),
+        }));
+      });
+  }
+
+  function reloadRemoteFile(tabId: string) {
+    const tab = remoteFileTabs.find((item) => item.id === tabId);
+    const connection = tab ? connectionById.get(tab.connectionId) : null;
+    if (!tab || !connection) {
+      return;
+    }
+
+    updateRemoteFileTab(tabId, (item) => ({
+      ...item,
+      error: null,
+      saveState: "loading",
+      statusMessage: "读取中",
+    }));
+    void loadRemoteFileTab(connection, tab.path, tabId);
+  }
+
+  function discardRemoteFileChanges(tabId: string) {
+    updateRemoteFileTab(tabId, (tab) => ({
+      ...tab,
+      content: tab.savedContent,
+      dirty: false,
+      error: null,
+      saveState: "ready",
+      statusMessage: "已放弃更改",
+    }));
+  }
+
+  function closeRemoteFileTab(tabId: string) {
+    const tab = remoteFileTabs.find((item) => item.id === tabId);
+    if (tab?.dirty) {
+      setPendingRemoteFileCloseId(tabId);
+      return;
+    }
+    closeRemoteFileTabNow(tabId);
+  }
+
+  function closeRemoteFileTabNow(tabId: string) {
+    setRemoteFileTabs((tabs) => tabs.filter((tab) => tab.id !== tabId));
+    if (activeWorkspaceTabId === tabId) {
+      nextWorkspaceTabAfterClose(tabId);
+    }
+  }
+
+  function requestCreateRemoteFile(parentPath: string) {
+    if (!activeConnection) {
+      return;
+    }
+    setRemoteFileTextAction({
+      action: "create-file",
+      connectionId: activeConnection.id,
+      parentPath: normalizeRemotePath(parentPath),
+    });
+    setRemoteFileTextValue(joinRemotePath(parentPath, "untitled.txt"));
+    setRemoteFileTextError(null);
+  }
+
+  function requestCreateRemoteDirectory(parentPath: string) {
+    if (!activeConnection) {
+      return;
+    }
+    setRemoteFileTextAction({
+      action: "create-directory",
+      connectionId: activeConnection.id,
+      parentPath: normalizeRemotePath(parentPath),
+    });
+    setRemoteFileTextValue(joinRemotePath(parentPath, "new-folder"));
+    setRemoteFileTextError(null);
+  }
+
+  function requestRenameRemoteEntry(entry: RemoteFileEntry) {
+    if (!activeConnection) {
+      return;
+    }
+    setRemoteFileTextAction({ action: "rename", connectionId: activeConnection.id, entry });
+    setRemoteFileTextValue(entry.path);
+    setRemoteFileTextError(null);
+  }
+
+  function requestDeleteRemoteEntry(entry: RemoteFileEntry) {
+    if (!activeConnection) {
+      return;
+    }
+    setRemoteFileDeleteTarget({ connectionId: activeConnection.id, entry });
+  }
+
+  async function submitRemoteFileTextAction(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const action = remoteFileTextAction;
+    const value = normalizeRemotePath(remoteFileTextValue);
+    if (!action) {
+      return;
+    }
+    if (!value || value === "/") {
+      setRemoteFileTextError("请输入有效路径。");
+      return;
+    }
+
+    try {
+      if (action.action === "create-file") {
+        const metadata = hasTauriRuntime()
+          ? await remoteFileCreateFile(action.connectionId, value)
+          : previewRemoteFileMetadata(value);
+        triggerRemoteFileRefresh(remotePathParent(metadata.path));
+        if (activeConnection) {
+          openRemoteFile({
+            name: metadata.name,
+            path: metadata.path,
+            type: "file",
+          });
+        }
+      } else if (action.action === "create-directory") {
+        if (hasTauriRuntime()) {
+          await remoteFileCreateDirectory(action.connectionId, value);
+        }
+        triggerRemoteFileRefresh(remotePathParent(value));
+      } else {
+        if (hasTauriRuntime()) {
+          await remoteFileRename({
+            connectionId: action.connectionId,
+            newPath: value,
+            path: action.entry.path,
+          });
+        }
+        renameRemoteFileTabs(action.connectionId, action.entry.path, value);
+        triggerRemoteFileRefresh(remotePathParent(action.entry.path));
+        triggerRemoteFileRefresh(remotePathParent(value));
+      }
+      setRemoteFileTextAction(null);
+      setRemoteFileTextValue("");
+      setRemoteFileTextError(null);
+    } catch (error) {
+      setRemoteFileTextError(formatError(error));
+    }
+  }
+
+  function renameRemoteFileTabs(connectionId: string, oldPath: string, newPath: string) {
+    const normalizedOldPath = normalizeRemotePath(oldPath);
+    const normalizedNewPath = normalizeRemotePath(newPath);
+    setRemoteFileTabs((tabs) =>
+      tabs.map((tab) => {
+        if (
+          tab.connectionId !== connectionId ||
+          (tab.path !== normalizedOldPath && !isRemotePathStrictDescendant(tab.path, normalizedOldPath))
+        ) {
+          return tab;
+        }
+        const nextPath = tab.path === normalizedOldPath
+          ? normalizedNewPath
+          : joinRemotePath(normalizedNewPath, tab.path.slice(normalizedOldPath.length + 1));
+        return {
+          ...tab,
+          id: remoteFileTabId(connectionId, nextPath),
+          name: remoteFileName(nextPath),
+          path: nextPath,
+        };
+      }),
+    );
+    if (activeWorkspaceTabId === remoteFileTabId(connectionId, normalizedOldPath)) {
+      setActiveWorkspaceTabId(remoteFileTabId(connectionId, normalizedNewPath));
+    }
+  }
+
+  async function confirmRemoteFileDelete() {
+    const target = remoteFileDeleteTarget;
+    if (!target) {
+      return;
+    }
+
+    if (hasTauriRuntime()) {
+      await remoteFileDelete({
+        connectionId: target.connectionId,
+        path: target.entry.path,
+        recursive: target.entry.type === "directory",
+      });
+    }
+    triggerRemoteFileRefresh(remotePathParent(target.entry.path));
+    const nextRemoteFileTabs = remoteFileTabs.filter(
+      (tab) => !isRemoteFileTabUnderEntry(tab, target.connectionId, target.entry.path),
+    );
+    const removedActiveWorkspaceTab = Boolean(
+      activeWorkspaceTabId &&
+        remoteFileTabs.some((tab) => tab.id === activeWorkspaceTabId) &&
+        !nextRemoteFileTabs.some((tab) => tab.id === activeWorkspaceTabId),
+    );
+
+    setRemoteFileTabs(nextRemoteFileTabs);
+    if (pendingRemoteFileCloseId && !nextRemoteFileTabs.some((tab) => tab.id === pendingRemoteFileCloseId)) {
+      setPendingRemoteFileCloseId(null);
+    }
+    if (pendingRemoteFileConflictId && !nextRemoteFileTabs.some((tab) => tab.id === pendingRemoteFileConflictId)) {
+      setPendingRemoteFileConflictId(null);
+    }
+    if (removedActiveWorkspaceTab) {
+      activateWorkspaceFallbackAfterRemoteFileRemoval(nextRemoteFileTabs, target.connectionId);
+    }
+    setRemoteFileDeleteTarget(null);
+  }
+
+  function uploadRemoteFile(parentPath: string) {
+    if (!activeConnection) {
+      return;
+    }
+    const input = document.createElement("input");
+    input.type = "file";
+    input.onchange = () => {
+      const file = input.files?.[0];
+      if (!file || !activeConnection) {
+        return;
+      }
+      const uploadPath = joinRemotePath(parentPath, file.name);
+      void file.arrayBuffer().then((buffer) => (
+        hasTauriRuntime()
+          ? remoteFileUploadFile({
+              connectionId: activeConnection.id,
+              content: new Uint8Array(buffer),
+              path: uploadPath,
+            })
+          : Promise.resolve({
+              ...previewRemoteFileMetadata(uploadPath),
+              mtime: Date.now(),
+              size: file.size,
+            })
+      )).then((metadata) => {
+        triggerRemoteFileRefresh(remotePathParent(metadata.path));
+      }).catch((error: unknown) => {
+        setRemoteFileTextError(formatError(error));
+      });
+    };
+    input.click();
+  }
+
+  function downloadRemoteFile(entry: RemoteFileEntry) {
+    if (!activeConnection || entry.type === "directory") {
+      return;
+    }
+
+    void (hasTauriRuntime()
+      ? remoteFileDownload(activeConnection.id, entry.path)
+      : Promise.resolve({
+          content: Array.from(new TextEncoder().encode("preview download")),
+          name: entry.name,
+          path: entry.path,
+        }))
+      .then((result) => {
+        const blob = new Blob([new Uint8Array(result.content)]);
+        const url = URL.createObjectURL(blob);
+        const anchor = document.createElement("a");
+        anchor.href = url;
+        anchor.download = result.name;
+        anchor.click();
+        URL.revokeObjectURL(url);
+      });
+  }
 
   function createConnection(groupId?: string) {
     setLeftPaneCollapsed(false);
@@ -184,6 +748,7 @@ export function WorkspaceShell() {
     await remove(connection.id);
     const closingTabIds = terminalTabs.filter((tab) => tab.connectionId === connection.id).map((tab) => tab.id);
     setTerminalDirectories((directories) => removeDirectoryState(directories, closingTabIds));
+    forgetActiveConnectionTabs([connection.id]);
     setTerminalTabs((tabs) => {
       const nextTabs = tabs.filter((tab) => tab.connectionId !== connection.id);
       if (nextTabs.length === 0) {
@@ -219,25 +784,57 @@ export function WorkspaceShell() {
     };
   }
 
+  function rememberActiveTab(tab: TerminalTab) {
+    setActiveTabByConnectionId((activeTabs) =>
+      activeTabs[tab.connectionId] === tab.id
+        ? activeTabs
+        : { ...activeTabs, [tab.connectionId]: tab.id },
+    );
+  }
+
+  function forgetActiveConnectionTabs(connectionIds: string[]) {
+    if (connectionIds.length === 0) {
+      return;
+    }
+
+    setActiveTabByConnectionId((activeTabs) => removeDirectoryState(activeTabs, connectionIds));
+  }
+
+  function preferredTabForConnection(connectionId: string, tabs = terminalTabs) {
+    const rememberedTabId = activeTabByConnectionId[connectionId];
+    return (
+      (rememberedTabId
+        ? tabs.find((tab) => tab.connectionId === connectionId && tab.id === rememberedTabId)
+        : null) ||
+      tabs.find((tab) => tab.connectionId === connectionId) ||
+      null
+    );
+  }
+
+  function activateTerminalTab(tab: TerminalTab) {
+    setHomeActive(false);
+    setActiveConnectionId(tab.connectionId);
+    setActiveTabId(tab.id);
+    setActiveWorkspaceTabId(tab.id);
+    setSelectedConnectionId(tab.connectionId);
+    rememberActiveTab(tab);
+  }
+
   function selectConnection(connection: ConnectionProfile) {
     setSelectedConnectionId(connection.id);
 
-    const existingTab = terminalTabs.find((tab) => tab.connectionId === connection.id);
+    const existingTab = preferredTabForConnection(connection.id);
     if (existingTab) {
-      setHomeActive(false);
-      setActiveConnectionId(connection.id);
-      setActiveTabId(existingTab.id);
+      activateTerminalTab(existingTab);
     }
   }
 
   function openConnectionSession(connection: ConnectionProfile) {
     setSelectedConnectionId(connection.id);
 
-    const existingTab = terminalTabs.find((tab) => tab.connectionId === connection.id);
+    const existingTab = preferredTabForConnection(connection.id);
     if (existingTab) {
-      setHomeActive(false);
-      setActiveConnectionId(connection.id);
-      setActiveTabId(existingTab.id);
+      activateTerminalTab(existingTab);
       return;
     }
 
@@ -251,6 +848,11 @@ export function WorkspaceShell() {
     setTerminalTabs((tabs) => {
       const tab = buildTerminalTab(tabs, connection);
       setActiveTabId(tab.id);
+      setActiveWorkspaceTabId(tab.id);
+      setActiveTabByConnectionId((activeTabs) => ({
+        ...activeTabs,
+        [connection.id]: tab.id,
+      }));
       return [...tabs, tab];
     });
   }
@@ -260,7 +862,7 @@ export function WorkspaceShell() {
     setTerminalTabs((tabs) => {
       const closingTab = tabs.find((tab) => tab.id === tabId);
       const nextTabs = tabs.filter((tab) => tab.id !== tabId);
-      if (nextTabs.length === 0) {
+      if (nextTabs.length === 0 && remoteFileTabs.length === 0) {
         setHomeActive(true);
       }
       if (activeTabId === tabId) {
@@ -273,12 +875,44 @@ export function WorkspaceShell() {
 
         setActiveTabId(nextActiveTab?.id || null);
         setActiveConnectionId(nextActiveTab?.connectionId || null);
+        if (nextActiveTab) {
+          rememberActiveTab(nextActiveTab);
+        } else if (closingTab) {
+          forgetActiveConnectionTabs([closingTab.connectionId]);
+        }
       } else if (
         closingTab &&
         activeConnectionId === closingTab.connectionId &&
         !nextTabs.some((tab) => tab.connectionId === closingTab.connectionId)
       ) {
         setActiveConnectionId(nextTabs[0]?.connectionId || null);
+        forgetActiveConnectionTabs([closingTab.connectionId]);
+      }
+      if (activeWorkspaceTabId === tabId) {
+        const nextWorkspaceTerminal =
+          (closingTab
+            ? nextTabs.find((tab) => tab.connectionId === closingTab.connectionId)
+            : null) ||
+          nextTabs[0] ||
+          null;
+        const nextWorkspaceFile =
+          (closingTab
+            ? remoteFileTabs.find((tab) => tab.connectionId === closingTab.connectionId)
+            : null) ||
+          remoteFileTabs[0] ||
+          null;
+
+        if (nextWorkspaceFile) {
+          setActiveWorkspaceTabId(nextWorkspaceFile.id);
+          setActiveConnectionId(nextWorkspaceFile.connectionId);
+          setSelectedConnectionId(nextWorkspaceFile.connectionId);
+        } else if (nextWorkspaceTerminal) {
+          setActiveWorkspaceTabId(nextWorkspaceTerminal.id);
+        } else {
+          setActiveWorkspaceTabId(null);
+          setActiveConnectionId(null);
+          setSelectedConnectionId(null);
+        }
       }
       return nextTabs;
     });
@@ -287,16 +921,22 @@ export function WorkspaceShell() {
   function closeConnectionSession(connectionId: string) {
     const closingTabIds = terminalTabs.filter((tab) => tab.connectionId === connectionId).map((tab) => tab.id);
     setTerminalDirectories((directories) => removeDirectoryState(directories, closingTabIds));
+    forgetActiveConnectionTabs([connectionId]);
     setTerminalTabs((tabs) => {
       const nextTabs = tabs.filter((tab) => tab.connectionId !== connectionId);
-      if (nextTabs.length === 0) {
+      if (nextTabs.length === 0 && remoteFileTabs.length === 0) {
         setHomeActive(true);
       }
 
       if (activeConnectionId === connectionId) {
         const nextActiveTab = nextTabs[0] || null;
+        const nextActiveFile =
+          remoteFileTabs.find((tab) => tab.connectionId === connectionId) ||
+          remoteFileTabs[0] ||
+          null;
         setActiveTabId(nextActiveTab?.id || null);
-        setActiveConnectionId(nextActiveTab?.connectionId || null);
+        setActiveConnectionId(nextActiveTab?.connectionId || nextActiveFile?.connectionId || null);
+        setActiveWorkspaceTabId(nextActiveTab?.id || nextActiveFile?.id || null);
       }
 
       return nextTabs;
@@ -420,9 +1060,11 @@ export function WorkspaceShell() {
     <div
       className="app-shell"
       data-home-active={showingHome}
+      data-density={settings.appearance.density}
       data-left-collapsed={leftPaneCollapsed}
       data-pane-resizing={resizingPane || undefined}
       data-right-collapsed={rightPaneCollapsed}
+      data-theme-mode={settings.appearance.themeMode}
       style={appShellStyle}
     >
       <AppTitlebar
@@ -433,16 +1075,16 @@ export function WorkspaceShell() {
         leftPaneCollapsed={leftPaneCollapsed}
         onCloseConnectionSession={closeConnectionSession}
         onOpenHome={openHome}
-        onSelectConnectionSession={(connectionId, tabId) => {
-          setHomeActive(false);
-          setActiveConnectionId(connectionId);
-          setActiveTabId(tabId);
-          setSelectedConnectionId(connectionId);
+        onSelectConnectionSession={(connectionId) => {
+          const nextTab = preferredTabForConnection(connectionId);
+          if (nextTab) {
+            activateTerminalTab(nextTab);
+          }
         }}
         onToggleLeftPane={() => setLeftPaneCollapsed((collapsed) => !collapsed)}
       />
 
-      <main className="workspace-shell" ref={workspaceShellRef}>
+      <main className="workspace-shell" ref={workspaceShellRef} hidden={activeView === "settings"}>
         <ConnectionPane
           connections={connections}
           connectionPlacementRequest={connectionPlacementRequest}
@@ -454,6 +1096,7 @@ export function WorkspaceShell() {
           onEdit={editConnection}
           onGroupCatalogChange={setConnectionGroupCatalog}
           onOpen={openTerminal}
+          onOpenSettings={() => setActiveView("settings")}
           onRefresh={reload}
           onSelect={selectConnection}
           selectedId={selectedConnectionId}
@@ -489,23 +1132,22 @@ export function WorkspaceShell() {
             hidden={!showingHome}
           />
 
-          {terminalTabs.length > 0 ? (
+          {hasSessionWorkspace ? (
             <section
               className={`session-workbench ${showingHome ? "is-hidden" : ""}`}
               aria-label="编辑器和终端"
               aria-hidden={showingHome}
             >
-              <nav className="terminal-subtabs" aria-label="当前连接的终端会话">
+              <nav className="terminal-subtabs" aria-label="当前连接工作区标签">
                 {activeConnectionTabs.map((tab) => (
-                  <div className={`subtab-shell ${tab.id === activeTabId ? "active" : ""}`} key={tab.id}>
+                  <div
+                    className={`subtab-shell ${tab.id === activeWorkspaceTabId ? "active" : ""}`}
+                    key={tab.id}
+                  >
                     <button
                       className="subtab"
                       type="button"
-                      onClick={() => {
-                        setHomeActive(false);
-                        setActiveTabId(tab.id);
-                        setSelectedConnectionId(tab.connectionId);
-                      }}
+                      onClick={() => activateWorkspaceTerminalTab(tab)}
                     >
                       <span>{tab.title}</span>
                     </button>
@@ -514,6 +1156,30 @@ export function WorkspaceShell() {
                       type="button"
                       aria-label={`关闭 ${tab.title}`}
                       onClick={() => closeTerminal(tab.id)}
+                    >
+                      <X className="ui-icon" aria-hidden="true" />
+                    </button>
+                  </div>
+                ))}
+                {activeRemoteFileTabs.map((tab) => (
+                  <div
+                    className={`subtab-shell file-tab ${tab.id === activeWorkspaceTabId ? "active" : ""}`}
+                    key={tab.id}
+                  >
+                    <button
+                      className="subtab"
+                      type="button"
+                      title={tab.path}
+                      onClick={() => activateRemoteFileTab(tab)}
+                    >
+                      <span>{tab.name}</span>
+                      {tab.dirty ? <span className="dirty-dot" aria-label="已修改" /> : null}
+                    </button>
+                    <button
+                      className="subtab-close"
+                      type="button"
+                      aria-label={`关闭 ${tab.name}`}
+                      onClick={() => closeRemoteFileTab(tab.id)}
                     >
                       <X className="ui-icon" aria-hidden="true" />
                     </button>
@@ -533,16 +1199,33 @@ export function WorkspaceShell() {
                 ) : null}
               </nav>
 
-              <section className="terminal-stack" aria-label="终端会话">
+              <section className="terminal-stack workbench-stack" aria-label="终端和文件编辑区">
                 {terminalTabs.map((tab) => (
                   <TerminalPanel
-                    active={!showingHome && tab.id === activeTabId}
+                    active={!showingHome && tab.id === activeWorkspaceTabId}
                     connection={connectionById.get(tab.connectionId) || null}
+                    fontFamily={terminalFontFamily}
+                    fontSize={settings.appearance.terminalFontSize}
                     key={tab.id}
                     onCurrentDirectoryChange={updateTerminalDirectory}
                     onStatusChange={updateTabStatus}
                     tabId={tab.id}
+                    theme={terminalColorScheme.theme}
                     title={tab.title}
+                  />
+                ))}
+                {remoteFileTabs.map((tab) => (
+                  <RemoteFileEditor
+                    active={!showingHome && tab.id === activeWorkspaceTabId}
+                    fontFamily={terminalFontFamily}
+                    fontSize={settings.appearance.terminalFontSize}
+                    key={tab.id}
+                    tab={tab}
+                    onChange={handleRemoteFileChange}
+                    onClose={closeRemoteFileTab}
+                    onDiscard={discardRemoteFileChanges}
+                    onReload={reloadRemoteFile}
+                    onSave={saveRemoteFile}
                   />
                 ))}
               </section>
@@ -550,16 +1233,16 @@ export function WorkspaceShell() {
           ) : null}
         </section>
 
-        {showSessionWorkspace ? (
-          <Tooltip label={rightPaneCollapsed ? "展开右侧面板" : "收起右侧面板"}>
+        {showSessionWorkspace && rightPaneCollapsed ? (
+          <Tooltip label="展开右侧面板">
             <button
-              className="right-collapse-button"
+              className="right-collapse-button right-collapse-button-floating"
               type="button"
-              aria-label={rightPaneCollapsed ? "展开右侧面板" : "收起右侧面板"}
-              aria-expanded={!rightPaneCollapsed}
+              aria-label="展开右侧面板"
+              aria-expanded={false}
               onClick={() => setRightPaneCollapsed((collapsed) => !collapsed)}
             >
-              <RightPaneToggleGlyph collapsed={rightPaneCollapsed} />
+              <PanelRightOpen className="ui-icon" aria-hidden="true" />
             </button>
           </Tooltip>
         ) : null}
@@ -583,6 +1266,16 @@ export function WorkspaceShell() {
         {hasSessionWorkspace ? (
           <RemoteFilePanel
             connection={activeConnection}
+            key={remoteFilePanelKey}
+            refreshRequest={remoteFileRefreshRequest}
+            onCreateDirectory={requestCreateRemoteDirectory}
+            onCreateFile={requestCreateRemoteFile}
+            onDeleteEntry={requestDeleteRemoteEntry}
+            onDownloadFile={downloadRemoteFile}
+            onOpenFile={openRemoteFile}
+            onRenameEntry={requestRenameRemoteEntry}
+            onToggleRightPane={() => setRightPaneCollapsed((collapsed) => !collapsed)}
+            onUploadFile={uploadRemoteFile}
             terminalPath={activeTerminalDirectory}
           />
         ) : null}
@@ -595,6 +1288,180 @@ export function WorkspaceShell() {
           open={dialogOpen}
         />
       </main>
+
+      <ConfirmDialog
+        confirmLabel="放弃"
+        description={
+          pendingRemoteFileCloseTab
+            ? `关闭“${pendingRemoteFileCloseTab.name}”会丢弃尚未保存的修改。`
+            : ""
+        }
+        open={Boolean(pendingRemoteFileCloseTab)}
+        title="关闭已修改文件"
+        onConfirm={() => {
+          if (pendingRemoteFileCloseTab) {
+            closeRemoteFileTabNow(pendingRemoteFileCloseTab.id);
+          }
+        }}
+        onOpenChange={(open) => {
+          if (!open) {
+            setPendingRemoteFileCloseId(null);
+          }
+        }}
+      />
+
+      <ConfirmDialog
+        confirmLabel="删除"
+        description={
+          remoteFileDeleteTarget
+            ? remoteFileDeleteDescription(
+                remoteFileDeleteTarget.entry.path,
+                remoteFileDeleteAffectedTabs.length,
+                remoteFileDeleteDirtyCount,
+              )
+            : ""
+        }
+        open={Boolean(remoteFileDeleteTarget)}
+        title="删除远程文件"
+        onConfirm={confirmRemoteFileDelete}
+        onOpenChange={(open) => {
+          if (!open) {
+            setRemoteFileDeleteTarget(null);
+          }
+        }}
+      />
+
+      <Dialog.Root
+        open={Boolean(pendingRemoteFileConflictTab)}
+        onOpenChange={(open) => {
+          if (!open) {
+            setPendingRemoteFileConflictId(null);
+          }
+        }}
+      >
+        <Dialog.Portal>
+          <Dialog.Overlay className="dialog-backdrop confirm-backdrop" />
+          <Dialog.Content
+            className="confirm-dialog remote-file-conflict"
+            onInteractOutside={(event) => event.preventDefault()}
+            onPointerDownOutside={(event) => event.preventDefault()}
+          >
+            <div className="confirm-dialog-icon" aria-hidden="true">
+              <RefreshCw className="ui-icon" />
+            </div>
+            <div className="confirm-dialog-copy">
+              <Dialog.Title className="confirm-dialog-title">远端文件已变化</Dialog.Title>
+              <Dialog.Description className="confirm-dialog-description">
+                {pendingRemoteFileConflictTab
+                  ? `“${pendingRemoteFileConflictTab.name}”在打开后被远端修改。你可以重新加载远端版本，或覆盖保存当前编辑内容。`
+                  : ""}
+              </Dialog.Description>
+              {pendingRemoteFileConflictTab?.error ? (
+                <p className="remote-file-dialog-error">{pendingRemoteFileConflictTab.error}</p>
+              ) : null}
+            </div>
+            <footer className="confirm-dialog-actions remote-file-conflict-actions">
+              <button
+                type="button"
+                onClick={() => {
+                  if (pendingRemoteFileConflictTab) {
+                    reloadRemoteFile(pendingRemoteFileConflictTab.id);
+                  }
+                  setPendingRemoteFileConflictId(null);
+                }}
+              >
+                重新加载
+              </button>
+              <button
+                className="danger-button"
+                type="button"
+                onClick={() => {
+                  if (pendingRemoteFileConflictTab) {
+                    saveRemoteFile(pendingRemoteFileConflictTab.id, true);
+                  }
+                  setPendingRemoteFileConflictId(null);
+                }}
+              >
+                覆盖保存
+              </button>
+              <Dialog.Close asChild>
+                <button type="button">取消</button>
+              </Dialog.Close>
+            </footer>
+          </Dialog.Content>
+        </Dialog.Portal>
+      </Dialog.Root>
+
+      <Dialog.Root
+        open={Boolean(remoteFileTextAction)}
+        onOpenChange={(open) => {
+          if (!open) {
+            setRemoteFileTextAction(null);
+            setRemoteFileTextValue("");
+            setRemoteFileTextError(null);
+          }
+        }}
+      >
+        <Dialog.Portal>
+          <Dialog.Overlay className="dialog-backdrop" />
+          <Dialog.Content
+            asChild
+            onInteractOutside={(event) => event.preventDefault()}
+            onPointerDownOutside={(event) => event.preventDefault()}
+          >
+            <form className="remote-file-text-dialog" onSubmit={submitRemoteFileTextAction}>
+              <header className="dialog-head">
+                <div className="dialog-title-group">
+                  <Dialog.Title asChild>
+                    <strong>{remoteFileTextAction ? remoteFileActionTitle(remoteFileTextAction) : "远程文件"}</strong>
+                  </Dialog.Title>
+                  <Dialog.Description className="dialog-subtitle">
+                    {remoteFileTextAction ? remoteFileActionDescription(remoteFileTextAction) : ""}
+                  </Dialog.Description>
+                </div>
+                <Dialog.Close asChild>
+                  <button className="icon-button dialog-close-button" type="button" aria-label="关闭">
+                    <X className="ui-icon" aria-hidden="true" />
+                  </button>
+                </Dialog.Close>
+              </header>
+              <div className="dialog-body">
+                <label className="remote-file-path-field">
+                  <span>远程路径</span>
+                  <input
+                    autoFocus
+                    spellCheck={false}
+                    value={remoteFileTextValue}
+                    onChange={(event) => setRemoteFileTextValue(event.target.value)}
+                  />
+                </label>
+                {remoteFileTextError ? (
+                  <p className="remote-file-dialog-error">{remoteFileTextError}</p>
+                ) : null}
+              </div>
+              <footer className="dialog-actions remote-file-text-actions">
+                <span />
+                <Dialog.Close asChild>
+                  <button type="button">取消</button>
+                </Dialog.Close>
+                <button className="primary-button" type="submit">
+                  确认
+                </button>
+              </footer>
+            </form>
+          </Dialog.Content>
+        </Dialog.Portal>
+      </Dialog.Root>
+
+      <SettingsView
+        hidden={activeView !== "settings"}
+        settings={settings}
+        onReset={reset}
+        onReturnWorkspace={() => setActiveView("workspace")}
+        onUpdateAppearance={updateAppearance}
+        onUpdateBasic={updateBasic}
+        onUpdateTerminalTheme={updateTerminalTheme}
+      />
     </div>
   );
 
@@ -1190,19 +2057,132 @@ function removeDirectoryState<T>(
   return next;
 }
 
-function RightPaneToggleGlyph({ collapsed }: { collapsed: boolean }) {
+function formatError(error: unknown) {
+  if (typeof error === "object" && error !== null && "message" in error) {
+    return String((error as { message: unknown }).message);
+  }
+  return String(error);
+}
+
+function isRemoteFileConflict(error: unknown) {
   return (
-    <svg
-      className="title-tool-icon"
-      viewBox="0 0 16 16"
-      fill="none"
-      stroke="currentColor"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-    >
-      <path d={collapsed ? "M6.2 4.2 10 8l-3.8 3.8" : "M9.8 4.2 6 8l3.8 3.8"} />
-      <path d={collapsed ? "M3.8 3.5v9" : "M12.2 3.5v9"} />
-    </svg>
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    (error as { code: unknown }).code === "remote_file_conflict"
   );
+}
+
+function isRemoteFileTabUnderEntry(
+  tab: RemoteFileEditorTab,
+  connectionId: string,
+  entryPath: string,
+) {
+  const normalizedEntryPath = normalizeRemotePath(entryPath);
+  return (
+    tab.connectionId === connectionId &&
+    (tab.path === normalizedEntryPath ||
+      isRemotePathStrictDescendant(tab.path, normalizedEntryPath))
+  );
+}
+
+function remoteFileDeleteDescription(path: string, affectedTabs: number, dirtyTabs: number) {
+  const base = `确认删除“${path}”吗？这个操作无法撤销。`;
+  if (dirtyTabs > 0) {
+    return `${base} 将同时关闭 ${affectedTabs.toString()} 个已打开文件，其中 ${dirtyTabs.toString()} 个有未保存修改。`;
+  }
+  if (affectedTabs > 0) {
+    return `${base} 将同时关闭 ${affectedTabs.toString()} 个已打开文件。`;
+  }
+  return base;
+}
+
+function joinRemotePath(parentPath: string, name: string) {
+  const normalizedParent = normalizeRemotePath(parentPath);
+  const cleanName = name.trim().replace(/\\/g, "/").replace(/^\/+/, "");
+  if (!cleanName) {
+    return normalizedParent;
+  }
+  return normalizeRemotePath(
+    normalizedParent === "/" ? `/${cleanName}` : `${normalizedParent}/${cleanName}`,
+  );
+}
+
+function remoteFileName(path: string) {
+  const normalizedPath = normalizeRemotePath(path);
+  if (normalizedPath === "/") {
+    return "/";
+  }
+  const parts = normalizedPath.split("/").filter(Boolean);
+  return parts[parts.length - 1] || normalizedPath;
+}
+
+function previewRemoteFileMetadata(path: string): RemoteFileMetadata {
+  const normalizedPath = normalizeRemotePath(path);
+  const content = previewRemoteFileContent(normalizedPath);
+  return {
+    mtime: Date.now(),
+    name: remoteFileName(normalizedPath),
+    path: normalizedPath,
+    size: new TextEncoder().encode(content).length,
+    mode: "-rw-r--r--",
+  };
+}
+
+function previewRemoteFileRead(
+  connection: ConnectionProfile,
+  path: string,
+): RemoteFileReadResult {
+  const normalizedPath = normalizeRemotePath(path);
+  const content = previewRemoteFileContent(normalizedPath, connection.name);
+  const metadata: RemoteFileMetadata = {
+    mtime: Date.now(),
+    name: remoteFileName(normalizedPath),
+    path: normalizedPath,
+    size: new TextEncoder().encode(content).length,
+    mode: "-rw-r--r--",
+  };
+
+  return {
+    content,
+    editable: true,
+    encoding: "utf-8",
+    is_binary: false,
+    metadata,
+    mode: metadata.mode,
+    mtime: metadata.mtime,
+    name: metadata.name,
+    path: metadata.path,
+    size: metadata.size,
+  };
+}
+
+function previewRemoteFileContent(path: string, connectionName = "preview") {
+  const name = remoteFileName(path);
+  if (name.endsWith(".json")) {
+    return `{\n  "name": "${connectionName}",\n  "path": "${path}",\n  "enabled": true\n}\n`;
+  }
+  if (name.endsWith(".sh")) {
+    return "#!/usr/bin/env sh\nset -eu\n\necho \"deploy preview\"\n";
+  }
+  if (name.endsWith(".md")) {
+    return `# ${name}\n\nRemote preview file for ${connectionName}.\n`;
+  }
+  if (name.endsWith(".conf")) {
+    return "server {\n  listen 80;\n  server_name example.local;\n}\n";
+  }
+  return `# ${name}\n# ${connectionName}:${path}\n\n编辑这里的内容后可看到 dirty 状态和保存入口。\n`;
+}
+
+function remoteFileActionTitle(action: RemoteFileTextAction) {
+  if (action.action === "create-file") return "新建文件";
+  if (action.action === "create-directory") return "新建文件夹";
+  return "重命名";
+}
+
+function remoteFileActionDescription(action: RemoteFileTextAction) {
+  if (action.action === "rename") {
+    return `原路径：${action.entry.path}`;
+  }
+  return `父目录：${action.parentPath}`;
 }

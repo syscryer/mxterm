@@ -204,3 +204,152 @@ terminalWrite(sessionId, `cd ${entry.path}\n`);
 // Terminal directory signals are recorded; the file panel uses them only on manual locate.
 onCurrentDirectoryChange?.(tabId, decodedPath);
 ```
+
+## Scenario: Remote File Editor Commands
+
+### 1. Scope / Trigger
+
+- Trigger: a React feature opens, edits, saves, creates, renames, deletes, uploads, or downloads remote files through Tauri.
+- Source files: `src/shared/tauri/commands.ts`, `src/features/files/remoteFileTypes.ts`, `src/features/files/RemoteFilePanel.tsx`, `src/features/editor/RemoteFileEditor.tsx`, and `src/features/layout/WorkspaceShell.tsx`.
+- This is a cross-layer command contract because React owns editor/tab state while Rust owns saved SSH credentials, remote metadata, conflict checks, and file content transfer.
+
+### 2. Signatures
+
+```ts
+remoteFileRead(connectionId: string, path: string): Promise<RemoteFileReadResult>
+remoteFileWrite(input: RemoteFileWriteInput): Promise<RemoteFileWriteResult>
+remoteFileCreateFile(connectionId: string, path: string): Promise<RemoteFileMetadata>
+remoteFileCreateDirectory(connectionId: string, path: string): Promise<void>
+remoteFileRename(input: RemoteFileRenameInput): Promise<void>
+remoteFileDelete(input: RemoteFileDeleteInput): Promise<void>
+remoteFileUploadFile(input: RemoteFileUploadInput): Promise<RemoteFileMetadata>
+remoteFileDownload(connectionId: string, path: string): Promise<RemoteFileDownloadResult>
+```
+
+Payload and result fields:
+
+```ts
+type RemoteFileMetadata = {
+  name: string;
+  path: string;
+  size: number;
+  mtime: number;
+  mode?: string | null;
+};
+
+type RemoteFileReadResult = {
+  content: string;
+  editable: boolean;
+  encoding: "utf-8";
+  is_binary: boolean;
+  metadata: RemoteFileMetadata;
+  mode?: string | null;
+  mtime: number;
+  name: string;
+  path: string;
+  size: number;
+};
+
+type RemoteFileWriteInput = {
+  connectionId: string;
+  path: string;
+  content: string;
+  expectedMtime: number;
+  expectedSize: number;
+  overwrite?: boolean;
+};
+
+type RemoteFileWriteResult = {
+  conflict: boolean;
+  metadata: RemoteFileMetadata;
+};
+```
+
+### 3. Contracts
+
+- UI components must call the typed wrappers in `src/shared/tauri/commands.ts`; do not call `invoke("remote_file_*", ...)` directly from feature components.
+- Wrapper request keys must match Rust exactly: `connection_id`, `path`, `content`, `expected_mtime`, `expected_size`, `overwrite`, `new_path`, and `recursive`.
+- `connectionId` is always the saved `ConnectionProfile.id`. Do not send host, username, password, private-key path, or passphrase from React for file editor commands.
+- `WorkspaceShell` owns open file tabs and must de-duplicate by `connectionId + path`; opening the same file again activates the existing tab.
+- `RemoteFileEditor` owns Monaco lifecycle only. Command calls, dirty close confirmation, save conflict dialogs, and tree refresh orchestration stay in `WorkspaceShell` / file panel integration.
+- Save must send the last opened/saved `metadata.mtime` and `metadata.size` as `expectedMtime` and `expectedSize`. Use `overwrite: true` only after the user chooses to overwrite a conflict.
+- Dirty file close must use the project dialog pattern, not `window.confirm`, so unsaved edits are not silently lost and styling stays consistent.
+- Binary or too-large read failures must not create an editable Monaco model. Keep the tab content safe and show retry/close or download-oriented UI.
+- Browser preview must not fire real upload/download or SSH commands when Tauri is unavailable; preview-only mock behavior is acceptable for layout checks.
+- Upload file content is sent as bytes. The wrapper converts `Uint8Array | number[]` to a plain number array before invoking Rust.
+- Upload-folder is not part of this command set. If visible in UI, keep it disabled or clearly marked as not implemented.
+
+### 4. Validation & Error Matrix
+
+| Condition | Frontend behavior |
+| --- | --- |
+| `connectionId` is blank or unknown | Show the command error and keep the tab/tree state intact. Do not retry with credential fields from React. |
+| `path` is blank for read/write/create/rename/delete/upload/download | Surface the Rust `remote_file_path_missing` message near the initiating UI. |
+| Read returns or errors as binary / not UTF-8 / too large | Do not mount Monaco for editable content; show a non-editable state and preserve the file path context. |
+| File is opened twice | Activate the existing tab instead of creating duplicate Monaco models. |
+| Monaco content changes | Mark the tab dirty and keep `savedContent` plus last metadata unchanged until save succeeds. |
+| Save succeeds | Clear dirty state, update metadata, update saved content, and refresh the affected remote directory. |
+| Save returns `remote_file_conflict` | Keep local edits, show conflict UI, and offer reload, overwrite, or cancel. |
+| Save fails for another reason | Keep local edits dirty and show the error without closing the tab. |
+| Dirty tab close is requested | Show a confirmation dialog with save/discard/cancel semantics or an equivalent safe flow. |
+| Delete succeeds for an opened file | Close or mark the matching tab unavailable, then choose a deterministic fallback active tab. |
+| Upload is requested in browser preview | Do not call the Tauri wrapper; show preview-only feedback or a disabled state. |
+
+### 5. Good / Base / Bad Cases
+
+- Good: a file row double-click calls `openRemoteFile(connection.id, entry.path)`, `WorkspaceShell` reuses an existing tab when present, `remoteFileRead` loads content, Monaco edits the model, and `remoteFileWrite` saves with expected metadata.
+- Base: a user creates `/tmp/app.conf`; React calls `remoteFileCreateFile(connection.id, path)`, refreshes the parent directory, then opens the new file tab.
+- Bad: a component stores passwords in file action state, calls `invoke("remote_file_write", ...)` directly, or closes a dirty Monaco tab without confirmation.
+
+### 6. Tests Required
+
+- Run `node scripts/check-remote-file-editor-source.mjs` after changing remote editor wrappers, Monaco integration, file tab state, or file panel actions.
+- Run `npm run check -- --pretty false` after changing TypeScript command payloads, editor types, or workspace/file panel props.
+- Run `npm run build` after visible Monaco/workspace/CSS changes.
+- Add frontend tests once the test runner exists for duplicate tab activation, dirty close confirmation, conflict branching, browser-preview upload blocking, and wrapper payload shape.
+- Cross-check frontend result fields against `RemoteFileMetadata`, `RemoteFileReadResult`, and `RemoteFileWriteResult` in `src-tauri/src/remote_files.rs`.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```tsx
+await invoke("remote_file_write", {
+  request: {
+    connection_id: connection.id,
+    path,
+    content,
+  },
+});
+```
+
+#### Correct
+
+```tsx
+await remoteFileWrite({
+  connectionId: connection.id,
+  path,
+  content,
+  expectedMtime: tab.metadata.mtime,
+  expectedSize: tab.metadata.size,
+});
+```
+
+#### Wrong
+
+```tsx
+// Reopens the same remote path as another tab and another Monaco model.
+setRemoteFileTabs((tabs) => [...tabs, createRemoteFileTab(connectionId, path)]);
+```
+
+#### Correct
+
+```tsx
+const existing = remoteFileTabs.find(
+  (tab) => tab.connectionId === connectionId && tab.path === path,
+);
+if (existing) {
+  setActiveWorkspaceTabId(existing.id);
+  return;
+}
+```

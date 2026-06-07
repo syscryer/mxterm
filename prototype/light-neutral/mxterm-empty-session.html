@@ -185,9 +185,10 @@
     }
 
     .workspace-shell {
+      --right-pane-width: 336px;
       min-height: 0;
       display: grid;
-      grid-template-columns: var(--left-pane-width) minmax(0, 1fr);
+      grid-template-columns: var(--left-pane-width) minmax(0, 1fr) var(--right-pane-width);
       overflow: hidden;
       background: var(--mx-panel);
     }
@@ -327,6 +328,167 @@
       display: grid;
       grid-template-rows: minmax(0, 1fr);
       background: var(--mx-panel);
+    }
+
+    .session-workspace {
+      min-width: 0;
+      min-height: 0;
+      display: grid;
+      grid-template-rows: 34px minmax(0, 1fr);
+      overflow: hidden;
+      background: var(--mx-panel);
+    }
+
+    .session-tabs,
+    .file-panel-tabs {
+      min-width: 0;
+      height: 34px;
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      border-bottom: 1px solid var(--mx-line);
+      background: #fbfcfe;
+    }
+
+    .session-tabs {
+      padding: 0 12px 0 18px;
+    }
+
+    .session-tab,
+    .file-panel-tab,
+    .add-session-tab,
+    .right-collapse-button {
+      height: 28px;
+      border: 0;
+      border-radius: 7px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      padding: 0 10px;
+      color: var(--mx-muted);
+      background: transparent;
+      font-size: 13px;
+    }
+
+    .session-tab.active,
+    .file-panel-tab.active,
+    .session-tab:hover,
+    .file-panel-tab:hover,
+    .add-session-tab:hover,
+    .right-collapse-button:hover {
+      color: var(--mx-text);
+      background: rgba(156, 163, 175, 0.12);
+    }
+
+    .session-tab {
+      max-width: 178px;
+      min-width: 0;
+      padding-right: 7px;
+    }
+
+    .session-tab span {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .add-session-tab,
+    .right-collapse-button {
+      width: 28px;
+      padding: 0;
+      flex: 0 0 28px;
+    }
+
+    .terminal-preview {
+      min-width: 0;
+      min-height: 0;
+      overflow: hidden;
+      padding: 0;
+      color: #cbd5e1;
+      background: #0f172a;
+      font-family: var(--font-mono);
+      font-size: 14px;
+      line-height: 1.65;
+    }
+
+    .terminal-preview pre {
+      margin: 0;
+      padding: 0;
+      white-space: pre-wrap;
+    }
+
+    .right-file-pane {
+      min-width: 0;
+      min-height: 0;
+      display: grid;
+      grid-template-rows: 34px 42px 38px minmax(0, 1fr);
+      border-left: 1px solid var(--mx-line);
+      background: var(--mx-panel-soft);
+    }
+
+    .file-panel-tabs {
+      position: relative;
+      padding: 0 8px;
+    }
+
+    .right-collapse-button {
+      z-index: 2;
+      margin-left: auto;
+      border: 0;
+      color: #717986;
+      background: transparent;
+      box-shadow: none;
+    }
+
+    .file-panel-tab .ui-icon,
+    .session-tab .ui-icon,
+    .right-collapse-button .ui-icon,
+    .add-session-tab .ui-icon,
+    .file-panel-actions .ui-icon {
+      width: 14px;
+      height: 14px;
+      stroke-width: 1.55;
+    }
+
+    .file-path-row {
+      min-width: 0;
+      display: flex;
+      align-items: center;
+      padding: 5px 10px;
+      border-bottom: 1px solid var(--mx-line-soft);
+      background: var(--mx-panel);
+    }
+
+    .file-path-input {
+      width: 100%;
+      height: 30px;
+      border: 1px solid var(--mx-line);
+      border-radius: 7px;
+      padding: 0 9px;
+      color: var(--mx-text);
+      background: #ffffff;
+      font-family: var(--font-mono);
+      font-size: 13px;
+    }
+
+    .file-panel-actions {
+      min-width: 0;
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      padding: 0 8px;
+      border-bottom: 1px solid var(--mx-line);
+      background: var(--mx-panel-soft);
+    }
+
+    .file-tree {
+      min-width: 0;
+      min-height: 0;
+      overflow: auto;
+      padding: 6px;
+      background: var(--mx-panel-soft);
     }
 
     .empty-workspace {
@@ -956,8 +1118,34 @@
         </footer>
       </aside>
 
-      <section class="main-workbench" aria-label="默认连接管理页">
-        <section class="empty-workspace" aria-label="无会话默认页">
+      <section class="main-workbench" aria-label="会话工作区">
+        <section class="session-workspace" aria-label="终端会话">
+          <nav class="session-tabs" aria-label="当前连接的终端会话">
+            <button class="session-tab active" type="button">
+              <svg class="ui-icon" viewBox="0 0 16 16"><path d="M3.5 4.2h9v7.6h-9z"/><path d="m5.4 6.4 1.7 1.6-1.7 1.6"/><path d="M8.4 9.6h3.1"/></svg>
+              <span>终端</span>
+            </button>
+            <button class="session-tab" type="button">
+              <svg class="ui-icon" viewBox="0 0 16 16"><path d="M3.5 4.2h9v7.6h-9z"/><path d="m5.4 6.4 1.7 1.6-1.7 1.6"/><path d="M8.4 9.6h3.1"/></svg>
+              <span>终端 1</span>
+            </button>
+            <button class="add-session-tab" type="button" aria-label="新建同连接终端">
+              <svg class="ui-icon" viewBox="0 0 16 16"><path d="M8 3.5v9M3.5 8h9"/></svg>
+            </button>
+          </nav>
+
+          <section class="terminal-preview" aria-label="终端预览">
+            <pre>连接 root@101.34.85.216:22 ...
+
+正在建立 SSH TCP 连接...
+
+SSH TCP 已连接。
+
+SSH 认证中...</pre>
+          </section>
+        </section>
+
+        <section class="empty-workspace" aria-label="无会话默认页" hidden>
           <header class="repository-toolbar">
             <div class="toolbar-left">
               <div class="filter-tabs" aria-label="连接筛选">
@@ -1206,6 +1394,61 @@
           </div>
         </section>
       </section>
+
+      <aside class="right-file-pane" aria-label="远程文件">
+        <header class="file-panel-tabs">
+          <button class="file-panel-tab active" type="button">
+            <svg class="ui-icon" viewBox="0 0 16 16"><path d="M2.8 4.5h4l1.1 1.4h5.3v7H2.8z"/></svg>
+            <span>文件</span>
+          </button>
+          <button class="right-collapse-button" type="button" aria-label="收起右侧文件面板">
+            <svg class="ui-icon" viewBox="0 0 16 16"><rect x="3.3" y="3.4" width="9.4" height="9.2" rx="1.5"/><path d="M9.8 3.6v8.8"/></svg>
+          </button>
+        </header>
+
+        <div class="file-path-row">
+          <input class="file-path-input" aria-label="远程路径" value="/" readonly>
+        </div>
+
+        <div class="file-panel-actions" aria-label="文件操作">
+          <button class="mini-action" type="button" aria-label="定位到终端目录">
+            <svg class="ui-icon" viewBox="0 0 16 16"><path d="M8 2.8v2"/><path d="M8 11.2v2"/><path d="M2.8 8h2"/><path d="M11.2 8h2"/><circle cx="8" cy="8" r="3.2"/></svg>
+          </button>
+          <button class="mini-action" type="button" aria-label="显示隐藏文件">
+            <svg class="ui-icon" viewBox="0 0 16 16"><path d="M2.5 8s2-3.5 5.5-3.5S13.5 8 13.5 8s-2 3.5-5.5 3.5S2.5 8 2.5 8z"/><circle cx="8" cy="8" r="1.6"/></svg>
+          </button>
+          <button class="mini-action" type="button" aria-label="收起目录">
+            <svg class="ui-icon" viewBox="0 0 16 16"><path d="m5 9 3-3 3 3"/><path d="m5 12 3-3 3 3"/></svg>
+          </button>
+          <span style="flex: 1"></span>
+          <button class="mini-action" type="button" aria-label="刷新文件列表">
+            <svg class="ui-icon" viewBox="0 0 16 16"><path d="M13 8a5 5 0 1 1-1.45-3.55"/><path d="M13 3.7v3.2H9.8"/></svg>
+          </button>
+        </div>
+
+        <section class="file-tree" aria-label="远程文件树">
+          <button class="tree-folder-row">
+            <svg class="ui-icon" viewBox="0 0 16 16"><path d="M2.8 4.5h4l1.1 1.4h5.3v7H2.8z"/></svg>
+            <span>bin.usr-is-merged</span>
+            <span class="count">dir</span>
+          </button>
+          <button class="tree-folder-row">
+            <svg class="ui-icon" viewBox="0 0 16 16"><path d="M2.8 4.5h4l1.1 1.4h5.3v7H2.8z"/></svg>
+            <span>boot</span>
+            <span class="count">dir</span>
+          </button>
+          <button class="tree-folder-row">
+            <svg class="ui-icon" viewBox="0 0 16 16"><path d="M2.8 4.5h4l1.1 1.4h5.3v7H2.8z"/></svg>
+            <span>etc</span>
+            <span class="count">dir</span>
+          </button>
+          <button class="file-row">
+            <svg class="ui-icon" viewBox="0 0 16 16"><path d="M4.2 2.8h5.4l2.2 2.2v8.2H4.2z"/><path d="M9.5 2.9v2.3h2.3"/></svg>
+            <span>README</span>
+            <span class="count">file</span>
+          </button>
+        </section>
+      </aside>
     </main>
   </div>
 </body>
