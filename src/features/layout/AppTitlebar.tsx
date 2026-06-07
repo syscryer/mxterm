@@ -23,7 +23,7 @@ interface AppTitlebarProps {
   leftPaneCollapsed: boolean;
   onCloseConnectionSession: (connectionId: string) => void;
   onOpenHome: () => void;
-  onSelectConnectionSession: (connectionId: string, tabId: string | null) => void;
+  onSelectConnectionSession: (connectionId: string) => void;
   onToggleLeftPane: () => void;
 }
 
@@ -82,10 +82,7 @@ export function AppTitlebar({
             <button
               className="tab"
               type="button"
-              onClick={() => {
-                const nextTab = session.tabs[0];
-                onSelectConnectionSession(session.connectionId, nextTab?.id || null);
-              }}
+              onClick={() => onSelectConnectionSession(session.connectionId)}
             >
               <span className="tab-label">
                 {connectionName(session.connectionId, connectionById)}

@@ -9,6 +9,7 @@ mod terminal;
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .manage(remote_files::RemoteFileManager::default())
         .manage(terminal::manager::TerminalManager::default())
         .invoke_handler(tauri::generate_handler![
             commands::connection_list,
@@ -20,6 +21,14 @@ pub fn run() {
             commands::terminal_resize,
             commands::terminal_close,
             commands::remote_file_list,
+            commands::remote_file_read,
+            commands::remote_file_write,
+            commands::remote_file_create_file,
+            commands::remote_file_create_directory,
+            commands::remote_file_rename,
+            commands::remote_file_delete,
+            commands::remote_file_upload_file,
+            commands::remote_file_download,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

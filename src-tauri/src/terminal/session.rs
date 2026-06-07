@@ -88,6 +88,10 @@ pub struct ExecOutput {
     pub exit_status: Option<u32>,
 }
 
+pub struct ReusableExecSession {
+    client: SshHandle,
+}
+
 impl TerminalSession {
     pub async fn open(
         request: TerminalConnectRequest,
@@ -275,14 +279,14 @@ impl TerminalSession {
             })
     }
 
-    pub async fn exec(
-        request: TerminalConnectRequest,
-        command: &str,
-    ) -> Result<ExecOutput, AppError> {
+}
+
+impl ReusableExecSession {
+    pub async fn connect(request: &TerminalConnectRequest) -> Result<Self, AppError> {
         let host = request.host.trim().to_string();
         let port = request.port;
         let username = request.username.trim().to_string();
-        let auth_method = auth_method(&request)?;
+        let auth_method = auth_method(request)?;
         let config = Arc::new(client::Config {
             keepalive_interval: Some(Duration::from_secs(20)),
             keepalive_max: 1,
@@ -314,11 +318,31 @@ impl TerminalSession {
         )
         .await??;
 
+        Ok(Self { client })
+    }
+
+    pub async fn exec(&self, command: &str) -> Result<ExecOutput, AppError> {
+        self.exec_inner(command, None).await
+    }
+
+    pub async fn exec_with_stdin(
+        &self,
+        command: &str,
+        stdin: &[u8],
+    ) -> Result<ExecOutput, AppError> {
+        self.exec_inner(command, Some(stdin)).await
+    }
+
+    async fn exec_inner(
+        &self,
+        command: &str,
+        stdin: Option<&[u8]>,
+    ) -> Result<ExecOutput, AppError> {
         let mut channel = run_with_timeout(
             "remote_exec_channel_timeout",
             "SSH 命令通道打开超时。",
             Duration::from_secs(20),
-            client.channel_open_session(),
+            self.client.channel_open_session(),
         )
         .await?
         .map_err(|error| {
@@ -346,6 +370,15 @@ impl TerminalSession {
             )
         })?;
 
+        if let Some(stdin) = stdin {
+            channel.data_bytes(stdin.to_vec()).await.map_err(|error| {
+                AppError::new("remote_exec_stdin_failed", "远程命令输入发送失败。", error, true)
+            })?;
+            channel.eof().await.map_err(|error| {
+                AppError::new("remote_exec_stdin_eof_failed", "远程命令输入结束失败。", error, true)
+            })?;
+        }
+
         let mut stdout = Vec::new();
         let mut stderr = Vec::new();
         let mut exit_status = None;
@@ -360,15 +393,20 @@ impl TerminalSession {
             }
         }
 
-        let _ = client
-            .disconnect(Disconnect::ByApplication, "", "English")
-            .await;
+        let _ = channel.close().await;
 
         Ok(ExecOutput {
             stdout,
             stderr,
             exit_status,
         })
+    }
+
+    pub async fn close(&self) {
+        let _ = self
+            .client
+            .disconnect(Disconnect::ByApplication, "", "English")
+            .await;
     }
 }
 

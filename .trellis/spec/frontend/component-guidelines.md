@@ -57,6 +57,15 @@ Ant Design, Mantine, or similar libraries just to fix one modal or button.
   header/footer spacing, and action buttons must stay visually consistent.
 - Keep desktop tool UI compact. Use restrained shadows, 6-8px radii for controls
   and modal surfaces, and avoid heavy gradients or oversized buttons.
+- Overlay surfaces should share the global glass treatment instead of carrying
+  one-off feature styles. Keep glass tokens in `src/styles/tokens.css`, apply
+  them through `src/styles/app.css`, and prefer reusable class pairs such as
+  `context-menu-content` / `context-menu-item`, `dropdown-menu-content` /
+  `dropdown-menu-item`, `select-menu-content` / `select-menu-item`, and
+  `popover-content` / `popover-menu-item` for Radix portals, custom dropdowns,
+  right-click menus, upload menus, and tooltips. The mXterm version should stay
+  tighter and calmer than codem's large popovers: light blur, fine borders,
+  modest shadow, and 7-10px radii.
 - Keep typography calm: default text should use regular or medium weight
   (`400`-`520`); reserve heavier weights (`600`+) for modal titles, critical
   counters, or rare primary emphasis.
@@ -66,7 +75,15 @@ Ant Design, Mantine, or similar libraries just to fix one modal or button.
   xterm state, and remote tree state are not recreated.
 - Side panes with expandable trees must keep their own scroll container inside
   a `min-height: 0` flex/grid boundary. Expanded file trees must not grow the
-  workspace grid row or change the terminal panel's measured height.
+  workspace grid row or change the terminal panel's measured height. Keep pane
+  chrome such as tabs, path inputs, and toolbars as non-shrinking flex items;
+  the tree/list body should be the only area that absorbs remaining height and
+  scrolls.
+- Remote file locate actions are one-way UI reveals: use the active terminal
+  tab's recorded directory only to expand/highlight the folder in the file tree.
+  Do not navigate into the located folder's child listing, auto-follow every
+  `cd`, execute probe commands, or write `cd` back into the interactive
+  terminal.
 - Terminal surfaces should not add decorative padding by default. If xterm
   spacing is ever needed, it must be accounted for by FitAddon; parent-only
   padding can make FitAddon over-count rows and clip the bottom terminal line at
@@ -75,6 +92,15 @@ Ant Design, Mantine, or similar libraries just to fix one modal or button.
   the same background as the terminal host. Their upstream CSS defaults to pure
   black, which creates visible right/bottom bands when FitAddon rounds the
   terminal to whole character cells.
+- Scrollable app panes should use the shared light scrollbar treatment in
+  `src/styles/app.css`: transparent tracks/corners, no WebKit scrollbar
+  buttons/arrows, muted rounded thumbs that become visible on hover, and a
+  narrower terminal scrollbar than ordinary side panes. For xterm, hide the
+  native `.xterm-viewport` WebKit/Firefox scrollbar completely and style
+  xterm's internal `.xterm-scrollable-element > .scrollbar`; keep the Terminal
+  `overviewRuler` width aligned with the CSS size so FitAddon does not reserve
+  a wider gutter, but hide `.xterm-decoration-overview-ruler` when the ruler is
+  only used for scrollbar sizing so it cannot draw a bright edge line.
 - Fixed sidebar footers should be explicit non-growing flex items. Keep the
   scrollable tree/list region as the only area that absorbs height changes.
 - Native window minimum sizes belong in Tauri window configuration, not root

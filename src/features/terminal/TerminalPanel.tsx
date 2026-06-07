@@ -1,6 +1,6 @@
 import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
-import { Terminal } from "@xterm/xterm";
+import { Terminal, type ITheme } from "@xterm/xterm";
 import { useEffect, useRef, useState } from "react";
 import "@xterm/xterm/css/xterm.css";
 
@@ -24,10 +24,15 @@ import {
   inferRemoteHomeDirectory,
 } from "./terminalInputDirectory";
 
+const TERMINAL_SCROLLBAR_WIDTH = 6;
+
 interface TerminalPanelProps {
   active: boolean;
   connection: ConnectionProfile | null;
+  fontFamily: string;
+  fontSize: number;
   tabId: string;
+  theme: ITheme;
   title: string;
   onCurrentDirectoryChange?: (tabId: string, path: string) => void;
   onStatusChange: (tabId: string, status: string) => void;
@@ -36,9 +41,12 @@ interface TerminalPanelProps {
 export function TerminalPanel({
   active,
   connection,
+  fontFamily,
+  fontSize,
   onCurrentDirectoryChange,
   onStatusChange,
   tabId,
+  theme,
   title,
 }: TerminalPanelProps) {
   const hostRef = useRef<HTMLDivElement | null>(null);
@@ -76,15 +84,13 @@ export function TerminalPanel({
     const terminal = new Terminal({
       cursorBlink: true,
       convertEol: true,
-      fontFamily: "Cascadia Mono, Consolas, monospace",
-      fontSize: 13,
-      scrollback: 8000,
-      theme: {
-        background: "#111827",
-        foreground: "#d1d5db",
-        cursor: "#f9fafb",
-        selectionBackground: "#374151",
+      fontFamily,
+      fontSize,
+      overviewRuler: {
+        width: TERMINAL_SCROLLBAR_WIDTH,
       },
+      scrollback: 8000,
+      theme: withTerminalChromeTheme(theme),
     });
     const fitAddon = new FitAddon();
     terminalRef.current = terminal;
@@ -212,6 +218,35 @@ export function TerminalPanel({
 
   useEffect(() => {
     const terminal = terminalRef.current;
+    if (!terminal) {
+      return;
+    }
+
+    terminal.options.theme = withTerminalChromeTheme(theme);
+  }, [theme]);
+
+  useEffect(() => {
+    const terminal = terminalRef.current;
+    if (!terminal || terminal.options.fontFamily === fontFamily) {
+      return;
+    }
+
+    terminal.options.fontFamily = fontFamily;
+    fitAddonRef.current?.fit();
+  }, [fontFamily]);
+
+  useEffect(() => {
+    const terminal = terminalRef.current;
+    if (!terminal || terminal.options.fontSize === fontSize) {
+      return;
+    }
+
+    terminal.options.fontSize = fontSize;
+    fitAddonRef.current?.fit();
+  }, [fontSize]);
+
+  useEffect(() => {
+    const terminal = terminalRef.current;
     const fitAddon = fitAddonRef.current;
     if (!terminal || !fitAddon || !connection || !listenersReady || startedRef.current) {
       return;
@@ -269,6 +304,16 @@ export function TerminalPanel({
       <div className="terminal-host" ref={hostRef} />
     </section>
   );
+}
+
+function withTerminalChromeTheme(theme: ITheme): ITheme {
+  return {
+    ...theme,
+    overviewRulerBorder: "transparent",
+    scrollbarSliderActiveBackground: "rgba(148, 163, 184, 0.36)",
+    scrollbarSliderBackground: "transparent",
+    scrollbarSliderHoverBackground: "rgba(148, 163, 184, 0.28)",
+  };
 }
 
 function formatError(error: unknown) {

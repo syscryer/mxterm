@@ -2,6 +2,7 @@
 .learnings/
 .codem-attachments/
 .playwright-cli/
+.idea/
 logs/
 prototype/light-theme/
 node_modules/
