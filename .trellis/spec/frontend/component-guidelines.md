@@ -112,6 +112,15 @@ Ant Design, Mantine, or similar libraries just to fix one modal or button.
   final layout width in CSS. Use narrow transparent separator handles with a
   subtle hover line, `col-resize`, keyboard arrow support, and double-click
   reset to the default width.
+- Stacked editor/terminal workspaces should treat the split handle as a drag
+  target, not as a visible divider. Keep the default handle visually quiet
+  (transparent or near-transparent), show only a subtle line on hover/focus or
+  during dragging, and expose the split size through a CSS variable so terminal
+  and editor instances remain mounted while resizing.
+- Remote editor chrome should stay close to icon height. If the file name is
+  already present in a tab, do not repeat it as a large title inside the editor;
+  keep path, save state, and toolbar actions in a single compact row and let long
+  paths truncate before controls are squeezed.
 
 ---
 

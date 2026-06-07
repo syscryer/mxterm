@@ -1,5 +1,5 @@
 import { AlertTriangle, Loader2, RefreshCw, RotateCcw, Save, Search, X } from "lucide-react";
-import { useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef } from "react";
 import * as monaco from "monaco-editor";
 import CssWorker from "monaco-editor/esm/vs/language/css/css.worker?worker";
 import EditorWorker from "monaco-editor/esm/vs/editor/editor.worker?worker";
@@ -59,7 +59,26 @@ export function RemoteFileEditor({
   const hostRef = useRef<HTMLDivElement | null>(null);
   const editorRef = useRef<monaco.editor.IStandaloneCodeEditor | null>(null);
   const modelRef = useRef<monaco.editor.ITextModel | null>(null);
+  const onChangeRef = useRef(onChange);
+  const onSaveRef = useRef(onSave);
   const applyingContentRef = useRef(false);
+  const layoutFrameRef = useRef<number | null>(null);
+
+  onChangeRef.current = onChange;
+  onSaveRef.current = onSave;
+
+  const scheduleEditorLayout = useCallback(() => {
+    if (layoutFrameRef.current !== null) {
+      window.cancelAnimationFrame(layoutFrameRef.current);
+    }
+
+    layoutFrameRef.current = window.requestAnimationFrame(() => {
+      layoutFrameRef.current = window.requestAnimationFrame(() => {
+        layoutFrameRef.current = null;
+        editorRef.current?.layout();
+      });
+    });
+  }, []);
 
   useEffect(() => {
     if (!hostRef.current) {
@@ -90,21 +109,25 @@ export function RemoteFileEditor({
 
     modelRef.current = model;
     editorRef.current = editor;
-    editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => onSave(tab.id));
+    editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => onSaveRef.current(tab.id));
     const changeDisposable = model.onDidChangeContent(() => {
       if (!applyingContentRef.current) {
-        onChange(tab.id, model.getValue());
+        onChangeRef.current(tab.id, model.getValue());
       }
     });
 
     return () => {
+      if (layoutFrameRef.current !== null) {
+        window.cancelAnimationFrame(layoutFrameRef.current);
+        layoutFrameRef.current = null;
+      }
       changeDisposable.dispose();
       editor.dispose();
       model.dispose();
       editorRef.current = null;
       modelRef.current = null;
     };
-  }, [fontFamily, fontSize, onChange, onSave, tab.connectionId, tab.id, tab.path]);
+  }, [scheduleEditorLayout, tab.connectionId, tab.id, tab.path]);
 
   useEffect(() => {
     const model = modelRef.current;
@@ -115,7 +138,8 @@ export function RemoteFileEditor({
     applyingContentRef.current = true;
     model.setValue(tab.content);
     applyingContentRef.current = false;
-  }, [tab.content]);
+    scheduleEditorLayout();
+  }, [scheduleEditorLayout, tab.content]);
 
   useEffect(() => {
     const model = modelRef.current;
@@ -126,7 +150,8 @@ export function RemoteFileEditor({
     if (model.getLanguageId() !== language) {
       monaco.editor.setModelLanguage(model, language);
     }
-  }, [tab.path]);
+    scheduleEditorLayout();
+  }, [scheduleEditorLayout, tab.path]);
 
   useEffect(() => {
     const editor = editorRef.current;
@@ -135,24 +160,46 @@ export function RemoteFileEditor({
     }
 
     editor.updateOptions({ fontFamily, fontSize });
-  }, [fontFamily, fontSize]);
+    scheduleEditorLayout();
+  }, [fontFamily, fontSize, scheduleEditorLayout]);
 
   useEffect(() => {
     if (active) {
-      editorRef.current?.layout();
+      scheduleEditorLayout();
       editorRef.current?.focus();
     }
-  }, [active]);
+  }, [active, scheduleEditorLayout]);
+
+  useEffect(() => {
+    const host = hostRef.current;
+    if (!host) {
+      return;
+    }
+
+    const observer = new ResizeObserver(() => scheduleEditorLayout());
+    observer.observe(host);
+    scheduleEditorLayout();
+
+    return () => observer.disconnect();
+  }, [scheduleEditorLayout]);
 
   return (
     <section
       className={`remote-file-editor ${active ? "" : "is-hidden"}`}
       aria-label={`${tab.name} 文件编辑器`}
     >
-      <header className="remote-file-editor-head">
-        <div className="remote-file-editor-title">
-          <strong>{tab.name}</strong>
-          <span title={tab.path}>{tab.connectionName}:{tab.path}</span>
+      <header className="remote-file-editor-compactbar" data-state={tab.saveState}>
+        <div className="remote-file-editor-path" title={`${tab.connectionName}:${tab.path}`}>
+          <span className="remote-file-editor-path-text">{tab.connectionName}:{tab.path}</span>
+          <span className="remote-file-editor-status" data-state={tab.saveState} aria-live="polite">
+            {tab.saveState === "loading" || tab.saveState === "saving" ? (
+              <Loader2 className="ui-icon spin" aria-hidden="true" />
+            ) : null}
+            {tab.saveState === "error" || tab.saveState === "conflict" ? (
+              <AlertTriangle className="ui-icon" aria-hidden="true" />
+            ) : null}
+            <span>{remoteFileStatusLabel(tab)}</span>
+          </span>
         </div>
         <div className="remote-file-editor-toolbar" aria-label="文件编辑器工具栏">
           <Tooltip label="保存">
@@ -209,15 +256,6 @@ export function RemoteFileEditor({
           </Tooltip>
         </div>
       </header>
-      <div className="remote-file-editor-status" data-state={tab.saveState}>
-        {tab.saveState === "loading" || tab.saveState === "saving" ? (
-          <Loader2 className="ui-icon spin" aria-hidden="true" />
-        ) : null}
-        {tab.saveState === "error" || tab.saveState === "conflict" ? (
-          <AlertTriangle className="ui-icon" aria-hidden="true" />
-        ) : null}
-        <span>{remoteFileStatusLabel(tab)}</span>
-      </div>
       <div className="remote-file-monaco" ref={hostRef} />
     </section>
   );

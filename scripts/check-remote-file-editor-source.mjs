@@ -95,7 +95,11 @@ for (const uiNeedle of [
 
 for (const workspaceNeedle of [
   "remoteFileTabs",
-  "activeWorkspaceTabId",
+  "activeRemoteFileTabId",
+  "editorTerminalSplitPercent",
+  "editor-terminal-resizer",
+  "remote-editor-pane",
+  "terminal-workbench-pane",
   "openRemoteFile",
   "saveRemoteFile",
   "closeRemoteFileTab",
@@ -107,9 +111,14 @@ for (const workspaceNeedle of [
   }
 }
 
+if (workspaceShell.includes("activeWorkspaceTabId")) {
+  throw new Error("WorkspaceShell should keep remote file active state separate from terminal active state");
+}
+
 for (const editorNeedle of [
   "MonacoEnvironment",
   "editor.create",
+  "remote-file-editor-compactbar",
   "KeyMod.CtrlCmd",
   "KeyCode.KeyS",
   "actions.find",
@@ -121,6 +130,12 @@ for (const editorNeedle of [
 }
 
 for (const className of [
+  ".editor-terminal-resizer",
+  ".remote-editor-pane",
+  ".remote-editor-tabs",
+  ".terminal-workbench-pane",
+  ".terminal-workbench-pane[data-terminal-tone=\"dark\"] .terminal-subtabs",
+  ".remote-file-editor-compactbar",
   ".remote-file-editor",
   ".remote-file-editor-toolbar",
   ".remote-file-editor-status",
