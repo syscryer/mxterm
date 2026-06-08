@@ -696,9 +696,52 @@ button {
   font-size: 12px;
 }
 
+.settings-path-control {
+  width: min(560px, 52vw);
+  min-width: 360px;
+  display: grid;
+  justify-items: stretch;
+  gap: 6px;
+}
+
+.settings-path-picker {
+  min-width: 0;
+  border: 1px solid var(--mx-line);
+  border-radius: 8px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 4px;
+  padding: 3px;
+  background: var(--mx-panel-soft);
+}
+
 .settings-path-input {
-  width: min(320px, 100%);
+  width: 100%;
+  border-color: transparent;
+  background: var(--mx-panel);
   font-family: var(--font-mono);
+}
+
+.settings-path-input:focus {
+  border-color: color-mix(in srgb, var(--mx-primary) 42%, transparent);
+}
+
+.settings-path-button {
+  height: 28px;
+  border-color: transparent;
+  background: transparent;
+}
+
+.settings-path-button .ui-icon {
+  width: 14px;
+  height: 14px;
+}
+
+.settings-path-error {
+  color: var(--mx-danger);
+  font-size: 12px;
+  line-height: 1.35;
 }
 
 .settings-select {
@@ -3233,6 +3276,11 @@ button {
   background: var(--mx-active);
 }
 
+.remote-file-row.is-active-directory {
+  color: var(--mx-text);
+  background: color-mix(in srgb, var(--mx-primary) 8%, var(--mx-panel));
+}
+
 .remote-file-row.is-drop-target {
   color: var(--mx-text);
   background: color-mix(in srgb, var(--mx-primary) 10%, var(--mx-panel));
@@ -3393,6 +3441,87 @@ button {
   font-size: 12px;
 }
 
+.transfer-progress-summary {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+}
+
+.transfer-progress-summary small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.transfer-progress-summary span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--mx-subtle);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  min-width: 0;
+  white-space: nowrap;
+}
+
+.transfer-progress-summary em {
+  color: var(--mx-muted);
+  font-style: normal;
+}
+
+.transfer-progress {
+  position: relative;
+  overflow: hidden;
+  height: 6px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--mx-primary) 8%, var(--mx-panel-soft));
+}
+
+.transfer-progress > span {
+  position: absolute;
+  inset: 0 auto 0 0;
+  min-width: 0;
+  border-radius: inherit;
+  background: linear-gradient(90deg, var(--mx-primary), color-mix(in srgb, var(--mx-primary) 78%, #22c55e));
+  transition: width 180ms ease;
+}
+
+.transfer-progress.indeterminate > span {
+  background:
+    linear-gradient(
+      110deg,
+      color-mix(in srgb, var(--mx-primary) 72%, #ffffff) 0%,
+      var(--mx-primary) 34%,
+      color-mix(in srgb, var(--mx-primary) 72%, #22c55e) 68%,
+      var(--mx-primary) 100%
+    );
+  background-size: 180% 100%;
+  animation: transfer-progress-pulse 1.2s linear infinite;
+}
+
+.transfer-item.success .transfer-progress {
+  background: rgb(21 128 61 / 10%);
+}
+
+.transfer-item.success .transfer-progress > span {
+  background: #16a34a;
+}
+
+.transfer-item.error .transfer-progress {
+  background: rgb(220 38 38 / 10%);
+}
+
+.transfer-item.error .transfer-progress > span {
+  background: #dc2626;
+}
+
+.transfer-item.skipped .transfer-progress > span,
+.transfer-item.canceled .transfer-progress > span {
+  background: var(--mx-subtle);
+}
+
 .transfer-item code {
   min-width: 0;
   overflow: hidden;
@@ -3414,6 +3543,16 @@ button {
   background: rgb(220 38 38 / 8%);
   font-size: 12px;
   line-height: 1.45;
+}
+
+@keyframes transfer-progress-pulse {
+  from {
+    background-position: 180% 0;
+  }
+
+  to {
+    background-position: 0 0;
+  }
 }
 
 .remote-file-name {

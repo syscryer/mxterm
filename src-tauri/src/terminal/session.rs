@@ -1,4 +1,5 @@
-use std::io::Write;
+use std::io::{Read, Write};
+use std::path::Path;
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Duration;
 
@@ -13,6 +14,7 @@ use crate::app_error::AppError;
 use crate::commands::TerminalConnectRequest;
 
 static TRACE_LOCK: StdMutex<()> = StdMutex::new(());
+const REMOTE_EXEC_TRANSFER_CHUNK_BYTES: usize = 256 * 1024;
 
 fn trace(stage: &str, message: &str) {
     let _guard = TRACE_LOCK.lock().ok();
@@ -86,6 +88,13 @@ pub struct ExecOutput {
     pub stdout: Vec<u8>,
     pub stderr: Vec<u8>,
     pub exit_status: Option<u32>,
+}
+
+pub type ExecProgressCallback = Arc<dyn Fn(u64) + Send + Sync>;
+
+enum ExecStdin<'a> {
+    Bytes(&'a [u8]),
+    File(&'a Path),
 }
 
 pub struct ReusableExecSession {
@@ -278,7 +287,6 @@ impl TerminalSession {
                 AppError::new("terminal_close_failed", "终端连接关闭失败。", error, true)
             })
     }
-
 }
 
 impl ReusableExecSession {
@@ -322,7 +330,7 @@ impl ReusableExecSession {
     }
 
     pub async fn exec(&self, command: &str) -> Result<ExecOutput, AppError> {
-        self.exec_inner(command, None).await
+        self.exec_inner(command, None, None, None).await
     }
 
     pub async fn exec_with_stdin(
@@ -330,13 +338,44 @@ impl ReusableExecSession {
         command: &str,
         stdin: &[u8],
     ) -> Result<ExecOutput, AppError> {
-        self.exec_inner(command, Some(stdin)).await
+        self.exec_inner(command, Some(ExecStdin::Bytes(stdin)), None, None)
+            .await
+    }
+
+    pub async fn exec_with_stdin_progress(
+        &self,
+        command: &str,
+        stdin: &[u8],
+        progress: ExecProgressCallback,
+    ) -> Result<ExecOutput, AppError> {
+        self.exec_inner(command, Some(ExecStdin::Bytes(stdin)), Some(progress), None)
+            .await
+    }
+
+    pub async fn exec_with_stdin_file_progress(
+        &self,
+        command: &str,
+        path: &Path,
+        progress: ExecProgressCallback,
+    ) -> Result<ExecOutput, AppError> {
+        self.exec_inner(command, Some(ExecStdin::File(path)), Some(progress), None)
+            .await
+    }
+
+    pub async fn exec_with_stdout_progress(
+        &self,
+        command: &str,
+        progress: ExecProgressCallback,
+    ) -> Result<ExecOutput, AppError> {
+        self.exec_inner(command, None, None, Some(progress)).await
     }
 
     async fn exec_inner(
         &self,
         command: &str,
-        stdin: Option<&[u8]>,
+        stdin: Option<ExecStdin<'_>>,
+        stdin_progress: Option<ExecProgressCallback>,
+        stdout_progress: Option<ExecProgressCallback>,
     ) -> Result<ExecOutput, AppError> {
         let mut channel = run_with_timeout(
             "remote_exec_channel_timeout",
@@ -371,11 +410,56 @@ impl ReusableExecSession {
         })?;
 
         if let Some(stdin) = stdin {
-            channel.data_bytes(stdin.to_vec()).await.map_err(|error| {
-                AppError::new("remote_exec_stdin_failed", "远程命令输入发送失败。", error, true)
-            })?;
+            match stdin {
+                ExecStdin::Bytes(bytes) => {
+                    let mut sent = 0usize;
+                    while sent < bytes.len() {
+                        let next = (sent + REMOTE_EXEC_TRANSFER_CHUNK_BYTES).min(bytes.len());
+                        send_stdin_chunk(&mut channel, &bytes[sent..next]).await?;
+                        sent = next;
+                        if let Some(progress) = stdin_progress.as_ref() {
+                            progress(sent as u64);
+                        }
+                    }
+                }
+                ExecStdin::File(path) => {
+                    let mut file = std::fs::File::open(path).map_err(|error| {
+                        AppError::new(
+                            "remote_exec_stdin_file_open_failed",
+                            "Local upload temp file open failed.",
+                            error,
+                            true,
+                        )
+                    })?;
+                    let mut buffer = vec![0u8; REMOTE_EXEC_TRANSFER_CHUNK_BYTES];
+                    let mut sent = 0u64;
+                    loop {
+                        let read = file.read(&mut buffer).map_err(|error| {
+                            AppError::new(
+                                "remote_exec_stdin_file_read_failed",
+                                "Local upload temp file read failed.",
+                                error,
+                                true,
+                            )
+                        })?;
+                        if read == 0 {
+                            break;
+                        }
+                        send_stdin_chunk(&mut channel, &buffer[..read]).await?;
+                        sent += read as u64;
+                        if let Some(progress) = stdin_progress.as_ref() {
+                            progress(sent);
+                        }
+                    }
+                }
+            }
             channel.eof().await.map_err(|error| {
-                AppError::new("remote_exec_stdin_eof_failed", "远程命令输入结束失败。", error, true)
+                AppError::new(
+                    "remote_exec_stdin_eof_failed",
+                    "Remote command stdin EOF failed.",
+                    error,
+                    true,
+                )
             })?;
         }
 
@@ -385,7 +469,12 @@ impl ReusableExecSession {
 
         while let Some(message) = channel.wait().await {
             match message {
-                ChannelMsg::Data { data } => stdout.extend_from_slice(&data),
+                ChannelMsg::Data { data } => {
+                    stdout.extend_from_slice(&data);
+                    if let Some(progress) = stdout_progress.as_ref() {
+                        progress(stdout.len() as u64);
+                    }
+                }
                 ChannelMsg::ExtendedData { data, .. } => stderr.extend_from_slice(&data),
                 ChannelMsg::ExitStatus { exit_status: code } => exit_status = Some(code),
                 ChannelMsg::Close => break,
@@ -408,6 +497,20 @@ impl ReusableExecSession {
             .disconnect(Disconnect::ByApplication, "", "English")
             .await;
     }
+}
+
+async fn send_stdin_chunk(
+    channel: &mut russh::Channel<client::Msg>,
+    chunk: &[u8],
+) -> Result<(), AppError> {
+    channel.data_bytes(chunk.to_vec()).await.map_err(|error| {
+        AppError::new(
+            "remote_exec_stdin_failed",
+            "远程命令输入发送失败。",
+            error,
+            true,
+        )
+    })
 }
 
 fn emit_progress(progress: &Option<OpenProgress>, stage: &str, message: &str) {
