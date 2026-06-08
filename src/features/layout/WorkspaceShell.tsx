@@ -12,10 +12,14 @@ import {
 import * as Dialog from "@radix-ui/react-dialog";
 import { openPath, revealItemInDir } from "@tauri-apps/plugin-opener";
 import {
+  AlertTriangle,
   Clock3,
   Clipboard,
+  CheckCircle2,
+  KeyRound,
   List,
   Loader2,
+  LockKeyhole,
   PanelRightOpen,
   Pencil,
   Play,
@@ -30,7 +34,14 @@ import {
 
 import { ConnectionDialog } from "../connections/ConnectionDialog";
 import { ConnectionPane } from "../connections/ConnectionPane";
-import type { ConnectionProfile, ConnectionProfileInput } from "../connections/connectionTypes";
+import type {
+  ConnectionAuthKind,
+  ConnectionProfile,
+  ConnectionProfileInput,
+  CredentialProfile,
+  CredentialProfileInput,
+  HostKeyInfo,
+} from "../connections/connectionTypes";
 import { RemoteFileEditor } from "../editor/RemoteFileEditor";
 import type { RemoteFileEditorTab } from "../editor/remoteFileEditorTypes";
 import {
@@ -66,9 +77,13 @@ import {
 } from "../settings/settingsTypes";
 import { useSettings } from "../settings/useSettings";
 import { useConnections } from "../connections/useConnections";
+import { useCredentials } from "../connections/useCredentials";
 import { TerminalPanel } from "../terminal/TerminalPanel";
+import type { TerminalOutputEvent } from "../terminal/terminalTypes";
 import { ConfirmDialog } from "../../shared/ui/ConfirmDialog";
 import {
+  connectionTest,
+  knownHostTrust,
   connectionProbeLatency,
   remoteFileCheckPath,
   remoteFileCheckDownloadTarget,
@@ -85,25 +100,66 @@ import {
   remoteFileUploadLocalArchive,
   remoteFileUploadLocalFile,
   remoteFileWrite,
+  terminalClose,
+  terminalConnect,
 } from "../../shared/tauri/commands";
 import { selectLocalUploadDirectories, selectLocalUploadFiles } from "../../shared/tauri/dialog";
-import { listenRemoteFileTransferProgress } from "../../shared/tauri/events";
+import {
+  listenRemoteFileTransferProgress,
+  listenTerminalOutput,
+} from "../../shared/tauri/events";
 import { hasTauriRuntime } from "../../shared/tauri/runtime";
 import { Tooltip } from "../../shared/ui/Tooltip";
 import { AppTitlebar } from "./AppTitlebar";
 
 interface TerminalTab {
+  connectionStep?: ConnectionStepState | null;
   id: string;
   connectionId: string;
   index: number;
+  requestId?: string;
+  sessionId?: string;
   status: string;
   title: string;
+  type: "connecting" | "terminal";
+  warmupOutput: number[];
 }
 
-interface ConnectionPlacementRequest {
+type ConnectionStepMode = "test" | "terminal";
+type ConnectionStepStatus = "idle" | "running" | "waiting_host_key" | "prompt" | "success" | "error";
+type HostKeyDecision = "unknown" | "changed";
+
+interface ConnectionStepState {
+  authKind: ConnectionAuthKind;
+  connection: ConnectionProfile;
+  errorDetail?: ConnectionStepErrorDetail | null;
+  error?: string | null;
+  hostKey?: HostKeyInfo | null;
+  hostKeyDecision?: HostKeyDecision | null;
+  oldHostKeyFingerprint?: string | null;
   id: number;
-  connectionId: string;
-  groupId: string;
+  logs: string[];
+  mode: ConnectionStepMode;
+  password: string;
+  privateKeyPassphrase: string;
+  privateKeyPath: string;
+  sessionId?: string | null;
+  status: ConnectionStepStatus;
+}
+
+interface ConnectionStepErrorDetail {
+  code: string;
+  message: string;
+  rawMessage: string;
+  recoverable: boolean;
+  stage: string;
+  suggestion: string;
+}
+
+interface ParsedHostKeyError {
+  decision: HostKeyDecision;
+  hostKey: HostKeyInfo;
+  oldFingerprint: string | null;
 }
 
 interface ConnectionGroupInfo {
@@ -196,6 +252,13 @@ const uploadTempAppendChunkBytes = fileReadChunkBytes;
 export function WorkspaceShell() {
   const { connections, error, loading, reload, remove, upsert } = useConnections();
   const {
+    credentials,
+    error: credentialError,
+    loading: credentialLoading,
+    remove: removeCredential,
+    upsert: upsertCredential,
+  } = useCredentials();
+  const {
     reset,
     settings,
     updateAppearance,
@@ -207,10 +270,13 @@ export function WorkspaceShell() {
   const [activeTabId, setActiveTabId] = useState<string | null>(null);
   const [activeTabByConnectionId, setActiveTabByConnectionId] = useState<Record<string, string>>({});
   const [activeView, setActiveView] = useState<"workspace" | "settings">("workspace");
+  const [settingsSectionRequest, setSettingsSectionRequest] =
+    useState<"basic" | "credentials" | "appearance" | "terminalTheme" | undefined>();
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editingConnection, setEditingConnection] = useState<ConnectionProfile | null>(null);
   const [selectedConnectionId, setSelectedConnectionId] = useState<string | null>(null);
   const [terminalTabs, setTerminalTabs] = useState<TerminalTab[]>([]);
+  const terminalTabsRef = useRef<TerminalTab[]>([]);
   const [terminalDirectories, setTerminalDirectories] = useState<Record<string, string>>({});
   const [remoteFileTabs, setRemoteFileTabs] = useState<RemoteFileEditorTab[]>([]);
   const [activeRemoteFileTabId, setActiveRemoteFileTabId] = useState<string | null>(null);
@@ -239,11 +305,13 @@ export function WorkspaceShell() {
   );
   const [resizingPane, setResizingPane] = useState<ResizingPane | null>(null);
   const [pendingConnectionGroupId, setPendingConnectionGroupId] = useState<string | null>(null);
-  const [connectionPlacementRequest, setConnectionPlacementRequest] =
-    useState<ConnectionPlacementRequest | null>(null);
   const [connectionGroupCatalog, setConnectionGroupCatalog] =
     useState<ConnectionGroupCatalog>({ assignments: {}, groups: [] });
   const workspaceShellRef = useRef<HTMLElement | null>(null);
+
+  useEffect(() => {
+    terminalTabsRef.current = terminalTabs;
+  }, [terminalTabs]);
 
   const connectionById = useMemo(() => {
     return new Map(connections.map((connection) => [connection.id, connection]));
@@ -274,7 +342,12 @@ export function WorkspaceShell() {
   const activeConnectionTabs = activeConnectionId
     ? terminalTabsByConnection.get(activeConnectionId) || []
     : [];
-  const activeRemoteFileTabs = activeConnectionId
+  const activeTerminalTab = activeTabId
+    ? terminalTabs.find((tab) => tab.id === activeTabId) || null
+    : null;
+  const activeConnectedTerminalTab =
+    activeTerminalTab?.type === "terminal" ? activeTerminalTab : null;
+  const activeRemoteFileTabs = activeConnectionId && activeConnectedTerminalTab
     ? remoteFileTabs.filter((tab) => tab.connectionId === activeConnectionId)
     : [];
   const activeRemoteFileTab =
@@ -286,8 +359,11 @@ export function WorkspaceShell() {
   const hasSessionWorkspace = terminalTabs.length > 0 || remoteFileTabs.length > 0;
   const showingHome = homeActive || !hasSessionWorkspace;
   const showSessionWorkspace = !showingHome && hasSessionWorkspace;
-  const activeTerminalDirectory = activeTabId ? terminalDirectories[activeTabId] || null : null;
-  const remoteFilePanelKey = activeConnection?.id || "no-active-connection";
+  const activeTerminalDirectory = activeConnectedTerminalTab
+    ? terminalDirectories[activeConnectedTerminalTab.id] || null
+    : null;
+  const remoteFileConnection = activeConnectedTerminalTab ? activeConnection : null;
+  const remoteFilePanelKey = remoteFileConnection?.id || "no-active-connection";
   const terminalColorScheme = getTerminalColorScheme(settings.terminalTheme.scheme);
   const terminalTone = getTerminalColorSchemeTone(terminalColorScheme);
   const terminalFontFamily = resolveTerminalFontFamily(settings.appearance);
@@ -655,7 +731,6 @@ export function WorkspaceShell() {
   function activateRemoteFileTab(tab: RemoteFileEditorTab) {
     setHomeActive(false);
     setActiveConnectionId(tab.connectionId);
-    setSelectedConnectionId(tab.connectionId);
     setActiveRemoteFileTabId(tab.id);
 
     const sameConnectionActiveTerminal = activeTabId
@@ -716,7 +791,6 @@ export function WorkspaceShell() {
     }
 
     setActiveConnectionId(null);
-    setSelectedConnectionId(null);
     setHomeActive(true);
   }
 
@@ -1574,16 +1648,13 @@ export function WorkspaceShell() {
   }
 
   async function saveConnection(input: ConnectionProfileInput) {
-    const saved = await upsert(input);
+    const saved = await upsert({
+      ...input,
+      group: input.group || pendingConnectionGroupId || undefined,
+    });
     setSelectedConnectionId(saved.id);
-    if (pendingConnectionGroupId) {
-      setConnectionPlacementRequest((request) => ({
-        id: (request?.id || 0) + 1,
-        connectionId: saved.id,
-        groupId: pendingConnectionGroupId,
-      }));
-      setPendingConnectionGroupId(null);
-    }
+    setPendingConnectionGroupId(null);
+    return saved;
   }
 
   async function deleteConnection(connection: ConnectionProfile) {
@@ -1593,6 +1664,7 @@ export function WorkspaceShell() {
     forgetActiveConnectionTabs([connection.id]);
     setTerminalTabs((tabs) => {
       const nextTabs = tabs.filter((tab) => tab.connectionId !== connection.id);
+      terminalTabsRef.current = nextTabs;
       if (nextTabs.length === 0) {
         setHomeActive(true);
       }
@@ -1610,7 +1682,11 @@ export function WorkspaceShell() {
     }
   }
 
-  function buildTerminalTab(tabs: TerminalTab[], connection: ConnectionProfile): TerminalTab {
+  function buildConnectingTab(
+    tabs: TerminalTab[],
+    connection: ConnectionProfile,
+    step: ConnectionStepState,
+  ): TerminalTab {
     const nextIndex =
       Math.max(
         -1,
@@ -1618,12 +1694,71 @@ export function WorkspaceShell() {
       ) + 1;
 
     return {
-      id: `terminal-${connection.id}-${Date.now().toString()}-${nextIndex.toString()}`,
       connectionId: connection.id,
+      connectionStep: step,
+      id: `connection-${connection.id}-${step.id.toString()}`,
       index: nextIndex,
-      status: "等待连接",
-      title: nextIndex === 0 ? "终端" : `终端 ${nextIndex.toString()}`,
+      status: connectionStepStatusTitle(step),
+      title: step.mode === "terminal" ? "连接准备" : "连接测试",
+      type: "connecting",
+      warmupOutput: [],
     };
+  }
+
+  function updateConnectingTabStep(tabId: string, step: ConnectionStepState) {
+    setTerminalTabs((tabs) =>
+      {
+        const nextTabs: TerminalTab[] = tabs.map((tab) =>
+        tab.id === tabId
+          ? {
+              ...tab,
+              connectionStep: step,
+              status: connectionStepStatusTitle(step),
+              title:
+                step.status === "error"
+                  ? "连接失败"
+                  : step.mode === "terminal"
+                    ? "连接准备"
+                    : "连接测试",
+            }
+          : tab,
+        );
+        terminalTabsRef.current = nextTabs;
+        return nextTabs;
+      },
+    );
+  }
+
+  function replaceConnectingTabWithTerminal(
+    tabId: string,
+    sessionId: string,
+    warmupOutput: number[] = [],
+    requestId?: string,
+  ) {
+    setTerminalTabs((tabs) =>
+      {
+        const nextTabs = tabs.map((tab) =>
+        tab.id === tabId
+          ? {
+              ...tab,
+              connectionStep: null,
+              requestId,
+              sessionId,
+              status: "已连接",
+              title: tab.index === 0 ? "终端" : `终端 ${tab.index.toString()}`,
+              type: "terminal" as const,
+              warmupOutput,
+            }
+          : tab,
+        );
+        terminalTabsRef.current = nextTabs;
+        return nextTabs;
+      },
+    );
+  }
+
+  function connectingTabExists(tabId: string) {
+    return terminalTabsRef.current.some((tab) => tab.id === tabId && tab.type === "connecting");
   }
 
   function rememberActiveTab(tab: TerminalTab) {
@@ -1653,48 +1788,33 @@ export function WorkspaceShell() {
     );
   }
 
+  function pendingTabForConnection(connectionId: string, tabs = terminalTabs) {
+    return tabs.find((tab) => tab.connectionId === connectionId && tab.type === "connecting") || null;
+  }
+
   function activateTerminalTab(tab: TerminalTab) {
     setHomeActive(false);
     setActiveConnectionId(tab.connectionId);
     setActiveTabId(tab.id);
-    setSelectedConnectionId(tab.connectionId);
     rememberActiveTab(tab);
   }
 
   function selectConnection(connection: ConnectionProfile) {
     setSelectedConnectionId(connection.id);
-
-    const existingTab = preferredTabForConnection(connection.id);
-    if (existingTab) {
-      activateTerminalTab(existingTab);
-    }
   }
 
   function openConnectionSession(connection: ConnectionProfile) {
-    setSelectedConnectionId(connection.id);
-
-    const existingTab = preferredTabForConnection(connection.id);
-    if (existingTab) {
-      activateTerminalTab(existingTab);
+    const pendingTab = pendingTabForConnection(connection.id);
+    if (pendingTab) {
+      activateTerminalTab(pendingTab);
       return;
     }
 
-    openTerminal(connection);
+    startConnectionStep(connection, "terminal");
   }
 
   function openTerminal(connection: ConnectionProfile) {
-    setHomeActive(false);
-    setSelectedConnectionId(connection.id);
-    setActiveConnectionId(connection.id);
-    setTerminalTabs((tabs) => {
-      const tab = buildTerminalTab(tabs, connection);
-      setActiveTabId(tab.id);
-      setActiveTabByConnectionId((activeTabs) => ({
-        ...activeTabs,
-        [connection.id]: tab.id,
-      }));
-      return [...tabs, tab];
-    });
+    startConnectionStep(connection, "terminal");
   }
 
   function closeTerminal(tabId: string) {
@@ -1702,6 +1822,7 @@ export function WorkspaceShell() {
     setTerminalTabs((tabs) => {
       const closingTab = tabs.find((tab) => tab.id === tabId);
       const nextTabs = tabs.filter((tab) => tab.id !== tabId);
+      terminalTabsRef.current = nextTabs;
       if (nextTabs.length === 0 && remoteFileTabs.length === 0) {
         setHomeActive(true);
       }
@@ -1721,7 +1842,6 @@ export function WorkspaceShell() {
 
         setActiveTabId(nextActiveTab?.id || null);
         setActiveConnectionId(nextActiveTab?.connectionId || nextActiveFile?.connectionId || null);
-        setSelectedConnectionId(nextActiveTab?.connectionId || nextActiveFile?.connectionId || null);
         if (nextActiveFile && !nextActiveTab) {
           setActiveRemoteFileTabId(nextActiveFile.id);
         }
@@ -1740,7 +1860,6 @@ export function WorkspaceShell() {
           remoteFileTabs[0] ||
           null;
         setActiveConnectionId(nextTabs[0]?.connectionId || nextActiveFile?.connectionId || null);
-        setSelectedConnectionId(nextTabs[0]?.connectionId || nextActiveFile?.connectionId || null);
         forgetActiveConnectionTabs([closingTab.connectionId]);
       }
       return nextTabs;
@@ -1753,6 +1872,7 @@ export function WorkspaceShell() {
     forgetActiveConnectionTabs([connectionId]);
     setTerminalTabs((tabs) => {
       const nextTabs = tabs.filter((tab) => tab.connectionId !== connectionId);
+      terminalTabsRef.current = nextTabs;
       if (nextTabs.length === 0 && remoteFileTabs.length === 0) {
         setHomeActive(true);
       }
@@ -1765,7 +1885,6 @@ export function WorkspaceShell() {
           null;
         setActiveTabId(nextActiveTab?.id || null);
         setActiveConnectionId(nextActiveTab?.connectionId || nextActiveFile?.connectionId || null);
-        setSelectedConnectionId(nextActiveTab?.connectionId || nextActiveFile?.connectionId || null);
         if (nextActiveFile) {
           setActiveRemoteFileTabId(nextActiveFile.id);
         }
@@ -1780,6 +1899,234 @@ export function WorkspaceShell() {
       openTerminal(activeConnection);
     }
   }
+
+  async function moveConnectionToGroup(connection: ConnectionProfile, groupId: string | null) {
+    await upsert(connectionToInput({ ...connection, group: groupId || undefined }));
+  }
+
+  function openCredentialSettings() {
+    setSettingsSectionRequest("credentials");
+    setActiveView("settings");
+  }
+
+  async function saveConnectionFromDialog(input: ConnectionProfileInput) {
+    await saveConnection(input);
+  }
+
+  async function testConnectionFromDialog(input: ConnectionProfileInput) {
+    const saved = await saveConnection(input);
+    if (!hasTauriRuntime()) {
+      await wait(260);
+      return;
+    }
+    await connectionTest({
+      connection_id: saved.id,
+    });
+  }
+
+  async function saveCredentialFromSettings(input: CredentialProfileInput) {
+    await upsertCredential(input);
+  }
+
+  async function deleteCredentialFromSettings(credential: CredentialProfile) {
+    await removeCredential(credential.id);
+  }
+
+  function startConnectionStep(connection: ConnectionProfile, mode: ConnectionStepMode) {
+    const authKind = connection.prompt_auth_kind || connection.inline_auth_kind || "password";
+    const step: ConnectionStepState = {
+      authKind,
+      connection,
+      error: null,
+      hostKey: null,
+      hostKeyDecision: null,
+      id: Date.now(),
+      logs: [
+        `${mode === "terminal" ? "打开终端" : "测试连接"}：${formatConnectionAddress(connection)}`,
+      ],
+      mode,
+      password: "",
+      privateKeyPassphrase: "",
+      privateKeyPath: "",
+      oldHostKeyFingerprint: null,
+      sessionId: null,
+      status: connection.credential_mode === "prompt" ? "prompt" : "idle",
+    };
+    const tab = buildConnectingTab(terminalTabsRef.current, connection, step);
+    setTerminalTabs((tabs) => {
+      const nextTabs = [...tabs, tab];
+      terminalTabsRef.current = nextTabs;
+      return nextTabs;
+    });
+    setHomeActive(false);
+    setActiveConnectionId(connection.id);
+    setActiveTabId(tab.id);
+    rememberActiveTab(tab);
+    if (connection.credential_mode !== "prompt") {
+      void runConnectionStep(tab.id, step);
+    }
+  }
+
+  async function runConnectionStep(tabId: string, step: ConnectionStepState) {
+    const runningStep: ConnectionStepState = {
+      ...step,
+      errorDetail: null,
+      error: null,
+      hostKey: null,
+      hostKeyDecision: null,
+      logs: [...step.logs, "读取连接配置", "建立网络连接"],
+      oldHostKeyFingerprint: null,
+      status: "running",
+    };
+    updateConnectingTabStep(tabId, runningStep);
+
+    if (!hasTauriRuntime()) {
+      await wait(260);
+      if (!connectingTabExists(tabId)) {
+        return;
+      }
+      const previewStep = {
+        ...runningStep,
+        logs: [...runningStep.logs, "普通浏览器预览已跳过真实 SSH", "连接步骤完成"],
+        status: "success" as ConnectionStepStatus,
+      };
+      if (step.mode === "terminal") {
+        replaceConnectingTabWithTerminal(tabId, `preview-${Date.now().toString()}`);
+      } else {
+        updateConnectingTabStep(tabId, previewStep);
+      }
+      return;
+    }
+
+    const prepareRequestId = `prepare-${step.id.toString()}`;
+    const warmupOutput: number[] = [];
+    let stopWarmupCapture: (() => void) | null = null;
+
+    try {
+      if (step.mode === "terminal") {
+        stopWarmupCapture = await listenTerminalOutput((event: TerminalOutputEvent) => {
+          if (event.request_id !== prepareRequestId) {
+            return;
+          }
+          warmupOutput.push(...event.data);
+        });
+      }
+
+      if (step.mode === "test") {
+        await connectionTest(runtimeCredentialRequest(step));
+        if (!connectingTabExists(tabId)) {
+          return;
+        }
+        updateConnectingTabStep(tabId, {
+          ...runningStep,
+          logs: [...runningStep.logs, "认证通过", "连接测试通过"],
+          status: "success",
+        });
+        return;
+      }
+
+      const sessionId = await terminalConnect({
+        auth_kind: step.connection.credential_mode === "prompt" ? step.authKind : undefined,
+        cols: 80,
+        connection_id: step.connection.id,
+        host: step.connection.host,
+        password: step.password || undefined,
+        port: step.connection.port,
+        private_key_path: step.privateKeyPath || undefined,
+        private_key_passphrase: step.privateKeyPassphrase || undefined,
+        request_id: prepareRequestId,
+        rows: 24,
+        username: step.connection.username,
+      });
+      stopWarmupCapture?.();
+      stopWarmupCapture = null;
+      if (!connectingTabExists(tabId)) {
+        await terminalClose(sessionId).catch(() => {});
+        return;
+      }
+      replaceConnectingTabWithTerminal(tabId, sessionId, warmupOutput, prepareRequestId);
+    } catch (nextError) {
+      stopWarmupCapture?.();
+      if (!connectingTabExists(tabId)) {
+        return;
+      }
+      const errorDetail = describeConnectionStepError(nextError);
+      const hostKeyError = parseHostKeyError(nextError);
+      if (hostKeyError) {
+        updateConnectingTabStep(tabId, {
+          ...runningStep,
+          error: errorDetail.message,
+          errorDetail,
+          hostKey: hostKeyError.hostKey,
+          hostKeyDecision: hostKeyError.decision,
+          logs: [...runningStep.logs, "等待确认主机密钥"],
+          oldHostKeyFingerprint: hostKeyError.oldFingerprint,
+          status: "waiting_host_key",
+        });
+        return;
+      }
+
+      updateConnectingTabStep(tabId, {
+        ...runningStep,
+        error: errorDetail.message,
+        errorDetail,
+        logs: appendUniqueLogs(runningStep.logs, [
+          errorDetail.message,
+          errorDetail.rawMessage,
+        ]),
+        status: "error",
+      });
+    }
+  }
+
+  async function trustHostKeyAndRetry(tabId: string, step: ConnectionStepState) {
+    if (!step.hostKey) {
+      return;
+    }
+    const nextStep: ConnectionStepState = {
+      ...step,
+      logs: [
+        ...step.logs,
+        step.hostKeyDecision === "changed"
+          ? "已更新主机密钥信任，重新连接"
+          : "已信任主机密钥，重新连接",
+      ],
+      status: "running",
+    };
+    updateConnectingTabStep(tabId, nextStep);
+    try {
+      await knownHostTrust(step.hostKey);
+      await runConnectionStep(tabId, nextStep);
+    } catch (nextError) {
+      if (!connectingTabExists(tabId)) {
+        return;
+      }
+      const errorDetail = describeConnectionStepError(nextError);
+      updateConnectingTabStep(tabId, {
+        ...nextStep,
+        error: errorDetail.message,
+        errorDetail,
+        logs: appendUniqueLogs(nextStep.logs, [
+          errorDetail.message,
+          errorDetail.rawMessage,
+        ]),
+        status: "error",
+      });
+    }
+  }
+
+  function submitPromptCredential(
+    tabId: string,
+    step: ConnectionStepState,
+    event: FormEvent<HTMLFormElement>,
+  ) {
+    event.preventDefault();
+    void runConnectionStep(tabId, {
+      ...step,
+      logs: [...step.logs, "已输入本次凭据"],
+    });
+  }
+
 
   function handlePaneResizeStart(
     side: ResizablePaneSide,
@@ -1998,7 +2345,6 @@ export function WorkspaceShell() {
       <main className="workspace-shell" ref={workspaceShellRef} hidden={activeView === "settings"}>
         <ConnectionPane
           connections={connections}
-          connectionPlacementRequest={connectionPlacementRequest}
           error={error}
           loading={loading}
           onConnect={openConnectionSession}
@@ -2006,6 +2352,7 @@ export function WorkspaceShell() {
           onDelete={deleteConnection}
           onEdit={editConnection}
           onGroupCatalogChange={setConnectionGroupCatalog}
+          onMoveConnectionToGroup={moveConnectionToGroup}
           onOpen={openTerminal}
           onOpenSettings={() => setActiveView("settings")}
           onRefresh={reload}
@@ -2157,20 +2504,62 @@ export function WorkspaceShell() {
                 </nav>
 
                 <section className="terminal-stack" aria-label="终端">
-                  {terminalTabs.map((tab) => (
-                    <TerminalPanel
-                      active={!showingHome && tab.id === activeTabId}
-                      connection={connectionById.get(tab.connectionId) || null}
-                      fontFamily={terminalFontFamily}
-                      fontSize={settings.appearance.terminalFontSize}
-                      key={tab.id}
-                      onCurrentDirectoryChange={updateTerminalDirectory}
-                      onStatusChange={updateTabStatus}
-                      tabId={tab.id}
-                      theme={terminalColorScheme.theme}
-                      title={tab.title}
-                    />
-                  ))}
+                  {terminalTabs.map((tab) => {
+                    const tabStep = tab.type === "connecting" ? tab.connectionStep : null;
+                    return tabStep ? (
+                      <ConnectionStepPanel
+                        key={tab.id}
+                        step={tabStep}
+                        active={!showingHome && tab.id === activeTabId}
+                        onCancel={() => closeTerminal(tab.id)}
+                        onEdit={(connection) => {
+                          closeTerminal(tab.id);
+                          editConnection(connection);
+                        }}
+                        onPromptAuthKindChange={(authKind) =>
+                          updateConnectingTabStep(tab.id, {
+                            ...tabStep,
+                            authKind,
+                            password: "",
+                            privateKeyPath: "",
+                          })
+                        }
+                        onPromptPasswordChange={(password) =>
+                          updateConnectingTabStep(tab.id, { ...tabStep, password })
+                        }
+                        onPromptPrivateKeyPathChange={(privateKeyPath) =>
+                          updateConnectingTabStep(tab.id, { ...tabStep, privateKeyPath })
+                        }
+                        onPromptPrivateKeyPassphraseChange={(privateKeyPassphrase) =>
+                          updateConnectingTabStep(tab.id, {
+                            ...tabStep,
+                            privateKeyPassphrase,
+                          })
+                        }
+                        onRetry={() => void runConnectionStep(tab.id, tabStep)}
+                        onSubmitPrompt={(event) =>
+                          submitPromptCredential(tab.id, tabStep, event)
+                        }
+                        onTrustHostKey={() => void trustHostKeyAndRetry(tab.id, tabStep)}
+                      />
+                    ) : tab.type === "terminal" && tab.sessionId ? (
+                      <TerminalPanel
+                        active={!showingHome && tab.id === activeTabId}
+                        connection={connectionById.get(tab.connectionId) || null}
+                        fontFamily={terminalFontFamily}
+                        fontSize={settings.appearance.terminalFontSize}
+                        initialSessionId={tab.sessionId}
+                        initialOutput={tab.warmupOutput}
+                        initialRequestId={tab.requestId}
+                        key={tab.id}
+                        onCurrentDirectoryChange={updateTerminalDirectory}
+                        onStatusChange={updateTabStatus}
+                        tabId={tab.id}
+                        theme={terminalColorScheme.theme}
+                        title={tab.title}
+                      />
+                    ) : null;
+                  })}
                 </section>
               </section>
             </section>
@@ -2210,7 +2599,7 @@ export function WorkspaceShell() {
         {hasSessionWorkspace ? (
           <RemoteFilePanel
             activeTool={rightTool}
-            connection={activeConnection}
+            connection={remoteFileConnection}
             key={remoteFilePanelKey}
             refreshRequest={remoteFileRefreshRequest}
             transferAttention={transferAttention}
@@ -2244,9 +2633,14 @@ export function WorkspaceShell() {
 
         <ConnectionDialog
           connection={editingConnection}
+          credentials={credentials}
+          defaultGroup={pendingConnectionGroupId}
+          groups={connectionGroupCatalog.groups}
           onClose={closeConnectionDialog}
           onDelete={deleteConnection}
-          onSave={saveConnection}
+          onManageCredentials={openCredentialSettings}
+          onSave={saveConnectionFromDialog}
+          onTest={testConnectionFromDialog}
           open={dialogOpen}
         />
       </main>
@@ -2513,10 +2907,16 @@ export function WorkspaceShell() {
       </Dialog.Root>
 
       <SettingsView
+        activeSection={settingsSectionRequest}
+        credentials={credentials}
+        credentialError={credentialError}
+        credentialLoading={credentialLoading}
         hidden={activeView !== "settings"}
         settings={settings}
+        onDeleteCredential={deleteCredentialFromSettings}
         onReset={reset}
         onReturnWorkspace={() => setActiveView("workspace")}
+        onSaveCredential={saveCredentialFromSettings}
         onUpdateAppearance={updateAppearance}
         onUpdateBasic={updateBasic}
         onUpdateFileTransfer={updateFileTransfer}
@@ -2631,6 +3031,394 @@ function RemoteFileTransferPanel({
       </div>
     </section>
   );
+}
+
+function ConnectionStepPanel({
+  active,
+  step,
+  onCancel,
+  onEdit,
+  onPromptAuthKindChange,
+  onPromptPasswordChange,
+  onPromptPrivateKeyPathChange,
+  onPromptPrivateKeyPassphraseChange,
+  onRetry,
+  onSubmitPrompt,
+  onTrustHostKey,
+}: {
+  active: boolean;
+  step: ConnectionStepState;
+  onCancel: () => void;
+  onEdit: (connection: ConnectionProfile) => void;
+  onPromptAuthKindChange: (authKind: ConnectionAuthKind) => void;
+  onPromptPasswordChange: (password: string) => void;
+  onPromptPrivateKeyPathChange: (path: string) => void;
+  onPromptPrivateKeyPassphraseChange: (passphrase: string) => void;
+  onRetry: () => void;
+  onSubmitPrompt: (event: FormEvent<HTMLFormElement>) => void;
+  onTrustHostKey: () => void;
+}) {
+  const hostKeyChanged = step.hostKeyDecision === "changed";
+  const activeStepIndex = currentConnectionStepIndex(step);
+  const closeLabel = step.status === "running" ? "取消" : "关闭";
+  const stepItems = [
+    "读取配置",
+    "网络连接",
+    "主机密钥",
+    "用户认证",
+    step.mode === "terminal" ? "打开终端" : "完成测试",
+  ];
+
+  return (
+    <section
+      className={`connection-step-page ${active ? "" : "is-hidden"}`}
+      aria-label="连接步骤"
+      aria-hidden={!active}
+    >
+      <header className="connection-step-head">
+        <span>
+          <strong>{step.mode === "terminal" ? "连接准备" : "连接测试"}</strong>
+          <small>
+            {step.connection.name} · {formatConnectionAddress(step.connection)}
+          </small>
+        </span>
+        <div className="connection-step-actions">
+          <button type="button" onClick={() => onEdit(step.connection)}>
+            <Pencil className="ui-icon" aria-hidden="true" />
+            <span>编辑连接</span>
+          </button>
+          <button type="button" onClick={onCancel}>
+            <X className="ui-icon" aria-hidden="true" />
+            <span>{closeLabel}</span>
+          </button>
+        </div>
+      </header>
+
+      <div className="connection-step-body">
+        <section className="connection-step-shell">
+          <aside className="connection-step-rail" aria-label="连接阶段">
+            <div className={`connection-step-status ${step.status}`}>
+              {step.status === "running" ? (
+                <Loader2 className="ui-icon spin" aria-hidden="true" />
+              ) : step.status === "error" ? (
+                <AlertTriangle className="ui-icon" aria-hidden="true" />
+              ) : step.status === "waiting_host_key" ? (
+                <LockKeyhole className="ui-icon" aria-hidden="true" />
+              ) : step.status === "prompt" ? (
+                <KeyRound className="ui-icon" aria-hidden="true" />
+              ) : (
+                <CheckCircle2 className="ui-icon" aria-hidden="true" />
+              )}
+              <span>
+                <strong>{connectionStepStatusTitle(step)}</strong>
+                <small>{connectionStepStatusDescription(step)}</small>
+              </span>
+            </div>
+
+            <ol className="connection-step-list">
+              {stepItems.map((label, index) => {
+                const state = connectionStepItemState(step, index, activeStepIndex);
+                return (
+                  <li className={state} key={label}>
+                    <span>
+                      {state === "active" && step.status === "running" ? (
+                        <Loader2 className="ui-icon spin" aria-hidden="true" />
+                      ) : state === "done" ? (
+                        <CheckCircle2 className="ui-icon" aria-hidden="true" />
+                      ) : state === "error" ? (
+                        <AlertTriangle className="ui-icon" aria-hidden="true" />
+                      ) : (
+                        <i className="connection-step-dot" aria-hidden="true" />
+                      )}
+                    </span>
+                    <strong>{label}</strong>
+                  </li>
+                );
+              })}
+            </ol>
+          </aside>
+
+          <section className="connection-step-card">
+            <div className="connection-step-card-head">
+              <span>
+                <strong>{connectionStepPanelTitle(step)}</strong>
+                <small>{connectionStepPanelDescription(step)}</small>
+              </span>
+            </div>
+
+            {step.status === "prompt" ? (
+              <form className="connection-prompt-form" onSubmit={onSubmitPrompt}>
+                <header>
+                  <KeyRound className="ui-icon" aria-hidden="true" />
+                  <span>
+                    <strong>输入本次凭据</strong>
+                    <small>这部分不会保存到连接配置。</small>
+                  </span>
+                </header>
+                <label>
+                  <span>认证方式</span>
+                  <select
+                    value={step.authKind}
+                    onChange={(event) =>
+                      onPromptAuthKindChange(event.currentTarget.value as ConnectionAuthKind)
+                    }
+                  >
+                    <option value="password">密码</option>
+                    <option value="private_key">私钥</option>
+                  </select>
+                </label>
+                {step.authKind === "password" ? (
+                  <label>
+                    <span>密码</span>
+                    <input
+                      type="password"
+                      value={step.password}
+                      onChange={(event) => onPromptPasswordChange(event.currentTarget.value)}
+                    />
+                  </label>
+                ) : (
+                  <>
+                    <label>
+                      <span>私钥路径</span>
+                      <input
+                        value={step.privateKeyPath}
+                        placeholder="~/.ssh/id_ed25519"
+                        onChange={(event) =>
+                          onPromptPrivateKeyPathChange(event.currentTarget.value)
+                        }
+                      />
+                    </label>
+                    <label>
+                      <span>私钥口令</span>
+                      <input
+                        type="password"
+                        value={step.privateKeyPassphrase}
+                        onChange={(event) =>
+                          onPromptPrivateKeyPassphraseChange(event.currentTarget.value)
+                        }
+                      />
+                    </label>
+                  </>
+                )}
+                <button className="primary-button" type="submit">
+                  继续连接
+                </button>
+              </form>
+            ) : null}
+
+            {step.status === "waiting_host_key" && step.hostKey ? (
+              <div className="host-key-confirm">
+                <header>
+                  <LockKeyhole className="ui-icon" aria-hidden="true" />
+                  <span>
+                    <strong>确认主机密钥</strong>
+                    <small>
+                      {hostKeyChanged ? "主机密钥已变化" : step.hostKey.key_algorithm}
+                    </small>
+                  </span>
+                </header>
+                {hostKeyChanged && step.oldHostKeyFingerprint ? (
+                  <code>旧指纹：{step.oldHostKeyFingerprint}</code>
+                ) : null}
+                <code>{step.hostKey.fingerprint_sha256}</code>
+                {step.error ? <p className="form-error">{step.error}</p> : null}
+                <button className="primary-button" type="button" onClick={onTrustHostKey}>
+                  {hostKeyChanged ? "更新信任并继续" : "信任并继续"}
+                </button>
+              </div>
+            ) : null}
+
+            {step.status === "running" ? (
+              <div className="connection-step-running">
+                <Loader2 className="ui-icon spin" aria-hidden="true" />
+                <span>连接中...</span>
+              </div>
+            ) : null}
+
+            {step.status === "success" && step.mode === "test" ? (
+              <div className="connection-step-success">
+                <CheckCircle2 className="ui-icon" aria-hidden="true" />
+                <span>连接测试通过。</span>
+              </div>
+            ) : null}
+
+            {step.status === "error" ? (
+              <div className="connection-step-error">
+                <header>
+                  <AlertTriangle className="ui-icon" aria-hidden="true" />
+                  <span>
+                    <strong>{step.errorDetail?.message || step.error || "连接失败"}</strong>
+                    <small>{step.errorDetail?.stage || "连接过程未完成"}</small>
+                  </span>
+                </header>
+                {step.errorDetail?.rawMessage ? (
+                  <dl>
+                    <div>
+                      <dt>底层原因</dt>
+                      <dd>{step.errorDetail.rawMessage}</dd>
+                    </div>
+                    <div>
+                      <dt>建议处理</dt>
+                      <dd>{step.errorDetail.suggestion}</dd>
+                    </div>
+                    <div>
+                      <dt>错误码</dt>
+                      <dd>{step.errorDetail.code}</dd>
+                    </div>
+                  </dl>
+                ) : null}
+                <button type="button" onClick={onRetry}>
+                  重试
+                </button>
+              </div>
+            ) : null}
+
+            <div className="connection-step-log" aria-label="连接日志">
+              <header>
+                <strong>连接日志</strong>
+                <small>{step.logs.length.toString()} 条</small>
+              </header>
+              <div>
+                {step.logs.map((line, index) => (
+                  <code key={`${line}-${index.toString()}`}>{line}</code>
+                ))}
+              </div>
+            </div>
+          </section>
+        </section>
+      </div>
+    </section>
+  );
+}
+
+function currentConnectionStepIndex(step: ConnectionStepState) {
+  if (step.status === "success") {
+    return 4;
+  }
+  if (step.status === "waiting_host_key") {
+    return 2;
+  }
+  if (step.status === "prompt") {
+    return 3;
+  }
+  if (step.status === "error") {
+    return connectionStepErrorIndex(step.errorDetail?.code || "");
+  }
+  return Math.min(Math.max(step.logs.length - 1, 1), 4);
+}
+
+function connectionStepErrorIndex(code: string) {
+  if (
+    code === "terminal_tcp_connect_failed" ||
+    code === "terminal_connect_failed" ||
+    code === "terminal_connect_timeout" ||
+    code.startsWith("proxy_")
+  ) {
+    return 1;
+  }
+  if (code === "host_key_unknown" || code === "host_key_changed") {
+    return 2;
+  }
+  if (
+    code === "terminal_auth_failed" ||
+    code === "terminal_auth_rejected" ||
+    code === "terminal_auth_timeout" ||
+    code === "terminal_auth_missing" ||
+    code === "terminal_private_key_invalid" ||
+    code.startsWith("credential_") ||
+    code.startsWith("connection_credential_")
+  ) {
+    return 3;
+  }
+  if (
+    code === "terminal_channel_open_failed" ||
+    code === "terminal_pty_failed" ||
+    code === "terminal_shell_failed"
+  ) {
+    return 4;
+  }
+  return 1;
+}
+
+function connectionStepItemState(
+  step: ConnectionStepState,
+  index: number,
+  activeStepIndex: number,
+) {
+  if (step.status === "success" || index < activeStepIndex) {
+    return "done";
+  }
+  if (step.status === "error" && index === activeStepIndex) {
+    return "error";
+  }
+  if (index === activeStepIndex) {
+    return "active";
+  }
+  return "pending";
+}
+
+function connectionStepStatusTitle(step: ConnectionStepState) {
+  if (step.status === "success") {
+    return "测试通过";
+  }
+  if (step.status === "error") {
+    return "连接失败";
+  }
+  if (step.status === "waiting_host_key") {
+    return "等待确认";
+  }
+  if (step.status === "prompt") {
+    return "需要凭据";
+  }
+  return "正在检查";
+}
+
+function connectionStepStatusDescription(step: ConnectionStepState) {
+  if (step.status === "success") {
+    return "目标主机和认证均可用。";
+  }
+  if (step.status === "error") {
+    return "请查看日志后重试或编辑连接。";
+  }
+  if (step.status === "waiting_host_key") {
+    return "确认主机指纹后继续连接。";
+  }
+  if (step.status === "prompt") {
+    return "请输入本次连接使用的认证材料。";
+  }
+  return "按步骤校验网络、密钥和认证。";
+}
+
+function connectionStepPanelTitle(step: ConnectionStepState) {
+  if (step.status === "success") {
+    return "连接检查完成";
+  }
+  if (step.status === "error") {
+    return "连接未完成";
+  }
+  if (step.status === "waiting_host_key") {
+    return "主机密钥确认";
+  }
+  if (step.status === "prompt") {
+    return "补充认证信息";
+  }
+  return "执行连接检查";
+}
+
+function connectionStepPanelDescription(step: ConnectionStepState) {
+  if (step.status === "success") {
+    return "本次测试没有创建终端会话。";
+  }
+  if (step.status === "error") {
+    return "错误保留在当前页面，不会写入终端。";
+  }
+  if (step.status === "waiting_host_key") {
+    return "首次连接或指纹变化时需要显式信任。";
+  }
+  if (step.status === "prompt") {
+    return "临时凭据只用于这一次连接。";
+  }
+  return "连接步骤会在这里实时更新。";
 }
 
 function RemoteFilePropertiesTable({ metadata }: { metadata: RemoteFileEntryMetadata }) {
@@ -2884,7 +3672,7 @@ function ConnectionHome({
                 </span>
                 <span className="remark-cell">
                   <span className="remark-main">{primaryNote(connection)}</span>
-                  <span className="remark-sub">{connection.auth_kind === "private_key" ? "密钥登录" : "密码登录"}</span>
+                  <span className="remark-sub">{credentialLabel(connection)}</span>
                 </span>
                 <span className="group-cell">
                   <span
@@ -3167,6 +3955,17 @@ function primaryNote(connection: ConnectionProfile) {
   return note.split(/[;；,，]/)[0]?.trim() || note;
 }
 
+function credentialLabel(connection: ConnectionProfile) {
+  if (connection.credential_mode === "saved") {
+    return "保存凭据";
+  }
+  if (connection.credential_mode === "prompt") {
+    return "每次询问";
+  }
+  const authKind = connection.inline_auth_kind || connection.auth_kind;
+  return authKind === "private_key" ? "密钥登录" : "密码登录";
+}
+
 function estimateLatency(connection: ConnectionProfile) {
   return 4 + (latencySeed(connection) % 66);
 }
@@ -3268,6 +4067,246 @@ function formatError(error: unknown) {
     return String((error as { message: unknown }).message);
   }
   return String(error);
+}
+
+function appendUniqueLogs(logs: string[], nextLines: string[]) {
+  const next = [...logs];
+  nextLines
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .forEach((line) => {
+      if (next[next.length - 1] !== line) {
+        next.push(line);
+      }
+    });
+  return next;
+}
+
+function describeConnectionStepError(error: unknown): ConnectionStepErrorDetail {
+  const code =
+    typeof error === "object" && error !== null && "code" in error
+      ? String((error as { code: unknown }).code)
+      : "unknown_error";
+  const message = formatError(error);
+  const rawMessage =
+    typeof error === "object" && error !== null && "raw_message" in error
+      ? normalizeErrorText((error as { raw_message: unknown }).raw_message)
+      : normalizeErrorText(error);
+  const recoverable =
+    typeof error === "object" && error !== null && "recoverable" in error
+      ? Boolean((error as { recoverable: unknown }).recoverable)
+      : true;
+
+  return {
+    code,
+    message: connectionErrorSummary(code, rawMessage, message),
+    rawMessage: rawMessage || message,
+    recoverable,
+    stage: connectionErrorStage(code, rawMessage),
+    suggestion: connectionErrorSuggestion(code, rawMessage),
+  };
+}
+
+function normalizeErrorText(value: unknown) {
+  return String(value ?? "")
+    .replace(/^Error:\s*/i, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function connectionErrorStage(code: string, rawMessage: string) {
+  const raw = rawMessage.toLowerCase();
+  if (isConnectionTimeoutError(code, raw)) {
+    return "网络连接超时";
+  }
+  if (
+    code === "terminal_connect_failed" ||
+    code === "terminal_tcp_connect_failed" ||
+    code === "remote_exec_connect_failed" ||
+    code.startsWith("proxy_") ||
+    raw.includes("connection refused") ||
+    raw.includes("actively refused") ||
+    raw.includes("no route") ||
+    raw.includes("unreachable") ||
+    raw.includes("reset")
+  ) {
+    return "网络连接阶段";
+  }
+  if (code === "host_key_unknown" || code === "host_key_changed") {
+    return "主机密钥阶段";
+  }
+  if (
+    code === "terminal_auth_failed" ||
+    code === "terminal_auth_rejected" ||
+    code === "terminal_auth_timeout" ||
+    code === "terminal_private_key_invalid" ||
+    code.startsWith("credential_")
+  ) {
+    return "用户认证阶段";
+  }
+  if (
+    code === "terminal_channel_open_failed" ||
+    code === "terminal_pty_failed" ||
+    code === "terminal_shell_failed"
+  ) {
+    return "远程终端初始化阶段";
+  }
+  return "连接阶段";
+}
+
+function connectionErrorSuggestion(code: string, rawMessage: string) {
+  const raw = rawMessage.toLowerCase();
+  if (isConnectionTimeoutError(code, raw)) {
+    return "检查主机 IP、端口、防火墙和网络连通性；确认目标 SSH 服务可以从本机访问。";
+  }
+  if (raw.includes("connection refused") || raw.includes("actively refused")) {
+    return "目标主机可达但端口拒绝连接，确认 SSH 服务已启动、端口填写正确，或安全组允许访问。";
+  }
+  if (raw.includes("no route") || raw.includes("unreachable")) {
+    return "本机到目标主机没有可用路由，检查 VPN、网段、网关或代理配置。";
+  }
+  if (raw.includes("reset")) {
+    return "连接被对端重置，检查 SSH 服务策略、代理链路或中间防火墙。";
+  }
+  if (code.startsWith("proxy_")) {
+    return "检查代理类型、代理地址端口以及代理用户名密码。";
+  }
+  if (code === "terminal_auth_rejected") {
+    return "主机已响应但认证被拒绝，检查用户名、密码或私钥是否匹配。";
+  }
+  if (code === "terminal_private_key_invalid") {
+    return "检查私钥路径、文件格式和私钥口令。";
+  }
+  if (code === "terminal_auth_failed" || code === "terminal_auth_timeout") {
+    return "检查认证方式、用户名、密码或私钥；如果服务器禁用该方式，需要换用允许的认证方式。";
+  }
+  if (code === "host_key_changed") {
+    return "确认目标主机是否重装或变更过；只有确认安全后再更新信任。";
+  }
+  if (code === "host_key_unknown") {
+    return "核对主机指纹，确认无误后信任并继续连接。";
+  }
+  if (code === "terminal_pty_failed" || code === "terminal_shell_failed") {
+    return "SSH 已登录但远程终端初始化失败，检查服务器是否允许分配 PTY 和启动默认 Shell。";
+  }
+  return "查看底层原因后重试；如果配置有误，点击编辑连接调整主机、端口、代理或认证信息。";
+}
+
+function connectionErrorSummary(code: string, rawMessage: string, fallback: string) {
+  const raw = rawMessage.toLowerCase();
+  if (isConnectionTimeoutError(code, raw)) {
+    return "连接超时";
+  }
+  if (raw.includes("connection refused") || raw.includes("actively refused")) {
+    return "端口无法连接";
+  }
+  if (raw.includes("no route") || raw.includes("unreachable")) {
+    return "主机不可达";
+  }
+  return fallback;
+}
+
+function isConnectionTimeoutError(code: string, raw: string) {
+  return (
+    code.includes("connect_timeout") ||
+    code === "terminal_tcp_connect_timeout" ||
+    raw.includes("timeout") ||
+    raw.includes("timed out") ||
+    raw.includes("operation timed out")
+  );
+}
+
+function connectionToInput(connection: ConnectionProfile): ConnectionProfileInput {
+  return {
+    advanced: connection.advanced,
+    credential_id: connection.credential_id || undefined,
+    credential_mode: connection.credential_mode,
+    group: connection.group || undefined,
+    host: connection.host,
+    id: connection.id,
+    inline_auth_kind: connection.inline_auth_kind || undefined,
+    inline_password: connection.inline_password || undefined,
+    inline_private_key_passphrase: connection.inline_private_key_passphrase || undefined,
+    inline_private_key_path: connection.inline_private_key_path || undefined,
+    name: connection.name,
+    notes: connection.notes || undefined,
+    port: connection.port,
+    prompt_auth_kind: connection.prompt_auth_kind || undefined,
+    proxy: connection.proxy,
+    username: connection.username,
+  };
+}
+
+function runtimeCredentialRequest(step: ConnectionStepState) {
+  return {
+    auth_kind: step.connection.credential_mode === "prompt" ? step.authKind : undefined,
+    connection_id: step.connection.id,
+    password: step.authKind === "password" ? step.password || undefined : undefined,
+    private_key_passphrase:
+      step.authKind === "private_key" ? step.privateKeyPassphrase || undefined : undefined,
+    private_key_path: step.authKind === "private_key" ? step.privateKeyPath || undefined : undefined,
+  };
+}
+
+function parseHostKeyError(error: unknown): ParsedHostKeyError | null {
+  if (typeof error !== "object" || error === null || !("code" in error)) {
+    return null;
+  }
+  const code = (error as { code: unknown }).code;
+  if (code !== "host_key_unknown" && code !== "host_key_changed") {
+    return null;
+  }
+  const raw = String((error as { raw_message?: unknown }).raw_message || "");
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (isHostKeyInfo(parsed)) {
+      return {
+        decision: "unknown",
+        hostKey: parsed,
+        oldFingerprint: null,
+      };
+    }
+    if (
+      typeof parsed === "object" &&
+      parsed !== null &&
+      "host_key" in parsed &&
+      isHostKeyInfo((parsed as { host_key: unknown }).host_key)
+    ) {
+      const changedPayload = parsed as {
+        host_key: HostKeyInfo;
+        old_fingerprint_sha256?: unknown;
+      };
+      return {
+        decision: code === "host_key_changed" ? "changed" : "unknown",
+        hostKey: changedPayload.host_key,
+        oldFingerprint:
+          typeof changedPayload.old_fingerprint_sha256 === "string"
+            ? changedPayload.old_fingerprint_sha256
+            : null,
+      };
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
+
+function isHostKeyInfo(value: unknown): value is HostKeyInfo {
+  if (typeof value !== "object" || value === null) {
+    return false;
+  }
+  const info = value as Partial<HostKeyInfo>;
+  return Boolean(
+    info.host &&
+      typeof info.port === "number" &&
+      info.key_algorithm &&
+      info.fingerprint_sha256 &&
+      info.public_key,
+  );
+}
+
+function formatConnectionAddress(connection: ConnectionProfile) {
+  return `${connection.username}@${connection.host}:${connection.port.toString()}`;
 }
 
 function isRemoteFileConflict(error: unknown) {

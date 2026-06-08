@@ -13,36 +13,121 @@ pub enum ConnectionAuthKind {
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ConnectionCredentialMode {
+    Saved,
+    Inline,
+    Prompt,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ConnectionProxyKind {
+    None,
+    HttpConnect,
+    Socks5,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+pub struct ConnectionProxyConfig {
+    pub kind: ConnectionProxyKind,
+    #[serde(default)]
+    pub host: Option<String>,
+    #[serde(default)]
+    pub port: Option<u16>,
+    #[serde(default)]
+    pub username: Option<String>,
+    #[serde(default)]
+    pub password: Option<String>,
+}
+
+impl Default for ConnectionProxyConfig {
+    fn default() -> Self {
+        Self {
+            kind: ConnectionProxyKind::None,
+            host: None,
+            port: None,
+            username: None,
+            password: None,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+pub struct ConnectionAdvancedConfig {
+    pub connect_timeout_ms: u64,
+    pub auth_timeout_ms: u64,
+    pub keepalive_interval_ms: u64,
+}
+
+impl Default for ConnectionAdvancedConfig {
+    fn default() -> Self {
+        Self {
+            connect_timeout_ms: 30_000,
+            auth_timeout_ms: 45_000,
+            keepalive_interval_ms: 20_000,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
 pub struct ConnectionProfileInput {
     #[serde(default)]
     pub id: Option<String>,
     #[serde(default)]
     pub name: Option<String>,
+    #[serde(default)]
+    pub group: Option<String>,
     pub host: String,
     pub port: u16,
     pub username: String,
-    pub auth_kind: ConnectionAuthKind,
+    #[serde(default = "default_credential_mode")]
+    pub credential_mode: ConnectionCredentialMode,
+    #[serde(default)]
+    pub credential_id: Option<String>,
+    #[serde(default)]
+    pub inline_auth_kind: Option<ConnectionAuthKind>,
+    #[serde(default)]
+    pub inline_password: Option<String>,
+    #[serde(default)]
+    pub inline_private_key_path: Option<String>,
+    #[serde(default)]
+    pub inline_private_key_passphrase: Option<String>,
+    #[serde(default)]
+    pub prompt_auth_kind: Option<ConnectionAuthKind>,
+    #[serde(default)]
+    pub proxy: ConnectionProxyConfig,
+    #[serde(default)]
+    pub advanced: ConnectionAdvancedConfig,
+    #[serde(default)]
+    pub notes: Option<String>,
+    #[serde(default)]
+    pub auth_kind: Option<ConnectionAuthKind>,
     #[serde(default)]
     pub password: Option<String>,
     #[serde(default)]
     pub private_key_path: Option<String>,
     #[serde(default)]
     pub private_key_passphrase: Option<String>,
-    #[serde(default)]
-    pub notes: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ValidatedConnectionProfileInput {
     pub id: Option<String>,
     pub name: String,
+    pub group: Option<String>,
     pub host: String,
     pub port: u16,
     pub username: String,
-    pub auth_kind: ConnectionAuthKind,
-    pub password: Option<String>,
-    pub private_key_path: Option<String>,
-    pub private_key_passphrase: Option<String>,
+    pub credential_mode: ConnectionCredentialMode,
+    pub credential_id: Option<String>,
+    pub inline_auth_kind: Option<ConnectionAuthKind>,
+    pub inline_password: Option<String>,
+    pub inline_private_key_path: Option<String>,
+    pub inline_private_key_passphrase: Option<String>,
+    pub prompt_auth_kind: Option<ConnectionAuthKind>,
+    pub proxy: ConnectionProxyConfig,
+    pub advanced: ConnectionAdvancedConfig,
     pub notes: Option<String>,
 }
 
@@ -50,16 +135,41 @@ pub struct ValidatedConnectionProfileInput {
 pub struct ConnectionProfile {
     pub id: String,
     pub name: String,
+    #[serde(default)]
+    pub group: Option<String>,
     pub host: String,
     pub port: u16,
     pub username: String,
-    pub auth_kind: ConnectionAuthKind,
-    pub password: Option<String>,
-    pub private_key_path: Option<String>,
-    pub private_key_passphrase: Option<String>,
+    #[serde(default = "default_credential_mode")]
+    pub credential_mode: ConnectionCredentialMode,
+    #[serde(default)]
+    pub credential_id: Option<String>,
+    #[serde(default)]
+    pub inline_auth_kind: Option<ConnectionAuthKind>,
+    #[serde(default)]
+    pub inline_password: Option<String>,
+    #[serde(default)]
+    pub inline_private_key_path: Option<String>,
+    #[serde(default)]
+    pub inline_private_key_passphrase: Option<String>,
+    #[serde(default)]
+    pub prompt_auth_kind: Option<ConnectionAuthKind>,
+    #[serde(default)]
+    pub proxy: ConnectionProxyConfig,
+    #[serde(default)]
+    pub advanced: ConnectionAdvancedConfig,
+    #[serde(default)]
     pub notes: Option<String>,
     pub created_at: String,
     pub updated_at: String,
+    #[serde(default)]
+    pub auth_kind: Option<ConnectionAuthKind>,
+    #[serde(default)]
+    pub password: Option<String>,
+    #[serde(default)]
+    pub private_key_path: Option<String>,
+    #[serde(default)]
+    pub private_key_passphrase: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -75,7 +185,7 @@ pub struct ConnectionStore {
 
 impl ConnectionStore {
     pub fn load(path: PathBuf) -> Result<Self, AppError> {
-        let document = if path.exists() {
+        let mut document = if path.exists() {
             let content = fs::read_to_string(&path).map_err(|error| {
                 AppError::new(
                     "connection_store_read_failed",
@@ -94,10 +204,17 @@ impl ConnectionStore {
             })?
         } else {
             ConnectionStoreDocument {
-                version: 1,
+                version: 2,
                 profiles: Vec::new(),
             }
         };
+
+        document.version = 2;
+        document.profiles = document
+            .profiles
+            .into_iter()
+            .map(migrate_profile)
+            .collect::<Vec<_>>();
 
         Ok(Self { path, document })
     }
@@ -138,16 +255,26 @@ impl ConnectionStore {
         let profile = ConnectionProfile {
             id,
             name: validated.name,
+            group: validated.group,
             host: validated.host,
             port: validated.port,
             username: validated.username,
-            auth_kind: validated.auth_kind,
-            password: validated.password,
-            private_key_path: validated.private_key_path,
-            private_key_passphrase: validated.private_key_passphrase,
+            credential_mode: validated.credential_mode,
+            credential_id: validated.credential_id,
+            inline_auth_kind: validated.inline_auth_kind,
+            inline_password: validated.inline_password,
+            inline_private_key_path: validated.inline_private_key_path,
+            inline_private_key_passphrase: validated.inline_private_key_passphrase,
+            prompt_auth_kind: validated.prompt_auth_kind,
+            proxy: validated.proxy,
+            advanced: validated.advanced,
             notes: validated.notes,
             created_at,
             updated_at: now.to_string(),
+            auth_kind: None,
+            password: None,
+            private_key_path: None,
+            private_key_passphrase: None,
         };
 
         if let Some(index) = existing_index {
@@ -187,7 +314,17 @@ impl ConnectionStore {
             })?;
         }
 
-        let content = serde_json::to_string_pretty(&self.document).map_err(|error| {
+        let content = serde_json::to_string_pretty(&ConnectionStoreDocument {
+            version: 2,
+            profiles: self
+                .document
+                .profiles
+                .iter()
+                .cloned()
+                .map(strip_legacy_profile_fields)
+                .collect(),
+        })
+        .map_err(|error| {
             AppError::new(
                 "connection_store_serialize_failed",
                 "连接仓库序列化失败。",
@@ -238,33 +375,84 @@ pub fn validate_profile_input(
         ));
     }
 
-    let password = trim_optional(input.password.as_ref());
-    let private_key_path = trim_optional(input.private_key_path.as_ref());
-    let private_key_passphrase = trim_optional(input.private_key_passphrase.as_ref());
-    match input.auth_kind {
-        ConnectionAuthKind::Password if password.is_none() => {
-            return Err(AppError::new(
-                "connection_password_missing",
-                "请填写 SSH 密码。",
-                "password is empty",
-                true,
-            ));
+    let credential_mode = normalize_credential_mode(input);
+    let inline_auth_kind = normalize_inline_auth_kind(input);
+    let inline_password = trim_optional(input.inline_password.as_ref())
+        .or_else(|| trim_optional(input.password.as_ref()));
+    let inline_private_key_path = trim_optional(input.inline_private_key_path.as_ref())
+        .or_else(|| trim_optional(input.private_key_path.as_ref()));
+    let inline_private_key_passphrase = trim_optional(input.inline_private_key_passphrase.as_ref())
+        .or_else(|| trim_optional(input.private_key_passphrase.as_ref()));
+    let credential_id = trim_optional(input.credential_id.as_ref());
+    let prompt_auth_kind = input.prompt_auth_kind.clone();
+
+    let (
+        credential_id,
+        inline_auth_kind,
+        inline_password,
+        inline_private_key_path,
+        inline_private_key_passphrase,
+        prompt_auth_kind,
+    ) = match credential_mode {
+        ConnectionCredentialMode::Saved => {
+            let Some(credential_id) = credential_id else {
+                return Err(AppError::new(
+                    "connection_credential_missing",
+                    "请选择保存的凭据。",
+                    "credential_id is empty",
+                    true,
+                ));
+            };
+            (Some(credential_id), None, None, None, None, None)
         }
-        ConnectionAuthKind::PrivateKey if private_key_path.is_none() => {
-            return Err(AppError::new(
-                "connection_private_key_missing",
-                "请选择 SSH 私钥。",
-                "private_key_path is empty",
-                true,
-            ));
+        ConnectionCredentialMode::Inline => {
+            let auth_kind = inline_auth_kind.unwrap_or(ConnectionAuthKind::Password);
+            match auth_kind {
+                ConnectionAuthKind::Password if inline_password.is_none() => {
+                    return Err(AppError::new(
+                        "connection_password_missing",
+                        "请填写 SSH 密码。",
+                        "inline password is empty",
+                        true,
+                    ));
+                }
+                ConnectionAuthKind::PrivateKey if inline_private_key_path.is_none() => {
+                    return Err(AppError::new(
+                        "connection_private_key_missing",
+                        "请选择 SSH 私钥。",
+                        "inline private key path is empty",
+                        true,
+                    ));
+                }
+                _ => {}
+            }
+            match auth_kind {
+                ConnectionAuthKind::Password => (
+                    None,
+                    Some(ConnectionAuthKind::Password),
+                    inline_password,
+                    None,
+                    None,
+                    None,
+                ),
+                ConnectionAuthKind::PrivateKey => (
+                    None,
+                    Some(ConnectionAuthKind::PrivateKey),
+                    None,
+                    inline_private_key_path,
+                    inline_private_key_passphrase,
+                    None,
+                ),
+            }
         }
-        _ => {}
-    }
-    let (password, private_key_path, private_key_passphrase) = match input.auth_kind {
-        ConnectionAuthKind::Password => (password, None, None),
-        ConnectionAuthKind::PrivateKey => (None, private_key_path, private_key_passphrase),
+        ConnectionCredentialMode::Prompt => {
+            let auth_kind = prompt_auth_kind.unwrap_or(ConnectionAuthKind::Password);
+            (None, None, None, None, None, Some(auth_kind))
+        }
     };
 
+    let proxy = validate_proxy_config(&input.proxy)?;
+    let advanced = validate_advanced_config(&input.advanced)?;
     let name = input
         .name
         .as_ref()
@@ -276,22 +464,143 @@ pub fn validate_profile_input(
     Ok(ValidatedConnectionProfileInput {
         id: trim_optional(input.id.as_ref()),
         name,
+        group: trim_optional(input.group.as_ref()),
         host,
         port: input.port,
         username,
-        auth_kind: input.auth_kind.clone(),
-        password,
-        private_key_path,
-        private_key_passphrase,
+        credential_mode,
+        credential_id,
+        inline_auth_kind,
+        inline_password,
+        inline_private_key_path,
+        inline_private_key_passphrase,
+        prompt_auth_kind,
+        proxy,
+        advanced,
         notes: trim_optional(input.notes.as_ref()),
     })
 }
 
-fn trim_optional(value: Option<&String>) -> Option<String> {
+pub fn trim_optional(value: Option<&String>) -> Option<String> {
     value
         .map(|item| item.trim())
         .filter(|item| !item.is_empty())
         .map(ToOwned::to_owned)
+}
+
+fn validate_proxy_config(input: &ConnectionProxyConfig) -> Result<ConnectionProxyConfig, AppError> {
+    if input.kind == ConnectionProxyKind::None {
+        return Ok(ConnectionProxyConfig::default());
+    }
+
+    let host = trim_optional(input.host.as_ref()).ok_or_else(|| {
+        AppError::new(
+            "connection_proxy_host_missing",
+            "请填写代理主机。",
+            "proxy host is empty",
+            true,
+        )
+    })?;
+    let port = input.port.filter(|port| *port > 0).ok_or_else(|| {
+        AppError::new(
+            "connection_proxy_port_invalid",
+            "代理端口无效。",
+            "proxy port is empty or 0",
+            true,
+        )
+    })?;
+
+    Ok(ConnectionProxyConfig {
+        kind: input.kind.clone(),
+        host: Some(host),
+        port: Some(port),
+        username: trim_optional(input.username.as_ref()),
+        password: trim_optional(input.password.as_ref()),
+    })
+}
+
+fn validate_advanced_config(
+    input: &ConnectionAdvancedConfig,
+) -> Result<ConnectionAdvancedConfig, AppError> {
+    if input.connect_timeout_ms < 1_000 || input.connect_timeout_ms > 300_000 {
+        return Err(AppError::new(
+            "connection_connect_timeout_invalid",
+            "连接超时时间无效。",
+            format!("connect_timeout_ms={}", input.connect_timeout_ms),
+            true,
+        ));
+    }
+    if input.auth_timeout_ms < 1_000 || input.auth_timeout_ms > 300_000 {
+        return Err(AppError::new(
+            "connection_auth_timeout_invalid",
+            "认证超时时间无效。",
+            format!("auth_timeout_ms={}", input.auth_timeout_ms),
+            true,
+        ));
+    }
+    if input.keepalive_interval_ms < 5_000 || input.keepalive_interval_ms > 600_000 {
+        return Err(AppError::new(
+            "connection_keepalive_invalid",
+            "心跳间隔无效。",
+            format!("keepalive_interval_ms={}", input.keepalive_interval_ms),
+            true,
+        ));
+    }
+
+    Ok(input.clone())
+}
+
+fn normalize_credential_mode(input: &ConnectionProfileInput) -> ConnectionCredentialMode {
+    if input.auth_kind.is_some() {
+        return ConnectionCredentialMode::Inline;
+    }
+    input.credential_mode.clone()
+}
+
+fn normalize_inline_auth_kind(input: &ConnectionProfileInput) -> Option<ConnectionAuthKind> {
+    input
+        .inline_auth_kind
+        .clone()
+        .or_else(|| input.auth_kind.clone())
+}
+
+fn migrate_profile(mut profile: ConnectionProfile) -> ConnectionProfile {
+    if profile.auth_kind.is_some() {
+        let auth_kind = profile
+            .auth_kind
+            .clone()
+            .unwrap_or(ConnectionAuthKind::Password);
+        profile.credential_mode = ConnectionCredentialMode::Inline;
+        profile.inline_auth_kind = Some(auth_kind.clone());
+        match auth_kind {
+            ConnectionAuthKind::Password => {
+                profile.inline_password = trim_optional(profile.password.as_ref());
+                profile.inline_private_key_path = None;
+                profile.inline_private_key_passphrase = None;
+            }
+            ConnectionAuthKind::PrivateKey => {
+                profile.inline_password = None;
+                profile.inline_private_key_path = trim_optional(profile.private_key_path.as_ref());
+                profile.inline_private_key_passphrase =
+                    trim_optional(profile.private_key_passphrase.as_ref());
+            }
+        }
+        profile.credential_id = None;
+        profile.prompt_auth_kind = None;
+    }
+    strip_legacy_profile_fields(profile)
+}
+
+fn strip_legacy_profile_fields(mut profile: ConnectionProfile) -> ConnectionProfile {
+    profile.auth_kind = None;
+    profile.password = None;
+    profile.private_key_path = None;
+    profile.private_key_passphrase = None;
+    profile
+}
+
+fn default_credential_mode() -> ConnectionCredentialMode {
+    ConnectionCredentialMode::Inline
 }
 
 #[cfg(test)]
@@ -300,21 +609,33 @@ mod tests {
     use std::path::PathBuf;
 
     use super::{
-        validate_profile_input, ConnectionAuthKind, ConnectionProfileInput, ConnectionStore,
+        validate_profile_input, ConnectionAdvancedConfig, ConnectionAuthKind,
+        ConnectionCredentialMode, ConnectionProfileInput, ConnectionProxyConfig,
+        ConnectionProxyKind, ConnectionStore,
     };
 
     fn password_input() -> ConnectionProfileInput {
         ConnectionProfileInput {
             id: None,
             name: None,
+            group: Some(" 生产 ".to_string()),
             host: "  example.com  ".to_string(),
             port: 22,
             username: "  root  ".to_string(),
-            auth_kind: ConnectionAuthKind::Password,
-            password: Some("secret".to_string()),
+            credential_mode: ConnectionCredentialMode::Inline,
+            credential_id: None,
+            inline_auth_kind: Some(ConnectionAuthKind::Password),
+            inline_password: Some("secret".to_string()),
+            inline_private_key_path: None,
+            inline_private_key_passphrase: None,
+            prompt_auth_kind: None,
+            proxy: ConnectionProxyConfig::default(),
+            advanced: ConnectionAdvancedConfig::default(),
+            notes: None,
+            auth_kind: None,
+            password: None,
             private_key_path: None,
             private_key_passphrase: None,
-            notes: None,
         }
     }
 
@@ -323,6 +644,7 @@ mod tests {
         let validated = validate_profile_input(&password_input()).unwrap();
 
         assert_eq!(validated.name, "root@example.com");
+        assert_eq!(validated.group, Some("生产".to_string()));
         assert_eq!(validated.host, "example.com");
         assert_eq!(validated.username, "root");
         assert_eq!(validated.port, 22);
@@ -341,9 +663,9 @@ mod tests {
     }
 
     #[test]
-    fn validation_rejects_missing_password_auth_secret() {
+    fn validation_rejects_missing_inline_password() {
         let input = ConnectionProfileInput {
-            password: Some(" ".to_string()),
+            inline_password: Some(" ".to_string()),
             ..password_input()
         };
 
@@ -353,55 +675,78 @@ mod tests {
     }
 
     #[test]
-    fn validation_rejects_missing_private_key_path() {
+    fn validation_rejects_missing_saved_credential() {
         let input = ConnectionProfileInput {
-            auth_kind: ConnectionAuthKind::PrivateKey,
-            password: None,
-            private_key_path: Some(" ".to_string()),
+            credential_mode: ConnectionCredentialMode::Saved,
+            credential_id: Some(" ".to_string()),
             ..password_input()
         };
 
         let error = validate_profile_input(&input).unwrap_err();
 
-        assert_eq!(error.code, "connection_private_key_missing");
+        assert_eq!(error.code, "connection_credential_missing");
     }
 
     #[test]
-    fn validation_clears_private_key_fields_for_password_auth() {
+    fn validation_prompt_mode_does_not_require_secret() {
         let input = ConnectionProfileInput {
-            private_key_path: Some("C:/Users/csm/.ssh/id_rsa".to_string()),
-            private_key_passphrase: Some("old-passphrase".to_string()),
+            credential_mode: ConnectionCredentialMode::Prompt,
+            inline_password: None,
+            prompt_auth_kind: Some(ConnectionAuthKind::PrivateKey),
             ..password_input()
         };
 
         let validated = validate_profile_input(&input).unwrap();
 
-        assert_eq!(validated.password, Some("secret".to_string()));
-        assert_eq!(validated.private_key_path, None);
-        assert_eq!(validated.private_key_passphrase, None);
+        assert_eq!(validated.credential_mode, ConnectionCredentialMode::Prompt);
+        assert_eq!(
+            validated.prompt_auth_kind,
+            Some(ConnectionAuthKind::PrivateKey)
+        );
+        assert_eq!(validated.inline_password, None);
     }
 
     #[test]
-    fn validation_clears_password_for_private_key_auth() {
+    fn validation_rejects_invalid_proxy() {
         let input = ConnectionProfileInput {
-            auth_kind: ConnectionAuthKind::PrivateKey,
-            password: Some("old-password".to_string()),
-            private_key_path: Some("C:/Users/csm/.ssh/id_rsa".to_string()),
-            private_key_passphrase: Some("key-passphrase".to_string()),
+            proxy: ConnectionProxyConfig {
+                kind: ConnectionProxyKind::Socks5,
+                host: Some(" ".to_string()),
+                port: Some(1080),
+                username: None,
+                password: None,
+            },
+            ..password_input()
+        };
+
+        let error = validate_profile_input(&input).unwrap_err();
+
+        assert_eq!(error.code, "connection_proxy_host_missing");
+    }
+
+    #[test]
+    fn validation_accepts_proxy_and_advanced() {
+        let input = ConnectionProfileInput {
+            proxy: ConnectionProxyConfig {
+                kind: ConnectionProxyKind::HttpConnect,
+                host: Some("  proxy.local ".to_string()),
+                port: Some(8080),
+                username: Some(" user ".to_string()),
+                password: Some(" pass ".to_string()),
+            },
+            advanced: ConnectionAdvancedConfig {
+                connect_timeout_ms: 10_000,
+                auth_timeout_ms: 20_000,
+                keepalive_interval_ms: 30_000,
+            },
             ..password_input()
         };
 
         let validated = validate_profile_input(&input).unwrap();
 
-        assert_eq!(validated.password, None);
-        assert_eq!(
-            validated.private_key_path,
-            Some("C:/Users/csm/.ssh/id_rsa".to_string())
-        );
-        assert_eq!(
-            validated.private_key_passphrase,
-            Some("key-passphrase".to_string())
-        );
+        assert_eq!(validated.proxy.host, Some("proxy.local".to_string()));
+        assert_eq!(validated.proxy.username, Some("user".to_string()));
+        assert_eq!(validated.advanced.auth_timeout_ms, 20_000);
     }
 
     #[test]
@@ -421,6 +766,7 @@ mod tests {
         assert_eq!(profiles[0].id, saved.id);
         assert_eq!(profiles[0].name, "root@example.com");
         assert_eq!(profiles[0].created_at, "2026-06-05T09:30:00+08:00");
+        assert_eq!(profiles[0].auth_kind, None);
 
         let _ = fs::remove_file(path);
     }
@@ -438,23 +784,6 @@ mod tests {
 
         let reloaded = ConnectionStore::load(path.clone()).unwrap();
         assert!(reloaded.list().is_empty());
-
-        let _ = fs::remove_file(path);
-    }
-
-    #[test]
-    fn store_get_returns_profile_by_id() {
-        let path = temp_store_path("get");
-        let _ = fs::remove_file(&path);
-        let mut store = ConnectionStore::load(path.clone()).unwrap();
-        let saved = store
-            .upsert(password_input(), "2026-06-05T09:30:00+08:00")
-            .unwrap();
-
-        let found = store.get(&saved.id).unwrap();
-
-        assert_eq!(found.id, saved.id);
-        assert_eq!(found.host, "example.com");
 
         let _ = fs::remove_file(path);
     }
@@ -484,6 +813,44 @@ mod tests {
         assert_eq!(updated.created_at, "2026-06-05T09:30:00+08:00");
         assert_eq!(updated.updated_at, "2026-06-05T09:45:00+08:00");
         assert_eq!(store.list().len(), 1);
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn load_migrates_legacy_auth_fields_to_inline_mode() {
+        let path = temp_store_path("legacy");
+        let _ = fs::remove_file(&path);
+        fs::write(
+            &path,
+            r#"{
+  "version": 1,
+  "profiles": [{
+    "id": "old",
+    "name": "old",
+    "host": "example.com",
+    "port": 22,
+    "username": "root",
+    "auth_kind": "password",
+    "password": "secret",
+    "private_key_path": "C:/old",
+    "private_key_passphrase": "old",
+    "notes": null,
+    "created_at": "1",
+    "updated_at": "1"
+  }]
+}"#,
+        )
+        .unwrap();
+
+        let store = ConnectionStore::load(path.clone()).unwrap();
+        let profile = store.get("old").unwrap();
+
+        assert_eq!(profile.credential_mode, ConnectionCredentialMode::Inline);
+        assert_eq!(profile.inline_auth_kind, Some(ConnectionAuthKind::Password));
+        assert_eq!(profile.inline_password, Some("secret".to_string()));
+        assert_eq!(profile.inline_private_key_path, None);
+        assert_eq!(profile.password, None);
 
         let _ = fs::remove_file(path);
     }

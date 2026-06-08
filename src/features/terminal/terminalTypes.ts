@@ -1,9 +1,12 @@
+import type { ConnectionAuthKind } from "../connections/connectionTypes";
+
 export interface TerminalConnectRequest {
   request_id?: string;
   connection_id?: string;
   host: string;
   port: number;
   username: string;
+  auth_kind?: ConnectionAuthKind;
   password?: string;
   private_key_path?: string;
   private_key_passphrase?: string;

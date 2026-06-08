@@ -1,51 +1,57 @@
-use std::io::{Read, Write};
+use std::io::Read;
 use std::path::Path;
-use std::sync::{Arc, Mutex as StdMutex};
+use std::sync::Arc;
 use std::time::Duration;
 
 use russh::client;
 use russh::keys::{load_secret_key, PrivateKeyWithHashAlg};
 use russh::{ChannelMsg, ChannelReadHalf, ChannelWriteHalf, Disconnect};
 use std::future::Future;
+use tauri::AppHandle;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::TcpStream;
 use tokio::sync::Mutex;
 use uuid::Uuid;
 
 use crate::app_error::AppError;
 use crate::commands::TerminalConnectRequest;
+use crate::connections::{ConnectionAdvancedConfig, ConnectionProxyConfig, ConnectionProxyKind};
+use crate::known_hosts::{host_key_info, KnownHostCheck, KnownHostStore};
+use crate::ssh_config::{
+    app_error_for_host_key_changed, app_error_for_host_key_unknown, known_host_store_path,
+    ResolvedSshConfig,
+};
 
-static TRACE_LOCK: StdMutex<()> = StdMutex::new(());
 const REMOTE_EXEC_TRANSFER_CHUNK_BYTES: usize = 256 * 1024;
 
-fn trace(stage: &str, message: &str) {
-    let _guard = TRACE_LOCK.lock().ok();
-    let path = std::env::temp_dir().join("mxterm-connect-trace.log");
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis())
-        .unwrap_or(0);
-    if let Ok(mut file) = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&path)
-    {
-        let _ = writeln!(file, "[{now}ms] {stage}: {message}");
-    }
-}
-
-type SshHandle = client::Handle<TrustingClient>;
+type SshHandle = client::Handle<KnownHostClient>;
 type ChannelWriter = ChannelWriteHalf<client::Msg>;
 
 #[derive(Clone, Debug)]
-struct TrustingClient;
+struct KnownHostClient {
+    host: String,
+    port: u16,
+    store_path: std::path::PathBuf,
+}
 
-impl client::Handler for TrustingClient {
+impl client::Handler for KnownHostClient {
     type Error = russh::Error;
 
     async fn check_server_key(
         &mut self,
-        _server_public_key: &russh::keys::ssh_key::PublicKey,
+        server_public_key: &russh::keys::ssh_key::PublicKey,
     ) -> Result<bool, Self::Error> {
-        Ok(true)
+        let host_key = host_key_info(&self.host, self.port, server_public_key);
+        let store = KnownHostStore::load(self.store_path.clone()).map_err(to_russh_error)?;
+        match store.check(&self.host, self.port, host_key) {
+            KnownHostCheck::Trusted { .. } => Ok(true),
+            KnownHostCheck::Unknown { host_key } => {
+                Err(to_russh_error(app_error_for_host_key_unknown(&host_key)))
+            }
+            KnownHostCheck::Changed { current, host_key } => Err(to_russh_error(
+                app_error_for_host_key_changed(&current.fingerprint_sha256, &host_key),
+            )),
+        }
     }
 }
 
@@ -103,72 +109,53 @@ pub struct ReusableExecSession {
 
 impl TerminalSession {
     pub async fn open(
+        app: AppHandle,
         request: TerminalConnectRequest,
         progress: Option<OpenProgress>,
     ) -> Result<(Self, ChannelReadHalf), AppError> {
-        let host = request.host.trim().to_string();
-        let port = request.port;
-        let username = request.username.trim().to_string();
-        trace(
-            "open.entry",
-            &format!(
-                "host={host} port={port} user={username} cols={} rows={} request_id={:?} connection_id={:?} has_password={} has_key={}",
-                request.cols,
-                request.rows,
-                request.request_id,
-                request.connection_id,
-                request.password.as_ref().is_some(),
-                request.private_key_path.as_ref().is_some(),
-            ),
-        );
-        let auth_method = auth_method(&request)?;
-        trace("open.auth_method", "ok");
+        let config = resolved_config_from_request(&request);
+        let host = config.host.clone();
+        let port = config.port;
+        let username = config.username.clone();
+        let auth_method = auth_method(&config)?;
 
-        let config = Arc::new(client::Config {
-            keepalive_interval: Some(Duration::from_secs(20)),
+        let ssh_config = Arc::new(client::Config {
+            keepalive_interval: Some(duration_from_ms(config.advanced.keepalive_interval_ms)),
             keepalive_max: 3,
             nodelay: true,
             ..<_>::default()
         });
+        let host_key_handler = KnownHostClient {
+            host: host.clone(),
+            port,
+            store_path: known_host_store_path(&app)?,
+        };
 
         emit_progress(&progress, "tcp_connecting", "正在建立 SSH TCP 连接...");
-        trace("tcp.before_connect", "calling client::connect");
-        let client_result = run_with_timeout(
+        let mut client = run_with_timeout(
             "terminal_connect_timeout",
             "SSH 连接超时。",
-            Duration::from_secs(30),
-            client::connect(config, (host.as_str(), port), TrustingClient),
+            duration_from_ms(config.advanced.connect_timeout_ms),
+            connect_ssh_client(ssh_config, &config, host_key_handler),
         )
-        .await;
-        match &client_result {
-            Ok(Ok(_)) => trace("tcp.after_connect", "tcp+handshake ok"),
-            Ok(Err(e)) => trace("tcp.after_connect", &format!("russh err: {e}")),
-            Err(e) => trace("tcp.after_connect", &format!("outer err: {e:?}")),
-        }
-        let mut client = client_result?.map_err(|error| {
-            AppError::new("terminal_connect_failed", "SSH 连接失败。", error, true)
+        .await?
+        .map_err(|error| {
+            app_error_from_russh(error, "terminal_connect_failed", "SSH 连接失败。")
         })?;
         emit_progress(&progress, "tcp_connected", "SSH TCP 已连接。");
 
         emit_progress(&progress, "authenticating", "SSH 认证中...");
-        trace("auth.before", "calling authenticate");
         let auth_result = run_with_timeout(
             "terminal_auth_timeout",
             "SSH 认证超时。",
-            Duration::from_secs(45),
+            duration_from_ms(config.advanced.auth_timeout_ms),
             authenticate(&mut client, &username, auth_method),
         )
         .await;
-        match &auth_result {
-            Ok(Ok(())) => trace("auth.after", "ok"),
-            Ok(Err(e)) => trace("auth.after", &format!("err: {e:?}")),
-            Err(e) => trace("auth.after", &format!("outer err: {e:?}")),
-        }
         auth_result??;
         emit_progress(&progress, "authenticated", "SSH 认证通过。");
 
         emit_progress(&progress, "channel_opening", "正在打开 SSH 终端通道...");
-        trace("channel.before", "calling channel_open_session");
         let channel = run_with_timeout(
             "terminal_channel_open_timeout",
             "SSH 终端通道打开超时。",
@@ -176,11 +163,6 @@ impl TerminalSession {
             client.channel_open_session(),
         )
         .await;
-        match &channel {
-            Ok(Ok(_)) => trace("channel.after", "ok"),
-            Ok(Err(e)) => trace("channel.after", &format!("err: {e}")),
-            Err(e) => trace("channel.after", &format!("outer err: {e:?}")),
-        }
         let channel = channel?.map_err(|error| {
             AppError::new(
                 "terminal_channel_open_failed",
@@ -191,10 +173,6 @@ impl TerminalSession {
         })?;
 
         emit_progress(&progress, "pty_requesting", "正在初始化远程 PTY...");
-        trace(
-            "pty.before",
-            &format!("cols={} rows={}", request.cols, request.rows),
-        );
         let pty_result = run_with_timeout(
             "terminal_pty_timeout",
             "远程终端初始化超时。",
@@ -210,18 +188,12 @@ impl TerminalSession {
             ),
         )
         .await;
-        match &pty_result {
-            Ok(Ok(_)) => trace("pty.after", "ok"),
-            Ok(Err(e)) => trace("pty.after", &format!("err: {e}")),
-            Err(e) => trace("pty.after", &format!("outer err: {e:?}")),
-        }
         pty_result?.map_err(|error| {
             AppError::new("terminal_pty_failed", "远程终端初始化失败。", error, true)
         })?;
         emit_progress(&progress, "pty_ready", "远程 PTY 已就绪。");
 
         emit_progress(&progress, "shell_starting", "正在启动远程 Shell...");
-        trace("shell.before", "calling request_shell");
         let shell_result = run_with_timeout(
             "terminal_shell_timeout",
             "远程 Shell 启动超时。",
@@ -229,11 +201,6 @@ impl TerminalSession {
             channel.request_shell(true),
         )
         .await;
-        match &shell_result {
-            Ok(Ok(_)) => trace("shell.after", "ok"),
-            Ok(Err(e)) => trace("shell.after", &format!("err: {e}")),
-            Err(e) => trace("shell.after", &format!("outer err: {e:?}")),
-        }
         shell_result?.map_err(|error| {
             AppError::new(
                 "terminal_shell_failed",
@@ -245,7 +212,6 @@ impl TerminalSession {
         emit_progress(&progress, "shell_ready", "远程 Shell 已启动。");
 
         let (reader, writer) = channel.split();
-        trace("open.exit", "session ready");
 
         Ok((
             Self {
@@ -290,38 +256,39 @@ impl TerminalSession {
 }
 
 impl ReusableExecSession {
-    pub async fn connect(request: &TerminalConnectRequest) -> Result<Self, AppError> {
-        let host = request.host.trim().to_string();
-        let port = request.port;
-        let username = request.username.trim().to_string();
-        let auth_method = auth_method(request)?;
-        let config = Arc::new(client::Config {
-            keepalive_interval: Some(Duration::from_secs(20)),
+    pub async fn connect_resolved(
+        app: &AppHandle,
+        config: &ResolvedSshConfig,
+    ) -> Result<Self, AppError> {
+        let username = config.username.clone();
+        let auth_method = auth_method(config)?;
+        let ssh_config = Arc::new(client::Config {
+            keepalive_interval: Some(duration_from_ms(config.advanced.keepalive_interval_ms)),
             keepalive_max: 1,
             nodelay: true,
             ..<_>::default()
         });
+        let host_key_handler = KnownHostClient {
+            host: config.host.clone(),
+            port: config.port,
+            store_path: known_host_store_path(app)?,
+        };
 
         let mut client = run_with_timeout(
             "remote_exec_connect_timeout",
             "SSH 命令连接超时。",
-            Duration::from_secs(30),
-            client::connect(config, (host.as_str(), port), TrustingClient),
+            duration_from_ms(config.advanced.connect_timeout_ms),
+            connect_ssh_client(ssh_config, config, host_key_handler),
         )
         .await?
         .map_err(|error| {
-            AppError::new(
-                "remote_exec_connect_failed",
-                "SSH 命令连接失败。",
-                error,
-                true,
-            )
+            app_error_from_russh(error, "remote_exec_connect_failed", "SSH 命令连接失败。")
         })?;
 
         run_with_timeout(
             "remote_exec_auth_timeout",
             "SSH 命令认证超时。",
-            Duration::from_secs(45),
+            duration_from_ms(config.advanced.auth_timeout_ms),
             authenticate(&mut client, &username, auth_method),
         )
         .await??;
@@ -426,7 +393,7 @@ impl ReusableExecSession {
                     let mut file = std::fs::File::open(path).map_err(|error| {
                         AppError::new(
                             "remote_exec_stdin_file_open_failed",
-                            "Local upload temp file open failed.",
+                            "本地上传临时文件打开失败。",
                             error,
                             true,
                         )
@@ -437,7 +404,7 @@ impl ReusableExecSession {
                         let read = file.read(&mut buffer).map_err(|error| {
                             AppError::new(
                                 "remote_exec_stdin_file_read_failed",
-                                "Local upload temp file read failed.",
+                                "本地上传临时文件读取失败。",
                                 error,
                                 true,
                             )
@@ -456,7 +423,7 @@ impl ReusableExecSession {
             channel.eof().await.map_err(|error| {
                 AppError::new(
                     "remote_exec_stdin_eof_failed",
-                    "Remote command stdin EOF failed.",
+                    "远程命令输入结束失败。",
                     error,
                     true,
                 )
@@ -533,18 +500,18 @@ where
         .map_err(|_| AppError::new(code, message, format!("timeout after {duration:?}"), true))
 }
 
-fn auth_method(request: &TerminalConnectRequest) -> Result<AuthMethod, AppError> {
-    if let Some(password) = request.password.as_ref() {
+fn auth_method(config: &ResolvedSshConfig) -> Result<AuthMethod, AppError> {
+    if let Some(password) = config.password.as_ref() {
         if !password.trim().is_empty() {
             return Ok(AuthMethod::Password(password.clone()));
         }
     }
 
-    if let Some(path) = request.private_key_path.as_ref() {
+    if let Some(path) = config.private_key_path.as_ref() {
         if !path.trim().is_empty() {
             return Ok(AuthMethod::PrivateKey {
                 path: path.trim().to_string(),
-                passphrase: request
+                passphrase: config
                     .private_key_passphrase
                     .as_ref()
                     .filter(|value| !value.is_empty())
@@ -559,6 +526,348 @@ fn auth_method(request: &TerminalConnectRequest) -> Result<AuthMethod, AppError>
         "password and private_key_path are both empty",
         true,
     ))
+}
+
+fn resolved_config_from_request(request: &TerminalConnectRequest) -> ResolvedSshConfig {
+    request
+        .runtime_config
+        .clone()
+        .unwrap_or_else(|| ResolvedSshConfig {
+            connection_id: request.connection_id.clone().unwrap_or_default(),
+            host: request.host.trim().to_string(),
+            port: request.port,
+            username: request.username.trim().to_string(),
+            auth_kind: if request
+                .private_key_path
+                .as_ref()
+                .is_some_and(|path| !path.trim().is_empty())
+            {
+                crate::connections::ConnectionAuthKind::PrivateKey
+            } else {
+                crate::connections::ConnectionAuthKind::Password
+            },
+            password: request.password.clone(),
+            private_key_path: request.private_key_path.clone(),
+            private_key_passphrase: request.private_key_passphrase.clone(),
+            proxy: ConnectionProxyConfig::default(),
+            advanced: ConnectionAdvancedConfig::default(),
+        })
+}
+
+async fn connect_ssh_client(
+    config: Arc<client::Config>,
+    request: &ResolvedSshConfig,
+    handler: KnownHostClient,
+) -> Result<SshHandle, russh::Error> {
+    match request.proxy.kind {
+        ConnectionProxyKind::None => {
+            client::connect(config, (request.host.as_str(), request.port), handler).await
+        }
+        _ => {
+            let stream = open_proxy_stream(request).await.map_err(to_russh_error)?;
+            client::connect_stream(config, stream, handler).await
+        }
+    }
+}
+
+async fn open_proxy_stream(request: &ResolvedSshConfig) -> Result<TcpStream, AppError> {
+    match request.proxy.kind {
+        ConnectionProxyKind::None => run_with_timeout(
+            "terminal_tcp_connect_timeout",
+            "SSH TCP 连接超时。",
+            duration_from_ms(request.advanced.connect_timeout_ms),
+            TcpStream::connect((request.host.as_str(), request.port)),
+        )
+        .await?
+        .map_err(|error| {
+                AppError::new(
+                    "terminal_tcp_connect_failed",
+                    "SSH TCP 连接失败。",
+                    error,
+                    true,
+                )
+            }),
+        ConnectionProxyKind::HttpConnect => open_http_connect_stream(request).await,
+        ConnectionProxyKind::Socks5 => open_socks5_stream(request).await,
+    }
+}
+
+async fn open_http_connect_stream(request: &ResolvedSshConfig) -> Result<TcpStream, AppError> {
+    let proxy_host = request.proxy.host.as_deref().unwrap_or_default();
+    let proxy_port = request.proxy.port.unwrap_or(0);
+    let mut stream = TcpStream::connect((proxy_host, proxy_port))
+        .await
+        .map_err(|error| AppError::new("proxy_connect_failed", "代理连接失败。", error, true))?;
+    let target = format!("{}:{}", request.host, request.port);
+    let auth = match (
+        request.proxy.username.as_deref(),
+        request.proxy.password.as_deref(),
+    ) {
+        (Some(username), Some(password)) if !username.is_empty() => {
+            let encoded = base64_simple(&format!("{username}:{password}"));
+            format!("Proxy-Authorization: Basic {encoded}\r\n")
+        }
+        _ => String::new(),
+    };
+    let connect = format!("CONNECT {target} HTTP/1.1\r\nHost: {target}\r\n{auth}\r\n");
+    stream
+        .write_all(connect.as_bytes())
+        .await
+        .map_err(|error| {
+            AppError::new(
+                "proxy_connect_failed",
+                "HTTP CONNECT 发送失败。",
+                error,
+                true,
+            )
+        })?;
+    let response = read_http_proxy_response(&mut stream).await?;
+    if !response.starts_with("HTTP/1.1 2") && !response.starts_with("HTTP/1.0 2") {
+        return Err(AppError::new(
+            "proxy_connect_rejected",
+            "HTTP CONNECT 代理拒绝连接。",
+            response.lines().next().unwrap_or("").trim(),
+            true,
+        ));
+    }
+    Ok(stream)
+}
+
+async fn read_http_proxy_response(stream: &mut TcpStream) -> Result<String, AppError> {
+    let mut buffer = Vec::new();
+    let mut byte = [0_u8; 1];
+    while buffer.len() < 8192 {
+        let read = stream.read(&mut byte).await.map_err(|error| {
+            AppError::new(
+                "proxy_connect_failed",
+                "HTTP CONNECT 响应读取失败。",
+                error,
+                true,
+            )
+        })?;
+        if read == 0 {
+            break;
+        }
+        buffer.push(byte[0]);
+        if buffer.ends_with(b"\r\n\r\n") {
+            break;
+        }
+    }
+    Ok(String::from_utf8_lossy(&buffer).to_string())
+}
+
+async fn open_socks5_stream(request: &ResolvedSshConfig) -> Result<TcpStream, AppError> {
+    let proxy_host = request.proxy.host.as_deref().unwrap_or_default();
+    let proxy_port = request.proxy.port.unwrap_or(0);
+    let mut stream = TcpStream::connect((proxy_host, proxy_port))
+        .await
+        .map_err(|error| AppError::new("proxy_connect_failed", "代理连接失败。", error, true))?;
+    let use_auth = request
+        .proxy
+        .username
+        .as_ref()
+        .is_some_and(|value| !value.is_empty());
+    let methods = if use_auth {
+        vec![0x05, 0x02, 0x00, 0x02]
+    } else {
+        vec![0x05, 0x01, 0x00]
+    };
+    stream
+        .write_all(&methods)
+        .await
+        .map_err(|error| AppError::new("proxy_connect_failed", "SOCKS5 握手失败。", error, true))?;
+    let mut method_response = [0_u8; 2];
+    stream
+        .read_exact(&mut method_response)
+        .await
+        .map_err(|error| {
+            AppError::new(
+                "proxy_connect_failed",
+                "SOCKS5 握手响应读取失败。",
+                error,
+                true,
+            )
+        })?;
+    match method_response {
+        [0x05, 0x00] => {}
+        [0x05, 0x02] => authenticate_socks5_proxy(&mut stream, request).await?,
+        [0x05, 0xff] => {
+            return Err(AppError::new(
+                "proxy_auth_rejected",
+                "SOCKS5 代理不接受当前认证方式。",
+                "no acceptable auth method",
+                true,
+            ));
+        }
+        _ => {
+            return Err(AppError::new(
+                "proxy_connect_rejected",
+                "SOCKS5 代理握手失败。",
+                format!("{method_response:?}"),
+                true,
+            ));
+        }
+    }
+
+    let host_bytes = request.host.as_bytes();
+    if host_bytes.len() > 255 {
+        return Err(AppError::new(
+            "proxy_target_invalid",
+            "SOCKS5 目标主机过长。",
+            &request.host,
+            true,
+        ));
+    }
+    let mut connect = vec![0x05, 0x01, 0x00, 0x03, host_bytes.len() as u8];
+    connect.extend_from_slice(host_bytes);
+    connect.extend_from_slice(&request.port.to_be_bytes());
+    stream.write_all(&connect).await.map_err(|error| {
+        AppError::new(
+            "proxy_connect_failed",
+            "SOCKS5 CONNECT 发送失败。",
+            error,
+            true,
+        )
+    })?;
+    read_socks5_connect_response(&mut stream).await?;
+    Ok(stream)
+}
+
+async fn authenticate_socks5_proxy(
+    stream: &mut TcpStream,
+    request: &ResolvedSshConfig,
+) -> Result<(), AppError> {
+    let username = request.proxy.username.as_deref().unwrap_or("");
+    let password = request.proxy.password.as_deref().unwrap_or("");
+    if username.len() > 255 || password.len() > 255 {
+        return Err(AppError::new(
+            "proxy_auth_invalid",
+            "SOCKS5 代理用户名或密码过长。",
+            "credential length > 255",
+            true,
+        ));
+    }
+    let mut packet = vec![0x01, username.len() as u8];
+    packet.extend_from_slice(username.as_bytes());
+    packet.push(password.len() as u8);
+    packet.extend_from_slice(password.as_bytes());
+    stream.write_all(&packet).await.map_err(|error| {
+        AppError::new("proxy_auth_failed", "SOCKS5 代理认证失败。", error, true)
+    })?;
+    let mut response = [0_u8; 2];
+    stream.read_exact(&mut response).await.map_err(|error| {
+        AppError::new(
+            "proxy_auth_failed",
+            "SOCKS5 代理认证响应读取失败。",
+            error,
+            true,
+        )
+    })?;
+    if response == [0x01, 0x00] {
+        Ok(())
+    } else {
+        Err(AppError::new(
+            "proxy_auth_rejected",
+            "SOCKS5 代理认证未通过。",
+            format!("{response:?}"),
+            true,
+        ))
+    }
+}
+
+async fn read_socks5_connect_response(stream: &mut TcpStream) -> Result<(), AppError> {
+    let mut head = [0_u8; 4];
+    stream.read_exact(&mut head).await.map_err(|error| {
+        AppError::new(
+            "proxy_connect_failed",
+            "SOCKS5 CONNECT 响应读取失败。",
+            error,
+            true,
+        )
+    })?;
+    if head[0] != 0x05 || head[1] != 0x00 {
+        return Err(AppError::new(
+            "proxy_connect_rejected",
+            "SOCKS5 代理拒绝连接目标主机。",
+            format!("{head:?}"),
+            true,
+        ));
+    }
+    let remaining = match head[3] {
+        0x01 => 4 + 2,
+        0x03 => {
+            let mut len = [0_u8; 1];
+            stream.read_exact(&mut len).await.map_err(|error| {
+                AppError::new("proxy_connect_failed", "SOCKS5 响应读取失败。", error, true)
+            })?;
+            usize::from(len[0]) + 2
+        }
+        0x04 => 16 + 2,
+        _ => {
+            return Err(AppError::new(
+                "proxy_connect_rejected",
+                "SOCKS5 代理响应地址类型无效。",
+                format!("{head:?}"),
+                true,
+            ));
+        }
+    };
+    let mut discard = vec![0_u8; remaining];
+    stream.read_exact(&mut discard).await.map_err(|error| {
+        AppError::new("proxy_connect_failed", "SOCKS5 响应读取失败。", error, true)
+    })?;
+    Ok(())
+}
+
+fn duration_from_ms(ms: u64) -> Duration {
+    Duration::from_millis(ms.max(1))
+}
+
+fn to_russh_error(error: AppError) -> russh::Error {
+    russh::Error::IO(std::io::Error::new(
+        std::io::ErrorKind::Other,
+        serde_json::to_string(&error).unwrap_or_else(|_| error.message),
+    ))
+}
+
+fn app_error_from_russh(
+    error: russh::Error,
+    fallback_code: &str,
+    fallback_message: &str,
+) -> AppError {
+    if let russh::Error::IO(io_error) = &error {
+        if let Ok(app_error) = serde_json::from_str::<AppError>(&io_error.to_string()) {
+            return app_error;
+        }
+    }
+
+    AppError::new(fallback_code, fallback_message, error, true)
+}
+
+fn base64_simple(value: &str) -> String {
+    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let bytes = value.as_bytes();
+    let mut output = String::new();
+    let mut index = 0;
+    while index < bytes.len() {
+        let b0 = bytes[index];
+        let b1 = bytes.get(index + 1).copied().unwrap_or(0);
+        let b2 = bytes.get(index + 2).copied().unwrap_or(0);
+        output.push(TABLE[(b0 >> 2) as usize] as char);
+        output.push(TABLE[(((b0 & 0b0000_0011) << 4) | (b1 >> 4)) as usize] as char);
+        if index + 1 < bytes.len() {
+            output.push(TABLE[(((b1 & 0b0000_1111) << 2) | (b2 >> 6)) as usize] as char);
+        } else {
+            output.push('=');
+        }
+        if index + 2 < bytes.len() {
+            output.push(TABLE[(b2 & 0b0011_1111) as usize] as char);
+        } else {
+            output.push('=');
+        }
+        index += 3;
+    }
+    output
 }
 
 async fn authenticate(
@@ -616,10 +925,7 @@ async fn authenticate(
 
 #[cfg(test)]
 mod tests {
-    use std::env;
     use std::time::Duration;
-
-    use russh::ChannelMsg;
 
     use super::*;
 
@@ -645,70 +951,23 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires MXTERM_SSH_HOST, MXTERM_SSH_USER and MXTERM_SSH_PASSWORD"]
-    fn opens_real_shell_with_password_auth() {
-        tauri::async_runtime::block_on(async {
-            let host = env::var("MXTERM_SSH_HOST").expect("MXTERM_SSH_HOST is required");
-            let username = env::var("MXTERM_SSH_USER").expect("MXTERM_SSH_USER is required");
-            let password =
-                env::var("MXTERM_SSH_PASSWORD").expect("MXTERM_SSH_PASSWORD is required");
-            let marker = "__MXTERM_SMOKE_READY__";
+    fn russh_app_error_mapping_preserves_recoverable_code() {
+        let original = AppError::new(
+            "host_key_unknown",
+            "首次连接该主机，需要确认主机密钥。",
+            r#"{"fingerprint_sha256":"SHA256:test"}"#,
+            true,
+        );
 
-            let request = TerminalConnectRequest {
-                request_id: None,
-                connection_id: None,
-                host,
-                port: 22,
-                username,
-                password: Some(password),
-                private_key_path: None,
-                private_key_passphrase: None,
-                cols: 80,
-                rows: 24,
-            };
-            let (session, mut reader) = TerminalSession::open(request, None).await.unwrap();
+        let mapped = app_error_from_russh(
+            to_russh_error(original.clone()),
+            "terminal_connect_failed",
+            "SSH 连接失败。",
+        );
 
-            session.resize(100, 30).await.unwrap();
-            session
-                .write(format!(
-                    "pwd\n\
-                     ls -la | head -5\n\
-                     seq 1 5000 | tail -1\n\
-                     (top -b -n1 | head -3) 2>/dev/null || true\n\
-                     (vim --version | head -1) 2>/dev/null || true\n\
-                     tmp=\"/tmp/mxterm-tail-smoke-$$\"; echo tail-ok > \"$tmp\"; (timeout 2s tail -f \"$tmp\") 2>/dev/null || true; rm -f \"$tmp\"\n\
-                     printf '{marker}:%s\\n' \"$PWD\"\n"
-                ))
-                .await
-                .unwrap();
-
-            let mut output = String::new();
-            let result = tokio::time::timeout(Duration::from_secs(10), async {
-                while !output.contains(marker) {
-                    if let Some(message) = reader.wait().await {
-                        match message {
-                            ChannelMsg::Data { data } | ChannelMsg::ExtendedData { data, .. } => {
-                                output.push_str(&String::from_utf8_lossy(&data));
-                            }
-                            ChannelMsg::Close | ChannelMsg::Eof => break,
-                            _ => {}
-                        }
-                    }
-                }
-            })
-            .await;
-
-            let _ = session.close().await;
-
-            result.expect("SSH smoke command timed out");
-            assert!(
-                output.contains(marker),
-                "SSH smoke marker missing from output: {output:?}"
-            );
-            assert!(
-                output.contains("5000"),
-                "SSH large output check missing from output: {output:?}"
-            );
-        });
+        assert_eq!(mapped.code, original.code);
+        assert_eq!(mapped.message, original.message);
+        assert_eq!(mapped.raw_message, original.raw_message);
+        assert!(mapped.recoverable);
     }
 }

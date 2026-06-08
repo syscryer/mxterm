@@ -14,6 +14,11 @@
 connectionList(): Promise<ConnectionProfile[]>
 connectionUpsert(request: ConnectionProfileInput): Promise<ConnectionProfile>
 connectionDelete(id: string): Promise<void>
+credentialList(): Promise<CredentialProfile[]>
+credentialUpsert(request: CredentialProfileInput): Promise<CredentialProfile>
+credentialDelete(id: string): Promise<void>
+connectionTest(request: ConnectionRuntimeCredentialRequest): Promise<ConnectionStepResult>
+knownHostTrust(hostKey: HostKeyInfo): Promise<void>
 connectionProbeLatency(connectionId: string): Promise<{ latency_ms: number | null; reachable: boolean }>
 terminalConnect(request: TerminalConnectRequest): Promise<string>
 terminalWrite(sessionId: string, data: string): Promise<void>
@@ -24,13 +29,67 @@ terminalClose(sessionId: string): Promise<void>
 `ConnectionProfileInput` mirrors the Rust payload:
 
 ```ts
-auth_kind: "password" | "private_key"
+group?: string
 host: string
 port: number
 username: string
+credential_mode: "saved" | "inline" | "prompt"
+credential_id?: string
+inline_auth_kind?: "password" | "private_key"
+inline_password?: string
+inline_private_key_path?: string
+inline_private_key_passphrase?: string
+prompt_auth_kind?: "password" | "private_key"
+proxy: {
+  kind: "none" | "http_connect" | "socks5"
+  host?: string | null
+  port?: number | null
+  username?: string | null
+  password?: string | null
+}
+advanced: {
+  connect_timeout_ms: number
+  auth_timeout_ms: number
+  keepalive_interval_ms: number
+}
+notes?: string
+// Legacy migration only:
+auth_kind?: "password" | "private_key"
 password?: string
 private_key_path?: string
 private_key_passphrase?: string
+```
+
+`CredentialProfileInput` mirrors the credential-only Rust payload:
+
+```ts
+id?: string
+name?: string
+kind: "password" | "private_key"
+password?: string
+private_key_path?: string
+private_key_passphrase?: string
+notes?: string
+```
+
+Runtime credential and host-key requests:
+
+```ts
+type ConnectionRuntimeCredentialRequest = {
+  connection_id: string
+  auth_kind?: "password" | "private_key"
+  password?: string
+  private_key_path?: string
+  private_key_passphrase?: string
+}
+
+type HostKeyInfo = {
+  host: string
+  port: number
+  key_algorithm: string
+  fingerprint_sha256: string
+  public_key: string
+}
 ```
 
 ### 3. Contracts
@@ -38,11 +97,16 @@ private_key_passphrase?: string
 - Keep Tauri command names centralized in `src/shared/tauri/commands.ts`.
 - Keep Tauri event names centralized in `src/shared/tauri/events.ts`. Event names must use allowed characters only; use `terminal:output`, `terminal:state_changed`, and `terminal:connect_progress`, not dot-separated names.
 - Wrapper argument objects must match Rust command parameter names exactly, for example `{ request }`, `{ id }`, and `{ sessionId }`.
-- UI state may use empty strings while editing, but `useConnections` must trim optional fields and convert blanks to `undefined` before calling `connectionUpsert`.
-- When opening a saved connection, `TerminalPanel` should pass `connection_id` plus the current profile fields; Rust treats the saved profile as authoritative.
+- UI state may use empty strings while editing, but `useConnections` and `useCredentials` must trim optional fields and convert blanks to `undefined` before calling `connectionUpsert` or `credentialUpsert`.
+- Connection profiles own target and behavior fields: group, host, port, username, credential mode, proxy, advanced settings, and notes.
+- Credential profiles own only authentication material: password or private key path/passphrase plus local notes. They must not store host, port, or username.
+- When opening a saved connection, the connection-preparation flow should pass `connection_id` plus prompt credentials only when `credential_mode === "prompt"`; Rust treats the saved profile as authoritative.
+- `ConnectionDialog` can test the current form by saving/upserting the profile, then calling `connectionTest({ connection_id })` or including prompt runtime credentials when required. It must show validation and connection errors as dialog feedback instead of writing them into a terminal.
+- Host-key confirmation UI must call `knownHostTrust(hostKey)` with the `HostKeyInfo` returned by a recoverable host-key error; do not synthesize fingerprints on the frontend.
 - Connection latency probing must go through `connectionProbeLatency(connection.id)`. The UI sends only a saved connection id; Rust reloads the saved host/port and never needs credential fields for this probe.
-- `TerminalPanel` must register output/state/progress listeners before calling `terminalConnect`.
-- During connection startup, match terminal output/state events by `request_id` as well as by `session_id`; shell prompts can arrive before the frontend receives the returned session id.
+- The connection preparation page owns startup, host-key confirmation, prompt credentials, retry, edit, and failure UI. A terminal tab is created only after `terminalConnect` returns a session id.
+- `TerminalPanel` receives an already-created `initialSessionId`; it must not start a second SSH connection for that tab.
+- During terminal handoff, match terminal output/state events by `request_id` as well as by `session_id`; shell prompts can arrive before the frontend receives the returned session id.
 - Do not store terminal session runtime state inside a `ConnectionProfile`. Connection profiles are persistent data; terminal tabs and session ids are runtime state.
 - Do not log passwords, private-key passphrases, or full command payloads.
 
@@ -52,24 +116,31 @@ private_key_passphrase?: string
 | --- | --- |
 | `connectionList` fails in a browser preview without Tauri | Show the static fallback profile from `useConnections` so the layout remains inspectable. |
 | `connectionUpsert` rejects validation | Surface the Rust `AppError.message` as user-facing form feedback. |
+| `credentialList` fails in a browser preview without Tauri | Show preview credentials from `useCredentials` so the credential management layout remains inspectable. |
+| `credentialUpsert` rejects validation | Surface the Rust `AppError.message` near the credential form. |
+| `credentialDelete` returns `credential_in_use` | Keep the credential, show that existing connections must be edited before deletion, and do not remove local UI state. |
 | Delete is requested | Confirm with `window.confirm` before calling `connectionDelete`. |
 | Latency probe runs in browser preview without Tauri | Use a stable preview latency so the home table remains inspectable. |
 | Latency probe returns `reachable: false` | Show a timeout/unreachable state in the latency cell without replacing the connection list error. |
+| Credential mode changes to `saved` | Clear inline secret fields before submit and require `credential_id`. |
+| Credential mode changes to `inline` | Clear `credential_id` and use inline auth kind fields. |
+| Credential mode changes to `prompt` | Clear saved/inline secrets and collect runtime credentials only on the connection step. |
 | Auth kind changes to `password` | Clear private-key fields in form state. |
 | Auth kind changes to `private_key` | Clear password in form state. |
-| Terminal connect fails | Keep the tab open and show the failure in terminal output/status. |
-| Shell output arrives before `terminalConnect` resolves | Display it when `request_id` matches the tab id. |
+| `terminalConnect` fails before session id exists | Keep the connection-preparation tab open and show structured failure, retry, edit, and close actions. |
+| Shell output arrives before `terminalConnect` resolves | Capture warmup output by `request_id` and pass it into `TerminalPanel` as initial output. |
 
 ### 5. Good / Base / Bad Cases
 
-- Good: `ConnectionDialog` holds editable strings, clears fields when auth mode changes, and delegates normalization to `useConnections` before saving.
+- Good: `ConnectionDialog` holds editable strings, clears fields when credential or auth mode changes, and delegates normalization to `useConnections` before saving.
+- Good: `SettingsView` edits credential-only records through `useCredentials`; it never asks for host, port, or username in credential management.
 - Base: `ConnectionPane` displays `username@host:port`, calls `onOpen(connection)`, and does not know about Tauri details.
-- Bad: A component calls `invoke("connection_upsert", ...)` directly and duplicates field normalization.
+- Bad: A component calls `invoke("connection_upsert", ...)` directly, stores runtime session ids inside `ConnectionProfile`, or sends raw passwords to remote-file commands.
 
 ### 6. Tests Required
 
-- Run `pnpm check` after changing command wrappers, connection types, terminal request types, or component props that carry command payloads.
-- Add focused tests once the frontend test runner exists for auth-mode field clearing, delete confirmation, fallback behavior, and error display.
+- Run `npm run check -- --pretty false` after changing command wrappers, connection types, credential types, terminal request types, or component props that carry command payloads.
+- Add focused tests once the frontend test runner exists for credential-mode field clearing, credential delete handling, host-key recoverable states, fallback behavior, and error display.
 - Cross-check changed TypeScript payload fields against `src-tauri/src/commands.rs` and `src-tauri/src/connections/mod.rs` in the same task.
 
 ### 7. Wrong vs Correct
@@ -85,7 +156,8 @@ await invoke("connection_upsert", { profile });
 ```tsx
 await connectionUpsert({
   ...input,
-  password: input.password?.trim() || undefined,
+  inline_password: input.inline_password?.trim() || undefined,
+  inline_private_key_path: input.inline_private_key_path?.trim() || undefined,
 });
 ```
 

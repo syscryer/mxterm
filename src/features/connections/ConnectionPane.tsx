@@ -15,7 +15,6 @@ import {
   Clock3,
   Folder,
   FolderPlus,
-  MoreHorizontal,
   Pencil,
   Play,
   Plus,
@@ -34,7 +33,6 @@ import type { ConnectionProfile } from "./connectionTypes";
 
 interface ConnectionPaneProps {
   connections: ConnectionProfile[];
-  connectionPlacementRequest: ConnectionPlacementRequest | null;
   error: string | null;
   loading: boolean;
   onCreate: (groupId?: string) => void;
@@ -45,6 +43,7 @@ interface ConnectionPaneProps {
     assignments: ConnectionGroupAssignments;
     groups: CustomGroup[];
   }) => void;
+  onMoveConnectionToGroup: (connection: ConnectionProfile, groupId: string | null) => void | Promise<void>;
   onOpen: (connection: ConnectionProfile) => void;
   onOpenSettings: () => void;
   onRefresh: () => void;
@@ -83,12 +82,6 @@ interface CustomGroup {
   parentId?: string | null;
 }
 
-interface ConnectionPlacementRequest {
-  id: number;
-  connectionId: string;
-  groupId: string;
-}
-
 type DeleteRequest =
   | { type: "connection"; connection: ConnectionProfile }
   | { type: "group"; group: CustomGroup };
@@ -100,13 +93,11 @@ const systemFolders: SystemFolder[] = [
 ];
 
 const customGroupStorageKey = "mxterm.connectionGroups.v2";
-const groupAssignmentStorageKey = "mxterm.connectionGroupAssignments.v1";
 const groupPalette = ["#64748b", "#2563eb", "#4f7d63", "#c47c2c", "#8b5cf6", "#d14d72"];
 const connectionDragDataType = "application/x-mxterm-connection-id";
 
 export function ConnectionPane({
   connections,
-  connectionPlacementRequest,
   error,
   loading,
   onCreate,
@@ -114,6 +105,7 @@ export function ConnectionPane({
   onDelete,
   onEdit,
   onGroupCatalogChange,
+  onMoveConnectionToGroup,
   onOpen,
   onOpenSettings,
   onRefresh,
@@ -121,8 +113,7 @@ export function ConnectionPane({
   selectedId,
 }: ConnectionPaneProps) {
   const [customGroups, setCustomGroups] = useState<CustomGroup[]>(readStoredGroups);
-  const [connectionGroups, setConnectionGroups] =
-    useState<ConnectionGroupAssignments>(readStoredGroupAssignments);
+  const connectionGroups = useMemo(() => buildConnectionGroupAssignments(connections), [connections]);
   const [creatingGroup, setCreatingGroup] = useState(false);
   const [editingGroupId, setEditingGroupId] = useState<string | null>(null);
   const [creatingGroupParentId, setCreatingGroupParentId] = useState<string | null>(null);
@@ -132,6 +123,7 @@ export function ConnectionPane({
   const [draggingConnectionId, setDraggingConnectionId] = useState<string | null>(null);
   const [dropTargetId, setDropTargetId] = useState<DropTargetId | null>(null);
   const [mouseDrag, setMouseDrag] = useState<MouseDragState | null>(null);
+  const [quickSelectedId, setQuickSelectedId] = useState<string | null>(null);
   const [expandedFolders, setExpandedFolders] = useState<Record<FolderId, boolean>>({
     common: true,
     favorites: true,
@@ -139,6 +131,10 @@ export function ConnectionPane({
   });
 
   const catalog = useMemo(() => buildCatalog(connections), [connections]);
+  const visibleSystemFolders = useMemo(
+    () => systemFolders.filter((folder) => catalog[folder.id].length > 0),
+    [catalog],
+  );
   const customGroupIds = useMemo(
     () => new Set(customGroups.map((group) => group.id)),
     [customGroups],
@@ -164,8 +160,8 @@ export function ConnectionPane({
   }, [customGroups]);
 
   useEffect(() => {
-    writeStoredGroupAssignments(connectionGroups);
-  }, [connectionGroups]);
+    setCustomGroups((groups) => mergeProfileGroups(groups, connections));
+  }, [connections]);
 
   useEffect(() => {
     onGroupCatalogChange?.({
@@ -173,15 +169,6 @@ export function ConnectionPane({
       groups: customGroups,
     });
   }, [connectionGroups, customGroups, onGroupCatalogChange]);
-
-  useEffect(() => {
-    if (connectionPlacementRequest) {
-      assignConnectionToGroup(
-        connectionPlacementRequest.connectionId,
-        connectionPlacementRequest.groupId,
-      );
-    }
-  }, [connectionPlacementRequest]);
 
   useEffect(() => {
     if (!mouseDrag) {
@@ -244,30 +231,32 @@ export function ConnectionPane({
           {loading ? <p className="pane-note">加载连接中...</p> : null}
           {error ? <p className="pane-error">{error}</p> : null}
 
-          <div className="tree-block" aria-label="固定分组">
-            {systemFolders.map((folder) => (
-              <TreeFolder
-                color={folder.color}
-                connections={catalog[folder.id]}
-                expanded={expandedFolders[folder.id]}
-                icon={folder.icon}
-                key={folder.id}
-                label={folder.label}
-                onEdit={onEdit}
-                onOpen={onOpen}
-                onSelect={onSelect}
-                onCreateConnection={() => onCreate()}
-                onCreateGroup={() => beginCreateGroup(null)}
-                onConnect={onConnect}
-                onDeleteConnection={requestDeleteConnection}
-                onConnectionDragEnd={finishConnectionDrag}
-                onConnectionDragStart={beginConnectionDrag}
-                onMouseConnectionDragStart={beginMouseConnectionDrag}
-                onToggle={() => toggleFolder(folder.id)}
-                selectedId={selectedId}
-              />
-            ))}
-          </div>
+          {visibleSystemFolders.length > 0 ? (
+            <div className="tree-block" aria-label="固定分组">
+              {visibleSystemFolders.map((folder) => (
+                <TreeFolder
+                  color={folder.color}
+                  connections={catalog[folder.id]}
+                  expanded={expandedFolders[folder.id]}
+                  icon={folder.icon}
+                  key={folder.id}
+                  label={folder.label}
+                  onEdit={onEdit}
+                  onOpen={onOpen}
+                  onSelect={selectQuickConnection}
+                  onCreateConnection={() => onCreate()}
+                  onCreateGroup={() => beginCreateGroup(null)}
+                  onConnect={connectQuickConnection}
+                  onDeleteConnection={requestDeleteConnection}
+                  onConnectionDragEnd={finishConnectionDrag}
+                  onConnectionDragStart={beginConnectionDrag}
+                  onMouseConnectionDragStart={beginMouseConnectionDrag}
+                  onToggle={() => toggleFolder(folder.id)}
+                  selectedId={quickSelectedId}
+                />
+              ))}
+            </div>
+          ) : null}
 
           <div className="tree-section-head">
             <span>连接</span>
@@ -275,11 +264,6 @@ export function ConnectionPane({
               <Tooltip label="刷新连接">
                 <button className="mini-action" type="button" aria-label="刷新连接" onClick={onRefresh}>
                   <RefreshCw className="ui-icon" aria-hidden="true" />
-                </button>
-              </Tooltip>
-              <Tooltip label="更多">
-                <button className="mini-action" type="button" aria-label="更多">
-                  <MoreHorizontal className="ui-icon" aria-hidden="true" />
                 </button>
               </Tooltip>
               <Tooltip label="新增分组">
@@ -292,12 +276,18 @@ export function ConnectionPane({
                   <FolderPlus className="ui-icon" aria-hidden="true" />
                 </button>
               </Tooltip>
+              <Tooltip label="新增连接">
+                <button
+                  className="mini-action"
+                  type="button"
+                  aria-label="新增连接"
+                  onClick={() => onCreate()}
+                >
+                  <Plus className="ui-icon" aria-hidden="true" />
+                </button>
+              </Tooltip>
             </div>
           </div>
-
-          {customGroups.length === 0 ? (
-            <p className="pane-note section-note">暂无分组</p>
-          ) : null}
 
           <div className="tree-block" aria-label="自定义分组">
             {topLevelCustomGroups.map((group) => renderCustomGroup(group))}
@@ -323,7 +313,7 @@ export function ConnectionPane({
                 onConnect={onConnect}
                 onEdit={onEdit}
                 onOpen={onOpen}
-                onSelect={onSelect}
+                onSelect={selectTreeConnection}
                 selected={connection.id === selectedId}
               />
             ))}
@@ -487,7 +477,7 @@ export function ConnectionPane({
         dropTargetId={dropTargetId}
         onEdit={onEdit}
         onOpen={onOpen}
-        onSelect={onSelect}
+        onSelect={selectTreeConnection}
         onCreateConnection={() => onCreate(group.id)}
         onCreateGroup={() => beginCreateGroup(group.id)}
         onConnect={onConnect}
@@ -517,6 +507,20 @@ export function ConnectionPane({
       ...folders,
       [id]: !(folders[id] ?? true),
     }));
+  }
+
+  function selectQuickConnection(connection: ConnectionProfile) {
+    setQuickSelectedId(connection.id);
+  }
+
+  function connectQuickConnection(connection: ConnectionProfile) {
+    setQuickSelectedId(connection.id);
+    onConnect(connection);
+  }
+
+  function selectTreeConnection(connection: ConnectionProfile) {
+    setQuickSelectedId(null);
+    onSelect(connection);
   }
 
   function beginConnectionDrag(event: DragEvent<HTMLElement>, connection: ConnectionProfile) {
@@ -570,20 +574,19 @@ export function ConnectionPane({
   }
 
   function assignConnectionToGroup(connectionId: string, groupId: string) {
-    setConnectionGroups((groups) => ({
-      ...groups,
-      [connectionId]: groupId,
-    }));
+    const connection = connections.find((item) => item.id === connectionId);
+    if (connection) {
+      void onMoveConnectionToGroup(connection, groupId);
+    }
     finishConnectionDrag();
   }
 
   function moveConnectionToDropTarget(connectionId: string, targetId: DropTargetId) {
     if (targetId === "root") {
-      setConnectionGroups((groups) => {
-        const nextGroups = { ...groups };
-        delete nextGroups[connectionId];
-        return nextGroups;
-      });
+      const connection = connections.find((item) => item.id === connectionId);
+      if (connection) {
+        void onMoveConnectionToGroup(connection, null);
+      }
       finishConnectionDrag();
       return;
     }
@@ -692,14 +695,11 @@ export function ConnectionPane({
   function deleteGroup(group: CustomGroup) {
     const deletingGroupIds = collectGroupAndDescendantIds(customGroups, group.id);
     setCustomGroups((groups) => groups.filter((item) => !deletingGroupIds.has(item.id)));
-    setConnectionGroups((groups) => {
-      const nextGroups = { ...groups };
-      Object.entries(nextGroups).forEach(([connectionId, groupId]) => {
-        if (deletingGroupIds.has(groupId)) {
-          delete nextGroups[connectionId];
-        }
-      });
-      return nextGroups;
+    connections.forEach((connection) => {
+      const groupId = connectionGroups[connection.id];
+      if (groupId && deletingGroupIds.has(groupId)) {
+        void onMoveConnectionToGroup(connection, null);
+      }
     });
     if (editingGroupId === group.id) {
       resetGroupForm();
@@ -1085,30 +1085,6 @@ function readStoredGroups() {
   }
 }
 
-function readStoredGroupAssignments(): ConnectionGroupAssignments {
-  if (typeof window === "undefined") {
-    return {};
-  }
-
-  try {
-    const raw = window.localStorage.getItem(groupAssignmentStorageKey);
-    const parsed: unknown = raw ? JSON.parse(raw) : {};
-
-    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
-      return {};
-    }
-
-    return Object.fromEntries(
-      Object.entries(parsed).filter(
-        (entry): entry is [string, string] =>
-          typeof entry[0] === "string" && typeof entry[1] === "string",
-      ),
-    );
-  } catch {
-    return {};
-  }
-}
-
 function isStoredGroup(value: unknown): value is CustomGroup {
   if (typeof value !== "object" || value === null) {
     return false;
@@ -1126,10 +1102,33 @@ function writeStoredGroups(groups: CustomGroup[]) {
   }
 }
 
-function writeStoredGroupAssignments(groups: ConnectionGroupAssignments) {
-  try {
-    window.localStorage.setItem(groupAssignmentStorageKey, JSON.stringify(groups));
-  } catch {
-    // localStorage can be unavailable in restricted preview contexts.
-  }
+function buildConnectionGroupAssignments(connections: ConnectionProfile[]) {
+  return Object.fromEntries(
+    connections
+      .map((connection) => [connection.id, connection.group?.trim() || ""] as const)
+      .filter(([, group]) => Boolean(group)),
+  );
+}
+
+function mergeProfileGroups(groups: CustomGroup[], connections: ConnectionProfile[]) {
+  const existingIds = new Set(groups.map((group) => group.id));
+  const existingNames = new Set(groups.map((group) => group.name.trim()));
+  const nextGroups = [...groups];
+
+  connections.forEach((connection) => {
+    const name = connection.group?.trim();
+    if (!name || existingIds.has(name) || existingNames.has(name)) {
+      return;
+    }
+    nextGroups.push({
+      color: groupPalette[nextGroups.length % groupPalette.length],
+      id: name,
+      name,
+      parentId: null,
+    });
+    existingIds.add(name);
+    existingNames.add(name);
+  });
+
+  return nextGroups.length === groups.length ? groups : nextGroups;
 }
