@@ -222,8 +222,11 @@ remoteFileCreateFile(connectionId: string, path: string): Promise<RemoteFileMeta
 remoteFileCreateDirectory(connectionId: string, path: string): Promise<void>
 remoteFileRename(input: RemoteFileRenameInput): Promise<void>
 remoteFileDelete(input: RemoteFileDeleteInput): Promise<void>
-remoteFileUploadFile(input: RemoteFileUploadInput): Promise<RemoteFileMetadata>
+remoteFileMetadata(connectionId: string, path: string): Promise<RemoteFileEntryMetadata>
+remoteFileUploadFile(input: RemoteFileUploadInput): Promise<RemoteFileUploadResult>
+remoteFileUploadArchive(input: RemoteFileArchiveUploadInput): Promise<RemoteFileArchiveUploadResult>
 remoteFileDownload(connectionId: string, path: string): Promise<RemoteFileDownloadResult>
+remoteFileDownloadToLocal(input: RemoteFileDownloadToLocalInput): Promise<RemoteFileDownloadToLocalResult>
 ```
 
 Payload and result fields:
@@ -263,12 +266,64 @@ type RemoteFileWriteResult = {
   conflict: boolean;
   metadata: RemoteFileMetadata;
 };
+
+type RemoteFileEntryMetadata = RemoteFileMetadata & {
+  type: "directory" | "file" | "symlink" | "other";
+};
+
+type RemoteFileTransferConflictPolicy = "ask" | "overwrite" | "skip" | "rename";
+
+type RemoteFileUploadInput = {
+  connectionId: string;
+  path: string;
+  content: Uint8Array | number[];
+  conflictPolicy?: RemoteFileTransferConflictPolicy;
+};
+
+type RemoteFileUploadResult = {
+  metadata?: RemoteFileMetadata | null;
+  name: string;
+  path: string;
+  skipped: boolean;
+};
+
+type RemoteFileArchiveUploadInput = {
+  archiveContent: Uint8Array | number[];
+  connectionId: string;
+  conflictPolicy?: RemoteFileTransferConflictPolicy;
+  keepArchive?: boolean;
+  rootName: string;
+  targetDir: string;
+};
+
+type RemoteFileDownloadToLocalInput = {
+  connectionId: string;
+  path: string;
+  directory?: boolean;
+  downloadRoot?: string;
+  groupBySession?: boolean;
+  keepArchives?: boolean;
+  sessionName?: string;
+  timestampDirectory?: boolean;
+  timestampName?: string;
+  conflictPolicy?: RemoteFileTransferConflictPolicy;
+};
+
+type RemoteFileDownloadToLocalResult = {
+  archive_path?: string | null;
+  directory: boolean;
+  local_directory: string;
+  local_path: string;
+  name: string;
+  remote_path: string;
+  skipped: boolean;
+};
 ```
 
 ### 3. Contracts
 
 - UI components must call the typed wrappers in `src/shared/tauri/commands.ts`; do not call `invoke("remote_file_*", ...)` directly from feature components.
-- Wrapper request keys must match Rust exactly: `connection_id`, `path`, `content`, `expected_mtime`, `expected_size`, `overwrite`, `new_path`, and `recursive`.
+- Wrapper request keys must match Rust exactly: `connection_id`, `path`, `content`, `expected_mtime`, `expected_size`, `overwrite`, `new_path`, `recursive`, `conflict_policy`, `target_dir`, `root_name`, `archive_content`, `keep_archive`, `directory`, `download_root`, `group_by_session`, `keep_archives`, `session_name`, `timestamp_directory`, and `timestamp_name`.
 - `connectionId` is always the saved `ConnectionProfile.id`. Do not send host, username, password, private-key path, or passphrase from React for file editor commands.
 - `WorkspaceShell` owns open file tabs and must de-duplicate by `connectionId + path`; opening the same file again activates the existing tab.
 - `RemoteFileEditor` owns Monaco lifecycle only. Command calls, dirty close confirmation, save conflict dialogs, and tree refresh orchestration stay in `WorkspaceShell` / file panel integration.
@@ -277,7 +332,11 @@ type RemoteFileWriteResult = {
 - Binary or too-large read failures must not create an editable Monaco model. Keep the tab content safe and show retry/close or download-oriented UI.
 - Browser preview must not fire real upload/download or SSH commands when Tauri is unavailable; preview-only mock behavior is acceptable for layout checks.
 - Upload file content is sent as bytes. The wrapper converts `Uint8Array | number[]` to a plain number array before invoking Rust.
-- Upload-folder is not part of this command set. If visible in UI, keep it disabled or clearly marked as not implemented.
+- Folder upload must build a tar archive, gzip it with `CompressionStream("gzip")`, then call `remoteFileUploadArchive(...)`; do not recursively invoke `remoteFileUploadFile` per file.
+- Folder download and file download from the desktop app should call `remoteFileDownloadToLocal(...)` so Rust resolves the system/custom download directory and writes to disk. Browser Blob download is only acceptable as a preview fallback.
+- `conflictPolicyDefault: "ask"` must be resolved in UI before invoking Rust. Rust receives only `overwrite`, `skip`, or `rename`; if an old caller sends `ask`, the wrapper/backend must keep non-destructive behavior.
+- File transfer settings live under `settings.fileTransfer` and include `downloadRoot`, `groupBySession`, `timestampDirectory`, `timestampFormat`, `keepArchives`, and `conflictPolicyDefault`.
+- Copy path actions copy the remote absolute path only. Rename dialogs edit the entry basename only and submit `joinRemotePath(remotePathParent(entry.path), newName)`.
 
 ### 4. Validation & Error Matrix
 
@@ -294,16 +353,23 @@ type RemoteFileWriteResult = {
 | Dirty tab close is requested | Show a confirmation dialog with save/discard/cancel semantics or an equivalent safe flow. |
 | Delete succeeds for an opened file | Close or mark the matching tab unavailable, then choose a deterministic fallback active tab. |
 | Upload is requested in browser preview | Do not call the Tauri wrapper; show preview-only feedback or a disabled state. |
+| Upload or download target exists and default policy is `ask` | Prompt for rename / skip / overwrite before invoking Rust. |
+| Single file upload succeeds with rename | Update the transfer item to the returned `path` and refresh the returned parent directory. |
+| Folder upload succeeds | Show archive/extract completion, then refresh the returned parent directory. |
+| Download to local succeeds | Show `local_path` in the transfer panel and offer copy/open/reveal actions. |
+| Download returns `skipped: true` | Keep a skipped transfer item instead of treating it as an error. |
 
 ### 5. Good / Base / Bad Cases
 
 - Good: a file row double-click calls `openRemoteFile(connection.id, entry.path)`, `WorkspaceShell` reuses an existing tab when present, `remoteFileRead` loads content, Monaco edits the model, and `remoteFileWrite` saves with expected metadata.
+- Good: a local directory drop is grouped by root folder, archived into `tar.gz`, uploaded once through `remoteFileUploadArchive`, extracted remotely, and reported in the transfer panel.
 - Base: a user creates `/tmp/app.conf`; React calls `remoteFileCreateFile(connection.id, path)`, refreshes the parent directory, then opens the new file tab.
-- Bad: a component stores passwords in file action state, calls `invoke("remote_file_write", ...)` directly, or closes a dirty Monaco tab without confirmation.
+- Bad: a component stores passwords in file action state, calls `invoke("remote_file_write", ...)` directly, uploads every folder child through separate commands, or closes a dirty Monaco tab without confirmation.
 
 ### 6. Tests Required
 
 - Run `node scripts/check-remote-file-editor-source.mjs` after changing remote editor wrappers, Monaco integration, file tab state, or file panel actions.
+- The source check must cover `remoteFileMetadata`, `remoteFileUploadArchive`, `remoteFileDownloadToLocal`, drag upload/download handlers, `CompressionStream("gzip")`, `webkitdirectory`, `fileTransfer` settings, and basename-only rename.
 - Run `npm run check -- --pretty false` after changing TypeScript command payloads, editor types, or workspace/file panel props.
 - Run `npm run build` after visible Monaco/workspace/CSS changes.
 - Add frontend tests once the test runner exists for duplicate tab activation, dirty close confirmation, conflict branching, browser-preview upload blocking, and wrapper payload shape.
@@ -352,4 +418,26 @@ if (existing) {
   setActiveWorkspaceTabId(existing.id);
   return;
 }
+```
+
+#### Wrong
+
+```tsx
+// Uploads a folder with one SSH round-trip per child and loses directory-level conflict handling.
+for (const file of files) {
+  await remoteFileUploadFile({ connectionId, path: `${targetDir}/${file.name}`, content });
+}
+```
+
+#### Correct
+
+```tsx
+const archiveContent = await buildTarGzArchive(items);
+await remoteFileUploadArchive({
+  archiveContent,
+  connectionId,
+  targetDir,
+  rootName,
+  conflictPolicy,
+});
 ```

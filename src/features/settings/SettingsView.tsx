@@ -2,6 +2,8 @@ import { useEffect, useMemo, useState, type CSSProperties } from "react";
 import {
   ArrowLeft,
   Check,
+  Clock3,
+  Download,
   Folder,
   Monitor,
   Moon,
@@ -31,6 +33,9 @@ import {
 import {
   accentColorPresets,
   defaultSettings,
+  type FileTransferConflictPolicy,
+  type FileTransferSettings,
+  type FileTransferTimestampFormat,
   normalizeFontFamilyInput,
   normalizeHexColor,
   terminalFontPresets,
@@ -59,6 +64,7 @@ interface SettingsViewProps {
   onReturnWorkspace: () => void;
   onUpdateAppearance: (update: Partial<AppearanceSettings>) => void;
   onUpdateBasic: (update: Partial<BasicSettings>) => void;
+  onUpdateFileTransfer: (update: Partial<FileTransferSettings>) => void;
   onUpdateTerminalTheme: (update: Partial<TerminalThemeSettings>) => void;
 }
 
@@ -80,6 +86,7 @@ export function SettingsView({
   onReturnWorkspace,
   onUpdateAppearance,
   onUpdateBasic,
+  onUpdateFileTransfer,
   onUpdateTerminalTheme,
 }: SettingsViewProps) {
   const [activeSection, setActiveSection] = useState<SettingsSectionId>("basic");
@@ -129,7 +136,12 @@ export function SettingsView({
 
       <div className="settings-content">
         {activeSection === "basic" ? (
-          <BasicSettingsSection settings={settings.basic} onUpdate={onUpdateBasic} />
+          <BasicSettingsSection
+            fileTransferSettings={settings.fileTransfer}
+            settings={settings.basic}
+            onUpdate={onUpdateBasic}
+            onUpdateFileTransfer={onUpdateFileTransfer}
+          />
         ) : null}
         {activeSection === "appearance" ? (
           <AppearanceSettingsSection
@@ -153,11 +165,15 @@ export function SettingsView({
 }
 
 function BasicSettingsSection({
+  fileTransferSettings,
   settings,
   onUpdate,
+  onUpdateFileTransfer,
 }: {
+  fileTransferSettings: FileTransferSettings;
   settings: BasicSettings;
   onUpdate: (update: Partial<BasicSettings>) => void;
+  onUpdateFileTransfer: (update: Partial<FileTransferSettings>) => void;
 }) {
   return (
     <section className="settings-page-section">
@@ -210,6 +226,78 @@ function BasicSettingsSection({
             label="文件面板跟随连接"
             onChange={(filePanelFollowsActiveConnection) =>
               onUpdate({ filePanelFollowsActiveConnection })
+            }
+          />
+        </SettingsRow>
+      </div>
+
+      <div className="settings-panel">
+        <SettingsRow
+          icon={Download}
+          title="下载根目录"
+          description="留空时使用系统下载目录。"
+          stack
+        >
+          <input
+            className="settings-input settings-path-input"
+            value={fileTransferSettings.downloadRoot}
+            placeholder="系统 Downloads"
+            spellCheck={false}
+            aria-label="下载根目录"
+            onChange={(event) => onUpdateFileTransfer({ downloadRoot: event.currentTarget.value })}
+          />
+        </SettingsRow>
+        <SettingsRow
+          icon={Folder}
+          title="按会话分组"
+          description="下载到 <会话名称>/<时间戳> 子目录。"
+        >
+          <SettingsToggle
+            checked={fileTransferSettings.groupBySession}
+            label="按会话分组"
+            onChange={(groupBySession) => onUpdateFileTransfer({ groupBySession })}
+          />
+        </SettingsRow>
+        <SettingsRow
+          icon={Clock3}
+          title="时间戳目录"
+          description="每轮下载放入独立时间戳目录。"
+        >
+          <SettingsToggle
+            checked={fileTransferSettings.timestampDirectory}
+            label="时间戳目录"
+            onChange={(timestampDirectory) => onUpdateFileTransfer({ timestampDirectory })}
+          />
+        </SettingsRow>
+        <SettingsRow icon={Clock3} title="时间戳格式" description="用于默认下载目录命名。">
+          <SegmentedControl<FileTransferTimestampFormat>
+            value={fileTransferSettings.timestampFormat}
+            options={[
+              { value: "yyyyMMddHHmm", label: "紧凑" },
+              { value: "yyyyMMdd-HHmm", label: "短横" },
+              { value: "yyyy-MM-dd-HHmm", label: "日期" },
+            ]}
+            onChange={(timestampFormat) => onUpdateFileTransfer({ timestampFormat })}
+          />
+        </SettingsRow>
+        <SettingsRow icon={Save} title="保留压缩包" description="目录上传/下载后保留中间 tar.gz。">
+          <SettingsToggle
+            checked={fileTransferSettings.keepArchives}
+            label="保留压缩包"
+            onChange={(keepArchives) => onUpdateFileTransfer({ keepArchives })}
+          />
+        </SettingsRow>
+        <SettingsRow icon={Rows3} title="同名冲突" description="上传/下载遇到同名目标时的默认策略。">
+          <SegmentedControl<FileTransferConflictPolicy>
+            value={fileTransferSettings.conflictPolicyDefault}
+            options={[
+              { value: "ask", label: "询问" },
+              { value: "rename", label: "重命名" },
+              { value: "overwrite", label: "覆盖" },
+              { value: "skip", label: "跳过" },
+            ]}
+            onChange={(conflictPolicyDefault) =>
+              onUpdateFileTransfer({ conflictPolicyDefault })
             }
           />
         </SettingsRow>

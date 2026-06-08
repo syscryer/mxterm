@@ -12,6 +12,11 @@ export type AccentColor = "blue" | "slate" | "emerald" | "rose" | "violet" | "cu
 export type FontSettingMode = "preset" | "custom";
 export type InterfaceDensity = "comfortable" | "compact";
 export type IconSize = "small" | "medium" | "large";
+export type FileTransferConflictPolicy = "ask" | "overwrite" | "skip" | "rename";
+export type FileTransferTimestampFormat =
+  | "yyyyMMddHHmm"
+  | "yyyyMMdd-HHmm"
+  | "yyyy-MM-dd-HHmm";
 export type TerminalFontPreset =
   | "cascadia-code"
   | "jetbrains-mono"
@@ -54,9 +59,19 @@ export interface TerminalThemeSettings {
   scheme: TerminalColorSchemeId;
 }
 
+export interface FileTransferSettings {
+  conflictPolicyDefault: FileTransferConflictPolicy;
+  downloadRoot: string;
+  groupBySession: boolean;
+  keepArchives: boolean;
+  timestampDirectory: boolean;
+  timestampFormat: FileTransferTimestampFormat;
+}
+
 export interface MxtermSettings {
   appearance: AppearanceSettings;
   basic: BasicSettings;
+  fileTransfer: FileTransferSettings;
   terminalTheme: TerminalThemeSettings;
 }
 
@@ -148,6 +163,14 @@ export const defaultSettings: MxtermSettings = {
     reopenLastTerminal: false,
     restoreWorkspaceOnLaunch: true,
   },
+  fileTransfer: {
+    conflictPolicyDefault: "ask",
+    downloadRoot: "",
+    groupBySession: true,
+    keepArchives: false,
+    timestampDirectory: true,
+    timestampFormat: "yyyyMMddHHmm",
+  },
   appearance: {
     accentColor: "blue",
     accentColorCustom: "#2563EB",
@@ -172,6 +195,7 @@ export const defaultSettings: MxtermSettings = {
 export function normalizeSettings(value: unknown): MxtermSettings {
   const record = isRecord(value) ? value : {};
   const basic = isRecord(record.basic) ? record.basic : {};
+  const fileTransfer = isRecord(record.fileTransfer) ? record.fileTransfer : {};
   const appearance = isRecord(record.appearance) ? record.appearance : {};
   const terminalTheme = isRecord(record.terminalTheme) ? record.terminalTheme : {};
 
@@ -192,6 +216,34 @@ export function normalizeSettings(value: unknown): MxtermSettings {
       restoreWorkspaceOnLaunch: normalizeBoolean(
         basic.restoreWorkspaceOnLaunch,
         defaultSettings.basic.restoreWorkspaceOnLaunch,
+      ),
+    },
+    fileTransfer: {
+      conflictPolicyDefault: normalizeOneOf(
+        fileTransfer.conflictPolicyDefault,
+        ["ask", "overwrite", "skip", "rename"],
+        defaultSettings.fileTransfer.conflictPolicyDefault,
+      ),
+      downloadRoot: normalizePathInput(
+        fileTransfer.downloadRoot,
+        defaultSettings.fileTransfer.downloadRoot,
+      ),
+      groupBySession: normalizeBoolean(
+        fileTransfer.groupBySession,
+        defaultSettings.fileTransfer.groupBySession,
+      ),
+      keepArchives: normalizeBoolean(
+        fileTransfer.keepArchives,
+        defaultSettings.fileTransfer.keepArchives,
+      ),
+      timestampDirectory: normalizeBoolean(
+        fileTransfer.timestampDirectory,
+        defaultSettings.fileTransfer.timestampDirectory,
+      ),
+      timestampFormat: normalizeOneOf(
+        fileTransfer.timestampFormat,
+        ["yyyyMMddHHmm", "yyyyMMdd-HHmm", "yyyy-MM-dd-HHmm"],
+        defaultSettings.fileTransfer.timestampFormat,
       ),
     },
     appearance: {
@@ -362,6 +414,15 @@ export function normalizeFontFamilyInput(value: unknown, fallback: string) {
 
   const trimmed = value.trim().replace(/[;{}\n\r\t]/g, " ");
   return trimmed.length > 0 && trimmed.length <= 180 ? trimmed : fallback;
+}
+
+function normalizePathInput(value: unknown, fallback: string) {
+  if (typeof value !== "string") {
+    return fallback;
+  }
+
+  const trimmed = value.trim().replace(/[<>"|?*\n\r\t]/g, "");
+  return trimmed.length <= 260 ? trimmed : fallback;
 }
 
 function normalizeNumber<T extends number>(value: unknown, allowed: readonly T[], fallback: T): T {

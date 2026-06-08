@@ -7,7 +7,10 @@ const libRs = readFileSync(new URL("../src-tauri/src/lib.rs", import.meta.url), 
 const remoteFilesRs = readFileSync(new URL("../src-tauri/src/remote_files.rs", import.meta.url), "utf8");
 const terminalSessionRs = readFileSync(new URL("../src-tauri/src/terminal/session.rs", import.meta.url), "utf8");
 const remoteFilePanel = readFileSync(new URL("../src/features/files/RemoteFilePanel.tsx", import.meta.url), "utf8");
+const remoteFileTypes = readFileSync(new URL("../src/features/files/remoteFileTypes.ts", import.meta.url), "utf8");
 const workspaceShell = readFileSync(new URL("../src/features/layout/WorkspaceShell.tsx", import.meta.url), "utf8");
+const settingsTypes = readFileSync(new URL("../src/features/settings/settingsTypes.ts", import.meta.url), "utf8");
+const settingsView = readFileSync(new URL("../src/features/settings/SettingsView.tsx", import.meta.url), "utf8");
 const styles = readFileSync(new URL("../src/styles/app.css", import.meta.url), "utf8");
 
 let editorSource = "";
@@ -30,8 +33,11 @@ for (const wrapper of [
   "remoteFileCreateDirectory",
   "remoteFileRename",
   "remoteFileDelete",
+  "remoteFileMetadata",
   "remoteFileUploadFile",
+  "remoteFileUploadArchive",
   "remoteFileDownload",
+  "remoteFileDownloadToLocal",
 ]) {
   if (!commandsTs.includes(`export function ${wrapper}`)) {
     throw new Error(`commands.ts should expose ${wrapper}`);
@@ -45,8 +51,11 @@ for (const command of [
   "remote_file_create_directory",
   "remote_file_rename",
   "remote_file_delete",
+  "remote_file_metadata",
   "remote_file_upload_file",
+  "remote_file_upload_archive",
   "remote_file_download",
+  "remote_file_download_to_local",
 ]) {
   if (!commandsRs.includes(command) || !libRs.includes(`commands::${command}`)) {
     throw new Error(`Rust command ${command} should be defined and registered`);
@@ -56,11 +65,24 @@ for (const command of [
 for (const backendSymbol of [
   "RemoteFileReadResult",
   "RemoteFileWriteResult",
+  "RemoteFileEntryMetadata",
+  "RemoteFileUploadResult",
+  "RemoteFileArchiveUploadResult",
+  "TransferConflictPolicy",
   "REMOTE_FILE_EDIT_LIMIT_BYTES",
   "read_file",
   "write_file",
+  "upload_file",
+  "upload_archive",
+  "download_archive",
   "build_remote_write_command",
+  "build_remote_upload_command",
+  "build_remote_resolve_child_command",
+  "build_remote_extract_archive_command",
+  "build_remote_archive_download_command",
   "parse_remote_file_metadata",
+  "parse_remote_entry_metadata",
+  "parse_remote_transfer_path",
   "looks_like_binary",
 ]) {
   if (!remoteFilesRs.includes(backendSymbol)) {
@@ -85,11 +107,27 @@ for (const uiNeedle of [
   "onCreateDirectory",
   "onRenameEntry",
   "onDeleteEntry",
+  "onDownloadEntry",
+  "onUploadDirectory",
   "onUploadFile",
-  "onDownloadFile",
+  "onUploadItems",
+  "onCopyPath",
+  "onShowProperties",
 ]) {
   if (!remoteFilePanel.includes(uiNeedle)) {
     throw new Error(`RemoteFilePanel should expose ${uiNeedle}`);
+  }
+}
+
+for (const dragNeedle of [
+  "onDragOver",
+  "onDrop",
+  "onDragEnd",
+  "webkitGetAsEntry",
+  "handleRemoteDragStart",
+]) {
+  if (!remoteFilePanel.includes(dragNeedle)) {
+    throw new Error(`RemoteFilePanel should include drag behavior ${dragNeedle}`);
   }
 }
 
@@ -105,6 +143,13 @@ for (const workspaceNeedle of [
   "closeRemoteFileTab",
   "dirty",
   "remote-file-conflict",
+  "remoteFileTransfers",
+  "RemoteFileTransferPanel",
+  "remoteFileUploadArchive",
+  "remoteFileDownloadToLocal",
+  "remoteFileMetadata",
+  "resolveTransferConflictPolicy",
+  "setRemoteFileTextValue(entry.name)",
 ]) {
   if (!workspaceShell.includes(workspaceNeedle)) {
     throw new Error(`WorkspaceShell should include ${workspaceNeedle}`);
@@ -113,6 +158,42 @@ for (const workspaceNeedle of [
 
 if (workspaceShell.includes("activeWorkspaceTabId")) {
   throw new Error("WorkspaceShell should keep remote file active state separate from terminal active state");
+}
+
+for (const archiveNeedle of [
+  "CompressionStream(\"gzip\")",
+  "buildTarGzArchive",
+  "webkitdirectory",
+  "RemoteFileUploadItem",
+]) {
+  if (!workspaceShell.includes(archiveNeedle) && !remoteFilePanel.includes(archiveNeedle)) {
+    throw new Error(`Folder transfer flow should include ${archiveNeedle}`);
+  }
+}
+
+for (const typeNeedle of [
+  "RemoteFileEntryMetadata",
+  "RemoteFileTransferConflictPolicy",
+  "RemoteFileArchiveUploadResult",
+  "RemoteFileDownloadToLocalResult",
+]) {
+  if (!remoteFileTypes.includes(typeNeedle)) {
+    throw new Error(`remoteFileTypes.ts should include ${typeNeedle}`);
+  }
+}
+
+for (const settingsNeedle of [
+  "fileTransfer",
+  "downloadRoot",
+  "groupBySession",
+  "timestampDirectory",
+  "timestampFormat",
+  "keepArchives",
+  "conflictPolicyDefault",
+]) {
+  if (!settingsTypes.includes(settingsNeedle) || !settingsView.includes(settingsNeedle)) {
+    throw new Error(`File transfer settings should include ${settingsNeedle}`);
+  }
 }
 
 for (const editorNeedle of [
@@ -140,6 +221,13 @@ for (const className of [
   ".remote-file-editor-toolbar",
   ".remote-file-editor-status",
   ".file-tab",
+  ".tool-tab-badge",
+  ".file-list.is-drop-target",
+  ".remote-file-row.is-drop-target",
+  ".transfer-panel",
+  ".remote-file-properties",
+  ".transfer-conflict-dialog",
+  ".settings-path-input",
 ]) {
   if (!styles.includes(className)) {
     throw new Error(`app.css should style ${className}`);

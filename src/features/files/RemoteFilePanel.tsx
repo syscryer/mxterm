@@ -2,6 +2,7 @@ import {
   ChevronDown,
   ChevronRight,
   ChevronsUp,
+  Clipboard,
   Crosshair,
   Download,
   Eye,
@@ -10,6 +11,7 @@ import {
   FileText,
   Folder,
   FolderPlus,
+  Info,
   PanelRightClose,
   Pencil,
   RefreshCw,
@@ -17,7 +19,15 @@ import {
   Upload,
 } from "lucide-react";
 import * as ContextMenu from "@radix-ui/react-context-menu";
-import { useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
+import {
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type DragEvent,
+  type FormEvent,
+  type ReactNode,
+} from "react";
 
 import type { ConnectionProfile } from "../connections/connectionTypes";
 import { remoteFileList } from "../../shared/tauri/commands";
@@ -28,28 +38,70 @@ import {
   isRemotePathStrictDescendant,
   normalizeRemotePath,
   remotePathAncestors,
+  remotePathParent,
   shouldShowRemoteDirectoryEmptyRow,
   sortRemoteFileEntries,
 } from "./remoteFilePaths";
 import type { RemoteFileEntry } from "./remoteFileTypes";
 
+export type RemoteFileTool = "files" | "transfers";
+
+export interface RemoteFileUploadItem {
+  file: File;
+  relativePath: string;
+}
+
 interface RemoteFilePanelProps {
+  activeTool: RemoteFileTool;
   connection: ConnectionProfile | null;
   refreshRequest?: RemoteFileRefreshRequest | null;
+  transferAttention?: boolean;
+  transferCount?: number;
+  transferPanel?: ReactNode;
+  onCopyPath?: (path: string) => void;
   onCreateDirectory?: (parentPath: string) => void;
   onCreateFile?: (parentPath: string) => void;
   onDeleteEntry?: (entry: RemoteFileEntry) => void;
-  onDownloadFile?: (entry: RemoteFileEntry) => void;
+  onDownloadEntry?: (entry: RemoteFileEntry) => void;
   onOpenFile?: (entry: RemoteFileEntry) => void;
   onRenameEntry?: (entry: RemoteFileEntry) => void;
+  onShowProperties?: (entry: RemoteFileEntry) => void;
+  onToolChange?: (tool: RemoteFileTool) => void;
   onToggleRightPane?: () => void;
+  onUploadDirectory?: (parentPath: string) => void;
   onUploadFile?: (parentPath: string) => void;
+  onUploadItems?: (parentPath: string, items: RemoteFileUploadItem[]) => void;
   terminalPath?: string | null;
 }
 
 interface RemoteFileRefreshRequest {
   id: number;
   path: string;
+}
+
+interface FileSystemEntryLike {
+  isDirectory: boolean;
+  isFile: boolean;
+  name: string;
+}
+
+interface FileSystemFileEntryLike extends FileSystemEntryLike {
+  file: (success: (file: File) => void, error?: (error: DOMException) => void) => void;
+}
+
+interface FileSystemDirectoryReaderLike {
+  readEntries: (
+    success: (entries: FileSystemEntryLike[]) => void,
+    error?: (error: DOMException) => void,
+  ) => void;
+}
+
+interface FileSystemDirectoryEntryLike extends FileSystemEntryLike {
+  createReader: () => FileSystemDirectoryReaderLike;
+}
+
+interface DataTransferItemWithEntry {
+  webkitGetAsEntry?: () => FileSystemEntryLike | null;
 }
 
 const previewEntries: RemoteFileEntry[] = [
@@ -63,16 +115,25 @@ const defaultRemotePath = "/";
 const loadingIndicatorDelayMs = 180;
 
 export function RemoteFilePanel({
+  activeTool,
   connection,
   refreshRequest,
+  transferAttention = false,
+  transferCount = 0,
+  transferPanel,
+  onCopyPath,
   onCreateDirectory,
   onCreateFile,
   onDeleteEntry,
-  onDownloadFile,
+  onDownloadEntry,
   onOpenFile,
   onRenameEntry,
+  onShowProperties,
+  onToolChange,
   onToggleRightPane,
+  onUploadDirectory,
   onUploadFile,
+  onUploadItems,
   terminalPath,
 }: RemoteFilePanelProps) {
   const terminalDirectory = terminalPath ? normalizeRemotePath(terminalPath) : null;
@@ -82,6 +143,7 @@ export function RemoteFilePanel({
   const [locatedDirectoryPath, setLocatedDirectoryPath] = useState<string | null>(null);
   const [showHidden, setShowHidden] = useState(false);
   const [uploadMenuOpen, setUploadMenuOpen] = useState(false);
+  const [dropTargetPath, setDropTargetPath] = useState<string | null>(null);
   const [loadingPath, setLoadingPath] = useState<string | null>(null);
   const [visibleLoadingPath, setVisibleLoadingPath] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -103,6 +165,7 @@ export function RemoteFilePanel({
     setExpandedDirectories({});
     setLocatedDirectoryPath(null);
     setUploadMenuOpen(false);
+    setDropTargetPath(null);
     setCurrentPath(defaultRemotePath);
     setLoadingPath(null);
     setVisibleLoadingPath(null);
@@ -129,72 +192,90 @@ export function RemoteFilePanel({
 
   const isCurrentPathLoading = loadingPath === currentPath;
   const showCurrentPathLoading = visibleLoadingPath === currentPath;
-
-  if (!connection) {
-    return (
-      <aside className="tool-pane" aria-label="右侧工具面板">
-        <FilePanelShell
-          disabled
-          hasExpandedDirectories={false}
-          loading={false}
-          path="/"
-          showHidden={showHidden}
-          terminalPath={null}
-          locatedDirectoryPath={null}
-          canLocateTerminalDirectory={false}
-          uploadMenuOpen={false}
-          onLocateTerminalDirectory={() => {}}
-          onPathSubmit={() => {}}
-          onRefresh={() => {}}
-          onCollapseExpandedDirectories={() => {}}
-          onToggleHidden={() => {}}
-          onToggleUploadMenu={() => {}}
-          onToggleRightPane={onToggleRightPane}
-          onCreateDirectory={undefined}
-          onCreateFile={undefined}
-          onUploadFile={undefined}
-        >
-          <p className="file-panel-empty">打开一个 SSH 会话后显示远程文件。</p>
-        </FilePanelShell>
-      </aside>
-    );
-  }
+  const disabled = !connection;
 
   return (
     <aside className="tool-pane" aria-label="右侧工具面板">
-      <FilePanelShell
-        hasExpandedDirectories={hasExpandedDirectories}
-        loading={Boolean(visibleLoadingPath)}
-        path={currentPath}
-        showHidden={showHidden}
-        terminalPath={terminalDirectory}
-        locatedDirectoryPath={locatedDirectoryPath}
-        canLocateTerminalDirectory={Boolean(terminalDirectory)}
-        uploadMenuOpen={uploadMenuOpen}
-        onLocateTerminalDirectory={revealTerminalDirectory}
-        onPathSubmit={navigateToPath}
-        onRefresh={() => void loadDirectory(currentPath, true)}
-        onCollapseExpandedDirectories={collapseExpandedDirectories}
-        onToggleHidden={() => setShowHidden((value) => !value)}
-        onToggleUploadMenu={() => setUploadMenuOpen((open) => !open)}
+      <FilePanelTabs
+        activeTool={activeTool}
+        transferAttention={transferAttention}
+        transferCount={transferCount}
+        onToolChange={onToolChange}
         onToggleRightPane={onToggleRightPane}
-        onCreateDirectory={onCreateDirectory}
-        onCreateFile={onCreateFile}
-        onUploadFile={onUploadFile}
-      >
-        {error ? <p className="file-panel-error">{error}</p> : null}
-        <section className="remote-file-tree" aria-label="远程文件树">
-          {entries.length ? (
-            renderRows(entries, 0)
-          ) : showCurrentPathLoading ? (
-            <p className="file-panel-empty">读取目录中...</p>
-          ) : isCurrentPathLoading ? null : (
-            <p className="file-panel-empty">当前目录为空。</p>
+      />
+      {activeTool === "transfers" ? (
+        <div className="transfer-tool-body">
+          {transferPanel || <p className="file-panel-empty">还没有传输任务。</p>}
+        </div>
+      ) : (
+        <FilePanelShell
+          disabled={disabled}
+          hasExpandedDirectories={hasExpandedDirectories}
+          loading={Boolean(visibleLoadingPath)}
+          path={currentPath}
+          showHidden={showHidden}
+          terminalPath={terminalDirectory}
+          locatedDirectoryPath={locatedDirectoryPath}
+          canLocateTerminalDirectory={Boolean(terminalDirectory)}
+          uploadMenuOpen={uploadMenuOpen}
+          onLocateTerminalDirectory={revealTerminalDirectory}
+          onPathSubmit={navigateToPath}
+          onRefresh={() => void loadDirectory(currentPath, true)}
+          onCollapseExpandedDirectories={collapseExpandedDirectories}
+          onToggleHidden={() => setShowHidden((value) => !value)}
+          onToggleUploadMenu={() => setUploadMenuOpen((open) => !open)}
+          onCreateDirectory={connection ? onCreateDirectory : undefined}
+          onCreateFile={connection ? onCreateFile : undefined}
+          onDownloadCurrentDirectory={connection ? () => onDownloadEntry?.(currentDirectoryEntry()) : undefined}
+          onCopyCurrentPath={connection ? () => onCopyPath?.(currentPath) : undefined}
+          onUploadDirectory={connection ? onUploadDirectory : undefined}
+          onUploadFile={connection ? onUploadFile : undefined}
+        >
+          {!connection ? (
+            <p className="file-panel-empty">打开一个 SSH 会话后显示远程文件。</p>
+          ) : (
+            <>
+              {error ? <p className="file-panel-error">{error}</p> : null}
+              <ContextMenu.Root>
+                <ContextMenu.Trigger asChild>
+                  <div
+                    className={`file-list ${dropTargetPath === currentPath ? "is-drop-target" : ""}`}
+                    onDragEnter={(event) => handleLocalDragEnter(event, currentPath)}
+                    onDragLeave={(event) => handleLocalDragLeave(event, currentPath)}
+                    onDragOver={handleLocalDragOver}
+                    onDrop={(event) => handleDropUpload(event, currentPath)}
+                  >
+                    <section className="remote-file-tree" aria-label="远程文件树">
+                      {entries.length ? (
+                        renderRows(entries, 0)
+                      ) : showCurrentPathLoading ? (
+                        <p className="file-panel-empty">读取目录中...</p>
+                      ) : isCurrentPathLoading ? null : (
+                        <p className="file-panel-empty">当前目录为空。</p>
+                      )}
+                    </section>
+                  </div>
+                </ContextMenu.Trigger>
+                <ContextMenu.Portal>
+                  <ContextMenu.Content className="context-menu-content">
+                    {renderBlankMenu()}
+                  </ContextMenu.Content>
+                </ContextMenu.Portal>
+              </ContextMenu.Root>
+            </>
           )}
-        </section>
-      </FilePanelShell>
+        </FilePanelShell>
+      )}
     </aside>
   );
+
+  function currentDirectoryEntry(): RemoteFileEntry {
+    return {
+      name: remotePathName(currentPath),
+      path: currentPath,
+      type: "directory",
+    };
+  }
 
   function navigateToPath(path: string) {
     const normalizedPath = normalizeRemotePath(path);
@@ -310,7 +391,10 @@ export function RemoteFilePanel({
         <ContextMenu.Root key={entry.path}>
           <ContextMenu.Trigger asChild>
             <button
-              className={`remote-file-row ${isLocatedDirectory ? "is-located" : ""}`}
+              className={`remote-file-row ${isLocatedDirectory ? "is-located" : ""} ${
+                dropTargetPath === entry.path ? "is-drop-target" : ""
+              }`}
+              draggable
               style={{
                 paddingLeft: `${8 + depth * 16}px`,
                 ...(isLocatedDirectory ? { background: "var(--mx-active)", color: "var(--mx-text)" } : {}),
@@ -326,6 +410,30 @@ export function RemoteFilePanel({
               onDoubleClick={() => {
                 if (!isDirectory) {
                   onOpenFile?.(entry);
+                }
+              }}
+              onDragEnd={() => {
+                onDownloadEntry?.(entry);
+              }}
+              onDragEnter={(event) => {
+                if (isDirectory) {
+                  handleLocalDragEnter(event, entry.path);
+                }
+              }}
+              onDragLeave={(event) => {
+                if (isDirectory) {
+                  handleLocalDragLeave(event, entry.path);
+                }
+              }}
+              onDragOver={(event) => {
+                if (isDirectory) {
+                  handleLocalDragOver(event);
+                }
+              }}
+              onDragStart={(event) => handleRemoteDragStart(event, entry)}
+              onDrop={(event) => {
+                if (isDirectory) {
+                  handleDropUpload(event, entry.path);
                 }
               }}
             >
@@ -374,34 +482,36 @@ export function RemoteFilePanel({
   }
 
   function renderFileMenu(entry: RemoteFileEntry) {
+    const parentPath = remotePathParent(entry.path);
     return (
       <>
         <ContextMenu.Item className="context-menu-item" onSelect={() => onOpenFile?.(entry)}>
           <FileText className="ui-icon" aria-hidden="true" />
           打开
         </ContextMenu.Item>
-        <ContextMenu.Item
-          className="context-menu-item"
-          disabled={!onDownloadFile}
-          onSelect={() => onDownloadFile?.(entry)}
-        >
+        <ContextMenu.Item className="context-menu-item" onSelect={() => onDownloadEntry?.(entry)}>
           <Download className="ui-icon" aria-hidden="true" />
           下载
         </ContextMenu.Item>
+        <ContextMenu.Item className="context-menu-item" onSelect={() => onUploadFile?.(parentPath)}>
+          <Upload className="ui-icon" aria-hidden="true" />
+          上传文件
+        </ContextMenu.Item>
         <ContextMenu.Separator className="context-menu-separator" />
-        <ContextMenu.Item
-          className="context-menu-item"
-          disabled={!onRenameEntry}
-          onSelect={() => onRenameEntry?.(entry)}
-        >
+        <ContextMenu.Item className="context-menu-item" onSelect={() => onRenameEntry?.(entry)}>
           <Pencil className="ui-icon" aria-hidden="true" />
           重命名
         </ContextMenu.Item>
-        <ContextMenu.Item
-          className="context-menu-item danger"
-          disabled={!onDeleteEntry}
-          onSelect={() => onDeleteEntry?.(entry)}
-        >
+        <ContextMenu.Item className="context-menu-item" onSelect={() => onCopyPath?.(entry.path)}>
+          <Clipboard className="ui-icon" aria-hidden="true" />
+          复制绝对路径
+        </ContextMenu.Item>
+        <ContextMenu.Item className="context-menu-item" onSelect={() => onShowProperties?.(entry)}>
+          <Info className="ui-icon" aria-hidden="true" />
+          查看属性
+        </ContextMenu.Item>
+        <ContextMenu.Separator className="context-menu-separator" />
+        <ContextMenu.Item className="context-menu-item danger" onSelect={() => onDeleteEntry?.(entry)}>
           <Trash2 className="ui-icon" aria-hidden="true" />
           删除
         </ContextMenu.Item>
@@ -414,35 +524,6 @@ export function RemoteFilePanel({
       <>
         <ContextMenu.Item
           className="context-menu-item"
-          disabled={!onCreateFile}
-          onSelect={() => onCreateFile?.(entry.path)}
-        >
-          <FilePlus className="ui-icon" aria-hidden="true" />
-          新建文件
-        </ContextMenu.Item>
-        <ContextMenu.Item
-          className="context-menu-item"
-          disabled={!onCreateDirectory}
-          onSelect={() => onCreateDirectory?.(entry.path)}
-        >
-          <FolderPlus className="ui-icon" aria-hidden="true" />
-          新建文件夹
-        </ContextMenu.Item>
-        <ContextMenu.Item
-          className="context-menu-item"
-          disabled={!onUploadFile}
-          onSelect={() => onUploadFile?.(entry.path)}
-        >
-          <Upload className="ui-icon" aria-hidden="true" />
-          上传文件
-        </ContextMenu.Item>
-        <ContextMenu.Item className="context-menu-item" disabled>
-          <Upload className="ui-icon" aria-hidden="true" />
-          上传文件夹
-        </ContextMenu.Item>
-        <ContextMenu.Separator className="context-menu-separator" />
-        <ContextMenu.Item
-          className="context-menu-item"
           onSelect={() => {
             setExpandedDirectories((current) => ({ ...current, [entry.path]: true }));
             void loadDirectory(entry.path, true);
@@ -451,24 +532,134 @@ export function RemoteFilePanel({
           <RefreshCw className="ui-icon" aria-hidden="true" />
           刷新
         </ContextMenu.Item>
-        <ContextMenu.Item
-          className="context-menu-item"
-          disabled={!onRenameEntry}
-          onSelect={() => onRenameEntry?.(entry)}
-        >
+        <ContextMenu.Item className="context-menu-item" onSelect={() => onUploadFile?.(entry.path)}>
+          <Upload className="ui-icon" aria-hidden="true" />
+          上传文件
+        </ContextMenu.Item>
+        <ContextMenu.Item className="context-menu-item" onSelect={() => onUploadDirectory?.(entry.path)}>
+          <Upload className="ui-icon" aria-hidden="true" />
+          上传文件夹
+        </ContextMenu.Item>
+        <ContextMenu.Item className="context-menu-item" onSelect={() => onCreateFile?.(entry.path)}>
+          <FilePlus className="ui-icon" aria-hidden="true" />
+          新建文件
+        </ContextMenu.Item>
+        <ContextMenu.Item className="context-menu-item" onSelect={() => onCreateDirectory?.(entry.path)}>
+          <FolderPlus className="ui-icon" aria-hidden="true" />
+          新建文件夹
+        </ContextMenu.Item>
+        <ContextMenu.Item className="context-menu-item" onSelect={() => onDownloadEntry?.(entry)}>
+          <Download className="ui-icon" aria-hidden="true" />
+          下载目录
+        </ContextMenu.Item>
+        <ContextMenu.Separator className="context-menu-separator" />
+        <ContextMenu.Item className="context-menu-item" onSelect={() => onRenameEntry?.(entry)}>
           <Pencil className="ui-icon" aria-hidden="true" />
           重命名
         </ContextMenu.Item>
-        <ContextMenu.Item
-          className="context-menu-item danger"
-          disabled={!onDeleteEntry}
-          onSelect={() => onDeleteEntry?.(entry)}
-        >
+        <ContextMenu.Item className="context-menu-item" onSelect={() => onCopyPath?.(entry.path)}>
+          <Clipboard className="ui-icon" aria-hidden="true" />
+          复制绝对路径
+        </ContextMenu.Item>
+        <ContextMenu.Item className="context-menu-item" onSelect={() => onShowProperties?.(entry)}>
+          <Info className="ui-icon" aria-hidden="true" />
+          查看属性
+        </ContextMenu.Item>
+        <ContextMenu.Separator className="context-menu-separator" />
+        <ContextMenu.Item className="context-menu-item danger" onSelect={() => onDeleteEntry?.(entry)}>
           <Trash2 className="ui-icon" aria-hidden="true" />
           删除
         </ContextMenu.Item>
       </>
     );
+  }
+
+  function renderBlankMenu() {
+    return (
+      <>
+        <ContextMenu.Item className="context-menu-item" onSelect={() => void loadDirectory(currentPath, true)}>
+          <RefreshCw className="ui-icon" aria-hidden="true" />
+          刷新当前目录
+        </ContextMenu.Item>
+        <ContextMenu.Item className="context-menu-item" onSelect={() => onUploadFile?.(currentPath)}>
+          <Upload className="ui-icon" aria-hidden="true" />
+          上传文件
+        </ContextMenu.Item>
+        <ContextMenu.Item className="context-menu-item" onSelect={() => onUploadDirectory?.(currentPath)}>
+          <Upload className="ui-icon" aria-hidden="true" />
+          上传文件夹
+        </ContextMenu.Item>
+        <ContextMenu.Item className="context-menu-item" onSelect={() => onCreateFile?.(currentPath)}>
+          <FilePlus className="ui-icon" aria-hidden="true" />
+          新建文件
+        </ContextMenu.Item>
+        <ContextMenu.Item className="context-menu-item" onSelect={() => onCreateDirectory?.(currentPath)}>
+          <FolderPlus className="ui-icon" aria-hidden="true" />
+          新建文件夹
+        </ContextMenu.Item>
+        <ContextMenu.Item className="context-menu-item" onSelect={() => onDownloadEntry?.(currentDirectoryEntry())}>
+          <Download className="ui-icon" aria-hidden="true" />
+          下载当前目录
+        </ContextMenu.Item>
+        <ContextMenu.Separator className="context-menu-separator" />
+        <ContextMenu.Item className="context-menu-item" onSelect={() => onCopyPath?.(currentPath)}>
+          <Clipboard className="ui-icon" aria-hidden="true" />
+          复制当前路径
+        </ContextMenu.Item>
+      </>
+    );
+  }
+
+  function handleLocalDragEnter(event: DragEvent<HTMLElement>, path: string) {
+    if (!hasLocalFileDrop(event.dataTransfer)) {
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    setDropTargetPath(path);
+  }
+
+  function handleLocalDragLeave(event: DragEvent<HTMLElement>, path: string) {
+    if (dropTargetPath !== path) {
+      return;
+    }
+    const related = event.relatedTarget;
+    if (related instanceof Node && event.currentTarget.contains(related)) {
+      return;
+    }
+    setDropTargetPath(null);
+  }
+
+  function handleLocalDragOver(event: DragEvent<HTMLElement>) {
+    if (!hasLocalFileDrop(event.dataTransfer)) {
+      return;
+    }
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "copy";
+  }
+
+  function handleRemoteDragStart(event: DragEvent<HTMLElement>, entry: RemoteFileEntry) {
+    event.dataTransfer.effectAllowed = "copy";
+    event.dataTransfer.setData("text/plain", entry.path);
+    event.dataTransfer.setData("application/x-mxterm-remote-file", JSON.stringify(entry));
+  }
+
+  function handleDropUpload(event: DragEvent<HTMLElement>, path: string) {
+    if (!hasLocalFileDrop(event.dataTransfer)) {
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    setDropTargetPath(null);
+    void extractUploadItems(event.dataTransfer)
+      .then((items) => {
+        if (items.length > 0) {
+          onUploadItems?.(path, items);
+        }
+      })
+      .catch((error: unknown) => {
+        setError(formatError(error));
+      });
   }
 
   function clearLoadingIndicatorTimer() {
@@ -477,6 +668,51 @@ export function RemoteFilePanel({
       loadingIndicatorTimerRef.current = null;
     }
   }
+}
+
+function FilePanelTabs({
+  activeTool,
+  transferAttention,
+  transferCount,
+  onToolChange,
+  onToggleRightPane,
+}: {
+  activeTool: RemoteFileTool;
+  transferAttention: boolean;
+  transferCount: number;
+  onToolChange?: (tool: RemoteFileTool) => void;
+  onToggleRightPane?: () => void;
+}) {
+  return (
+    <nav className="tool-tabs" aria-label="工具标签">
+      <button className={activeTool === "files" ? "active" : ""} type="button" onClick={() => onToolChange?.("files")}>
+        <Folder className="ui-icon" aria-hidden="true" />
+        文件
+      </button>
+      <button
+        className={`${activeTool === "transfers" ? "active" : ""} ${transferAttention ? "attention" : ""}`}
+        type="button"
+        onClick={() => onToolChange?.("transfers")}
+      >
+        <Upload className="ui-icon" aria-hidden="true" />
+        传输
+        {transferCount > 0 ? <span className="tool-tab-badge">{transferCount.toString()}</span> : null}
+      </button>
+      {onToggleRightPane ? (
+        <Tooltip label="收起右侧面板">
+          <button
+            className="right-collapse-button"
+            type="button"
+            aria-label="收起右侧面板"
+            aria-expanded
+            onClick={onToggleRightPane}
+          >
+            <PanelRightClose className="ui-icon" aria-hidden="true" />
+          </button>
+        </Tooltip>
+      ) : null}
+    </nav>
+  );
 }
 
 function FilePanelShell({
@@ -496,9 +732,11 @@ function FilePanelShell({
   onCollapseExpandedDirectories,
   onCreateDirectory,
   onCreateFile,
+  onCopyCurrentPath,
+  onDownloadCurrentDirectory,
   onToggleHidden,
   onToggleUploadMenu,
-  onToggleRightPane,
+  onUploadDirectory,
   onUploadFile,
 }: {
   children: ReactNode;
@@ -507,6 +745,8 @@ function FilePanelShell({
   loading?: boolean;
   onCreateDirectory?: (parentPath: string) => void;
   onCreateFile?: (parentPath: string) => void;
+  onCopyCurrentPath?: () => void;
+  onDownloadCurrentDirectory?: () => void;
   path: string;
   showHidden: boolean;
   terminalPath: string | null;
@@ -519,7 +759,7 @@ function FilePanelShell({
   onCollapseExpandedDirectories: () => void;
   onToggleHidden: () => void;
   onToggleUploadMenu: () => void;
-  onToggleRightPane?: () => void;
+  onUploadDirectory?: (parentPath: string) => void;
   onUploadFile?: (parentPath: string) => void;
 }) {
   const [pathInput, setPathInput] = useState(path);
@@ -539,25 +779,6 @@ function FilePanelShell({
 
   return (
     <>
-      <nav className="tool-tabs" aria-label="工具标签">
-        <button className="active" type="button">
-          <Folder className="ui-icon" aria-hidden="true" />
-          文件
-        </button>
-        {onToggleRightPane ? (
-          <Tooltip label="收起右侧面板">
-            <button
-              className="right-collapse-button"
-              type="button"
-              aria-label="收起右侧面板"
-              aria-expanded
-              onClick={onToggleRightPane}
-            >
-              <PanelRightClose className="ui-icon" aria-hidden="true" />
-            </button>
-          </Tooltip>
-        ) : null}
-      </nav>
       <div className="file-panel-toolbar">
         <form className="path-form" onSubmit={submitPath}>
           <input
@@ -613,6 +834,16 @@ function FilePanelShell({
             </Tooltip>
           </div>
           <div className="file-panel-action-group">
+            <Tooltip label="复制当前路径">
+              <button className="mini-action" type="button" aria-label="复制当前路径" disabled={disabled} onClick={onCopyCurrentPath}>
+                <Clipboard className="ui-icon" aria-hidden="true" />
+              </button>
+            </Tooltip>
+            <Tooltip label="下载当前目录">
+              <button className="mini-action" type="button" aria-label="下载当前目录" disabled={disabled} onClick={onDownloadCurrentDirectory}>
+                <Download className="ui-icon" aria-hidden="true" />
+              </button>
+            </Tooltip>
             <Tooltip label="新建文件">
               <button
                 className="mini-action"
@@ -668,17 +899,25 @@ function FilePanelShell({
                   >
                     上传文件
                   </button>
-                  <button className="upload-menu-item" type="button" disabled role="menuitem">
+                  <button
+                    className="upload-menu-item"
+                    type="button"
+                    disabled={disabled || !onUploadDirectory}
+                    role="menuitem"
+                    onClick={() => {
+                      onUploadDirectory?.(path);
+                      onToggleUploadMenu();
+                    }}
+                  >
                     上传文件夹
                   </button>
-                  <span className="upload-menu-note">上传文件夹暂未接入递归传输</span>
                 </div>
               ) : null}
             </div>
           </div>
         </div>
       </div>
-      <div className="file-list">{children}</div>
+      {children}
     </>
   );
 }
@@ -732,7 +971,86 @@ function fileBadgeLabel(iconKind: string) {
   if (iconKind === "log") return "L";
   if (iconKind === "script") return ">";
   if (iconKind === "link") return "@";
-  return "·";
+  return ".";
+}
+
+async function extractUploadItems(dataTransfer: DataTransfer): Promise<RemoteFileUploadItem[]> {
+  const items = Array.from(dataTransfer.items || []);
+  if (items.length > 0) {
+    const collected = await Promise.all(
+      items
+        .filter((item) => item.kind === "file")
+        .map(async (item) => {
+          const entry = (item as unknown as DataTransferItemWithEntry).webkitGetAsEntry?.();
+          if (entry) {
+            return collectEntryUploadItems(entry, "");
+          }
+          const file = item.getAsFile();
+          return file ? [{ file, relativePath: file.name }] : [];
+        }),
+    );
+    return collected.flat();
+  }
+
+  return Array.from(dataTransfer.files || []).map((file) => ({
+    file,
+    relativePath: relativePathForFile(file),
+  }));
+}
+
+async function collectEntryUploadItems(
+  entry: FileSystemEntryLike,
+  prefix: string,
+): Promise<RemoteFileUploadItem[]> {
+  if (entry.isFile) {
+    const file = await readFileEntry(entry as FileSystemFileEntryLike);
+    return [{ file, relativePath: `${prefix}${file.name}` }];
+  }
+
+  if (!entry.isDirectory) {
+    return [];
+  }
+
+  const directory = entry as FileSystemDirectoryEntryLike;
+  const entries = await readAllDirectoryEntries(directory);
+  const nextPrefix = `${prefix}${directory.name}/`;
+  const nested = await Promise.all(entries.map((item) => collectEntryUploadItems(item, nextPrefix)));
+  return nested.flat();
+}
+
+function readFileEntry(entry: FileSystemFileEntryLike) {
+  return new Promise<File>((resolve, reject) => {
+    entry.file(resolve, reject);
+  });
+}
+
+function readAllDirectoryEntries(entry: FileSystemDirectoryEntryLike) {
+  const reader = entry.createReader();
+  const entries: FileSystemEntryLike[] = [];
+
+  return new Promise<FileSystemEntryLike[]>((resolve, reject) => {
+    function readNextBatch() {
+      reader.readEntries((batch) => {
+        if (batch.length === 0) {
+          resolve(entries);
+          return;
+        }
+        entries.push(...batch);
+        readNextBatch();
+      }, reject);
+    }
+
+    readNextBatch();
+  });
+}
+
+function relativePathForFile(file: File) {
+  const withRelativePath = file as File & { webkitRelativePath?: string };
+  return withRelativePath.webkitRelativePath || file.name;
+}
+
+function hasLocalFileDrop(dataTransfer: DataTransfer) {
+  return Array.from(dataTransfer.types || []).includes("Files");
 }
 
 function formatError(error: unknown) {
@@ -746,4 +1064,13 @@ function visibleEntries(entries: RemoteFileEntry[], showHidden: boolean) {
   return sortRemoteFileEntries(
     showHidden ? entries : entries.filter((entry) => !entry.name.startsWith(".")),
   );
+}
+
+function remotePathName(path: string) {
+  const normalizedPath = normalizeRemotePath(path);
+  if (normalizedPath === "/") {
+    return "/";
+  }
+  const parts = normalizedPath.split("/").filter(Boolean);
+  return parts[parts.length - 1] || normalizedPath;
 }
