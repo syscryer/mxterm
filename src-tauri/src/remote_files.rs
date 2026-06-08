@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::path::Path;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -8,7 +9,7 @@ use tokio::sync::Mutex;
 use crate::app_error::AppError;
 use crate::commands::TerminalConnectRequest;
 use crate::connections::ConnectionProfile;
-use crate::terminal::session::{ExecOutput, ReusableExecSession};
+use crate::terminal::session::{ExecOutput, ExecProgressCallback, ReusableExecSession};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -71,6 +72,14 @@ pub struct RemoteFileEntryMetadata {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct RemoteFilePathCheckResult {
+    pub path: String,
+    pub exists: bool,
+    #[serde(rename = "type")]
+    pub kind: Option<RemoteFileKind>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct RemoteFileReadResult {
     pub content: String,
     pub encoding: String,
@@ -99,7 +108,12 @@ pub enum TransferConflictPolicy {
 
 impl TransferConflictPolicy {
     pub fn from_request(value: Option<&str>) -> Self {
-        match value.unwrap_or("rename").trim().to_ascii_lowercase().as_str() {
+        match value
+            .unwrap_or("rename")
+            .trim()
+            .to_ascii_lowercase()
+            .as_str()
+        {
             "overwrite" => Self::Overwrite,
             "skip" => Self::Skip,
             // Frontend should resolve "ask" before invoking Rust. If an old caller sends it,
@@ -222,6 +236,19 @@ pub fn build_remote_entry_metadata_command(path: &str) -> String {
          mtime=$(stat -c %Y \"$path\" 2>/dev/null || stat -f %m \"$path\" 2>/dev/null) || exit 4; \
          mode=$(stat -c %a \"$path\" 2>/dev/null || stat -f %Lp \"$path\" 2>/dev/null || printf ''); \
          printf '%s\\000%s\\000%s\\000%s\\000%s\\000' \"$kind\" \"$path\" \"$size\" \"$mtime\" \"$mode\""
+    )
+}
+
+pub fn build_remote_path_check_command(path: &str) -> String {
+    let quoted_path = quote_posix_shell(path);
+    format!(
+        "path={quoted_path}; \
+         exists=0; kind=; \
+         if [ -L \"$path\" ]; then exists=1; kind=l; \
+         elif [ -d \"$path\" ]; then exists=1; kind=d; \
+         elif [ -f \"$path\" ]; then exists=1; kind=f; \
+         elif [ -e \"$path\" ]; then exists=1; kind=o; fi; \
+         printf '%s\\000%s\\000%s\\000' \"$exists\" \"$path\" \"$kind\""
     )
 }
 
@@ -388,6 +415,21 @@ pub fn parse_remote_entry_metadata(output: &[u8]) -> Option<RemoteFileEntryMetad
     })
 }
 
+pub fn parse_remote_path_check_output(output: &[u8]) -> Option<RemoteFilePathCheckResult> {
+    let mut fields = output.split(|byte| *byte == 0);
+    let exists = fields.next()?;
+    let path = fields.next()?;
+    let kind = fields.next().unwrap_or_default();
+
+    let exists = String::from_utf8_lossy(exists).trim() == "1";
+    let path = String::from_utf8_lossy(path).to_string();
+    let kind = exists
+        .then(|| kind.first().copied())
+        .flatten()
+        .map(|kind| find_kind(Some(kind)));
+    Some(RemoteFilePathCheckResult { exists, path, kind })
+}
+
 pub fn parse_remote_transfer_path(output: &[u8]) -> Option<(bool, String)> {
     let mut fields = output.split(|byte| *byte == 0);
     let status = String::from_utf8_lossy(fields.next()?).to_string();
@@ -420,6 +462,32 @@ impl RemoteFileManager {
         }
 
         Ok(parse_remote_list_output(&output.stdout))
+    }
+
+    pub async fn check_path(
+        &self,
+        profile: ConnectionProfile,
+        path: &str,
+    ) -> Result<RemoteFilePathCheckResult, AppError> {
+        let config = RemoteFileSessionConfig::from_profile(profile);
+        let output = self
+            .exec_with_reconnect(&config, &build_remote_path_check_command(path))
+            .await?;
+        if output.exit_status != Some(0) {
+            return Err(remote_file_command_error(
+                "remote_file_check_path_failed",
+                "远程目标预检失败。",
+                &output,
+            ));
+        }
+        parse_remote_path_check_output(&output.stdout).ok_or_else(|| {
+            AppError::new(
+                "remote_file_check_path_parse_failed",
+                "远程目标预检结果解析失败。",
+                String::from_utf8_lossy(&output.stdout),
+                true,
+            )
+        })
     }
 
     pub async fn read_file(
@@ -655,13 +723,15 @@ impl RemoteFileManager {
         path: &str,
         content: &[u8],
         conflict_policy: TransferConflictPolicy,
+        progress: Option<ExecProgressCallback>,
     ) -> Result<RemoteFileUploadResult, AppError> {
         let config = RemoteFileSessionConfig::from_profile(profile);
         let output = self
-            .exec_with_reconnect_stdin(
+            .exec_with_reconnect_stdin_progress(
                 &config,
                 &build_remote_upload_command(path, conflict_policy),
                 content,
+                progress,
             )
             .await?;
         if output.exit_status != Some(0) {
@@ -672,14 +742,63 @@ impl RemoteFileManager {
             ));
         }
 
-        let (skipped, final_path) = parse_remote_transfer_path(&output.stdout).ok_or_else(|| {
-            AppError::new(
-                "remote_file_upload_parse_failed",
-                "远程文件上传结果解析失败。",
-                String::from_utf8_lossy(&output.stdout),
-                true,
+        let (skipped, final_path) =
+            parse_remote_transfer_path(&output.stdout).ok_or_else(|| {
+                AppError::new(
+                    "remote_file_upload_parse_failed",
+                    "远程文件上传结果解析失败。",
+                    String::from_utf8_lossy(&output.stdout),
+                    true,
+                )
+            })?;
+        let metadata = if skipped {
+            None
+        } else {
+            Some(self.metadata(&config, &final_path).await?)
+        };
+
+        Ok(RemoteFileUploadResult {
+            name: remote_file_name(&final_path),
+            path: final_path,
+            skipped,
+            metadata,
+        })
+    }
+
+    pub async fn upload_local_file(
+        &self,
+        profile: ConnectionProfile,
+        path: &str,
+        local_path: &Path,
+        conflict_policy: TransferConflictPolicy,
+        progress: ExecProgressCallback,
+    ) -> Result<RemoteFileUploadResult, AppError> {
+        let config = RemoteFileSessionConfig::from_profile(profile);
+        let output = self
+            .exec_with_reconnect_stdin_file_progress(
+                &config,
+                &build_remote_upload_command(path, conflict_policy),
+                local_path,
+                progress,
             )
-        })?;
+            .await?;
+        if output.exit_status != Some(0) {
+            return Err(remote_file_command_error(
+                "remote_file_upload_failed",
+                "远程文件上传失败。",
+                &output,
+            ));
+        }
+
+        let (skipped, final_path) =
+            parse_remote_transfer_path(&output.stdout).ok_or_else(|| {
+                AppError::new(
+                    "remote_file_upload_parse_failed",
+                    "远程文件上传结果解析失败。",
+                    String::from_utf8_lossy(&output.stdout),
+                    true,
+                )
+            })?;
         let metadata = if skipped {
             None
         } else {
@@ -702,6 +821,7 @@ impl RemoteFileManager {
         archive_content: &[u8],
         conflict_policy: TransferConflictPolicy,
         keep_archive: bool,
+        progress: Option<ExecProgressCallback>,
     ) -> Result<RemoteFileArchiveUploadResult, AppError> {
         let config = RemoteFileSessionConfig::from_profile(profile);
         let resolve_output = self
@@ -743,10 +863,105 @@ impl RemoteFileManager {
         );
         let archive_path = join_remote_path(target_dir, &archive_name);
         let upload_output = self
-            .exec_with_reconnect_stdin(
+            .exec_with_reconnect_stdin_progress(
                 &config,
                 &build_remote_write_command(&archive_path),
                 archive_content,
+                progress,
+            )
+            .await?;
+        if upload_output.exit_status != Some(0) {
+            return Err(remote_file_command_error(
+                "remote_file_archive_upload_failed",
+                "远程目录归档上传失败。",
+                &upload_output,
+            ));
+        }
+
+        let extract_output = self
+            .exec_with_reconnect(
+                &config,
+                &build_remote_extract_archive_command(
+                    &archive_path,
+                    target_dir,
+                    root_name,
+                    &final_path,
+                    conflict_policy == TransferConflictPolicy::Overwrite,
+                    keep_archive,
+                ),
+            )
+            .await?;
+        if extract_output.exit_status != Some(0) {
+            return Err(remote_file_command_error(
+                "remote_file_archive_extract_failed",
+                "远程目录解压失败。",
+                &extract_output,
+            ));
+        }
+
+        Ok(RemoteFileArchiveUploadResult {
+            archive_path: keep_archive.then_some(archive_path),
+            name: remote_file_name(&final_path),
+            path: final_path,
+            skipped: false,
+        })
+    }
+
+    pub async fn upload_local_archive(
+        &self,
+        profile: ConnectionProfile,
+        target_dir: &str,
+        root_name: &str,
+        local_path: &Path,
+        conflict_policy: TransferConflictPolicy,
+        keep_archive: bool,
+        progress: ExecProgressCallback,
+    ) -> Result<RemoteFileArchiveUploadResult, AppError> {
+        let config = RemoteFileSessionConfig::from_profile(profile);
+        let resolve_output = self
+            .exec_with_reconnect(
+                &config,
+                &build_remote_resolve_child_command(target_dir, root_name, conflict_policy),
+            )
+            .await?;
+        if resolve_output.exit_status != Some(0) {
+            return Err(remote_file_command_error(
+                "remote_file_archive_resolve_failed",
+                "远程目录上传目标解析失败。",
+                &resolve_output,
+            ));
+        }
+
+        let (skipped, final_path) =
+            parse_remote_transfer_path(&resolve_output.stdout).ok_or_else(|| {
+                AppError::new(
+                    "remote_file_archive_resolve_parse_failed",
+                    "远程目录上传目标解析失败。",
+                    String::from_utf8_lossy(&resolve_output.stdout),
+                    true,
+                )
+            })?;
+        if skipped {
+            return Ok(RemoteFileArchiveUploadResult {
+                archive_path: None,
+                name: remote_file_name(&final_path),
+                path: final_path,
+                skipped: true,
+            });
+        }
+
+        let archive_name = format!(
+            ".mxterm-upload-{}-{}.tar.gz",
+            timestamp_millis(),
+            sanitize_remote_temp_name(root_name)
+        );
+        let archive_path = join_remote_path(target_dir, &archive_name);
+        let upload_output = self
+            .exec_with_reconnect_stdin_file_progress(
+                &config,
+                &build_remote_write_command(&archive_path),
+                local_path,
+                progress,
             )
             .await?;
         if upload_output.exit_status != Some(0) {
@@ -790,10 +1005,15 @@ impl RemoteFileManager {
         &self,
         profile: ConnectionProfile,
         path: &str,
+        progress: Option<ExecProgressCallback>,
     ) -> Result<Vec<u8>, AppError> {
         let config = RemoteFileSessionConfig::from_profile(profile);
         let output = self
-            .exec_with_reconnect(&config, &build_remote_read_command(path))
+            .exec_with_reconnect_stdout_progress(
+                &config,
+                &build_remote_read_command(path),
+                progress,
+            )
             .await?;
         if output.exit_status != Some(0) {
             return Err(remote_file_command_error(
@@ -809,10 +1029,15 @@ impl RemoteFileManager {
         &self,
         profile: ConnectionProfile,
         path: &str,
+        progress: Option<ExecProgressCallback>,
     ) -> Result<Vec<u8>, AppError> {
         let config = RemoteFileSessionConfig::from_profile(profile);
         let output = self
-            .exec_with_reconnect(&config, &build_remote_archive_download_command(path))
+            .exec_with_reconnect_stdout_progress(
+                &config,
+                &build_remote_archive_download_command(path),
+                progress,
+            )
             .await?;
         if output.exit_status != Some(0) {
             return Err(remote_file_command_error(
@@ -871,13 +1096,71 @@ impl RemoteFileManager {
         command: &str,
         stdin: &[u8],
     ) -> Result<ExecOutput, AppError> {
+        self.exec_with_reconnect_stdin_progress(config, command, stdin, None)
+            .await
+    }
+
+    async fn exec_with_reconnect_stdin_progress(
+        &self,
+        config: &RemoteFileSessionConfig,
+        command: &str,
+        stdin: &[u8],
+        progress: Option<ExecProgressCallback>,
+    ) -> Result<ExecOutput, AppError> {
         let handle = self.session_handle(config).await?;
-        match self.exec_with_handle_stdin(&handle, command, stdin).await {
+        match self
+            .exec_with_handle_stdin(&handle, command, stdin, progress.clone())
+            .await
+        {
             Ok(output) => Ok(output),
             Err(_) => {
                 self.invalidate_handle(&config.connection_id, &handle).await;
                 let refreshed = self.connect_and_store(config).await?;
-                self.exec_with_handle_stdin(&refreshed, command, stdin).await
+                self.exec_with_handle_stdin(&refreshed, command, stdin, progress)
+                    .await
+            }
+        }
+    }
+
+    async fn exec_with_reconnect_stdin_file_progress(
+        &self,
+        config: &RemoteFileSessionConfig,
+        command: &str,
+        path: &Path,
+        progress: ExecProgressCallback,
+    ) -> Result<ExecOutput, AppError> {
+        let handle = self.session_handle(config).await?;
+        match self
+            .exec_with_handle_stdin_file(&handle, command, path, progress.clone())
+            .await
+        {
+            Ok(output) => Ok(output),
+            Err(_) => {
+                self.invalidate_handle(&config.connection_id, &handle).await;
+                let refreshed = self.connect_and_store(config).await?;
+                self.exec_with_handle_stdin_file(&refreshed, command, path, progress)
+                    .await
+            }
+        }
+    }
+
+    async fn exec_with_reconnect_stdout_progress(
+        &self,
+        config: &RemoteFileSessionConfig,
+        command: &str,
+        progress: Option<ExecProgressCallback>,
+    ) -> Result<ExecOutput, AppError> {
+        let handle = self.session_handle(config).await?;
+        match self
+            .exec_with_handle_stdout_progress(&handle, command, progress.clone())
+            .await
+        {
+            Ok(output) => Ok(output),
+            Err(_) => {
+                self.invalidate_handle(&config.connection_id, &handle).await;
+                let refreshed = self.connect_and_store(config).await?;
+                self.exec_with_handle_stdout_progress(&refreshed, command, progress)
+                    .await
             }
         }
     }
@@ -896,9 +1179,43 @@ impl RemoteFileManager {
         handle: &RemoteFileSessionHandle,
         command: &str,
         stdin: &[u8],
+        progress: Option<ExecProgressCallback>,
     ) -> Result<ExecOutput, AppError> {
         let session = handle.session.lock().await;
-        session.exec_with_stdin(command, stdin).await
+        if let Some(progress) = progress {
+            session
+                .exec_with_stdin_progress(command, stdin, progress)
+                .await
+        } else {
+            session.exec_with_stdin(command, stdin).await
+        }
+    }
+
+    async fn exec_with_handle_stdin_file(
+        &self,
+        handle: &RemoteFileSessionHandle,
+        command: &str,
+        path: &Path,
+        progress: ExecProgressCallback,
+    ) -> Result<ExecOutput, AppError> {
+        let session = handle.session.lock().await;
+        session
+            .exec_with_stdin_file_progress(command, path, progress)
+            .await
+    }
+
+    async fn exec_with_handle_stdout_progress(
+        &self,
+        handle: &RemoteFileSessionHandle,
+        command: &str,
+        progress: Option<ExecProgressCallback>,
+    ) -> Result<ExecOutput, AppError> {
+        let session = handle.session.lock().await;
+        if let Some(progress) = progress {
+            session.exec_with_stdout_progress(command, progress).await
+        } else {
+            session.exec(command).await
+        }
     }
 
     async fn session_handle(
@@ -909,7 +1226,8 @@ impl RemoteFileManager {
             if existing.signature == config.signature {
                 return Ok(existing);
             }
-            self.invalidate_handle(&config.connection_id, &existing).await;
+            self.invalidate_handle(&config.connection_id, &existing)
+                .await;
         }
 
         self.connect_and_store(config).await
@@ -925,7 +1243,9 @@ impl RemoteFileManager {
     ) -> Result<RemoteFileSessionHandle, AppError> {
         let new_handle = RemoteFileSessionHandle {
             signature: config.signature.clone(),
-            session: Arc::new(Mutex::new(ReusableExecSession::connect(&config.request).await?)),
+            session: Arc::new(Mutex::new(
+                ReusableExecSession::connect(&config.request).await?,
+            )),
         };
 
         let replaced = {
@@ -949,11 +1269,7 @@ impl RemoteFileManager {
         Ok(replaced)
     }
 
-    async fn invalidate_handle(
-        &self,
-        connection_id: &str,
-        handle: &RemoteFileSessionHandle,
-    ) {
+    async fn invalidate_handle(&self, connection_id: &str, handle: &RemoteFileSessionHandle) {
         let removed = {
             let mut sessions = self.sessions.lock().await;
             if let Some(current) = sessions.get(connection_id) {
@@ -1036,7 +1352,11 @@ fn remote_file_name(path: &str) -> String {
 }
 
 fn join_remote_path(parent: &str, name: &str) -> String {
-    let parent = if parent.trim().is_empty() { "/" } else { parent.trim() };
+    let parent = if parent.trim().is_empty() {
+        "/"
+    } else {
+        parent.trim()
+    };
     let name = name.trim().trim_start_matches('/');
     if parent == "/" {
         format!("/{name}")
@@ -1085,9 +1405,9 @@ fn timestamp_millis() -> u128 {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_remote_list_command, build_remote_write_command, looks_like_binary,
-        parse_remote_file_metadata, parse_remote_list_output, quote_posix_shell,
-        REMOTE_FILE_EDIT_LIMIT_BYTES,
+        build_remote_list_command, build_remote_path_check_command, build_remote_write_command,
+        looks_like_binary, parse_remote_file_metadata, parse_remote_list_output,
+        parse_remote_path_check_output, quote_posix_shell, REMOTE_FILE_EDIT_LIMIT_BYTES,
     };
 
     #[test]
@@ -1138,10 +1458,22 @@ mod tests {
     }
 
     #[test]
+    fn build_remote_path_check_command_checks_only_one_target() {
+        let command = build_remote_path_check_command("/srv/app's data/dist");
+
+        assert!(command.contains("path='/srv/app'\\''s data/dist'"));
+        assert!(command.contains("[ -L \"$path\" ]"));
+        assert!(command.contains("[ -d \"$path\" ]"));
+        assert!(command.contains("[ -f \"$path\" ]"));
+        assert!(command.contains("printf '%s\\000%s\\000%s\\000'"));
+        assert!(!command.contains("for entry"));
+        assert!(!command.contains("tar "));
+    }
+
+    #[test]
     fn parse_remote_file_metadata_reads_nul_fields_and_empty_mode() {
-        let metadata =
-            parse_remote_file_metadata(b"/opt/app/app.conf\x0042\x001717711111\x00\x00")
-                .expect("metadata should parse");
+        let metadata = parse_remote_file_metadata(b"/opt/app/app.conf\x0042\x001717711111\x00\x00")
+            .expect("metadata should parse");
 
         assert_eq!(metadata.path, "/opt/app/app.conf");
         assert_eq!(metadata.name, "app.conf");
@@ -1158,6 +1490,21 @@ mod tests {
 
         assert_eq!(metadata.name, "deploy.sh");
         assert_eq!(metadata.mode.as_deref(), Some("755"));
+    }
+
+    #[test]
+    fn parse_remote_path_check_output_maps_missing_and_existing_targets() {
+        let missing = parse_remote_path_check_output(b"0\0/opt/app/dist\0\0")
+            .expect("missing path check should parse");
+        assert!(!missing.exists);
+        assert_eq!(missing.path, "/opt/app/dist");
+        assert!(missing.kind.is_none());
+
+        let existing = parse_remote_path_check_output(b"1\0/opt/app/dist\0d\0")
+            .expect("existing path check should parse");
+        assert!(existing.exists);
+        assert_eq!(existing.path, "/opt/app/dist");
+        assert_eq!(existing.kind.as_ref().map(|kind| kind.as_str()), Some("directory"));
     }
 
     #[test]

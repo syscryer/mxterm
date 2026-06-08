@@ -104,12 +104,25 @@ interface DataTransferItemWithEntry {
   webkitGetAsEntry?: () => FileSystemEntryLike | null;
 }
 
-const previewEntries: RemoteFileEntry[] = [
-  { name: "logs", path: "/opt/app/logs", type: "directory" },
-  { name: "config", path: "/opt/app/config", type: "directory" },
-  { name: "app.log", path: "/opt/app/app.log", type: "file" },
-  { name: "nginx.conf", path: "/opt/app/nginx.conf", type: "file" },
-];
+const previewDirectoryEntries: Record<string, RemoteFileEntry[]> = {
+  "/": [
+    { name: "logs", path: "/opt/app/logs", type: "directory" },
+    { name: "config", path: "/opt/app/config", type: "directory" },
+    { name: "app.log", path: "/opt/app/app.log", type: "file" },
+    { name: "nginx.conf", path: "/opt/app/nginx.conf", type: "file" },
+  ],
+  "/opt/app/config": [
+    { name: "app.conf", path: "/opt/app/config/app.conf", type: "file" },
+    { name: "sites-enabled", path: "/opt/app/config/sites-enabled", type: "directory" },
+  ],
+  "/opt/app/config/sites-enabled": [
+    { name: "default.conf", path: "/opt/app/config/sites-enabled/default.conf", type: "file" },
+  ],
+  "/opt/app/logs": [
+    { name: "app.log", path: "/opt/app/logs/app.log", type: "file" },
+    { name: "deploy.log", path: "/opt/app/logs/deploy.log", type: "file" },
+  ],
+};
 
 const defaultRemotePath = "/";
 const loadingIndicatorDelayMs = 180;
@@ -138,6 +151,7 @@ export function RemoteFilePanel({
 }: RemoteFilePanelProps) {
   const terminalDirectory = terminalPath ? normalizeRemotePath(terminalPath) : null;
   const [currentPath, setCurrentPath] = useState(defaultRemotePath);
+  const [activeDirectoryPath, setActiveDirectoryPath] = useState(defaultRemotePath);
   const [directoryEntries, setDirectoryEntries] = useState<Record<string, RemoteFileEntry[]>>({});
   const [expandedDirectories, setExpandedDirectories] = useState<Record<string, boolean>>({});
   const [locatedDirectoryPath, setLocatedDirectoryPath] = useState<string | null>(null);
@@ -167,6 +181,7 @@ export function RemoteFilePanel({
     setUploadMenuOpen(false);
     setDropTargetPath(null);
     setCurrentPath(defaultRemotePath);
+    setActiveDirectoryPath(defaultRemotePath);
     setLoadingPath(null);
     setVisibleLoadingPath(null);
     clearLoadingIndicatorTimer();
@@ -212,7 +227,7 @@ export function RemoteFilePanel({
           disabled={disabled}
           hasExpandedDirectories={hasExpandedDirectories}
           loading={Boolean(visibleLoadingPath)}
-          path={currentPath}
+          path={activeDirectoryPath}
           showHidden={showHidden}
           terminalPath={terminalDirectory}
           locatedDirectoryPath={locatedDirectoryPath}
@@ -220,14 +235,14 @@ export function RemoteFilePanel({
           uploadMenuOpen={uploadMenuOpen}
           onLocateTerminalDirectory={revealTerminalDirectory}
           onPathSubmit={navigateToPath}
-          onRefresh={() => void loadDirectory(currentPath, true)}
+          onRefresh={() => void loadDirectory(activeDirectoryPath, true)}
           onCollapseExpandedDirectories={collapseExpandedDirectories}
           onToggleHidden={() => setShowHidden((value) => !value)}
           onToggleUploadMenu={() => setUploadMenuOpen((open) => !open)}
           onCreateDirectory={connection ? onCreateDirectory : undefined}
           onCreateFile={connection ? onCreateFile : undefined}
           onDownloadCurrentDirectory={connection ? () => onDownloadEntry?.(currentDirectoryEntry()) : undefined}
-          onCopyCurrentPath={connection ? () => onCopyPath?.(currentPath) : undefined}
+          onCopyCurrentPath={connection ? () => onCopyPath?.(activeDirectoryPath) : undefined}
           onUploadDirectory={connection ? onUploadDirectory : undefined}
           onUploadFile={connection ? onUploadFile : undefined}
         >
@@ -239,11 +254,11 @@ export function RemoteFilePanel({
               <ContextMenu.Root>
                 <ContextMenu.Trigger asChild>
                   <div
-                    className={`file-list ${dropTargetPath === currentPath ? "is-drop-target" : ""}`}
-                    onDragEnter={(event) => handleLocalDragEnter(event, currentPath)}
-                    onDragLeave={(event) => handleLocalDragLeave(event, currentPath)}
+                    className={`file-list ${dropTargetPath === activeDirectoryPath ? "is-drop-target" : ""}`}
+                    onDragEnter={(event) => handleLocalDragEnter(event, activeDirectoryPath)}
+                    onDragLeave={(event) => handleLocalDragLeave(event, activeDirectoryPath)}
                     onDragOver={handleLocalDragOver}
-                    onDrop={(event) => handleDropUpload(event, currentPath)}
+                    onDrop={(event) => handleDropUpload(event, activeDirectoryPath)}
                   >
                     <section className="remote-file-tree" aria-label="远程文件树">
                       {entries.length ? (
@@ -271,8 +286,8 @@ export function RemoteFilePanel({
 
   function currentDirectoryEntry(): RemoteFileEntry {
     return {
-      name: remotePathName(currentPath),
-      path: currentPath,
+      name: remotePathName(activeDirectoryPath),
+      path: activeDirectoryPath,
       type: "directory",
     };
   }
@@ -280,6 +295,7 @@ export function RemoteFilePanel({
   function navigateToPath(path: string) {
     const normalizedPath = normalizeRemotePath(path);
     setCurrentPath(normalizedPath);
+    setActiveDirectoryPath(normalizedPath);
     setLocatedDirectoryPath(null);
     setUploadMenuOpen(false);
     if (directoryEntries[normalizedPath]) {
@@ -301,6 +317,7 @@ export function RemoteFilePanel({
     );
 
     setCurrentPath(revealRootPath);
+    setActiveDirectoryPath(terminalDirectory);
     setLocatedDirectoryPath(terminalDirectory);
     setUploadMenuOpen(false);
     setExpandedDirectories((current) => {
@@ -317,6 +334,7 @@ export function RemoteFilePanel({
   function collapseExpandedDirectories() {
     if (hasExpandedDirectories) {
       setExpandedDirectories({});
+      setActiveDirectoryPath(currentPath);
     }
   }
 
@@ -341,7 +359,7 @@ export function RemoteFilePanel({
     try {
       const nextEntries = hasTauriRuntime()
         ? await remoteFileList(connection.id, normalizedPath)
-        : previewEntries;
+        : previewEntriesForPath(normalizedPath);
 
       if (connectionLoadScopeRef.current !== requestLoadScope) {
         return;
@@ -373,6 +391,8 @@ export function RemoteFilePanel({
   }
 
   function toggleDirectory(entry: RemoteFileEntry) {
+    setActiveDirectoryPath(entry.path);
+    setLocatedDirectoryPath(null);
     setExpandedDirectories((current) => ({
       ...current,
       [entry.path]: !current[entry.path],
@@ -386,12 +406,15 @@ export function RemoteFilePanel({
     return rows.flatMap((entry) => {
       const isDirectory = entry.type === "directory";
       const expanded = Boolean(expandedDirectories[entry.path]);
+      const isActiveDirectory = isDirectory && entry.path === activeDirectoryPath;
       const isLocatedDirectory = entry.path === locatedDirectoryPath;
       const row = (
         <ContextMenu.Root key={entry.path}>
           <ContextMenu.Trigger asChild>
             <button
-              className={`remote-file-row ${isLocatedDirectory ? "is-located" : ""} ${
+              className={`remote-file-row ${isActiveDirectory ? "is-active-directory" : ""} ${
+                isLocatedDirectory ? "is-located" : ""
+              } ${
                 dropTargetPath === entry.path ? "is-drop-target" : ""
               }`}
               draggable
@@ -401,7 +424,7 @@ export function RemoteFilePanel({
               }}
               type="button"
               title={entry.path}
-              aria-current={isLocatedDirectory ? "location" : undefined}
+              aria-current={isLocatedDirectory ? "location" : isActiveDirectory ? "page" : undefined}
               onClick={() => {
                 if (isDirectory) {
                   toggleDirectory(entry);
@@ -577,23 +600,23 @@ export function RemoteFilePanel({
   function renderBlankMenu() {
     return (
       <>
-        <ContextMenu.Item className="context-menu-item" onSelect={() => void loadDirectory(currentPath, true)}>
+        <ContextMenu.Item className="context-menu-item" onSelect={() => void loadDirectory(activeDirectoryPath, true)}>
           <RefreshCw className="ui-icon" aria-hidden="true" />
           刷新当前目录
         </ContextMenu.Item>
-        <ContextMenu.Item className="context-menu-item" onSelect={() => onUploadFile?.(currentPath)}>
+        <ContextMenu.Item className="context-menu-item" onSelect={() => onUploadFile?.(activeDirectoryPath)}>
           <Upload className="ui-icon" aria-hidden="true" />
           上传文件
         </ContextMenu.Item>
-        <ContextMenu.Item className="context-menu-item" onSelect={() => onUploadDirectory?.(currentPath)}>
+        <ContextMenu.Item className="context-menu-item" onSelect={() => onUploadDirectory?.(activeDirectoryPath)}>
           <Upload className="ui-icon" aria-hidden="true" />
           上传文件夹
         </ContextMenu.Item>
-        <ContextMenu.Item className="context-menu-item" onSelect={() => onCreateFile?.(currentPath)}>
+        <ContextMenu.Item className="context-menu-item" onSelect={() => onCreateFile?.(activeDirectoryPath)}>
           <FilePlus className="ui-icon" aria-hidden="true" />
           新建文件
         </ContextMenu.Item>
-        <ContextMenu.Item className="context-menu-item" onSelect={() => onCreateDirectory?.(currentPath)}>
+        <ContextMenu.Item className="context-menu-item" onSelect={() => onCreateDirectory?.(activeDirectoryPath)}>
           <FolderPlus className="ui-icon" aria-hidden="true" />
           新建文件夹
         </ContextMenu.Item>
@@ -602,7 +625,7 @@ export function RemoteFilePanel({
           下载当前目录
         </ContextMenu.Item>
         <ContextMenu.Separator className="context-menu-separator" />
-        <ContextMenu.Item className="context-menu-item" onSelect={() => onCopyPath?.(currentPath)}>
+        <ContextMenu.Item className="context-menu-item" onSelect={() => onCopyPath?.(activeDirectoryPath)}>
           <Clipboard className="ui-icon" aria-hidden="true" />
           复制当前路径
         </ContextMenu.Item>
@@ -1064,6 +1087,10 @@ function visibleEntries(entries: RemoteFileEntry[], showHidden: boolean) {
   return sortRemoteFileEntries(
     showHidden ? entries : entries.filter((entry) => !entry.name.startsWith(".")),
   );
+}
+
+function previewEntriesForPath(path: string) {
+  return [...(previewDirectoryEntries[path] || [])];
 }
 
 function remotePathName(path: string) {

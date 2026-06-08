@@ -5,6 +5,7 @@ import {
   Clock3,
   Download,
   Folder,
+  FolderOpen,
   Monitor,
   Moon,
   Palette,
@@ -20,9 +21,12 @@ import {
   Terminal,
   Type,
   Undo2,
+  X,
 } from "lucide-react";
 
 import { Tooltip } from "../../shared/ui/Tooltip";
+import { selectLocalDownloadDirectory } from "../../shared/tauri/dialog";
+import { hasTauriRuntime } from "../../shared/tauri/runtime";
 import {
   getTerminalAnsiSwatches,
   getTerminalColorSchemeTone,
@@ -175,6 +179,24 @@ function BasicSettingsSection({
   onUpdate: (update: Partial<BasicSettings>) => void;
   onUpdateFileTransfer: (update: Partial<FileTransferSettings>) => void;
 }) {
+  const [downloadRootError, setDownloadRootError] = useState<string | null>(null);
+  const hasCustomDownloadRoot = fileTransferSettings.downloadRoot.trim().length > 0;
+
+  async function chooseDownloadRoot() {
+    if (!hasTauriRuntime()) {
+      return;
+    }
+    setDownloadRootError(null);
+    try {
+      const selectedPath = await selectLocalDownloadDirectory();
+      if (selectedPath) {
+        onUpdateFileTransfer({ downloadRoot: selectedPath });
+      }
+    } catch (error) {
+      setDownloadRootError(error instanceof Error ? error.message : "无法打开目录选择器");
+    }
+  }
+
   return (
     <section className="settings-page-section">
       <header className="settings-section-head">
@@ -235,26 +257,60 @@ function BasicSettingsSection({
         <SettingsRow
           icon={Download}
           title="下载根目录"
-          description="留空时使用系统下载目录。"
-          stack
+          description={
+            hasCustomDownloadRoot
+              ? "使用自定义本地根目录，可随时恢复系统默认。"
+              : "未设置时使用系统 Downloads，可选择自定义目录。"
+          }
         >
-          <input
-            className="settings-input settings-path-input"
-            value={fileTransferSettings.downloadRoot}
-            placeholder="系统 Downloads"
-            spellCheck={false}
-            aria-label="下载根目录"
-            onChange={(event) => onUpdateFileTransfer({ downloadRoot: event.currentTarget.value })}
-          />
+          <div className="settings-path-control">
+            <div className="settings-path-picker">
+              <input
+                className="settings-input settings-path-input"
+                value={fileTransferSettings.downloadRoot}
+                placeholder="使用系统 Downloads"
+                spellCheck={false}
+                aria-label="下载根目录"
+                onChange={(event) => {
+                  setDownloadRootError(null);
+                  onUpdateFileTransfer({ downloadRoot: event.currentTarget.value });
+                }}
+              />
+              <button
+                className="settings-action-button settings-path-button"
+                type="button"
+                disabled={!hasTauriRuntime()}
+                title={hasTauriRuntime() ? "选择下载目录" : "桌面模式可选择目录"}
+                onClick={() => void chooseDownloadRoot()}
+              >
+                <FolderOpen className="ui-icon" aria-hidden="true" />
+                <span>选择</span>
+              </button>
+              <button
+                className="settings-action-button settings-path-button"
+                type="button"
+                disabled={!hasCustomDownloadRoot}
+                title="恢复系统 Downloads"
+                onClick={() => {
+                  setDownloadRootError(null);
+                  onUpdateFileTransfer({ downloadRoot: "" });
+                }}
+              >
+                <X className="ui-icon" aria-hidden="true" />
+                <span>默认</span>
+              </button>
+            </div>
+            {downloadRootError ? <small className="settings-path-error">{downloadRootError}</small> : null}
+          </div>
         </SettingsRow>
         <SettingsRow
           icon={Folder}
-          title="按会话分组"
-          description="下载到 <会话名称>/<时间戳> 子目录。"
+          title="按连接分组"
+          description="下载到 <连接名称>/<时间戳> 子目录。"
         >
           <SettingsToggle
             checked={fileTransferSettings.groupBySession}
-            label="按会话分组"
+            label="按连接分组"
             onChange={(groupBySession) => onUpdateFileTransfer({ groupBySession })}
           />
         </SettingsRow>

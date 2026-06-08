@@ -8,6 +8,7 @@ mod terminal;
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .manage(remote_files::RemoteFileManager::default())
         .manage(terminal::manager::TerminalManager::default())
@@ -28,9 +29,16 @@ pub fn run() {
             commands::remote_file_rename,
             commands::remote_file_delete,
             commands::remote_file_metadata,
+            commands::remote_file_check_path,
             commands::remote_file_upload_file,
+            commands::remote_file_upload_local_file,
             commands::remote_file_upload_archive,
+            commands::remote_file_upload_local_archive,
+            commands::remote_file_prepare_upload_temp,
+            commands::remote_file_append_upload_temp,
+            commands::remote_file_delete_upload_temp,
             commands::remote_file_download,
+            commands::remote_file_check_download_target,
             commands::remote_file_download_to_local,
         ])
         .run(tauri::generate_context!())

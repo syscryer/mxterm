@@ -296,9 +296,16 @@ let output = TerminalSession::exec(
 - `remote_file_rename(app: AppHandle, manager: State<RemoteFileManager>, request: RemoteFileRenameRequest) -> Result<(), AppError>`
 - `remote_file_delete(app: AppHandle, manager: State<RemoteFileManager>, request: RemoteFileDeleteRequest) -> Result<(), AppError>`
 - `remote_file_metadata(app: AppHandle, manager: State<RemoteFileManager>, request: RemoteFilePathRequest) -> Result<RemoteFileEntryMetadata, AppError>`
+- `remote_file_check_path(app: AppHandle, manager: State<RemoteFileManager>, request: RemoteFilePathRequest) -> Result<RemoteFilePathCheckResult, AppError>`
 - `remote_file_upload_file(app: AppHandle, manager: State<RemoteFileManager>, request: RemoteFileUploadFileRequest) -> Result<RemoteFileUploadResult, AppError>`
+- `remote_file_upload_local_file(app: AppHandle, manager: State<RemoteFileManager>, request: RemoteFileUploadLocalFileRequest) -> Result<RemoteFileUploadResult, AppError>`
 - `remote_file_upload_archive(app: AppHandle, manager: State<RemoteFileManager>, request: RemoteFileUploadArchiveRequest) -> Result<RemoteFileArchiveUploadResult, AppError>`
+- `remote_file_upload_local_archive(app: AppHandle, manager: State<RemoteFileManager>, request: RemoteFileUploadLocalArchiveRequest) -> Result<RemoteFileArchiveUploadResult, AppError>`
+- `remote_file_prepare_upload_temp(request: LocalUploadTempRequest) -> Result<LocalUploadTempResult, AppError>`
+- `remote_file_append_upload_temp(request: LocalUploadTempAppendRequest) -> Result<(), AppError>`
+- `remote_file_delete_upload_temp(request: LocalUploadTempDeleteRequest) -> Result<(), AppError>`
 - `remote_file_download(app: AppHandle, manager: State<RemoteFileManager>, request: RemoteFilePathRequest) -> Result<RemoteFileDownloadResult, AppError>`
+- `remote_file_check_download_target(app: AppHandle, request: RemoteFileDownloadTargetCheckRequest) -> Result<RemoteFileDownloadTargetCheckResult, AppError>`
 - `remote_file_download_to_local(app: AppHandle, manager: State<RemoteFileManager>, request: RemoteFileDownloadToLocalRequest) -> Result<RemoteFileDownloadToLocalResult, AppError>`
 - `ReusableExecSession::exec_with_stdin(command: &str, stdin: &[u8]) -> Result<ExecOutput, AppError>`
 
@@ -341,6 +348,7 @@ RemoteFileUploadFileRequest {
     path: String,
     content: Vec<u8>,
     conflict_policy: Option<String>, // overwrite | skip | rename | ask, default handled as rename
+    transfer_id: Option<String>, // #[serde(default)], enables progress events
 }
 
 RemoteFileUploadArchiveRequest {
@@ -350,6 +358,41 @@ RemoteFileUploadArchiveRequest {
     archive_content: Vec<u8>,
     conflict_policy: Option<String>,
     keep_archive: bool, // #[serde(default)]
+    transfer_id: Option<String>, // #[serde(default)], enables progress events
+}
+
+RemoteFileUploadLocalFileRequest {
+    connection_id: String,
+    path: String,
+    local_path: String,
+    conflict_policy: Option<String>,
+    transfer_id: Option<String>,
+}
+
+RemoteFileUploadLocalArchiveRequest {
+    connection_id: String,
+    target_dir: String,
+    root_name: String,
+    local_path: String,
+    conflict_policy: Option<String>,
+    keep_archive: bool,
+    transfer_id: Option<String>,
+}
+
+LocalUploadTempAppendRequest {
+    local_path: String,
+    chunk: Vec<u8>,
+}
+
+RemoteFileDownloadTargetCheckRequest {
+    connection_id: String,
+    path: String,
+    directory: bool, // #[serde(default)]
+    download_root: Option<String>,
+    session_name: Option<String>,
+    timestamp_name: Option<String>,
+    group_by_session: bool, // #[serde(default)]
+    timestamp_directory: bool, // #[serde(default)]
 }
 
 RemoteFileDownloadToLocalRequest {
@@ -363,6 +406,7 @@ RemoteFileDownloadToLocalRequest {
     timestamp_directory: bool, // #[serde(default)]
     keep_archives: bool, // #[serde(default)]
     conflict_policy: Option<String>,
+    transfer_id: Option<String>, // #[serde(default)], enables progress events
 }
 ```
 
@@ -384,6 +428,12 @@ RemoteFileEntryMetadata {
     mtime: u64,
     mode: Option<String>,
     type: "directory" | "file" | "symlink" | "other",
+}
+
+RemoteFilePathCheckResult {
+    path: String,
+    exists: bool,
+    type: Option<"directory" | "file" | "symlink" | "other">,
 }
 
 RemoteFileReadResult {
@@ -433,6 +483,22 @@ RemoteFileDownloadToLocalResult {
     skipped: bool,
     directory: bool,
 }
+
+RemoteFileDownloadTargetCheckResult {
+    remote_path: String,
+    name: String,
+    local_path: String,
+    local_directory: String,
+    exists: bool,
+    directory: bool,
+}
+
+RemoteFileTransferProgressEvent {
+    transfer_id: String,
+    direction: String, // "upload" | "download"
+    loaded_bytes: u64,
+    total_bytes: Option<u64>,
+}
 ```
 
 ### 3. Contracts
@@ -447,12 +513,20 @@ RemoteFileDownloadToLocalResult {
 - File content must never be embedded in a shell command string. Save and upload must call `exec_with_reconnect_stdin(..., content.as_bytes())` or `exec_with_reconnect_stdin(..., content)` and send bytes through the SSH channel stdin.
 - `build_remote_write_command` writes stdin to a same-directory hidden temp file, tries to preserve mode from the existing file, then moves the temp file over the target path. Cleanup must remove the temp file on command failure where possible.
 - `ReusableExecSession::exec_with_stdin` must send `channel.data_bytes(stdin)` and then `channel.eof()` before collecting stdout, stderr, and exit status.
+- Transfer commands with `transfer_id` must emit `remote_file:transfer_progress` events from Rust while bytes move over the SSH exec channel. Single-file and archive uploads emit after each stdin chunk; local-path uploads read backend-owned temp files in bounded chunks before writing SSH stdin; downloads emit after each stdout data chunk.
+- Upload progress events must include `total_bytes: Some(content.len() as u64)`. Download progress events may use `total_bytes: None` when the remote stream size is not known without an extra command.
+- `ReusableExecSession` must keep non-progress `exec_with_stdin` behavior available for save/write commands, and add progress-aware variants instead of forcing every exec caller to emit UI events.
 - `RemoteFileManager` may reuse a `ReusableExecSession` per connection signature. If an exec fails, invalidate the handle, reconnect once, and retry the command.
 - `remote_file_metadata` returns regular file, directory, symlink, or other metadata for the properties dialog. The serialized kind field is `type`.
+- `remote_file_check_path` is a lightweight existence/type preflight for exact transfer targets. It must check only the requested path, return `{ exists, path, type }`, and must not list the parent directory, scan directory contents, read file content, create archives, or start upload/download work.
 - `remote_file_upload_file` is a single-file byte upload. It accepts a conflict policy and returns the final remote path plus optional metadata; skipped uploads return `metadata: None`.
-- `remote_file_upload_archive` accepts a frontend-built `tar.gz` archive, uploads it through stdin to a remote temporary archive, extracts it with remote `tar -xzf`, and removes the remote archive unless `keep_archive == true`.
+- `remote_file_upload_local_file` accepts a trusted local file path from the Tauri dialog path or a backend-owned upload temp path from the drag/drop fallback, streams that file through SSH stdin, and emits transfer progress from bytes read on the Rust side.
+- `remote_file_upload_archive` accepts a legacy frontend-built `tar.gz` archive, uploads it through stdin to a remote temporary archive, extracts it with remote `tar -xzf`, and removes the remote archive unless `keep_archive == true`. Desktop UI should prefer `remote_file_upload_local_archive` so the selected directory path or compressed archive stays in Rust-owned local IO instead of crossing IPC as one `Vec<u8>`.
+- `remote_file_upload_local_archive` accepts either a local `tar.gz` path or a local directory path. Directory paths must be packed into a backend-owned temporary `tar.gz` before upload, then cleaned up after upload/extract completes.
 - Directory upload conflict handling is root-folder level: resolve `target_dir/root_name` using overwrite / skip / rename before extraction. Do not silently extract over an existing directory.
+- `remote_file_check_download_target` resolves the same system/custom download directory shape as `remote_file_download_to_local`, checks only the final local path with `Path::exists`, and returns the path plus `exists`. It must not contact SSH or create directories/files.
 - `remote_file_download_to_local` resolves the system or custom download root on the Rust side, creates optional session and timestamp subdirectories, writes files directly to disk, and returns the final local path.
+- The frontend-owned `session_name` value represents the connection grouping name, not a terminal tab title. Rust should sanitize it as a local path segment and use the fallback segment only when the provided value is blank.
 - Directory download must call `download_archive`, write a local temporary or retained `tar.gz`, extract it with local `tar -xzf`, then remove the temporary archive unless `keep_archives == true`.
 - Local file and directory conflicts use the same overwrite / skip / rename policy as remote transfers. If the frontend sends `ask`, treat it as `rename` to keep behavior non-destructive.
 - Windows path segments for download directories must be sanitized before joining paths. Do not use remote names directly as local path components.
@@ -477,6 +551,7 @@ RemoteFileDownloadToLocalResult {
 | Remote write command exits non-zero | `remote_file_write_failed` | true |
 | SSH stdin send fails | `remote_exec_stdin_failed` | true |
 | SSH stdin EOF fails | `remote_exec_stdin_eof_failed` | true |
+| Transfer event emit fails | no command error | n/a |
 | Create file command exits non-zero | `remote_file_create_failed` | true |
 | Create directory command exits non-zero | `remote_file_create_directory_failed` | true |
 | Rename command exits non-zero | `remote_file_rename_failed` | true |
@@ -485,6 +560,8 @@ RemoteFileDownloadToLocalResult {
 | Download command exits non-zero | `remote_file_download_failed` | true |
 | Entry metadata command exits non-zero | `remote_file_metadata_failed` | true |
 | Entry metadata output cannot parse | `remote_file_metadata_parse_failed` | true |
+| Remote target preflight command exits non-zero | `remote_file_check_path_failed` | true |
+| Remote target preflight output cannot parse | `remote_file_check_path_parse_failed` | true |
 | Archive upload target cannot resolve | `remote_file_archive_resolve_failed` / `remote_file_archive_resolve_parse_failed` | true |
 | Archive upload write fails | `remote_file_archive_upload_failed` | true |
 | Remote archive extraction fails | `remote_file_archive_extract_failed` | true |
@@ -500,8 +577,11 @@ RemoteFileDownloadToLocalResult {
 ### 5. Good / Base / Bad Cases
 
 - Good: `remote_file_write` receives `/opt/app/app.conf`, current metadata still matches `expected_mtime` and `expected_size`, the shell command contains only quoted path/temp-file logic, content is sent over stdin, and the response returns fresh metadata.
-- Good: `remote_file_upload_archive` receives a tar.gz for `dist`, resolves `/opt/app/dist (1)` under rename policy, uploads the archive through stdin, extracts with `tar -xzf`, cleans the temporary archive, and returns the final remote path.
-- Good: `remote_file_download_to_local` receives a directory path and settings-derived timestamp name, downloads one remote archive, extracts it under `Downloads/<session>/<timestamp>/`, and returns `local_path` plus `local_directory`.
+- Good: `remote_file_upload_local_file` receives a Tauri-dialog file path for `app.log`, streams that file directly from disk through SSH stdin, emits uploaded-byte progress, and never asks React to copy the file into an upload cache first.
+- Good: `remote_file_check_path` receives `/opt/app/dist`, runs a single `test -e/-L/-d/-f` style shell command, returns `exists: true` and `type: "directory"` when the root exists, and does not inspect the directory tree.
+- Good: `remote_file_upload_local_archive` receives a Tauri-dialog directory path for `dist`, creates a backend-owned local tar.gz, resolves `/opt/app/dist (1)` under rename policy, streams the archive through stdin from disk, extracts with `tar -xzf`, cleans local and remote temporary archives, and returns the final remote path.
+- Good: `remote_file_upload_local_archive` receives `transfer_id`, sends the local archive in chunks, emits `remote_file:transfer_progress` with uploaded bytes, then continues to extraction and returns the final remote path.
+- Good: `remote_file_download_to_local` receives a directory path and settings-derived timestamp name, downloads one remote archive while emitting received-byte progress, extracts it under `Downloads/<session>/<timestamp>/`, and returns `local_path` plus `local_directory`.
 - Base: `remote_file_read` receives a small UTF-8 file, metadata parses with optional mode, content has no NUL bytes, and the response sets `encoding = "utf-8"` and `editable = true`.
 - Bad: write logic builds `format!("cat > {}", content)`, extracts a directory archive over an existing target without applying conflict policy, or accepts a frontend password field for a remote file command.
 
@@ -511,7 +591,9 @@ RemoteFileDownloadToLocalResult {
 - Unit-test `parse_remote_file_metadata` for NUL-delimited path, size, mtime, empty mode, and present mode.
 - Unit-test `looks_like_binary` for plain text and NUL-containing bytes.
 - Unit-test `build_remote_write_command` to assert it creates a temp file, uses `cat > "$tmp"`, moves the temp file to the target, and does not contain literal content.
-- Unit-test `build_remote_upload_command`, `build_remote_resolve_child_command`, `build_remote_extract_archive_command`, and `build_remote_archive_download_command` for quoted paths, POSIX shell syntax, tar usage, and no embedded file content.
+- Unit-test `build_remote_path_check_command` and `parse_remote_path_check_output` for missing targets, existing file/directory/symlink targets, quoted paths, and no directory listing/archive work.
+- Unit-test `build_remote_upload_command`, `build_remote_resolve_child_command`, `build_remote_extract_archive_command`, and `build_remote_archive_download_command` for quoted paths, POSIX shell syntax, tar usage, and no embedded file content. Source-check local upload temp helpers and `exec_with_stdin_file_progress` when changing upload plumbing.
+- Source-check progress plumbing for `REMOTE_FILE_TRANSFER_PROGRESS`, `RemoteFileTransferProgressEvent`, `ExecProgressCallback`, `exec_with_stdin_progress`, and `exec_with_stdout_progress`.
 - Unit-test `parse_remote_entry_metadata` and `parse_remote_transfer_path` for NUL-delimited fields and skipped/final path parsing.
 - Unit-test local download helpers for sanitized path segments, rename conflict behavior, skip/overwrite handling, and retained archive naming.
 - Unit-test the edit limit constant so `REMOTE_FILE_EDIT_LIMIT_BYTES == 2 * 1024 * 1024`.
@@ -538,6 +620,22 @@ let output = self
         content.as_bytes(),
     )
     .await?;
+```
+
+#### Wrong
+
+```rust
+// Sends the entire upload at once, so the UI cannot show real transfer speed.
+channel.data_bytes(stdin.to_vec()).await?;
+```
+
+#### Correct
+
+```rust
+for chunk in stdin.chunks(REMOTE_EXEC_TRANSFER_CHUNK_BYTES) {
+    channel.data_bytes(chunk.to_vec()).await?;
+    progress(sent_bytes);
+}
 ```
 
 #### Wrong

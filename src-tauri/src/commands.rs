@@ -1,19 +1,22 @@
 use serde::{Deserialize, Serialize};
-use std::fs;
+use std::fs::{self, OpenOptions};
+use std::io::Write;
 use std::net::{TcpStream, ToSocketAddrs};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::app_error::AppError;
 use crate::connections::{ConnectionProfile, ConnectionProfileInput, ConnectionStore};
+use crate::events::RemoteFileTransferProgressEvent;
 use crate::remote_files::{
-    RemoteFileArchiveUploadResult, RemoteFileEntry, RemoteFileEntryMetadata,
-    RemoteFileManager, RemoteFileMetadata, RemoteFileReadResult, RemoteFileUploadResult,
+    RemoteFileArchiveUploadResult, RemoteFileEntry, RemoteFileEntryMetadata, RemoteFileManager,
+    RemoteFileMetadata, RemoteFilePathCheckResult, RemoteFileReadResult, RemoteFileUploadResult,
     RemoteFileWriteResult, TransferConflictPolicy,
 };
 use crate::terminal::manager::TerminalManager;
+use crate::terminal::session::ExecProgressCallback;
 
 #[derive(Debug, Deserialize)]
 pub struct TerminalConnectRequest {
@@ -99,6 +102,19 @@ pub struct RemoteFileUploadFileRequest {
     pub content: Vec<u8>,
     #[serde(default)]
     pub conflict_policy: Option<String>,
+    #[serde(default)]
+    pub transfer_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct RemoteFileUploadLocalFileRequest {
+    pub connection_id: String,
+    pub path: String,
+    pub local_path: String,
+    #[serde(default)]
+    pub conflict_policy: Option<String>,
+    #[serde(default)]
+    pub transfer_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -111,6 +127,43 @@ pub struct RemoteFileUploadArchiveRequest {
     pub conflict_policy: Option<String>,
     #[serde(default)]
     pub keep_archive: bool,
+    #[serde(default)]
+    pub transfer_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct RemoteFileUploadLocalArchiveRequest {
+    pub connection_id: String,
+    pub target_dir: String,
+    pub root_name: String,
+    pub local_path: String,
+    #[serde(default)]
+    pub conflict_policy: Option<String>,
+    #[serde(default)]
+    pub keep_archive: bool,
+    #[serde(default)]
+    pub transfer_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct LocalUploadTempRequest {
+    pub file_name: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct LocalUploadTempAppendRequest {
+    pub local_path: String,
+    pub chunk: Vec<u8>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct LocalUploadTempDeleteRequest {
+    pub local_path: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct LocalUploadTempResult {
+    pub local_path: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -140,6 +193,26 @@ pub struct RemoteFileDownloadToLocalRequest {
     pub keep_archives: bool,
     #[serde(default)]
     pub conflict_policy: Option<String>,
+    #[serde(default)]
+    pub transfer_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct RemoteFileDownloadTargetCheckRequest {
+    pub connection_id: String,
+    pub path: String,
+    #[serde(default)]
+    pub directory: bool,
+    #[serde(default)]
+    pub download_root: Option<String>,
+    #[serde(default)]
+    pub session_name: Option<String>,
+    #[serde(default)]
+    pub timestamp_name: Option<String>,
+    #[serde(default)]
+    pub group_by_session: bool,
+    #[serde(default)]
+    pub timestamp_directory: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -151,6 +224,16 @@ pub struct RemoteFileDownloadToLocalResult {
     pub archive_path: Option<String>,
     pub skipped: bool,
     pub directory: bool,
+}
+
+#[derive(Debug, Serialize)]
+pub struct RemoteFileDownloadTargetCheckResult {
+    pub exists: bool,
+    pub directory: bool,
+    pub local_directory: String,
+    pub local_path: String,
+    pub name: String,
+    pub remote_path: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -316,6 +399,17 @@ pub async fn remote_file_metadata(
 }
 
 #[tauri::command]
+pub async fn remote_file_check_path(
+    app: AppHandle,
+    manager: State<'_, RemoteFileManager>,
+    request: RemoteFilePathRequest,
+) -> Result<RemoteFilePathCheckResult, AppError> {
+    let profile = load_remote_connection_profile(&app, &request.connection_id)?;
+    let path = require_remote_path(&request.path)?;
+    manager.check_path(profile, path).await
+}
+
+#[tauri::command]
 pub async fn remote_file_upload_file(
     app: AppHandle,
     manager: State<'_, RemoteFileManager>,
@@ -323,12 +417,57 @@ pub async fn remote_file_upload_file(
 ) -> Result<RemoteFileUploadResult, AppError> {
     let profile = load_remote_connection_profile(&app, &request.connection_id)?;
     let path = require_remote_path(&request.path)?;
+    let total_bytes = request.content.len() as u64;
+    let progress = remote_transfer_progress_callback(
+        &app,
+        request.transfer_id.as_deref(),
+        "upload",
+        Some(total_bytes),
+    );
     manager
         .upload_file(
             profile,
             path,
             &request.content,
             TransferConflictPolicy::from_request(request.conflict_policy.as_deref()),
+            progress,
+        )
+        .await
+}
+
+#[tauri::command]
+pub async fn remote_file_upload_local_file(
+    app: AppHandle,
+    manager: State<'_, RemoteFileManager>,
+    request: RemoteFileUploadLocalFileRequest,
+) -> Result<RemoteFileUploadResult, AppError> {
+    let profile = load_remote_connection_profile(&app, &request.connection_id)?;
+    let path = require_remote_path(&request.path)?;
+    let local_path = require_existing_local_file_path(&request.local_path)?;
+    let total_bytes = fs::metadata(&local_path)
+        .map_err(|error| {
+            AppError::new(
+                "remote_file_upload_local_metadata_failed",
+                "本地上传文件信息读取失败。",
+                error,
+                true,
+            )
+        })?
+        .len();
+    let progress = remote_transfer_progress_callback(
+        &app,
+        request.transfer_id.as_deref(),
+        "upload",
+        Some(total_bytes),
+    )
+    .unwrap_or_else(noop_transfer_progress_callback);
+    manager
+        .upload_local_file(
+            profile,
+            path,
+            &local_path,
+            TransferConflictPolicy::from_request(request.conflict_policy.as_deref()),
+            progress,
         )
         .await
 }
@@ -342,6 +481,13 @@ pub async fn remote_file_upload_archive(
     let profile = load_remote_connection_profile(&app, &request.connection_id)?;
     let target_dir = require_remote_path(&request.target_dir)?;
     let root_name = require_safe_name(&request.root_name, "remote_file_archive_root_missing")?;
+    let total_bytes = request.archive_content.len() as u64;
+    let progress = remote_transfer_progress_callback(
+        &app,
+        request.transfer_id.as_deref(),
+        "upload",
+        Some(total_bytes),
+    );
     manager
         .upload_archive(
             profile,
@@ -350,8 +496,143 @@ pub async fn remote_file_upload_archive(
             &request.archive_content,
             TransferConflictPolicy::from_request(request.conflict_policy.as_deref()),
             request.keep_archive,
+            progress,
         )
         .await
+}
+
+#[tauri::command]
+pub async fn remote_file_upload_local_archive(
+    app: AppHandle,
+    manager: State<'_, RemoteFileManager>,
+    request: RemoteFileUploadLocalArchiveRequest,
+) -> Result<RemoteFileArchiveUploadResult, AppError> {
+    let profile = load_remote_connection_profile(&app, &request.connection_id)?;
+    let target_dir = require_remote_path(&request.target_dir)?;
+    let requested_root_name = require_safe_name(&request.root_name, "remote_file_archive_root_missing")?;
+    let local_path = require_existing_local_path(&request.local_path)?;
+    let (upload_path, root_name, cleanup_path) = if local_path.is_dir() {
+        let root_name = local_path
+            .file_name()
+            .and_then(|value| value.to_str())
+            .ok_or_else(|| {
+                AppError::new(
+                    "remote_file_archive_root_missing",
+                    "请选择有效的本地文件夹。",
+                    local_path.to_string_lossy(),
+                    true,
+                )
+            })?
+            .to_string();
+        let root_name = require_safe_name(&root_name, "remote_file_archive_root_missing")?.to_string();
+        let archive_path = create_local_directory_archive(&local_path, &root_name)?;
+        (archive_path.clone(), root_name, Some(archive_path))
+    } else {
+        (local_path, requested_root_name.to_string(), None)
+    };
+    let total_bytes = fs::metadata(&upload_path)
+        .map_err(|error| {
+            AppError::new(
+                "remote_file_upload_local_metadata_failed",
+                "本地上传归档信息读取失败。",
+                error,
+                true,
+            )
+        })?
+        .len();
+    let progress = remote_transfer_progress_callback(
+        &app,
+        request.transfer_id.as_deref(),
+        "upload",
+        Some(total_bytes),
+    )
+    .unwrap_or_else(noop_transfer_progress_callback);
+    let result = manager
+        .upload_local_archive(
+            profile,
+            target_dir,
+            &root_name,
+            &upload_path,
+            TransferConflictPolicy::from_request(request.conflict_policy.as_deref()),
+            request.keep_archive,
+            progress,
+        )
+        .await;
+    if let Some(path) = cleanup_path {
+        let _ = fs::remove_file(path);
+    }
+    result
+}
+
+#[tauri::command]
+pub async fn remote_file_prepare_upload_temp(
+    request: LocalUploadTempRequest,
+) -> Result<LocalUploadTempResult, AppError> {
+    let dir = upload_temp_dir()?;
+    fs::create_dir_all(&dir).map_err(|error| {
+        AppError::new(
+            "remote_file_upload_temp_create_dir_failed",
+            "本地上传临时目录创建失败。",
+            error,
+            true,
+        )
+    })?;
+    let file_name = sanitize_local_path_segment(&request.file_name);
+    let local_path = dir.join(format!("{}-{}", now_millis(), file_name));
+    fs::File::create(&local_path).map_err(|error| {
+        AppError::new(
+            "remote_file_upload_temp_create_failed",
+            "本地上传临时文件创建失败。",
+            error,
+            true,
+        )
+    })?;
+    Ok(LocalUploadTempResult {
+        local_path: local_path.to_string_lossy().to_string(),
+    })
+}
+
+#[tauri::command]
+pub async fn remote_file_append_upload_temp(
+    request: LocalUploadTempAppendRequest,
+) -> Result<(), AppError> {
+    let local_path = require_upload_temp_path(&request.local_path)?;
+    let mut file = OpenOptions::new()
+        .append(true)
+        .open(&local_path)
+        .map_err(|error| {
+            AppError::new(
+                "remote_file_upload_temp_open_failed",
+                "本地上传临时文件打开失败。",
+                error,
+                true,
+            )
+        })?;
+    file.write_all(&request.chunk).map_err(|error| {
+        AppError::new(
+            "remote_file_upload_temp_write_failed",
+            "本地上传临时文件写入失败。",
+            error,
+            true,
+        )
+    })
+}
+
+#[tauri::command]
+pub async fn remote_file_delete_upload_temp(
+    request: LocalUploadTempDeleteRequest,
+) -> Result<(), AppError> {
+    let local_path = require_upload_temp_path(&request.local_path)?;
+    match fs::remove_file(&local_path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(AppError::new(
+            "remote_file_upload_temp_delete_failed",
+            "本地上传临时文件删除失败。",
+            error,
+            true,
+        )),
+    }
 }
 
 #[tauri::command]
@@ -362,7 +643,7 @@ pub async fn remote_file_download(
 ) -> Result<RemoteFileDownloadResult, AppError> {
     let profile = load_remote_connection_profile(&app, &request.connection_id)?;
     let path = require_remote_path(&request.path)?;
-    let content = manager.download_file(profile, path).await?;
+    let content = manager.download_file(profile, path, None).await?;
     Ok(RemoteFileDownloadResult {
         name: path
             .rsplit('/')
@@ -371,6 +652,34 @@ pub async fn remote_file_download(
             .to_string(),
         path: path.to_string(),
         content,
+    })
+}
+
+#[tauri::command]
+pub async fn remote_file_check_download_target(
+    app: AppHandle,
+    request: RemoteFileDownloadTargetCheckRequest,
+) -> Result<RemoteFileDownloadTargetCheckResult, AppError> {
+    let _profile = load_remote_connection_profile(&app, &request.connection_id)?;
+    let path = require_remote_path(&request.path)?;
+    let name = remote_path_name(path);
+    let local_directory = resolve_download_directory_parts(
+        &app,
+        request.download_root.as_deref(),
+        request.session_name.as_deref(),
+        request.timestamp_name.as_deref(),
+        request.group_by_session,
+        request.timestamp_directory,
+    )?;
+    let target = local_directory.join(sanitize_local_path_segment(&name));
+
+    Ok(RemoteFileDownloadTargetCheckResult {
+        exists: target.exists(),
+        directory: request.directory,
+        local_directory: local_directory.to_string_lossy().to_string(),
+        local_path: target.to_string_lossy().to_string(),
+        name,
+        remote_path: path.to_string(),
     })
 }
 
@@ -401,7 +710,13 @@ pub async fn remote_file_download_to_local(
             });
         }
 
-        let content = manager.download_archive(profile, path).await?;
+        let progress = remote_transfer_progress_callback(
+            &app,
+            request.transfer_id.as_deref(),
+            "download",
+            None,
+        );
+        let content = manager.download_archive(profile, path, progress).await?;
         fs::create_dir_all(&local_directory).map_err(|error| {
             AppError::new(
                 "remote_file_download_create_dir_failed",
@@ -462,7 +777,13 @@ pub async fn remote_file_download_to_local(
             });
         }
 
-        let content = manager.download_file(profile, path).await?;
+        let progress = remote_transfer_progress_callback(
+            &app,
+            request.transfer_id.as_deref(),
+            "download",
+            None,
+        );
+        let content = manager.download_file(profile, path, progress).await?;
         fs::create_dir_all(&local_directory).map_err(|error| {
             AppError::new(
                 "remote_file_download_create_dir_failed",
@@ -591,12 +912,7 @@ fn require_remote_path(path: &str) -> Result<&str, AppError> {
 
 fn require_safe_name<'a>(name: &'a str, code: &str) -> Result<&'a str, AppError> {
     let name = name.trim();
-    if name.is_empty()
-        || name == "."
-        || name == ".."
-        || name.contains('/')
-        || name.contains('\\')
-    {
+    if name.is_empty() || name == "." || name == ".." || name.contains('/') || name.contains('\\') {
         return Err(AppError::new(
             code,
             "请输入有效名称。",
@@ -612,7 +928,25 @@ fn resolve_download_directory(
     app: &AppHandle,
     request: &RemoteFileDownloadToLocalRequest,
 ) -> Result<PathBuf, AppError> {
-    let root = match request.download_root.as_ref().map(|value| value.trim()) {
+    resolve_download_directory_parts(
+        app,
+        request.download_root.as_deref(),
+        request.session_name.as_deref(),
+        request.timestamp_name.as_deref(),
+        request.group_by_session,
+        request.timestamp_directory,
+    )
+}
+
+fn resolve_download_directory_parts(
+    app: &AppHandle,
+    download_root: Option<&str>,
+    session_name: Option<&str>,
+    timestamp_name: Option<&str>,
+    group_by_session: bool,
+    timestamp_directory: bool,
+) -> Result<PathBuf, AppError> {
+    let root = match download_root.map(str::trim) {
         Some(value) if !value.is_empty() => PathBuf::from(value),
         _ => app.path().download_dir().map_err(|error| {
             AppError::new(
@@ -625,21 +959,17 @@ fn resolve_download_directory(
     };
 
     let mut directory = root;
-    if request.group_by_session {
+    if group_by_session {
         directory.push(sanitize_local_path_segment(
-            request
-                .session_name
-                .as_deref()
+            session_name
                 .map(str::trim)
                 .filter(|value| !value.is_empty())
                 .unwrap_or("mxterm-session"),
         ));
     }
-    if request.timestamp_directory {
+    if timestamp_directory {
         directory.push(sanitize_local_path_segment(
-            request
-                .timestamp_name
-                .as_deref()
+            timestamp_name
                 .map(str::trim)
                 .filter(|value| !value.is_empty())
                 .unwrap_or("download"),
@@ -780,17 +1110,19 @@ fn unpack_remote_directory_archive(
             true,
         ));
     }
-    fs::rename(&extracted, target).or_else(|_| {
-        copy_local_directory(&extracted, target)?;
-        fs::remove_dir_all(&extracted)
-    }).map_err(|error| {
-        AppError::new(
-            "remote_file_download_extract_move_failed",
-            "本地解压结果移动失败。",
-            error,
-            true,
-        )
-    })?;
+    fs::rename(&extracted, target)
+        .or_else(|_| {
+            copy_local_directory(&extracted, target)?;
+            fs::remove_dir_all(&extracted)
+        })
+        .map_err(|error| {
+            AppError::new(
+                "remote_file_download_extract_move_failed",
+                "本地解压结果移动失败。",
+                error,
+                true,
+            )
+        })?;
     let _ = fs::remove_dir_all(&tmp_dir);
     Ok(())
 }
@@ -845,6 +1177,138 @@ fn sanitize_local_path_segment(value: &str) -> String {
     }
 }
 
+fn upload_temp_dir() -> Result<PathBuf, AppError> {
+    Ok(std::env::temp_dir().join("mxterm-upload-temp"))
+}
+
+fn require_existing_local_path(local_path: &str) -> Result<PathBuf, AppError> {
+    let trimmed = local_path.trim();
+    if trimmed.is_empty() {
+        return Err(AppError::new(
+            "remote_file_upload_local_path_missing",
+            "请选择本地上传路径。",
+            "local_path is empty",
+            true,
+        ));
+    }
+
+    PathBuf::from(trimmed).canonicalize().map_err(|error| {
+        AppError::new(
+            "remote_file_upload_local_path_failed",
+            "本地上传路径解析失败。",
+            error,
+            true,
+        )
+    })
+}
+
+fn require_existing_local_file_path(local_path: &str) -> Result<PathBuf, AppError> {
+    let path = require_existing_local_path(local_path)?;
+    if !path.is_file() {
+        return Err(AppError::new(
+            "remote_file_upload_local_file_invalid",
+            "请选择有效的本地文件。",
+            path.to_string_lossy(),
+            true,
+        ));
+    }
+    Ok(path)
+}
+
+fn require_upload_temp_path(local_path: &str) -> Result<PathBuf, AppError> {
+    let trimmed = local_path.trim();
+    if trimmed.is_empty() {
+        return Err(AppError::new(
+            "remote_file_upload_temp_path_missing",
+            "本地上传临时文件路径缺失。",
+            "local_path is empty",
+            true,
+        ));
+    }
+
+    let root = upload_temp_dir()?;
+    let root = root.canonicalize().map_err(|error| {
+        AppError::new(
+            "remote_file_upload_temp_root_failed",
+            "本地上传临时目录解析失败。",
+            error,
+            true,
+        )
+    })?;
+    let path = PathBuf::from(trimmed).canonicalize().map_err(|error| {
+        AppError::new(
+            "remote_file_upload_temp_path_failed",
+            "本地上传临时文件路径解析失败。",
+            error,
+            true,
+        )
+    })?;
+    if !path.starts_with(&root) {
+        return Err(AppError::new(
+            "remote_file_upload_temp_path_invalid",
+            "本地上传临时文件路径无效。",
+            path.to_string_lossy(),
+            true,
+        ));
+    }
+
+    Ok(path)
+}
+
+fn create_local_directory_archive(directory: &Path, root_name: &str) -> Result<PathBuf, AppError> {
+    let parent = directory.parent().ok_or_else(|| {
+        AppError::new(
+            "remote_file_upload_archive_parent_missing",
+            "本地上传文件夹父目录不可用。",
+            directory.to_string_lossy(),
+            true,
+        )
+    })?;
+    let archive_dir = upload_temp_dir()?;
+    fs::create_dir_all(&archive_dir).map_err(|error| {
+        AppError::new(
+            "remote_file_upload_temp_create_dir_failed",
+            "本地上传临时目录创建失败。",
+            error,
+            true,
+        )
+    })?;
+    let archive_path = archive_dir.join(format!(
+        "{}-{}.tar.gz",
+        now_millis(),
+        sanitize_local_path_segment(root_name)
+    ));
+    let status = Command::new("tar")
+        .arg("-czf")
+        .arg(&archive_path)
+        .arg("-C")
+        .arg(parent)
+        .arg(root_name)
+        .status()
+        .map_err(|error| {
+            AppError::new(
+                "remote_file_upload_archive_start_failed",
+                "本地 tar 打包启动失败。",
+                error,
+                true,
+            )
+        })?;
+    if !status.success() {
+        let _ = fs::remove_file(&archive_path);
+        return Err(AppError::new(
+            "remote_file_upload_archive_failed",
+            "本地 tar.gz 打包失败。",
+            status.to_string(),
+            true,
+        ));
+    }
+    Ok(archive_path)
+}
+
+fn noop_transfer_progress_callback() -> ExecProgressCallback {
+    std::sync::Arc::new(|_| {})
+}
+
 fn remote_path_name(path: &str) -> String {
     path.rsplit('/')
         .find(|segment| !segment.is_empty())
@@ -857,6 +1321,30 @@ fn now_millis() -> u128 {
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_millis())
         .unwrap_or(0)
+}
+
+fn remote_transfer_progress_callback(
+    app: &AppHandle,
+    transfer_id: Option<&str>,
+    direction: &'static str,
+    total_bytes: Option<u64>,
+) -> Option<ExecProgressCallback> {
+    let transfer_id = transfer_id
+        .map(str::trim)
+        .filter(|value| !value.is_empty())?
+        .to_string();
+    let app = app.clone();
+    Some(std::sync::Arc::new(move |loaded_bytes| {
+        let _ = app.emit(
+            crate::events::REMOTE_FILE_TRANSFER_PROGRESS,
+            RemoteFileTransferProgressEvent {
+                transfer_id: transfer_id.clone(),
+                direction: direction.to_string(),
+                loaded_bytes,
+                total_bytes,
+            },
+        );
+    }))
 }
 
 fn connection_store_path(app: &AppHandle) -> Result<PathBuf, AppError> {
@@ -890,10 +1378,7 @@ fn probe_tcp_latency(host: &str, port: u16) -> ConnectionLatencyProbeResult {
 
     for address in addresses {
         if TcpStream::connect_timeout(&address, timeout).is_ok() {
-            let latency_ms = started
-                .elapsed()
-                .as_millis()
-                .min(u128::from(u64::MAX)) as u64;
+            let latency_ms = started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
             return ConnectionLatencyProbeResult {
                 latency_ms: Some(latency_ms),
                 reachable: true,

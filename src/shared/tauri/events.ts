@@ -1,5 +1,8 @@
 import { listen } from "@tauri-apps/api/event";
 import type {
+  RemoteFileTransferProgressEvent,
+} from "../../features/files/remoteFileTypes";
+import type {
   TerminalConnectProgressEvent,
   TerminalOutputEvent,
   TerminalStateChangedEvent,
@@ -19,6 +22,14 @@ export function listenTerminalConnectProgress(
   handler: (event: TerminalConnectProgressEvent) => void,
 ) {
   return listen<TerminalConnectProgressEvent>("terminal:connect_progress", (event) =>
+    handler(event.payload),
+  );
+}
+
+export function listenRemoteFileTransferProgress(
+  handler: (event: RemoteFileTransferProgressEvent) => void,
+) {
+  return listen<RemoteFileTransferProgressEvent>("remote_file:transfer_progress", (event) =>
     handler(event.payload),
   );
 }

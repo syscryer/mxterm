@@ -26,3 +26,4 @@ uuid = { version = "1", features = ["v4"] }
 russh = { version = "0.61.1", default-features = false, features = ["ring", "flate2", "rsa"] }
 tokio = { version = "1", features = ["sync", "time"] }
 primefield = "=0.14.0-rc.9"
+tauri-plugin-dialog = "2"

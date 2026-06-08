@@ -99,7 +99,7 @@ Folder picker / DataTransfer directory
 Remote file context menu download
 → remoteFileDownload(connectionId, remotePath)
 → resolve local destination:
-   Downloads/<session name>/<yyyyMMddHHmm>/<remote file name>
+   Downloads/<connection name>/<yyyyMMddHHmm>/<remote file name>
    or configured settings policy
 → write local file through Tauri fs capability or backend command
 → show completion feedback with local path
@@ -112,7 +112,7 @@ Remote directory context menu / drag download
 → remote tar -czf temp archive from selected directory
 → download archive bytes/stream
 → write archive to local temp path
-→ extract into Downloads/<session name>/<yyyyMMddHHmm>/<directory name>
+→ extract into Downloads/<connection name>/<yyyyMMddHHmm>/<directory name>
 → cleanup remote temp archive and local temp archive unless settings keep archives
 → show completion feedback with local folder path
 ```
@@ -286,21 +286,21 @@ Monaco 约束：
 本轮默认下载路径：
 
 ```text
-<用户下载目录>/<会话名称>/<yyyyMMddHHmm>/<文件名>
+<用户下载目录>/<连接名称>/<yyyyMMddHHmm>/<文件名>
 ```
 
-会话名称优先使用活动终端 tab 标题或连接名；需要清理 Windows 不合法路径字符。若没有活动会话，使用连接名。时间戳默认使用用户本地时区，精度到分钟。
+连接分组名称优先使用连接名称；如果连接名称为空，使用连接 host，最后兜底为 `mxterm-session`。该名称需要清理 Windows 不合法路径字符。时间戳默认使用用户本地时区，精度到分钟。
 
 设置模型接入：
 
-- downloadRoot: 用户下载目录或自定义目录。
-- groupBySession: 是否按会话名称创建子目录。
+- downloadRoot: 可选的自定义下载根目录；留空时使用系统 Downloads，设置页提供目录选择入口和手动输入。
+- groupBySession: 是否按连接名称创建子目录。
 - timestampDirectory: 是否按时间戳创建子目录。
 - timestampFormat: 默认 `yyyyMMddHHmm`。
 - keepArchives: 文件夹上传/下载是否保留中间 `tar.gz` 包，默认 false。
 - conflictPolicyDefault: 同名目标默认策略，默认 ask。
 
-设置页需要提供下载根目录、会话分组、时间戳目录、保留压缩包和同名冲突默认策略。若当前设置页没有对应 section，本任务补到外观/基础设置里的文件传输设置组。
+设置页需要提供下载根目录、连接分组、时间戳目录、保留压缩包和同名冲突默认策略。若当前设置页没有对应 section，本任务补到外观/基础设置里的文件传输设置组。
 
 如果 Tauri dialog/fs 插件尚未接入，本任务需要补依赖、capability 权限和 typed helper；不要继续使用浏览器 Blob 下载作为桌面应用的下载路径。
 

@@ -84,6 +84,11 @@ Ant Design, Mantine, or similar libraries just to fix one modal or button.
   Do not navigate into the located folder's child listing, auto-follow every
   `cd`, execute probe commands, or write `cd` back into the interactive
   terminal.
+- Remote file trees keep two directory concepts separate. The tree root path
+  owns the top-level listing currently rendered, while the active directory path
+  owns the path input, toolbar actions, blank-area context menu, and blank-area
+  drag/drop upload target. Expanding or locating a directory should update the
+  active directory without forcing the tree root to navigate into that child.
 - Terminal surfaces should not add decorative padding by default. If xterm
   spacing is ever needed, it must be accounted for by FitAddon; parent-only
   padding can make FitAddon over-count rows and clip the bottom terminal line at

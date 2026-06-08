@@ -18,6 +18,12 @@ export interface RemoteFileEntryMetadata extends RemoteFileMetadata {
   type: RemoteFileKind;
 }
 
+export interface RemoteFilePathCheckResult {
+  exists: boolean;
+  path: string;
+  type?: RemoteFileKind | null;
+}
+
 export interface RemoteFileReadResult {
   content: string;
   editable: boolean;
@@ -62,6 +68,15 @@ export interface RemoteFileUploadInput {
   content: Uint8Array | number[];
   conflictPolicy?: RemoteFileTransferConflictPolicy;
   path: string;
+  transferId?: string;
+}
+
+export interface RemoteFileUploadLocalInput {
+  connectionId: string;
+  conflictPolicy?: RemoteFileTransferConflictPolicy;
+  localPath: string;
+  path: string;
+  transferId?: string;
 }
 
 export type RemoteFileTransferConflictPolicy = "ask" | "overwrite" | "skip" | "rename";
@@ -80,6 +95,17 @@ export interface RemoteFileArchiveUploadInput {
   keepArchive?: boolean;
   rootName: string;
   targetDir: string;
+  transferId?: string;
+}
+
+export interface RemoteFileArchiveUploadLocalInput {
+  connectionId: string;
+  conflictPolicy?: RemoteFileTransferConflictPolicy;
+  keepArchive?: boolean;
+  localPath: string;
+  rootName: string;
+  targetDir: string;
+  transferId?: string;
 }
 
 export interface RemoteFileArchiveUploadResult {
@@ -106,6 +132,27 @@ export interface RemoteFileDownloadToLocalInput {
   sessionName?: string;
   timestampDirectory?: boolean;
   timestampName?: string;
+  transferId?: string;
+}
+
+export interface RemoteFileDownloadTargetCheckInput {
+  connectionId: string;
+  directory?: boolean;
+  downloadRoot?: string;
+  groupBySession?: boolean;
+  path: string;
+  sessionName?: string;
+  timestampDirectory?: boolean;
+  timestampName?: string;
+}
+
+export interface RemoteFileDownloadTargetCheckResult {
+  directory: boolean;
+  exists: boolean;
+  local_directory: string;
+  local_path: string;
+  name: string;
+  remote_path: string;
 }
 
 export interface RemoteFileDownloadToLocalResult {
@@ -116,4 +163,15 @@ export interface RemoteFileDownloadToLocalResult {
   name: string;
   remote_path: string;
   skipped: boolean;
+}
+
+export interface RemoteFileTransferProgressEvent {
+  direction: "upload" | "download";
+  loaded_bytes: number;
+  total_bytes?: number | null;
+  transfer_id: string;
+}
+
+export interface LocalUploadTempResult {
+  local_path: string;
 }

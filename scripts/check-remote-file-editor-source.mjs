@@ -3,9 +3,13 @@ import { readFileSync } from "node:fs";
 const packageJson = readFileSync(new URL("../package.json", import.meta.url), "utf8");
 const commandsTs = readFileSync(new URL("../src/shared/tauri/commands.ts", import.meta.url), "utf8");
 const commandsRs = readFileSync(new URL("../src-tauri/src/commands.rs", import.meta.url), "utf8");
+const eventsRs = readFileSync(new URL("../src-tauri/src/events.rs", import.meta.url), "utf8");
 const libRs = readFileSync(new URL("../src-tauri/src/lib.rs", import.meta.url), "utf8");
 const remoteFilesRs = readFileSync(new URL("../src-tauri/src/remote_files.rs", import.meta.url), "utf8");
 const terminalSessionRs = readFileSync(new URL("../src-tauri/src/terminal/session.rs", import.meta.url), "utf8");
+const tauriCapability = readFileSync(new URL("../src-tauri/capabilities/default.json", import.meta.url), "utf8");
+const tauriEventsTs = readFileSync(new URL("../src/shared/tauri/events.ts", import.meta.url), "utf8");
+const tauriDialogTs = readFileSync(new URL("../src/shared/tauri/dialog.ts", import.meta.url), "utf8");
 const remoteFilePanel = readFileSync(new URL("../src/features/files/RemoteFilePanel.tsx", import.meta.url), "utf8");
 const remoteFileTypes = readFileSync(new URL("../src/features/files/remoteFileTypes.ts", import.meta.url), "utf8");
 const workspaceShell = readFileSync(new URL("../src/features/layout/WorkspaceShell.tsx", import.meta.url), "utf8");
@@ -34,13 +38,38 @@ for (const wrapper of [
   "remoteFileRename",
   "remoteFileDelete",
   "remoteFileMetadata",
+  "remoteFileCheckPath",
   "remoteFileUploadFile",
+  "remoteFileUploadLocalFile",
   "remoteFileUploadArchive",
+  "remoteFileUploadLocalArchive",
+  "remoteFilePrepareUploadTemp",
+  "remoteFileAppendUploadTemp",
+  "remoteFileDeleteUploadTemp",
   "remoteFileDownload",
+  "remoteFileCheckDownloadTarget",
   "remoteFileDownloadToLocal",
 ]) {
   if (!commandsTs.includes(`export function ${wrapper}`)) {
     throw new Error(`commands.ts should expose ${wrapper}`);
+  }
+}
+
+if (/remoteFileAppendUploadTemp[\s\S]*Array\.from\(chunk\)/.test(commandsTs)) {
+  throw new Error("remoteFileAppendUploadTemp should pass Uint8Array chunks without Array.from on the hot path");
+}
+
+if (!libRs.includes("tauri_plugin_dialog::init()") || !tauriCapability.includes("dialog:allow-open")) {
+  throw new Error("Tauri dialog plugin should be registered and allowed for upload pickers");
+}
+
+for (const dialogNeedle of [
+  "@tauri-apps/plugin-dialog",
+  "selectLocalUploadFiles",
+  "selectLocalUploadDirectories",
+]) {
+  if (!tauriDialogTs.includes(dialogNeedle)) {
+    throw new Error(`Tauri dialog wrapper should include ${dialogNeedle}`);
   }
 }
 
@@ -52,9 +81,16 @@ for (const command of [
   "remote_file_rename",
   "remote_file_delete",
   "remote_file_metadata",
+  "remote_file_check_path",
   "remote_file_upload_file",
+  "remote_file_upload_local_file",
   "remote_file_upload_archive",
+  "remote_file_upload_local_archive",
+  "remote_file_prepare_upload_temp",
+  "remote_file_append_upload_temp",
+  "remote_file_delete_upload_temp",
   "remote_file_download",
+  "remote_file_check_download_target",
   "remote_file_download_to_local",
 ]) {
   if (!commandsRs.includes(command) || !libRs.includes(`commands::${command}`)) {
@@ -66,6 +102,8 @@ for (const backendSymbol of [
   "RemoteFileReadResult",
   "RemoteFileWriteResult",
   "RemoteFileEntryMetadata",
+  "RemoteFilePathCheckResult",
+  "RemoteFileDownloadTargetCheckResult",
   "RemoteFileUploadResult",
   "RemoteFileArchiveUploadResult",
   "TransferConflictPolicy",
@@ -73,20 +111,42 @@ for (const backendSymbol of [
   "read_file",
   "write_file",
   "upload_file",
+  "upload_local_file",
   "upload_archive",
+  "upload_local_archive",
   "download_archive",
   "build_remote_write_command",
+  "build_remote_path_check_command",
   "build_remote_upload_command",
   "build_remote_resolve_child_command",
   "build_remote_extract_archive_command",
   "build_remote_archive_download_command",
   "parse_remote_file_metadata",
   "parse_remote_entry_metadata",
+  "parse_remote_path_check_output",
   "parse_remote_transfer_path",
   "looks_like_binary",
+  "ExecProgressCallback",
+  "exec_with_stdin_progress",
+  "exec_with_stdin_file_progress",
+  "exec_with_stdout_progress",
 ]) {
-  if (!remoteFilesRs.includes(backendSymbol)) {
-    throw new Error(`remote_files.rs should include ${backendSymbol}`);
+  if (
+    !remoteFilesRs.includes(backendSymbol) &&
+    !terminalSessionRs.includes(backendSymbol) &&
+    !commandsRs.includes(backendSymbol)
+  ) {
+    throw new Error(`remote file backend should include ${backendSymbol}`);
+  }
+}
+
+for (const eventNeedle of [
+  "REMOTE_FILE_TRANSFER_PROGRESS",
+  "RemoteFileTransferProgressEvent",
+  "remote_transfer_progress_callback",
+]) {
+  if (!eventsRs.includes(eventNeedle) && !commandsRs.includes(eventNeedle)) {
+    throw new Error(`Remote file transfer progress events should include ${eventNeedle}`);
   }
 }
 
@@ -119,6 +179,34 @@ for (const uiNeedle of [
   }
 }
 
+if (!remoteFilePanel.includes("const [activeDirectoryPath, setActiveDirectoryPath]")) {
+  throw new Error("RemoteFilePanel should keep an active directory separate from the tree root path");
+}
+
+if (!remoteFilePanel.includes("previewDirectoryEntries") || remoteFilePanel.includes(": previewEntries;")) {
+  throw new Error("RemoteFilePanel preview tree should return path-specific entries to avoid self-recursive mock directories");
+}
+
+if (!remoteFilePanel.includes("path={activeDirectoryPath}")) {
+  throw new Error("RemoteFilePanel path input should render the active directory path");
+}
+
+if (!/function toggleDirectory\(entry: RemoteFileEntry\)[\s\S]*setActiveDirectoryPath\(entry\.path\)/.test(remoteFilePanel)) {
+  throw new Error("RemoteFilePanel should update the active directory when expanding a directory row");
+}
+
+for (const activeDirectoryNeedle of [
+  "onRefresh={() => void loadDirectory(activeDirectoryPath, true)}",
+  "onCopyCurrentPath={connection ? () => onCopyPath?.(activeDirectoryPath)",
+  "handleDropUpload(event, activeDirectoryPath)",
+  "onUploadFile?.(activeDirectoryPath)",
+  "is-active-directory",
+]) {
+  if (!remoteFilePanel.includes(activeDirectoryNeedle)) {
+    throw new Error(`RemoteFilePanel active-directory behavior should include ${activeDirectoryNeedle}`);
+  }
+}
+
 for (const dragNeedle of [
   "onDragOver",
   "onDrop",
@@ -145,10 +233,37 @@ for (const workspaceNeedle of [
   "remote-file-conflict",
   "remoteFileTransfers",
   "RemoteFileTransferPanel",
-  "remoteFileUploadArchive",
+  "listenRemoteFileTransferProgress",
+  "remoteFileUploadLocalFile",
+  "remoteFileUploadLocalArchive",
+  "remoteFilePrepareUploadTemp",
+  "remoteFileAppendUploadTemp",
+  "remoteFileDeleteUploadTemp",
   "remoteFileDownloadToLocal",
+  "remoteFileCheckDownloadTarget",
+  "resolveDownloadConflictPolicy",
+  "downloadTargetOptions",
   "remoteFileMetadata",
-  "resolveTransferConflictPolicy",
+  "remoteFileCheckPath",
+  "resolveUploadConflictPolicy",
+  "progressDetail",
+  "speedText",
+  "formatTransferSpeed",
+  "RemoteFileTransferItem",
+  "resolveUploadConflictPolicy",
+  "resolveDownloadConflictPolicy",
+  "setTransferProgress",
+  "uploadTempAppendChunkBytes",
+  "concatenateUint8Arrays",
+  "selectLocalUploadFiles",
+  "selectLocalUploadDirectories",
+  "runLocalFileUpload",
+  "runLocalDirectoryUpload",
+  "localPathName",
+  "writeFileToUploadTemp",
+  "buildTarGzArchiveToTemp",
+  "writeFileToTarGzipStream",
+  "yieldToBrowser",
   "setRemoteFileTextValue(entry.name)",
 ]) {
   if (!workspaceShell.includes(workspaceNeedle)) {
@@ -160,9 +275,45 @@ if (workspaceShell.includes("activeWorkspaceTabId")) {
   throw new Error("WorkspaceShell should keep remote file active state separate from terminal active state");
 }
 
+if (
+  !/resolveUploadConflictPolicy[\s\S]*remoteFileCheckPath[\s\S]*promptTransferConflictPolicy/.test(
+    workspaceShell,
+  )
+) {
+  throw new Error("Upload conflict policy should preflight the remote target before prompting");
+}
+
+if (
+  !/resolveDownloadConflictPolicy[\s\S]*remoteFileCheckDownloadTarget[\s\S]*promptTransferConflictPolicy/.test(
+    workspaceShell,
+  )
+) {
+  throw new Error("Download conflict policy should preflight the local target before prompting");
+}
+
+const transferSessionNameMatch = workspaceShell.match(
+  /function transferSessionName\(([^)]*)\)\s*\{([\s\S]*?)\n\}/,
+);
+if (!transferSessionNameMatch) {
+  throw new Error("WorkspaceShell should define transferSessionName for download grouping");
+}
+if (!/connection:\s*ConnectionProfile/.test(transferSessionNameMatch[1])) {
+  throw new Error("transferSessionName should derive the download group from the connection profile");
+}
+if (/activeTab|terminalTabs/.test(transferSessionNameMatch[1] + transferSessionNameMatch[2])) {
+  throw new Error("transferSessionName should not use terminal tab titles for download grouping");
+}
+if (!/connection\.name[\s\S]*connection\.host[\s\S]*mxterm-session/.test(transferSessionNameMatch[2])) {
+  throw new Error("transferSessionName should prefer connection name, then host, then mxterm-session");
+}
+
 for (const archiveNeedle of [
   "CompressionStream(\"gzip\")",
-  "buildTarGzArchive",
+  "buildTarGzArchiveToTemp",
+  "ArchiveBuildProgress",
+  "compression.writable.getWriter",
+  "compression.readable.getReader",
+  "remoteFileAppendUploadTemp(localPath",
   "webkitdirectory",
   "RemoteFileUploadItem",
 ]) {
@@ -171,11 +322,36 @@ for (const archiveNeedle of [
   }
 }
 
+for (const transferProgressNeedle of [
+  "transfer-progress",
+  "transfer-progress-summary",
+  "role=\"progressbar\"",
+  "transfer_id",
+  "remote_file:transfer_progress",
+]) {
+  if (
+    !workspaceShell.includes(transferProgressNeedle) &&
+    !styles.includes(transferProgressNeedle) &&
+    !commandsTs.includes(transferProgressNeedle) &&
+    !tauriEventsTs.includes(transferProgressNeedle) &&
+    !remoteFileTypes.includes(transferProgressNeedle)
+  ) {
+    throw new Error(`Transfer progress UI should include ${transferProgressNeedle}`);
+  }
+}
+
 for (const typeNeedle of [
   "RemoteFileEntryMetadata",
+  "RemoteFilePathCheckResult",
+  "RemoteFileDownloadTargetCheckInput",
+  "RemoteFileDownloadTargetCheckResult",
   "RemoteFileTransferConflictPolicy",
+  "RemoteFileUploadLocalInput",
   "RemoteFileArchiveUploadResult",
+  "RemoteFileArchiveUploadLocalInput",
   "RemoteFileDownloadToLocalResult",
+  "RemoteFileTransferProgressEvent",
+  "LocalUploadTempResult",
 ]) {
   if (!remoteFileTypes.includes(typeNeedle)) {
     throw new Error(`remoteFileTypes.ts should include ${typeNeedle}`);
@@ -193,6 +369,12 @@ for (const settingsNeedle of [
 ]) {
   if (!settingsTypes.includes(settingsNeedle) || !settingsView.includes(settingsNeedle)) {
     throw new Error(`File transfer settings should include ${settingsNeedle}`);
+  }
+}
+
+for (const settingsUiNeedle of ["selectLocalDownloadDirectory", "settings-path-control"]) {
+  if (!settingsView.includes(settingsUiNeedle) && !styles.includes(settingsUiNeedle)) {
+    throw new Error(`File transfer settings UI should include ${settingsUiNeedle}`);
   }
 }
 
