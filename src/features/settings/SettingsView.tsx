@@ -1,11 +1,16 @@
-import { useEffect, useMemo, useState, type CSSProperties } from "react";
+import { useEffect, useMemo, useState, type CSSProperties, type FormEvent } from "react";
 import {
   ArrowLeft,
   Check,
   Clock3,
   Download,
+  Eye,
+  EyeOff,
+  FileKey,
   Folder,
   FolderOpen,
+  KeyRound,
+  LockKeyhole,
   Monitor,
   Moon,
   Palette,
@@ -15,18 +20,27 @@ import {
   Rows3,
   Save,
   Search,
+  Shield,
+  ShieldCheck,
   Server,
   Settings,
   Sun,
   Terminal,
+  Trash2,
   Type,
   Undo2,
   X,
 } from "lucide-react";
 
 import { Tooltip } from "../../shared/ui/Tooltip";
+import { ConfirmDialog } from "../../shared/ui/ConfirmDialog";
 import { selectLocalDownloadDirectory } from "../../shared/tauri/dialog";
 import { hasTauriRuntime } from "../../shared/tauri/runtime";
+import type {
+  ConnectionAuthKind,
+  CredentialProfile,
+  CredentialProfileInput,
+} from "../connections/connectionTypes";
 import {
   getTerminalAnsiSwatches,
   getTerminalColorSchemeTone,
@@ -62,10 +76,16 @@ import {
 } from "./SettingsControls";
 
 interface SettingsViewProps {
+  credentials: CredentialProfile[];
+  credentialError?: string | null;
+  credentialLoading?: boolean;
   hidden?: boolean;
   settings: MxtermSettings;
+  activeSection?: SettingsSectionId;
   onReset: () => void;
   onReturnWorkspace: () => void;
+  onSaveCredential: (input: CredentialProfileInput) => Promise<void>;
+  onDeleteCredential: (credential: CredentialProfile) => Promise<void>;
   onUpdateAppearance: (update: Partial<AppearanceSettings>) => void;
   onUpdateBasic: (update: Partial<BasicSettings>) => void;
   onUpdateFileTransfer: (update: Partial<FileTransferSettings>) => void;
@@ -79,15 +99,22 @@ const settingsSections: Array<{
   label: string;
 }> = [
   { id: "basic", label: "基础设置", description: "启动、连接与面板行为", icon: Settings },
+  { id: "credentials", label: "凭据管理", description: "复用 SSH 密码和私钥", icon: Shield },
   { id: "appearance", label: "外观", description: "字号、密度与强调色", icon: Palette },
   { id: "terminalTheme", label: "终端配色", description: "终端 ANSI 主题方案", icon: Terminal },
 ];
 
 export function SettingsView({
+  credentials,
+  credentialError,
+  credentialLoading = false,
   hidden = false,
   settings,
+  activeSection: requestedActiveSection,
   onReset,
   onReturnWorkspace,
+  onSaveCredential,
+  onDeleteCredential,
   onUpdateAppearance,
   onUpdateBasic,
   onUpdateFileTransfer,
@@ -105,6 +132,12 @@ export function SettingsView({
   useEffect(() => {
     setAccentDraft(settings.appearance.accentColorCustom);
   }, [settings.appearance.accentColorCustom]);
+
+  useEffect(() => {
+    if (requestedActiveSection) {
+      setActiveSection(requestedActiveSection);
+    }
+  }, [requestedActiveSection]);
 
   return (
     <section className="settings-view" hidden={hidden} aria-label="设置" aria-hidden={hidden}>
@@ -156,6 +189,15 @@ export function SettingsView({
             onUpdate={onUpdateAppearance}
           />
         ) : null}
+        {activeSection === "credentials" ? (
+          <CredentialSettingsSection
+            credentials={credentials}
+            error={credentialError || null}
+            loading={credentialLoading}
+            onDelete={onDeleteCredential}
+            onSave={onSaveCredential}
+          />
+        ) : null}
         {activeSection === "terminalTheme" ? (
           <TerminalThemeSettingsSection
             selectedScheme={selectedScheme}
@@ -166,6 +208,414 @@ export function SettingsView({
       </div>
     </section>
   );
+}
+
+function CredentialSettingsSection({
+  credentials,
+  error,
+  loading,
+  onDelete,
+  onSave,
+}: {
+  credentials: CredentialProfile[];
+  error: string | null;
+  loading: boolean;
+  onDelete: (credential: CredentialProfile) => Promise<void>;
+  onSave: (input: CredentialProfileInput) => Promise<void>;
+}) {
+  const [editing, setEditing] = useState<CredentialProfile | null>(null);
+  const [form, setForm] = useState<CredentialProfileInput>(emptyCredentialForm());
+  const [busy, setBusy] = useState(false);
+  const [formError, setFormError] = useState<string | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<CredentialProfile | null>(null);
+  const [kindFilter, setKindFilter] = useState<"all" | ConnectionAuthKind>("all");
+  const [query, setQuery] = useState("");
+  const [showSecret, setShowSecret] = useState(false);
+  const [showPassphrase, setShowPassphrase] = useState(false);
+  const passwordCount = credentials.filter((credential) => credential.kind === "password").length;
+  const privateKeyCount = credentials.length - passwordCount;
+  const filteredCredentials = useMemo(
+    () =>
+      credentials.filter((credential) => {
+        const matchesKind = kindFilter === "all" || credential.kind === kindFilter;
+        const keyword = query.trim().toLowerCase();
+        const matchesQuery =
+          !keyword ||
+          credential.name.toLowerCase().includes(keyword) ||
+          (credential.notes || "").toLowerCase().includes(keyword);
+        return matchesKind && matchesQuery;
+      }),
+    [credentials, kindFilter, query],
+  );
+  const editingKindLabel = form.kind === "private_key" ? "私钥" : "密码";
+
+  function startCreate(kind: ConnectionAuthKind = "password") {
+    setEditing(null);
+    setForm(emptyCredentialForm(kind));
+    setFormError(null);
+    setShowSecret(false);
+    setShowPassphrase(false);
+  }
+
+  function startEdit(credential: CredentialProfile) {
+    setEditing(credential);
+    setForm({
+      id: credential.id,
+      kind: credential.kind,
+      name: credential.name,
+      notes: credential.notes || "",
+      password: credential.password || "",
+      private_key_passphrase: credential.private_key_passphrase || "",
+      private_key_path: credential.private_key_path || "",
+    });
+    setFormError(null);
+    setShowSecret(false);
+    setShowPassphrase(false);
+  }
+
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setBusy(true);
+    setFormError(null);
+    try {
+      await onSave(form);
+      startCreate(form.kind);
+    } catch (nextError) {
+      setFormError(formatError(nextError));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function confirmDelete() {
+    if (!deleteTarget) {
+      return;
+    }
+    setBusy(true);
+    setFormError(null);
+    try {
+      await onDelete(deleteTarget);
+      if (editing?.id === deleteTarget.id) {
+        startCreate(deleteTarget.kind);
+      }
+      setDeleteTarget(null);
+    } catch (nextError) {
+      setFormError(formatError(nextError));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <section className="settings-page-section credential-page-section">
+      <header className="settings-section-head settings-section-head-row">
+        <span>
+          <h1>凭据管理</h1>
+          <p>保存可复用的 SSH 密码或私钥，连接仍单独填写主机、端口和用户名。</p>
+        </span>
+        <button
+          className="repository-primary-button credential-new-button"
+          type="button"
+          onClick={() => startCreate()}
+        >
+          <Plus className="ui-icon" aria-hidden="true" />
+          <span>新增凭据</span>
+        </button>
+      </header>
+
+      <div className="credential-settings-layout">
+        <section className="settings-panel credential-list-panel" aria-label="凭据列表">
+          <header className="credential-list-head">
+            <span>
+              <strong>凭据库</strong>
+              <small>{credentialSummary(credentials.length, passwordCount, privateKeyCount)}</small>
+            </span>
+            <button
+              className="repository-icon-button"
+              type="button"
+              aria-label="新增私钥凭据"
+              onClick={() => startCreate("private_key")}
+            >
+              <FileKey className="ui-icon" aria-hidden="true" />
+            </button>
+          </header>
+
+          <div className="credential-list-tools">
+            <label className="credential-search">
+              <Search className="ui-icon" aria-hidden="true" />
+              <input
+                value={query}
+                placeholder="搜索凭据"
+                aria-label="搜索凭据"
+                onChange={(event) => setQuery(event.currentTarget.value)}
+              />
+            </label>
+            <SegmentedControl
+              value={kindFilter}
+              options={[
+                { value: "all", label: "全部" },
+                { value: "password", label: "密码" },
+                { value: "private_key", label: "私钥" },
+              ]}
+              onChange={setKindFilter}
+            />
+          </div>
+
+          <div className="credential-list-body">
+            {loading ? <p className="settings-note">加载凭据中...</p> : null}
+            {error ? <p className="form-error credential-list-error">{error}</p> : null}
+            {credentials.length === 0 && !loading ? (
+              <div className="credential-empty-state">
+                <ShieldCheck className="ui-icon" aria-hidden="true" />
+                <strong>还没有保存凭据</strong>
+                <small>先添加一个密码或私钥，之后连接配置里可以直接引用。</small>
+                <div>
+                  <button type="button" onClick={() => startCreate("password")}>
+                    新建密码
+                  </button>
+                  <button type="button" onClick={() => startCreate("private_key")}>
+                    新建私钥
+                  </button>
+                </div>
+              </div>
+            ) : null}
+            {credentials.length > 0 && filteredCredentials.length === 0 ? (
+              <p className="settings-note">没有匹配的凭据。</p>
+            ) : null}
+            {filteredCredentials.map((credential) => {
+              const Icon = credential.kind === "private_key" ? FileKey : KeyRound;
+              return (
+                <button
+                  className={`credential-list-item ${
+                    editing?.id === credential.id ? "active" : ""
+                  }`}
+                  key={credential.id}
+                  type="button"
+                  onClick={() => startEdit(credential)}
+                >
+                  <span className="credential-list-icon">
+                    <Icon className="ui-icon" aria-hidden="true" />
+                  </span>
+                  <span className="credential-list-copy">
+                    <strong>{credential.name}</strong>
+                    <small>
+                      {credential.kind === "private_key" ? "私钥" : "密码"}
+                      {credential.notes ? ` · ${credential.notes}` : ""}
+                    </small>
+                  </span>
+                  <span className="credential-list-kind">
+                    {credential.kind === "private_key" ? "私钥" : "密码"}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+        </section>
+
+        <form className="settings-panel credential-form-panel" onSubmit={submit}>
+          <header className="credential-form-head">
+            <span className="credential-form-icon">
+              {form.kind === "private_key" ? (
+                <FileKey className="ui-icon" aria-hidden="true" />
+              ) : (
+                <KeyRound className="ui-icon" aria-hidden="true" />
+              )}
+            </span>
+            <span>
+              <strong>{editing ? "编辑凭据" : `新增${editingKindLabel}凭据`}</strong>
+              <small>凭据只保存认证材料，不包含主机、端口或用户名。</small>
+            </span>
+          </header>
+
+          <div className="credential-form-body">
+            <label className="credential-field credential-field-name">
+              <span>名称</span>
+              <input
+                className="settings-input"
+                value={form.name || ""}
+                placeholder="例如：生产只读账号"
+                aria-label="凭据名称"
+                onChange={(event) => setForm({ ...form, name: event.currentTarget.value })}
+              />
+            </label>
+            <label className="credential-field credential-field-kind">
+              <span>类型</span>
+              <select
+                className="settings-select"
+                value={form.kind}
+                aria-label="凭据类型"
+                onChange={(event) => {
+                  setForm(emptyCredentialForm(event.currentTarget.value as ConnectionAuthKind, form));
+                  setShowSecret(false);
+                  setShowPassphrase(false);
+                }}
+              >
+                <option value="password">密码</option>
+                <option value="private_key">私钥</option>
+              </select>
+            </label>
+
+            {form.kind === "password" ? (
+              <label className="credential-field credential-field-full">
+                <span>密码</span>
+                <div className="credential-secret-field">
+                  <LockKeyhole className="ui-icon" aria-hidden="true" />
+                  <input
+                    type={showSecret ? "text" : "password"}
+                    value={form.password || ""}
+                    placeholder="输入密码"
+                    aria-label="密码"
+                    onChange={(event) => setForm({ ...form, password: event.currentTarget.value })}
+                  />
+                  <button
+                    type="button"
+                    aria-label={showSecret ? "隐藏密码" : "显示密码"}
+                    onClick={() => setShowSecret((value) => !value)}
+                  >
+                    {showSecret ? (
+                      <EyeOff className="ui-icon" aria-hidden="true" />
+                    ) : (
+                      <Eye className="ui-icon" aria-hidden="true" />
+                    )}
+                  </button>
+                </div>
+              </label>
+            ) : (
+              <>
+                <label className="credential-field credential-field-full">
+                  <span>私钥路径</span>
+                  <input
+                    className="settings-input settings-path-input"
+                    value={form.private_key_path || ""}
+                    placeholder="~/.ssh/id_ed25519"
+                    aria-label="私钥路径"
+                    onChange={(event) =>
+                      setForm({ ...form, private_key_path: event.currentTarget.value })
+                    }
+                  />
+                </label>
+                <label className="credential-field credential-field-full">
+                  <span>私钥口令</span>
+                  <div className="credential-secret-field">
+                    <LockKeyhole className="ui-icon" aria-hidden="true" />
+                    <input
+                      type={showPassphrase ? "text" : "password"}
+                      value={form.private_key_passphrase || ""}
+                      placeholder="可选"
+                      aria-label="私钥口令"
+                      onChange={(event) =>
+                        setForm({
+                          ...form,
+                          private_key_passphrase: event.currentTarget.value,
+                        })
+                      }
+                    />
+                    <button
+                      type="button"
+                      aria-label={showPassphrase ? "隐藏私钥口令" : "显示私钥口令"}
+                      onClick={() => setShowPassphrase((value) => !value)}
+                    >
+                      {showPassphrase ? (
+                        <EyeOff className="ui-icon" aria-hidden="true" />
+                      ) : (
+                        <Eye className="ui-icon" aria-hidden="true" />
+                      )}
+                    </button>
+                  </div>
+                </label>
+              </>
+            )}
+
+            <label className="credential-field credential-field-full">
+              <span>备注</span>
+              <textarea
+                className="settings-input credential-notes-input"
+                value={form.notes || ""}
+                placeholder="可选，用于本机识别和检索。"
+                aria-label="凭据备注"
+                onChange={(event) => setForm({ ...form, notes: event.currentTarget.value })}
+              />
+            </label>
+          </div>
+
+          {formError ? <p className="form-error credential-form-error">{formError}</p> : null}
+
+          <footer className="credential-form-actions">
+            <div>
+              {editing ? (
+                <button
+                  className="danger-button credential-danger-button"
+                  disabled={busy}
+                  type="button"
+                  onClick={() => setDeleteTarget(editing)}
+                >
+                  <Trash2 className="ui-icon" aria-hidden="true" />
+                  删除
+                </button>
+              ) : null}
+            </div>
+            <div>
+              <button disabled={busy} type="button" onClick={() => startCreate(form.kind)}>
+                清空
+              </button>
+              <button className="primary-button" disabled={busy} type="submit">
+                <ShieldCheck className="ui-icon" aria-hidden="true" />
+                保存凭据
+              </button>
+            </div>
+          </footer>
+        </form>
+      </div>
+
+      <ConfirmDialog
+        confirmLabel="删除"
+        description={
+          deleteTarget
+            ? `确认删除凭据“${deleteTarget.name}”吗？如果已有连接正在使用它，请先修改这些连接后再删除。`
+            : ""
+        }
+        open={Boolean(deleteTarget)}
+        title="删除凭据"
+        onConfirm={confirmDelete}
+        onOpenChange={(open) => {
+          if (!open) {
+            setDeleteTarget(null);
+          }
+        }}
+      />
+    </section>
+  );
+}
+
+function emptyCredentialForm(
+  kind: ConnectionAuthKind = "password",
+  base?: CredentialProfileInput,
+): CredentialProfileInput {
+  return {
+    id: base?.id,
+    kind,
+    name: base?.name || "",
+    notes: base?.notes || "",
+    password: kind === "password" ? base?.password || "" : "",
+    private_key_passphrase:
+      kind === "private_key" ? base?.private_key_passphrase || "" : "",
+    private_key_path: kind === "private_key" ? base?.private_key_path || "" : "",
+  };
+}
+
+function credentialSummary(total: number, passwordCount: number, privateKeyCount: number) {
+  if (total === 0) {
+    return "0 项凭据";
+  }
+  return `${total.toString()} 项 · ${passwordCount.toString()} 密码 · ${privateKeyCount.toString()} 私钥`;
+}
+
+function formatError(error: unknown) {
+  if (typeof error === "object" && error !== null && "message" in error) {
+    return String((error as { message: unknown }).message);
+  }
+
+  return String(error);
 }
 
 function BasicSettingsSection({
@@ -229,12 +679,12 @@ function BasicSettingsSection({
         </SettingsRow>
         <SettingsRow
           icon={Server}
-          title="保留失败标签"
-          description="连接失败时保留终端标签，并在标签内显示错误。"
+          title="保留失败页"
+          description="连接失败时保留当前会话页，方便查看原因、重试或编辑连接。"
         >
           <SettingsToggle
             checked={settings.keepFailedTerminalTabs}
-            label="保留失败标签"
+            label="保留失败页"
             onChange={(keepFailedTerminalTabs) => onUpdate({ keepFailedTerminalTabs })}
           />
         </SettingsRow>

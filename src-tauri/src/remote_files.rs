@@ -4,11 +4,11 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
+use tauri::AppHandle;
 use tokio::sync::Mutex;
 
 use crate::app_error::AppError;
-use crate::commands::TerminalConnectRequest;
-use crate::connections::ConnectionProfile;
+use crate::ssh_config::ResolvedSshConfig;
 use crate::terminal::session::{ExecOutput, ExecProgressCallback, ReusableExecSession};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -162,7 +162,7 @@ struct RemoteFileSessionHandle {
 struct RemoteFileSessionConfig {
     connection_id: String,
     signature: String,
-    request: TerminalConnectRequest,
+    resolved: ResolvedSshConfig,
 }
 
 pub fn quote_posix_shell(value: &str) -> String {
@@ -444,12 +444,13 @@ pub fn looks_like_binary(bytes: &[u8]) -> bool {
 impl RemoteFileManager {
     pub async fn list_directory(
         &self,
-        profile: ConnectionProfile,
+        app: &AppHandle,
+        profile: ResolvedSshConfig,
         path: &str,
     ) -> Result<Vec<RemoteFileEntry>, AppError> {
-        let config = RemoteFileSessionConfig::from_profile(profile);
+        let config = RemoteFileSessionConfig::from_config(profile);
         let command = build_remote_list_command(path);
-        let output = self.exec_with_reconnect(&config, &command).await?;
+        let output = self.exec_with_reconnect(app, &config, &command).await?;
 
         if output.exit_status != Some(0) {
             let detail = String::from_utf8_lossy(&output.stderr);
@@ -466,12 +467,13 @@ impl RemoteFileManager {
 
     pub async fn check_path(
         &self,
-        profile: ConnectionProfile,
+        app: &AppHandle,
+        profile: ResolvedSshConfig,
         path: &str,
     ) -> Result<RemoteFilePathCheckResult, AppError> {
-        let config = RemoteFileSessionConfig::from_profile(profile);
+        let config = RemoteFileSessionConfig::from_config(profile);
         let output = self
-            .exec_with_reconnect(&config, &build_remote_path_check_command(path))
+            .exec_with_reconnect(app, &config, &build_remote_path_check_command(path))
             .await?;
         if output.exit_status != Some(0) {
             return Err(remote_file_command_error(
@@ -492,11 +494,12 @@ impl RemoteFileManager {
 
     pub async fn read_file(
         &self,
-        profile: ConnectionProfile,
+        app: &AppHandle,
+        profile: ResolvedSshConfig,
         path: &str,
     ) -> Result<RemoteFileReadResult, AppError> {
-        let config = RemoteFileSessionConfig::from_profile(profile);
-        let metadata = self.metadata(&config, path).await?;
+        let config = RemoteFileSessionConfig::from_config(profile);
+        let metadata = self.metadata(app, &config, path).await?;
 
         if metadata.size > REMOTE_FILE_EDIT_LIMIT_BYTES {
             return Err(AppError::new(
@@ -508,7 +511,7 @@ impl RemoteFileManager {
         }
 
         let output = self
-            .exec_with_reconnect(&config, &build_remote_read_command(&metadata.path))
+            .exec_with_reconnect(app, &config, &build_remote_read_command(&metadata.path))
             .await?;
         if output.exit_status != Some(0) {
             return Err(remote_file_command_error(
@@ -547,15 +550,16 @@ impl RemoteFileManager {
 
     pub async fn write_file(
         &self,
-        profile: ConnectionProfile,
+        app: &AppHandle,
+        profile: ResolvedSshConfig,
         path: &str,
         content: &str,
         expected_mtime: u64,
         expected_size: u64,
         overwrite: bool,
     ) -> Result<RemoteFileWriteResult, AppError> {
-        let config = RemoteFileSessionConfig::from_profile(profile);
-        let current = self.metadata(&config, path).await?;
+        let config = RemoteFileSessionConfig::from_config(profile);
+        let current = self.metadata(app, &config, path).await?;
         let changed = current.mtime != expected_mtime || current.size != expected_size;
         if changed && !overwrite {
             return Err(AppError::new(
@@ -571,9 +575,11 @@ impl RemoteFileManager {
 
         let output = self
             .exec_with_reconnect_stdin(
+                app,
                 &config,
                 &build_remote_write_command(path),
                 content.as_bytes(),
+                None,
             )
             .await?;
         if output.exit_status != Some(0) {
@@ -584,7 +590,7 @@ impl RemoteFileManager {
             ));
         }
 
-        let metadata = self.metadata(&config, path).await?;
+        let metadata = self.metadata(app, &config, path).await?;
         Ok(RemoteFileWriteResult {
             metadata,
             conflict: false,
@@ -593,12 +599,14 @@ impl RemoteFileManager {
 
     pub async fn create_file(
         &self,
-        profile: ConnectionProfile,
+        app: &AppHandle,
+        profile: ResolvedSshConfig,
         path: &str,
     ) -> Result<RemoteFileMetadata, AppError> {
-        let config = RemoteFileSessionConfig::from_profile(profile);
+        let config = RemoteFileSessionConfig::from_config(profile);
         let output = self
             .exec_with_reconnect(
+                app,
                 &config,
                 &format!(
                     "path={}; if [ -e \"$path\" ] || [ -L \"$path\" ]; then printf '%s\\n' \"already exists: $path\" >&2; exit 2; fi; : > \"$path\"",
@@ -613,17 +621,19 @@ impl RemoteFileManager {
                 &output,
             ));
         }
-        self.metadata(&config, path).await
+        self.metadata(app, &config, path).await
     }
 
     pub async fn create_directory(
         &self,
-        profile: ConnectionProfile,
+        app: &AppHandle,
+        profile: ResolvedSshConfig,
         path: &str,
     ) -> Result<(), AppError> {
-        let config = RemoteFileSessionConfig::from_profile(profile);
+        let config = RemoteFileSessionConfig::from_config(profile);
         let output = self
             .exec_with_reconnect(
+                app,
                 &config,
                 &format!("path={}; mkdir -p \"$path\"", quote_posix_shell(path)),
             )
@@ -640,13 +650,15 @@ impl RemoteFileManager {
 
     pub async fn rename_entry(
         &self,
-        profile: ConnectionProfile,
+        app: &AppHandle,
+        profile: ResolvedSshConfig,
         path: &str,
         new_path: &str,
     ) -> Result<(), AppError> {
-        let config = RemoteFileSessionConfig::from_profile(profile);
+        let config = RemoteFileSessionConfig::from_config(profile);
         let output = self
             .exec_with_reconnect(
+                app,
                 &config,
                 &format!(
                     "from={}; to={}; mv \"$from\" \"$to\"",
@@ -667,12 +679,13 @@ impl RemoteFileManager {
 
     pub async fn entry_metadata(
         &self,
-        profile: ConnectionProfile,
+        app: &AppHandle,
+        profile: ResolvedSshConfig,
         path: &str,
     ) -> Result<RemoteFileEntryMetadata, AppError> {
-        let config = RemoteFileSessionConfig::from_profile(profile);
+        let config = RemoteFileSessionConfig::from_config(profile);
         let output = self
-            .exec_with_reconnect(&config, &build_remote_entry_metadata_command(path))
+            .exec_with_reconnect(app, &config, &build_remote_entry_metadata_command(path))
             .await?;
         if output.exit_status != Some(0) {
             return Err(remote_file_command_error(
@@ -693,11 +706,12 @@ impl RemoteFileManager {
 
     pub async fn delete_entry(
         &self,
-        profile: ConnectionProfile,
+        app: &AppHandle,
+        profile: ResolvedSshConfig,
         path: &str,
         recursive: bool,
     ) -> Result<(), AppError> {
-        let config = RemoteFileSessionConfig::from_profile(profile);
+        let config = RemoteFileSessionConfig::from_config(profile);
         let command = if recursive {
             format!(
                 "path={}; [ \"$path\" = / ] && {{ printf '%s\\n' 'refuse to delete /' >&2; exit 2; }}; rm -rf -- \"$path\"",
@@ -706,7 +720,7 @@ impl RemoteFileManager {
         } else {
             format!("path={}; rm -f -- \"$path\"", quote_posix_shell(path))
         };
-        let output = self.exec_with_reconnect(&config, &command).await?;
+        let output = self.exec_with_reconnect(app, &config, &command).await?;
         if output.exit_status != Some(0) {
             return Err(remote_file_command_error(
                 "remote_file_delete_failed",
@@ -719,15 +733,17 @@ impl RemoteFileManager {
 
     pub async fn upload_file(
         &self,
-        profile: ConnectionProfile,
+        app: &AppHandle,
+        profile: ResolvedSshConfig,
         path: &str,
         content: &[u8],
         conflict_policy: TransferConflictPolicy,
         progress: Option<ExecProgressCallback>,
     ) -> Result<RemoteFileUploadResult, AppError> {
-        let config = RemoteFileSessionConfig::from_profile(profile);
+        let config = RemoteFileSessionConfig::from_config(profile);
         let output = self
-            .exec_with_reconnect_stdin_progress(
+            .exec_with_reconnect_stdin(
+                app,
                 &config,
                 &build_remote_upload_command(path, conflict_policy),
                 content,
@@ -754,7 +770,7 @@ impl RemoteFileManager {
         let metadata = if skipped {
             None
         } else {
-            Some(self.metadata(&config, &final_path).await?)
+            Some(self.metadata(app, &config, &final_path).await?)
         };
 
         Ok(RemoteFileUploadResult {
@@ -767,15 +783,17 @@ impl RemoteFileManager {
 
     pub async fn upload_local_file(
         &self,
-        profile: ConnectionProfile,
+        app: &AppHandle,
+        profile: ResolvedSshConfig,
         path: &str,
         local_path: &Path,
         conflict_policy: TransferConflictPolicy,
         progress: ExecProgressCallback,
     ) -> Result<RemoteFileUploadResult, AppError> {
-        let config = RemoteFileSessionConfig::from_profile(profile);
+        let config = RemoteFileSessionConfig::from_config(profile);
         let output = self
             .exec_with_reconnect_stdin_file_progress(
+                app,
                 &config,
                 &build_remote_upload_command(path, conflict_policy),
                 local_path,
@@ -802,7 +820,7 @@ impl RemoteFileManager {
         let metadata = if skipped {
             None
         } else {
-            Some(self.metadata(&config, &final_path).await?)
+            Some(self.metadata(app, &config, &final_path).await?)
         };
 
         Ok(RemoteFileUploadResult {
@@ -815,7 +833,8 @@ impl RemoteFileManager {
 
     pub async fn upload_archive(
         &self,
-        profile: ConnectionProfile,
+        app: &AppHandle,
+        profile: ResolvedSshConfig,
         target_dir: &str,
         root_name: &str,
         archive_content: &[u8],
@@ -823,9 +842,10 @@ impl RemoteFileManager {
         keep_archive: bool,
         progress: Option<ExecProgressCallback>,
     ) -> Result<RemoteFileArchiveUploadResult, AppError> {
-        let config = RemoteFileSessionConfig::from_profile(profile);
+        let config = RemoteFileSessionConfig::from_config(profile);
         let resolve_output = self
             .exec_with_reconnect(
+                app,
                 &config,
                 &build_remote_resolve_child_command(target_dir, root_name, conflict_policy),
             )
@@ -863,7 +883,8 @@ impl RemoteFileManager {
         );
         let archive_path = join_remote_path(target_dir, &archive_name);
         let upload_output = self
-            .exec_with_reconnect_stdin_progress(
+            .exec_with_reconnect_stdin(
+                app,
                 &config,
                 &build_remote_write_command(&archive_path),
                 archive_content,
@@ -880,6 +901,7 @@ impl RemoteFileManager {
 
         let extract_output = self
             .exec_with_reconnect(
+                app,
                 &config,
                 &build_remote_extract_archive_command(
                     &archive_path,
@@ -909,7 +931,8 @@ impl RemoteFileManager {
 
     pub async fn upload_local_archive(
         &self,
-        profile: ConnectionProfile,
+        app: &AppHandle,
+        profile: ResolvedSshConfig,
         target_dir: &str,
         root_name: &str,
         local_path: &Path,
@@ -917,9 +940,10 @@ impl RemoteFileManager {
         keep_archive: bool,
         progress: ExecProgressCallback,
     ) -> Result<RemoteFileArchiveUploadResult, AppError> {
-        let config = RemoteFileSessionConfig::from_profile(profile);
+        let config = RemoteFileSessionConfig::from_config(profile);
         let resolve_output = self
             .exec_with_reconnect(
+                app,
                 &config,
                 &build_remote_resolve_child_command(target_dir, root_name, conflict_policy),
             )
@@ -958,6 +982,7 @@ impl RemoteFileManager {
         let archive_path = join_remote_path(target_dir, &archive_name);
         let upload_output = self
             .exec_with_reconnect_stdin_file_progress(
+                app,
                 &config,
                 &build_remote_write_command(&archive_path),
                 local_path,
@@ -974,6 +999,7 @@ impl RemoteFileManager {
 
         let extract_output = self
             .exec_with_reconnect(
+                app,
                 &config,
                 &build_remote_extract_archive_command(
                     &archive_path,
@@ -1003,13 +1029,15 @@ impl RemoteFileManager {
 
     pub async fn download_file(
         &self,
-        profile: ConnectionProfile,
+        app: &AppHandle,
+        profile: ResolvedSshConfig,
         path: &str,
         progress: Option<ExecProgressCallback>,
     ) -> Result<Vec<u8>, AppError> {
-        let config = RemoteFileSessionConfig::from_profile(profile);
+        let config = RemoteFileSessionConfig::from_config(profile);
         let output = self
             .exec_with_reconnect_stdout_progress(
+                app,
                 &config,
                 &build_remote_read_command(path),
                 progress,
@@ -1027,13 +1055,15 @@ impl RemoteFileManager {
 
     pub async fn download_archive(
         &self,
-        profile: ConnectionProfile,
+        app: &AppHandle,
+        profile: ResolvedSshConfig,
         path: &str,
         progress: Option<ExecProgressCallback>,
     ) -> Result<Vec<u8>, AppError> {
-        let config = RemoteFileSessionConfig::from_profile(profile);
+        let config = RemoteFileSessionConfig::from_config(profile);
         let output = self
             .exec_with_reconnect_stdout_progress(
+                app,
                 &config,
                 &build_remote_archive_download_command(path),
                 progress,
@@ -1051,11 +1081,12 @@ impl RemoteFileManager {
 
     async fn metadata(
         &self,
+        app: &AppHandle,
         config: &RemoteFileSessionConfig,
         path: &str,
     ) -> Result<RemoteFileMetadata, AppError> {
         let output = self
-            .exec_with_reconnect(config, &build_remote_metadata_command(path))
+            .exec_with_reconnect(app, config, &build_remote_metadata_command(path))
             .await?;
         if output.exit_status != Some(0) {
             return Err(remote_file_command_error(
@@ -1076,15 +1107,16 @@ impl RemoteFileManager {
 
     async fn exec_with_reconnect(
         &self,
+        app: &AppHandle,
         config: &RemoteFileSessionConfig,
         command: &str,
     ) -> Result<ExecOutput, AppError> {
-        let handle = self.session_handle(config).await?;
+        let handle = self.session_handle(app, config).await?;
         match self.exec_with_handle(&handle, command).await {
             Ok(output) => Ok(output),
             Err(_) => {
                 self.invalidate_handle(&config.connection_id, &handle).await;
-                let refreshed = self.connect_and_store(config).await?;
+                let refreshed = self.connect_and_store(app, config).await?;
                 self.exec_with_handle(&refreshed, command).await
             }
         }
@@ -1092,22 +1124,13 @@ impl RemoteFileManager {
 
     async fn exec_with_reconnect_stdin(
         &self,
-        config: &RemoteFileSessionConfig,
-        command: &str,
-        stdin: &[u8],
-    ) -> Result<ExecOutput, AppError> {
-        self.exec_with_reconnect_stdin_progress(config, command, stdin, None)
-            .await
-    }
-
-    async fn exec_with_reconnect_stdin_progress(
-        &self,
+        app: &AppHandle,
         config: &RemoteFileSessionConfig,
         command: &str,
         stdin: &[u8],
         progress: Option<ExecProgressCallback>,
     ) -> Result<ExecOutput, AppError> {
-        let handle = self.session_handle(config).await?;
+        let handle = self.session_handle(app, config).await?;
         match self
             .exec_with_handle_stdin(&handle, command, stdin, progress.clone())
             .await
@@ -1115,7 +1138,7 @@ impl RemoteFileManager {
             Ok(output) => Ok(output),
             Err(_) => {
                 self.invalidate_handle(&config.connection_id, &handle).await;
-                let refreshed = self.connect_and_store(config).await?;
+                let refreshed = self.connect_and_store(app, config).await?;
                 self.exec_with_handle_stdin(&refreshed, command, stdin, progress)
                     .await
             }
@@ -1124,12 +1147,13 @@ impl RemoteFileManager {
 
     async fn exec_with_reconnect_stdin_file_progress(
         &self,
+        app: &AppHandle,
         config: &RemoteFileSessionConfig,
         command: &str,
         path: &Path,
         progress: ExecProgressCallback,
     ) -> Result<ExecOutput, AppError> {
-        let handle = self.session_handle(config).await?;
+        let handle = self.session_handle(app, config).await?;
         match self
             .exec_with_handle_stdin_file(&handle, command, path, progress.clone())
             .await
@@ -1137,7 +1161,7 @@ impl RemoteFileManager {
             Ok(output) => Ok(output),
             Err(_) => {
                 self.invalidate_handle(&config.connection_id, &handle).await;
-                let refreshed = self.connect_and_store(config).await?;
+                let refreshed = self.connect_and_store(app, config).await?;
                 self.exec_with_handle_stdin_file(&refreshed, command, path, progress)
                     .await
             }
@@ -1146,11 +1170,12 @@ impl RemoteFileManager {
 
     async fn exec_with_reconnect_stdout_progress(
         &self,
+        app: &AppHandle,
         config: &RemoteFileSessionConfig,
         command: &str,
         progress: Option<ExecProgressCallback>,
     ) -> Result<ExecOutput, AppError> {
-        let handle = self.session_handle(config).await?;
+        let handle = self.session_handle(app, config).await?;
         match self
             .exec_with_handle_stdout_progress(&handle, command, progress.clone())
             .await
@@ -1158,7 +1183,7 @@ impl RemoteFileManager {
             Ok(output) => Ok(output),
             Err(_) => {
                 self.invalidate_handle(&config.connection_id, &handle).await;
-                let refreshed = self.connect_and_store(config).await?;
+                let refreshed = self.connect_and_store(app, config).await?;
                 self.exec_with_handle_stdout_progress(&refreshed, command, progress)
                     .await
             }
@@ -1220,6 +1245,7 @@ impl RemoteFileManager {
 
     async fn session_handle(
         &self,
+        app: &AppHandle,
         config: &RemoteFileSessionConfig,
     ) -> Result<RemoteFileSessionHandle, AppError> {
         if let Some(existing) = self.lookup_handle(&config.connection_id).await {
@@ -1230,7 +1256,7 @@ impl RemoteFileManager {
                 .await;
         }
 
-        self.connect_and_store(config).await
+        self.connect_and_store(app, config).await
     }
 
     async fn lookup_handle(&self, connection_id: &str) -> Option<RemoteFileSessionHandle> {
@@ -1239,12 +1265,13 @@ impl RemoteFileManager {
 
     async fn connect_and_store(
         &self,
+        app: &AppHandle,
         config: &RemoteFileSessionConfig,
     ) -> Result<RemoteFileSessionHandle, AppError> {
         let new_handle = RemoteFileSessionHandle {
             signature: config.signature.clone(),
             session: Arc::new(Mutex::new(
-                ReusableExecSession::connect(&config.request).await?,
+                ReusableExecSession::connect_resolved(app, &config.resolved).await?,
             )),
         };
 
@@ -1295,34 +1322,12 @@ impl RemoteFileManager {
 }
 
 impl RemoteFileSessionConfig {
-    fn from_profile(profile: ConnectionProfile) -> Self {
-        let signature = format!(
-            "{}|{}|{}|{:?}|{:?}|{:?}",
-            profile.host,
-            profile.port,
-            profile.username,
-            profile.password,
-            profile.private_key_path,
-            profile.private_key_passphrase,
-        );
-
-        let request = TerminalConnectRequest {
-            request_id: None,
-            connection_id: Some(profile.id.clone()),
-            host: profile.host,
-            port: profile.port,
-            username: profile.username,
-            password: profile.password,
-            private_key_path: profile.private_key_path,
-            private_key_passphrase: profile.private_key_passphrase,
-            cols: 80,
-            rows: 24,
-        };
-
+    fn from_config(config: ResolvedSshConfig) -> Self {
+        let signature = config.signature();
         Self {
-            connection_id: profile.id,
+            connection_id: config.connection_id.clone(),
             signature,
-            request,
+            resolved: config,
         }
     }
 }

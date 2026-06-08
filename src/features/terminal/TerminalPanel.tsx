@@ -31,6 +31,9 @@ interface TerminalPanelProps {
   connection: ConnectionProfile | null;
   fontFamily: string;
   fontSize: number;
+  initialOutput?: number[];
+  initialRequestId?: string;
+  initialSessionId: string;
   tabId: string;
   theme: ITheme;
   title: string;
@@ -43,6 +46,9 @@ export function TerminalPanel({
   connection,
   fontFamily,
   fontSize,
+  initialOutput = [],
+  initialRequestId,
+  initialSessionId,
   onCurrentDirectoryChange,
   onStatusChange,
   tabId,
@@ -100,7 +106,14 @@ export function TerminalPanel({
     terminal.open(hostRef.current);
     fitAddon.fit();
     startedRef.current = false;
-    terminal.writeln("终端已就绪。");
+    if (initialSessionId) {
+      sessionIdRef.current = initialSessionId;
+      setSessionId(initialSessionId);
+      setStatus(hasTauriRuntime() ? "已连接" : "预览");
+      if (initialOutput.length > 0) {
+        terminal.write(decoderRef.current.decode(Uint8Array.from(initialOutput), { stream: true }));
+      }
+    }
 
     const dataDisposable = terminal.onData((data) => {
       const activeSessionId = sessionIdRef.current;
@@ -142,7 +155,7 @@ export function TerminalPanel({
     if (hasTauriRuntime()) {
       setListenersReady(false);
       const outputListener = listenTerminalOutput((event) => {
-        if (!matchesTerminalEvent(event, tabId, sessionIdRef.current)) {
+        if (!matchesTerminalEvent(event, tabId, sessionIdRef.current, initialRequestId)) {
           return;
         }
         const decoded = decoderRef.current.decode(Uint8Array.from(event.data), { stream: true });
@@ -159,7 +172,7 @@ export function TerminalPanel({
       });
 
       const stateListener = listenTerminalStateChanged((event) => {
-        if (!matchesTerminalEvent(event, tabId, sessionIdRef.current)) {
+        if (!matchesTerminalEvent(event, tabId, sessionIdRef.current, initialRequestId)) {
           return;
         }
         setSessionId(null);
@@ -214,7 +227,7 @@ export function TerminalPanel({
       terminalRef.current = null;
       fitAddonRef.current = null;
     };
-  }, [tabId]);
+  }, [initialRequestId, initialSessionId, tabId]);
 
   useEffect(() => {
     const terminal = terminalRef.current;
@@ -248,7 +261,14 @@ export function TerminalPanel({
   useEffect(() => {
     const terminal = terminalRef.current;
     const fitAddon = fitAddonRef.current;
-    if (!terminal || !fitAddon || !connection || !listenersReady || startedRef.current) {
+    if (
+      !terminal ||
+      !fitAddon ||
+      !connection ||
+      !listenersReady ||
+      startedRef.current ||
+      initialSessionId
+    ) {
       return;
     }
 
@@ -327,6 +347,11 @@ function matchesTerminalEvent(
   event: { request_id: string | null; session_id: string },
   tabId: string,
   sessionId: string | null,
+  initialRequestId?: string,
 ) {
-  return event.session_id === sessionId || event.request_id === tabId;
+  return (
+    event.session_id === sessionId ||
+    event.request_id === tabId ||
+    (Boolean(initialRequestId) && event.request_id === initialRequestId)
+  );
 }

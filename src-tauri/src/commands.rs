@@ -8,12 +8,20 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::app_error::AppError;
-use crate::connections::{ConnectionProfile, ConnectionProfileInput, ConnectionStore};
+use crate::connections::{
+    ConnectionAuthKind, ConnectionProfile, ConnectionProfileInput, ConnectionStore,
+};
+use crate::credentials::{CredentialProfile, CredentialProfileInput, CredentialStore};
 use crate::events::RemoteFileTransferProgressEvent;
+use crate::known_hosts::{HostKeyInfo, KnownHostStore};
 use crate::remote_files::{
     RemoteFileArchiveUploadResult, RemoteFileEntry, RemoteFileEntryMetadata, RemoteFileManager,
     RemoteFileMetadata, RemoteFilePathCheckResult, RemoteFileReadResult, RemoteFileUploadResult,
     RemoteFileWriteResult, TransferConflictPolicy,
+};
+use crate::ssh_config::{
+    connection_store_path, credential_store_path, known_host_store_path, load_connection_profile,
+    resolve_saved_connection, ResolvedSshConfig, RuntimeCredentialInput,
 };
 use crate::terminal::manager::TerminalManager;
 use crate::terminal::session::ExecProgressCallback;
@@ -28,6 +36,8 @@ pub struct TerminalConnectRequest {
     pub port: u16,
     pub username: String,
     #[serde(default)]
+    pub auth_kind: Option<ConnectionAuthKind>,
+    #[serde(default)]
     pub password: Option<String>,
     #[serde(default)]
     pub private_key_path: Option<String>,
@@ -35,6 +45,32 @@ pub struct TerminalConnectRequest {
     pub private_key_passphrase: Option<String>,
     pub cols: u16,
     pub rows: u16,
+    #[serde(skip)]
+    pub runtime_config: Option<ResolvedSshConfig>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ConnectionRuntimeCredentialRequest {
+    pub connection_id: String,
+    #[serde(default)]
+    pub auth_kind: Option<ConnectionAuthKind>,
+    #[serde(default)]
+    pub password: Option<String>,
+    #[serde(default)]
+    pub private_key_path: Option<String>,
+    #[serde(default)]
+    pub private_key_passphrase: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct KnownHostTrustRequest {
+    pub host_key: HostKeyInfo,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ConnectionStepResult {
+    pub ok: bool,
+    pub message: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -259,13 +295,23 @@ pub async fn terminal_connect(
         .map(|value| value.trim())
         .filter(|value| !value.is_empty())
     {
-        let profile = load_connection_profile(&app, connection_id)?;
-        request.host = profile.host;
-        request.port = profile.port;
-        request.username = profile.username;
-        request.password = profile.password;
-        request.private_key_path = profile.private_key_path;
-        request.private_key_passphrase = profile.private_key_passphrase;
+        let config = resolve_saved_connection(
+            &app,
+            connection_id,
+            Some(RuntimeCredentialInput {
+                auth_kind: request.auth_kind.clone(),
+                password: request.password.clone(),
+                private_key_path: request.private_key_path.clone(),
+                private_key_passphrase: request.private_key_passphrase.clone(),
+            }),
+        )?;
+        request.host = config.host.clone();
+        request.port = config.port;
+        request.username = config.username.clone();
+        request.password = config.password.clone();
+        request.private_key_path = config.private_key_path.clone();
+        request.private_key_passphrase = config.private_key_passphrase.clone();
+        request.runtime_config = Some(config);
     }
 
     manager.connect(app, request).await
@@ -301,14 +347,14 @@ pub async fn remote_file_list(
     manager: State<'_, RemoteFileManager>,
     request: RemoteFileListRequest,
 ) -> Result<Vec<RemoteFileEntry>, AppError> {
-    let profile = load_remote_connection_profile(&app, &request.connection_id)?;
+    let profile = resolve_remote_connection_profile(&app, &request.connection_id)?;
     let path = request
         .path
         .as_ref()
         .map(|value| value.trim())
         .filter(|value| !value.is_empty())
         .unwrap_or(".");
-    manager.list_directory(profile, path).await
+    manager.list_directory(&app, profile, path).await
 }
 
 #[tauri::command]
@@ -317,9 +363,9 @@ pub async fn remote_file_read(
     manager: State<'_, RemoteFileManager>,
     request: RemoteFileReadRequest,
 ) -> Result<RemoteFileReadResult, AppError> {
-    let profile = load_remote_connection_profile(&app, &request.connection_id)?;
+    let profile = resolve_remote_connection_profile(&app, &request.connection_id)?;
     let path = require_remote_path(&request.path)?;
-    manager.read_file(profile, path).await
+    manager.read_file(&app, profile, path).await
 }
 
 #[tauri::command]
@@ -328,10 +374,11 @@ pub async fn remote_file_write(
     manager: State<'_, RemoteFileManager>,
     request: RemoteFileWriteRequest,
 ) -> Result<RemoteFileWriteResult, AppError> {
-    let profile = load_remote_connection_profile(&app, &request.connection_id)?;
+    let profile = resolve_remote_connection_profile(&app, &request.connection_id)?;
     let path = require_remote_path(&request.path)?;
     manager
         .write_file(
+            &app,
             profile,
             path,
             &request.content,
@@ -348,9 +395,9 @@ pub async fn remote_file_create_file(
     manager: State<'_, RemoteFileManager>,
     request: RemoteFilePathRequest,
 ) -> Result<RemoteFileMetadata, AppError> {
-    let profile = load_remote_connection_profile(&app, &request.connection_id)?;
+    let profile = resolve_remote_connection_profile(&app, &request.connection_id)?;
     let path = require_remote_path(&request.path)?;
-    manager.create_file(profile, path).await
+    manager.create_file(&app, profile, path).await
 }
 
 #[tauri::command]
@@ -359,9 +406,9 @@ pub async fn remote_file_create_directory(
     manager: State<'_, RemoteFileManager>,
     request: RemoteFilePathRequest,
 ) -> Result<(), AppError> {
-    let profile = load_remote_connection_profile(&app, &request.connection_id)?;
+    let profile = resolve_remote_connection_profile(&app, &request.connection_id)?;
     let path = require_remote_path(&request.path)?;
-    manager.create_directory(profile, path).await
+    manager.create_directory(&app, profile, path).await
 }
 
 #[tauri::command]
@@ -370,10 +417,10 @@ pub async fn remote_file_rename(
     manager: State<'_, RemoteFileManager>,
     request: RemoteFileRenameRequest,
 ) -> Result<(), AppError> {
-    let profile = load_remote_connection_profile(&app, &request.connection_id)?;
+    let profile = resolve_remote_connection_profile(&app, &request.connection_id)?;
     let path = require_remote_path(&request.path)?;
     let new_path = require_remote_path(&request.new_path)?;
-    manager.rename_entry(profile, path, new_path).await
+    manager.rename_entry(&app, profile, path, new_path).await
 }
 
 #[tauri::command]
@@ -382,9 +429,11 @@ pub async fn remote_file_delete(
     manager: State<'_, RemoteFileManager>,
     request: RemoteFileDeleteRequest,
 ) -> Result<(), AppError> {
-    let profile = load_remote_connection_profile(&app, &request.connection_id)?;
+    let profile = resolve_remote_connection_profile(&app, &request.connection_id)?;
     let path = require_remote_path(&request.path)?;
-    manager.delete_entry(profile, path, request.recursive).await
+    manager
+        .delete_entry(&app, profile, path, request.recursive)
+        .await
 }
 
 #[tauri::command]
@@ -393,9 +442,9 @@ pub async fn remote_file_metadata(
     manager: State<'_, RemoteFileManager>,
     request: RemoteFilePathRequest,
 ) -> Result<RemoteFileEntryMetadata, AppError> {
-    let profile = load_remote_connection_profile(&app, &request.connection_id)?;
+    let profile = resolve_remote_connection_profile(&app, &request.connection_id)?;
     let path = require_remote_path(&request.path)?;
-    manager.entry_metadata(profile, path).await
+    manager.entry_metadata(&app, profile, path).await
 }
 
 #[tauri::command]
@@ -404,9 +453,9 @@ pub async fn remote_file_check_path(
     manager: State<'_, RemoteFileManager>,
     request: RemoteFilePathRequest,
 ) -> Result<RemoteFilePathCheckResult, AppError> {
-    let profile = load_remote_connection_profile(&app, &request.connection_id)?;
+    let profile = resolve_remote_connection_profile(&app, &request.connection_id)?;
     let path = require_remote_path(&request.path)?;
-    manager.check_path(profile, path).await
+    manager.check_path(&app, profile, path).await
 }
 
 #[tauri::command]
@@ -415,7 +464,7 @@ pub async fn remote_file_upload_file(
     manager: State<'_, RemoteFileManager>,
     request: RemoteFileUploadFileRequest,
 ) -> Result<RemoteFileUploadResult, AppError> {
-    let profile = load_remote_connection_profile(&app, &request.connection_id)?;
+    let profile = resolve_remote_connection_profile(&app, &request.connection_id)?;
     let path = require_remote_path(&request.path)?;
     let total_bytes = request.content.len() as u64;
     let progress = remote_transfer_progress_callback(
@@ -426,6 +475,7 @@ pub async fn remote_file_upload_file(
     );
     manager
         .upload_file(
+            &app,
             profile,
             path,
             &request.content,
@@ -441,7 +491,7 @@ pub async fn remote_file_upload_local_file(
     manager: State<'_, RemoteFileManager>,
     request: RemoteFileUploadLocalFileRequest,
 ) -> Result<RemoteFileUploadResult, AppError> {
-    let profile = load_remote_connection_profile(&app, &request.connection_id)?;
+    let profile = resolve_remote_connection_profile(&app, &request.connection_id)?;
     let path = require_remote_path(&request.path)?;
     let local_path = require_existing_local_file_path(&request.local_path)?;
     let total_bytes = fs::metadata(&local_path)
@@ -463,6 +513,7 @@ pub async fn remote_file_upload_local_file(
     .unwrap_or_else(noop_transfer_progress_callback);
     manager
         .upload_local_file(
+            &app,
             profile,
             path,
             &local_path,
@@ -478,7 +529,7 @@ pub async fn remote_file_upload_archive(
     manager: State<'_, RemoteFileManager>,
     request: RemoteFileUploadArchiveRequest,
 ) -> Result<RemoteFileArchiveUploadResult, AppError> {
-    let profile = load_remote_connection_profile(&app, &request.connection_id)?;
+    let profile = resolve_remote_connection_profile(&app, &request.connection_id)?;
     let target_dir = require_remote_path(&request.target_dir)?;
     let root_name = require_safe_name(&request.root_name, "remote_file_archive_root_missing")?;
     let total_bytes = request.archive_content.len() as u64;
@@ -490,6 +541,7 @@ pub async fn remote_file_upload_archive(
     );
     manager
         .upload_archive(
+            &app,
             profile,
             target_dir,
             root_name,
@@ -507,7 +559,7 @@ pub async fn remote_file_upload_local_archive(
     manager: State<'_, RemoteFileManager>,
     request: RemoteFileUploadLocalArchiveRequest,
 ) -> Result<RemoteFileArchiveUploadResult, AppError> {
-    let profile = load_remote_connection_profile(&app, &request.connection_id)?;
+    let profile = resolve_remote_connection_profile(&app, &request.connection_id)?;
     let target_dir = require_remote_path(&request.target_dir)?;
     let requested_root_name = require_safe_name(&request.root_name, "remote_file_archive_root_missing")?;
     let local_path = require_existing_local_path(&request.local_path)?;
@@ -549,6 +601,7 @@ pub async fn remote_file_upload_local_archive(
     .unwrap_or_else(noop_transfer_progress_callback);
     let result = manager
         .upload_local_archive(
+            &app,
             profile,
             target_dir,
             &root_name,
@@ -641,9 +694,9 @@ pub async fn remote_file_download(
     manager: State<'_, RemoteFileManager>,
     request: RemoteFilePathRequest,
 ) -> Result<RemoteFileDownloadResult, AppError> {
-    let profile = load_remote_connection_profile(&app, &request.connection_id)?;
+    let profile = resolve_remote_connection_profile(&app, &request.connection_id)?;
     let path = require_remote_path(&request.path)?;
-    let content = manager.download_file(profile, path, None).await?;
+    let content = manager.download_file(&app, profile, path, None).await?;
     Ok(RemoteFileDownloadResult {
         name: path
             .rsplit('/')
@@ -660,7 +713,7 @@ pub async fn remote_file_check_download_target(
     app: AppHandle,
     request: RemoteFileDownloadTargetCheckRequest,
 ) -> Result<RemoteFileDownloadTargetCheckResult, AppError> {
-    let _profile = load_remote_connection_profile(&app, &request.connection_id)?;
+    let _profile = load_connection_profile(&app, request.connection_id.trim())?;
     let path = require_remote_path(&request.path)?;
     let name = remote_path_name(path);
     let local_directory = resolve_download_directory_parts(
@@ -689,7 +742,7 @@ pub async fn remote_file_download_to_local(
     manager: State<'_, RemoteFileManager>,
     request: RemoteFileDownloadToLocalRequest,
 ) -> Result<RemoteFileDownloadToLocalResult, AppError> {
-    let profile = load_remote_connection_profile(&app, &request.connection_id)?;
+    let profile = resolve_remote_connection_profile(&app, &request.connection_id)?;
     let path = require_remote_path(&request.path)?;
     let name = remote_path_name(path);
     let policy = TransferConflictPolicy::from_request(request.conflict_policy.as_deref());
@@ -716,7 +769,9 @@ pub async fn remote_file_download_to_local(
             "download",
             None,
         );
-        let content = manager.download_archive(profile, path, progress).await?;
+        let content = manager
+            .download_archive(&app, profile, path, progress)
+            .await?;
         fs::create_dir_all(&local_directory).map_err(|error| {
             AppError::new(
                 "remote_file_download_create_dir_failed",
@@ -783,7 +838,7 @@ pub async fn remote_file_download_to_local(
             "download",
             None,
         );
-        let content = manager.download_file(profile, path, progress).await?;
+        let content = manager.download_file(&app, profile, path, progress).await?;
         fs::create_dir_all(&local_directory).map_err(|error| {
             AppError::new(
                 "remote_file_download_create_dir_failed",
@@ -835,6 +890,89 @@ pub async fn connection_delete(app: AppHandle, id: String) -> Result<(), AppErro
 }
 
 #[tauri::command]
+pub async fn credential_list(app: AppHandle) -> Result<Vec<CredentialProfile>, AppError> {
+    let store = CredentialStore::load(credential_store_path(&app)?)?;
+    Ok(store.list())
+}
+
+#[tauri::command]
+pub async fn credential_upsert(
+    app: AppHandle,
+    request: CredentialProfileInput,
+) -> Result<CredentialProfile, AppError> {
+    let mut store = CredentialStore::load(credential_store_path(&app)?)?;
+    store.upsert(request, &now_timestamp()?)
+}
+
+#[tauri::command]
+pub async fn credential_delete(app: AppHandle, id: String) -> Result<(), AppError> {
+    let credential_id = id.trim();
+    if credential_id.is_empty() {
+        return Err(AppError::new(
+            "credential_missing",
+            "凭据不存在。",
+            "credential id is empty",
+            false,
+        ));
+    }
+
+    let connection_store = ConnectionStore::load(connection_store_path(&app)?)?;
+    let references = connection_store
+        .list()
+        .into_iter()
+        .filter(|profile| profile.credential_id.as_deref() == Some(credential_id))
+        .map(|profile| profile.name)
+        .collect::<Vec<_>>();
+    if !references.is_empty() {
+        return Err(AppError::new(
+            "credential_in_use",
+            "该凭据正在被连接使用，请先修改连接。",
+            references.join(", "),
+            true,
+        ));
+    }
+
+    let mut store = CredentialStore::load(credential_store_path(&app)?)?;
+    store.delete(credential_id)
+}
+
+#[tauri::command]
+pub async fn known_host_trust(
+    app: AppHandle,
+    request: KnownHostTrustRequest,
+) -> Result<(), AppError> {
+    let mut store = KnownHostStore::load(known_host_store_path(&app)?)?;
+    store.trust(request.host_key, &now_timestamp()?)?;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn connection_test(
+    app: AppHandle,
+    request: ConnectionRuntimeCredentialRequest,
+) -> Result<ConnectionStepResult, AppError> {
+    let config = resolve_saved_connection(
+        &app,
+        request.connection_id.trim(),
+        Some(RuntimeCredentialInput {
+            auth_kind: request.auth_kind,
+            password: request.password,
+            private_key_path: request.private_key_path,
+            private_key_passphrase: request.private_key_passphrase,
+        }),
+    )?;
+
+    crate::terminal::session::ReusableExecSession::connect_resolved(&app, &config)
+        .await?
+        .close()
+        .await;
+    Ok(ConnectionStepResult {
+        ok: true,
+        message: "连接测试通过。".to_string(),
+    })
+}
+
+#[tauri::command]
 pub async fn connection_probe_latency(
     app: AppHandle,
     request: ConnectionLatencyProbeRequest,
@@ -864,25 +1002,10 @@ pub async fn connection_probe_latency(
         })
 }
 
-fn load_connection_profile(
+fn resolve_remote_connection_profile(
     app: &AppHandle,
     connection_id: &str,
-) -> Result<ConnectionProfile, AppError> {
-    let store = ConnectionStore::load(connection_store_path(app)?)?;
-    store.get(connection_id).ok_or_else(|| {
-        AppError::new(
-            "connection_missing",
-            "连接不存在。",
-            format!("connection_id={connection_id}"),
-            false,
-        )
-    })
-}
-
-fn load_remote_connection_profile(
-    app: &AppHandle,
-    connection_id: &str,
-) -> Result<ConnectionProfile, AppError> {
+) -> Result<ResolvedSshConfig, AppError> {
     let connection_id = connection_id.trim();
     if connection_id.is_empty() {
         return Err(AppError::new(
@@ -893,7 +1016,7 @@ fn load_remote_connection_profile(
         ));
     }
 
-    load_connection_profile(app, connection_id)
+    resolve_saved_connection(app, connection_id, None)
 }
 
 fn require_remote_path(path: &str) -> Result<&str, AppError> {
@@ -1345,18 +1468,6 @@ fn remote_transfer_progress_callback(
             },
         );
     }))
-}
-
-fn connection_store_path(app: &AppHandle) -> Result<PathBuf, AppError> {
-    let app_data_dir = app.path().app_data_dir().map_err(|error| {
-        AppError::new(
-            "connection_store_path_failed",
-            "连接仓库路径获取失败。",
-            error,
-            true,
-        )
-    })?;
-    Ok(app_data_dir.join("connections.json"))
 }
 
 fn now_timestamp() -> Result<String, AppError> {

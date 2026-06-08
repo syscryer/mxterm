@@ -6,7 +6,12 @@ import {
   connectionUpsert,
 } from "../../shared/tauri/commands";
 import { hasTauriRuntime } from "../../shared/tauri/runtime";
-import type { ConnectionProfile, ConnectionProfileInput } from "./connectionTypes";
+import {
+  defaultAdvancedConfig,
+  defaultProxyConfig,
+  type ConnectionProfile,
+  type ConnectionProfileInput,
+} from "./connectionTypes";
 
 const demoConnections: ConnectionProfile[] = [
   {
@@ -15,8 +20,12 @@ const demoConnections: ConnectionProfile[] = [
     host: "203.0.113.70",
     port: 22,
     username: "root",
-    auth_kind: "password",
-    password: "",
+    group: "开发环境",
+    credential_mode: "inline",
+    inline_auth_kind: "password",
+    inline_password: "",
+    proxy: defaultProxyConfig,
+    advanced: defaultAdvancedConfig,
     notes: "开发 收藏 k8s",
     created_at: "demo",
     updated_at: "demo",
@@ -27,8 +36,12 @@ const demoConnections: ConnectionProfile[] = [
     host: "203.0.113.131",
     port: 22,
     username: "root",
-    auth_kind: "password",
-    password: "",
+    group: "测试环境",
+    credential_mode: "inline",
+    inline_auth_kind: "password",
+    inline_password: "",
+    proxy: defaultProxyConfig,
+    advanced: defaultAdvancedConfig,
     notes: "测试 qa",
     created_at: "demo",
     updated_at: "demo",
@@ -39,9 +52,13 @@ const demoConnections: ConnectionProfile[] = [
     host: "100.93.140.33",
     port: 22,
     username: "root",
-    auth_kind: "private_key",
-    private_key_path: "~/.ssh/id_ed25519",
-    private_key_passphrase: "",
+    group: "生产环境",
+    credential_mode: "inline",
+    inline_auth_kind: "private_key",
+    inline_private_key_path: "~/.ssh/id_ed25519",
+    inline_private_key_passphrase: "",
+    proxy: defaultProxyConfig,
+    advanced: defaultAdvancedConfig,
     notes: "跳板 tailscale bastion",
     created_at: "demo",
     updated_at: "demo",
@@ -52,9 +69,13 @@ const demoConnections: ConnectionProfile[] = [
     host: "198.51.100.24",
     port: 22,
     username: "ubuntu",
-    auth_kind: "private_key",
-    private_key_path: "~/.ssh/cloud.pem",
-    private_key_passphrase: "",
+    group: "云主机",
+    credential_mode: "inline",
+    inline_auth_kind: "private_key",
+    inline_private_key_path: "~/.ssh/cloud.pem",
+    inline_private_key_passphrase: "",
+    proxy: defaultProxyConfig,
+    advanced: defaultAdvancedConfig,
     notes: "云 aws",
     created_at: "demo",
     updated_at: "demo",
@@ -65,8 +86,11 @@ const demoConnections: ConnectionProfile[] = [
     host: "203.0.113.16",
     port: 22,
     username: "root",
-    auth_kind: "password",
-    password: "",
+    group: "开发环境",
+    credential_mode: "prompt",
+    prompt_auth_kind: "password",
+    proxy: defaultProxyConfig,
+    advanced: defaultAdvancedConfig,
     notes: "开发 k8s preview",
     created_at: "demo",
     updated_at: "demo",
@@ -77,8 +101,12 @@ const demoConnections: ConnectionProfile[] = [
     host: "198.51.100.78",
     port: 22,
     username: "deploy",
-    auth_kind: "password",
-    password: "",
+    group: "预发环境",
+    credential_mode: "inline",
+    inline_auth_kind: "password",
+    inline_password: "",
+    proxy: defaultProxyConfig,
+    advanced: defaultAdvancedConfig,
     notes: "stage 测试",
     created_at: "demo",
     updated_at: "demo",
@@ -116,19 +144,15 @@ export function useConnections() {
 
   const upsert = useCallback(
     async (input: ConnectionProfileInput) => {
+      const normalized = normalizeConnectionInput(input);
       if (!isTauri) {
         const now = "preview";
         const profile: ConnectionProfile = {
-          id: input.id || `preview-${Date.now().toString()}`,
-          name: input.name?.trim() || `${input.username.trim()}@${input.host.trim()}`,
-          host: input.host.trim(),
-          port: input.port,
-          username: input.username.trim(),
-          auth_kind: input.auth_kind,
-          password: input.password?.trim() || undefined,
-          private_key_path: input.private_key_path?.trim() || undefined,
-          private_key_passphrase: input.private_key_passphrase?.trim() || undefined,
-          notes: input.notes?.trim() || undefined,
+          ...normalized,
+          id: normalized.id || `preview-${Date.now().toString()}`,
+          name:
+            normalized.name ||
+            `${normalized.username.trim()}@${normalized.host.trim()}`,
           created_at: now,
           updated_at: now,
         };
@@ -145,7 +169,7 @@ export function useConnections() {
         return profile;
       }
 
-      const profile = await connectionUpsert(input);
+      const profile = await connectionUpsert(normalized);
       setConnections((items) => {
         const index = items.findIndex((item) => item.id === profile.id);
         if (index === -1) {
@@ -182,6 +206,60 @@ export function useConnections() {
     }),
     [connections, error, loading, reload, remove, upsert],
   );
+}
+
+export function normalizeConnectionInput(input: ConnectionProfileInput): ConnectionProfileInput {
+  const credentialMode = input.credential_mode || "inline";
+  const inlineAuthKind =
+    input.inline_auth_kind || input.auth_kind || (input.private_key_path ? "private_key" : "password");
+  const promptAuthKind = input.prompt_auth_kind || input.auth_kind || "password";
+  const proxyKind = input.proxy?.kind || "none";
+  const trim = (value: string | undefined | null) => value?.trim() || undefined;
+
+  return {
+    id: trim(input.id),
+    name: trim(input.name),
+    group: trim(input.group),
+    host: input.host.trim(),
+    port: Number(input.port) || 22,
+    username: input.username.trim(),
+    credential_mode: credentialMode,
+    credential_id: credentialMode === "saved" ? trim(input.credential_id) : undefined,
+    inline_auth_kind: credentialMode === "inline" ? inlineAuthKind : undefined,
+    inline_password:
+      credentialMode === "inline" && inlineAuthKind === "password"
+        ? trim(input.inline_password || input.password)
+        : undefined,
+    inline_private_key_path:
+      credentialMode === "inline" && inlineAuthKind === "private_key"
+        ? trim(input.inline_private_key_path || input.private_key_path)
+        : undefined,
+    inline_private_key_passphrase:
+      credentialMode === "inline" && inlineAuthKind === "private_key"
+        ? trim(input.inline_private_key_passphrase || input.private_key_passphrase)
+        : undefined,
+    prompt_auth_kind: credentialMode === "prompt" ? promptAuthKind : undefined,
+    proxy:
+      proxyKind === "none"
+        ? { kind: "none" }
+        : {
+            kind: proxyKind,
+            host: trim(input.proxy?.host),
+            port: Number(input.proxy?.port) || undefined,
+            username: trim(input.proxy?.username),
+            password: trim(input.proxy?.password),
+          },
+    advanced: {
+      auth_timeout_ms:
+        Number(input.advanced?.auth_timeout_ms) || defaultAdvancedConfig.auth_timeout_ms,
+      connect_timeout_ms:
+        Number(input.advanced?.connect_timeout_ms) || defaultAdvancedConfig.connect_timeout_ms,
+      keepalive_interval_ms:
+        Number(input.advanced?.keepalive_interval_ms) ||
+        defaultAdvancedConfig.keepalive_interval_ms,
+    },
+    notes: trim(input.notes),
+  };
 }
 
 function formatError(error: unknown) {

@@ -6,7 +6,7 @@ import {
   type TerminalColorSchemeId,
 } from "./terminalColorSchemes";
 
-export type SettingsSectionId = "basic" | "appearance" | "terminalTheme";
+export type SettingsSectionId = "basic" | "credentials" | "appearance" | "terminalTheme";
 export type ThemeMode = "system" | "light" | "dark";
 export type AccentColor = "blue" | "slate" | "emerald" | "rose" | "violet" | "custom";
 export type FontSettingMode = "preset" | "custom";

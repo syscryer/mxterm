@@ -1,7 +1,12 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
+  ConnectionRuntimeCredentialRequest,
+  ConnectionStepResult,
+  CredentialProfile,
+  CredentialProfileInput,
   ConnectionProfile,
   ConnectionProfileInput,
+  HostKeyInfo,
 } from "../../features/connections/connectionTypes";
 import type {
   LocalUploadTempResult,
@@ -38,6 +43,30 @@ export function connectionUpsert(request: ConnectionProfileInput) {
 
 export function connectionDelete(id: string) {
   return invoke<void>("connection_delete", { id });
+}
+
+export function credentialList() {
+  return invoke<CredentialProfile[]>("credential_list");
+}
+
+export function credentialUpsert(request: CredentialProfileInput) {
+  return invoke<CredentialProfile>("credential_upsert", { request });
+}
+
+export function credentialDelete(id: string) {
+  return invoke<void>("credential_delete", { id });
+}
+
+export function connectionTest(request: ConnectionRuntimeCredentialRequest) {
+  return invoke<ConnectionStepResult>("connection_test", { request });
+}
+
+export function knownHostTrust(hostKey: HostKeyInfo) {
+  return invoke<void>("known_host_trust", {
+    request: {
+      host_key: hostKey,
+    },
+  });
 }
 
 export function connectionProbeLatency(connectionId: string) {

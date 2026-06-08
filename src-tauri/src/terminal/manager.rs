@@ -43,7 +43,7 @@ impl TerminalManager {
                 );
             })
         });
-        let (session, reader) = TerminalSession::open(request, progress).await?;
+        let (session, reader) = TerminalSession::open(app.clone(), request, progress).await?;
         let session_id = session.id.clone();
         self.sessions
             .lock()
@@ -227,11 +227,13 @@ mod tests {
             host: "127.0.0.1".to_string(),
             port: 22,
             username: "root".to_string(),
+            auth_kind: None,
             password: Some("secret".to_string()),
             private_key_path: None,
             private_key_passphrase: None,
             cols: 80,
             rows: 24,
+            runtime_config: None,
         }
     }
 

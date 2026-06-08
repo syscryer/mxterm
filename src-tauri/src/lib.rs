@@ -1,8 +1,11 @@
 mod app_error;
 mod commands;
 mod connections;
+mod credentials;
 mod events;
+mod known_hosts;
 mod remote_files;
+mod ssh_config;
 mod terminal;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -17,6 +20,11 @@ pub fn run() {
             commands::connection_upsert,
             commands::connection_delete,
             commands::connection_probe_latency,
+            commands::connection_test,
+            commands::credential_list,
+            commands::credential_upsert,
+            commands::credential_delete,
+            commands::known_host_trust,
             commands::terminal_connect,
             commands::terminal_write,
             commands::terminal_resize,

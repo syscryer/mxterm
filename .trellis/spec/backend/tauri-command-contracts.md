@@ -5,7 +5,7 @@
 ### 1. Scope / Trigger
 
 - Trigger: a backend Tauri command or persistent data contract changes.
-- Source files: `src-tauri/src/commands.rs`, `src-tauri/src/connections/mod.rs`, and `src-tauri/src/terminal/manager.rs`.
+- Source files: `src-tauri/src/commands.rs`, `src-tauri/src/connections/mod.rs`, `src-tauri/src/credentials/mod.rs`, `src-tauri/src/known_hosts/mod.rs`, `src-tauri/src/ssh_config.rs`, and `src-tauri/src/terminal/manager.rs`.
 - This project treats Tauri commands as the API boundary between React and Rust. Backend structs, serialized field names, validation, and `AppError` codes are executable contracts.
 
 ### 2. Signatures
@@ -13,6 +13,11 @@
 - `connection_list(app: AppHandle) -> Result<Vec<ConnectionProfile>, AppError>`
 - `connection_upsert(app: AppHandle, request: ConnectionProfileInput) -> Result<ConnectionProfile, AppError>`
 - `connection_delete(app: AppHandle, id: String) -> Result<(), AppError>`
+- `credential_list(app: AppHandle) -> Result<Vec<CredentialProfile>, AppError>`
+- `credential_upsert(app: AppHandle, request: CredentialProfileInput) -> Result<CredentialProfile, AppError>`
+- `credential_delete(app: AppHandle, id: String) -> Result<(), AppError>`
+- `known_host_trust(app: AppHandle, request: KnownHostTrustRequest) -> Result<(), AppError>`
+- `connection_test(app: AppHandle, request: ConnectionRuntimeCredentialRequest) -> Result<ConnectionStepResult, AppError>`
 - `connection_probe_latency(app: AppHandle, request: ConnectionLatencyProbeRequest) -> Result<ConnectionLatencyProbeResult, AppError>`
 - `terminal_connect(app: AppHandle, manager: State<TerminalManager>, request: TerminalConnectRequest) -> Result<String, AppError>`
 - `terminal_write(manager: State<TerminalManager>, request: TerminalWriteRequest) -> Result<(), AppError>`
@@ -24,17 +29,66 @@
 ```rust
 id: Option<String>
 name: Option<String>
+group: Option<String>
 host: String
 port: u16
 username: String
-auth_kind: ConnectionAuthKind // "password" | "private_key"
+credential_mode: ConnectionCredentialMode // "saved" | "inline" | "prompt"
+credential_id: Option<String>
+inline_auth_kind: Option<ConnectionAuthKind>
+inline_password: Option<String>
+inline_private_key_path: Option<String>
+inline_private_key_passphrase: Option<String>
+prompt_auth_kind: Option<ConnectionAuthKind>
+proxy: ConnectionProxyConfig
+advanced: ConnectionAdvancedConfig
+notes: Option<String>
+// Legacy migration only:
+auth_kind: Option<ConnectionAuthKind>
+password: Option<String>
+private_key_path: Option<String>
+private_key_passphrase: Option<String>
+```
+
+`ConnectionProfile` adds `id`, normalized `name`, `created_at`, and `updated_at`.
+
+`CredentialProfileInput` fields:
+
+```rust
+id: Option<String>
+name: Option<String>
+kind: ConnectionAuthKind // "password" | "private_key"
 password: Option<String>
 private_key_path: Option<String>
 private_key_passphrase: Option<String>
 notes: Option<String>
 ```
 
-`ConnectionProfile` adds `id`, normalized `name`, `created_at`, and `updated_at`.
+`ConnectionRuntimeCredentialRequest` fields:
+
+```rust
+connection_id: String
+auth_kind: Option<ConnectionAuthKind>
+password: Option<String>
+private_key_path: Option<String>
+private_key_passphrase: Option<String>
+```
+
+`KnownHostTrustRequest` fields:
+
+```rust
+host_key: HostKeyInfo
+```
+
+`HostKeyInfo` fields:
+
+```rust
+host: String
+port: u16
+key_algorithm: String
+fingerprint_sha256: String
+public_key: String
+```
 
 `ConnectionLatencyProbeRequest` fields:
 
@@ -49,18 +103,30 @@ latency_ms: Option<u64>
 reachable: bool
 ```
 
-`TerminalConnectRequest` accepts a direct SSH request plus optional `connection_id`. When `connection_id` is present and non-empty, Rust reloads the saved profile and overrides `host`, `port`, `username`, `password`, `private_key_path`, and `private_key_passphrase` before connecting.
+`TerminalConnectRequest` accepts a direct SSH request plus optional `connection_id`. When `connection_id` is present and non-empty, Rust resolves the saved connection as authoritative, then combines connection target fields, credential mode, saved or inline credential material, proxy config, advanced timeouts, and any prompt credential supplied by the request.
 
 ### 3. Contracts
 
 - Connection data is stored as JSON at `app.path().app_data_dir()/connections.json`.
-- The JSON root has `version: 1` and `profiles: ConnectionProfile[]`.
+- Credential data is stored as JSON at `app.path().app_data_dir()/credentials.json`.
+- Trusted host keys are stored as JSON at `app.path().app_data_dir()/known_hosts.json`.
+- JSON roots use `version` plus the relevant item list (`profiles`, `credentials`, or `entries`).
 - `ConnectionAuthKind` uses `#[serde(rename_all = "snake_case")]`; frontend values must be `password` or `private_key`.
-- Empty optional strings are normalized to `None`; non-empty `host`, `username`, `password`, `private_key_path`, and `notes` are trimmed.
+- `ConnectionCredentialMode` uses `saved`, `inline`, or `prompt`.
+- `ConnectionProxyKind` uses `none`, `http_connect`, or `socks5`.
+- Empty optional strings are normalized to `None`; non-empty target, credential, proxy, and note fields are trimmed.
 - Blank `name` defaults to `{username}@{host}`.
-- `password` auth clears `private_key_path` and `private_key_passphrase`; `private_key` auth clears `password`.
+- `credential_mode=saved` requires `credential_id` and clears inline secrets.
+- `credential_mode=inline` requires inline password or inline private key path depending on `inline_auth_kind`.
+- `credential_mode=prompt` stores no password or private key passphrase; runtime prompt credentials must be supplied by `TerminalConnectRequest` or `ConnectionRuntimeCredentialRequest`.
+- Password auth clears private-key fields; private-key auth clears password fields.
+- HTTP CONNECT and SOCKS5 proxy modes require proxy host and port. `none` clears proxy auth and proxy target fields.
+- Advanced timeouts are milliseconds. Keep validation ranges in Rust; React may edit numbers as strings but Rust is authoritative.
 - The first version intentionally stores passwords and private-key passphrases in clear text. Do not add masking/encryption unless the task explicitly introduces the lock-screen or secret-store feature.
 - All command failures return `AppError { code, message, raw_message, recoverable }`.
+- `credential_delete` must check saved connection references and return `credential_in_use` instead of deleting a credential currently referenced by `credential_mode=saved`.
+- Host-key verification is stateful. Unknown host keys return `host_key_unknown` with serialized `HostKeyInfo` in `raw_message`; changed host keys return `host_key_changed` with the new key and old fingerprint. Only `known_host_trust` may write or update trusted host keys.
+- `connection_test`, `terminal_connect`, and remote-file commands must use the same saved-connection resolution path in `ssh_config.rs`; do not re-resolve credentials independently in UI-facing command handlers.
 - `connection_probe_latency` must load the saved profile by `connection_id` and probe only the saved `host`/`port` with a short TCP timeout. It must not require or log passwords, private keys, or passphrases.
 - Terminal output and state events include both `session_id` and the optional frontend `request_id`. Keep `request_id` on early connection events so React can display shell output that arrives before the `terminal_connect` promise resolves.
 - Tauri event names must use allowed characters only. Use colon-separated names such as `terminal:output`, `terminal:state_changed`, and `terminal:connect_progress`; do not use dot-separated names.
@@ -72,9 +138,23 @@ reachable: bool
 | `host` is blank | `connection_host_missing` | true |
 | `username` is blank | `connection_username_missing` | true |
 | `port == 0` | `connection_port_invalid` | true |
-| `auth_kind == password` and password is blank | `connection_password_missing` | true |
-| `auth_kind == private_key` and private key path is blank | `connection_private_key_missing` | true |
+| `credential_mode == saved` and credential id is blank | `connection_credential_missing` | true |
+| `credential_mode == saved` and credential id is unknown | `credential_missing` | false |
+| `credential_mode == inline`, password auth, and password is blank | `connection_password_missing` | true |
+| `credential_mode == inline`, private-key auth, and private key path is blank | `connection_private_key_missing` | true |
+| Proxy mode requires proxy target but host is blank | `connection_proxy_host_missing` | true |
+| Proxy mode requires proxy target but port is blank / invalid | `connection_proxy_port_invalid` | true |
+| Advanced connect timeout outside allowed range | `connection_connect_timeout_invalid` | true |
+| Advanced auth timeout outside allowed range | `connection_auth_timeout_invalid` | true |
+| Advanced keepalive interval outside allowed range | `connection_keepalive_invalid` | true |
 | Delete/open unknown connection id | `connection_missing` | false |
+| Credential name is blank | `credential_name_missing` | true |
+| Credential password auth has blank password | `credential_password_missing` | true |
+| Credential private-key auth has blank key path | `credential_private_key_missing` | true |
+| Delete unknown credential id | `credential_missing` | false |
+| Delete referenced credential id | `credential_in_use` | true |
+| Unknown host key during SSH handshake | `host_key_unknown` | true |
+| Changed host key during SSH handshake | `host_key_changed` | true |
 | Latency probe blank connection id | `connection_probe_connection_missing` | false |
 | Latency probe task cannot join | `connection_probe_join_failed` | true |
 | Cannot resolve app data dir | `connection_store_path_failed` | true |
@@ -84,20 +164,23 @@ reachable: bool
 | Cannot serialize store | `connection_store_serialize_failed` | true |
 | Cannot write store file | `connection_store_write_failed` | true |
 | System clock before UNIX epoch | `connection_clock_invalid` | false |
-| Terminal direct request has no auth material | `terminal_auth_missing` | true |
+| Runtime prompt credential is required but missing | `credential_prompt_required` | true |
+| Terminal request has no resolved auth material | `terminal_auth_missing` | true |
 
 ### 5. Good / Base / Bad Cases
 
-- Good: `connection_upsert` receives password auth, trims `host` and `username`, defaults `name`, clears private-key fields, persists the JSON store, and returns the saved profile.
-- Base: `terminal_connect` receives both `connection_id` and stale frontend host fields; Rust loads the saved profile and uses the stored values.
-- Bad: `connection_delete` receives an unknown id and returns `connection_missing` instead of silently succeeding.
+- Good: `connection_upsert` receives inline password auth, trims `host` and `username`, defaults `name`, clears private-key fields, persists the JSON store, and returns the saved profile.
+- Good: `terminal_connect` receives `connection_id` for a saved-credential connection plus stale frontend host fields; Rust loads the saved profile, resolves the credential, verifies the host key, applies proxy/timeout settings, and uses the saved values.
+- Base: `connection_test` receives prompt credentials, resolves the saved connection with those runtime credentials, opens a reusable exec session, closes it, and returns `{ ok: true }`.
+- Bad: `credential_delete` deletes a credential referenced by an existing connection or a command handler accepts frontend-supplied raw credentials for remote-file commands.
 
 ### 6. Tests Required
 
-- Unit-test connection validation for blank host, blank username, zero port, missing password, and missing private key.
-- Unit-test auth-field clearing for both auth modes.
-- Unit-test JSON store round-trip, get-by-id, update preserving `created_at`, delete persistence, and missing id errors.
-- Unit-test terminal connection validation for missing auth and invalid direct SSH request fields.
+- Unit-test connection validation for blank host, blank username, zero port, credential modes, proxy validation, advanced validation, and legacy migration.
+- Unit-test credential validation for blank name, missing password, missing private key, auth-field clearing, and JSON store round-trip/delete.
+- Unit-test known-host store behavior for unknown, trusted, and changed fingerprints.
+- Unit-test saved connection resolution for saved, inline, prompt, missing credential, proxy, and advanced timeout behavior.
+- Unit-test terminal connection validation for missing runtime prompt credentials and invalid direct SSH request fields.
 - Run `cargo test --manifest-path src-tauri/Cargo.toml` and `cargo check --manifest-path src-tauri/Cargo.toml` after changing command payloads or storage behavior.
 
 ### 7. Wrong vs Correct
@@ -120,20 +203,15 @@ let profile = store.upsert(request, &now_timestamp()?)?;
 #### Wrong
 
 ```rust
-// Trusts stale frontend fields even when a saved connection was selected.
+// Bypasses saved credential, proxy, advanced timeout, and host-key resolution.
 manager.connect(app, request).await
 ```
 
 #### Correct
 
 ```rust
-if let Some(connection_id) = request.connection_id.as_ref().map(|value| value.trim()) {
-    let profile = load_connection_profile(&app, connection_id)?;
-    request.host = profile.host;
-    request.port = profile.port;
-    request.username = profile.username;
-}
-manager.connect(app, request).await
+let config = resolve_saved_connection(app, connection_id, prompt_credential)?;
+manager.connect_resolved(app, &config).await
 ```
 
 ## Scenario: Remote File Listing Command
