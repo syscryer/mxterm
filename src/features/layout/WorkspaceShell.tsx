@@ -10,8 +10,10 @@ import {
   type PointerEvent as ReactPointerEvent,
 } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
+import { openPath, revealItemInDir } from "@tauri-apps/plugin-opener";
 import {
   Clock3,
+  Clipboard,
   List,
   Loader2,
   PanelRightOpen,
@@ -31,23 +33,36 @@ import { ConnectionPane } from "../connections/ConnectionPane";
 import type { ConnectionProfile, ConnectionProfileInput } from "../connections/connectionTypes";
 import { RemoteFileEditor } from "../editor/RemoteFileEditor";
 import type { RemoteFileEditorTab } from "../editor/remoteFileEditorTypes";
-import { RemoteFilePanel } from "../files/RemoteFilePanel";
+import {
+  RemoteFilePanel,
+  type RemoteFileTool,
+  type RemoteFileUploadItem,
+} from "../files/RemoteFilePanel";
 import {
   isRemotePathStrictDescendant,
   normalizeRemotePath,
   remotePathParent,
 } from "../files/remoteFilePaths";
 import type {
+  RemoteFileArchiveUploadResult,
+  RemoteFileDownloadToLocalResult,
   RemoteFileEntry,
+  RemoteFileEntryMetadata,
   RemoteFileMetadata,
   RemoteFileReadResult,
+  RemoteFileTransferConflictPolicy,
+  RemoteFileUploadResult,
 } from "../files/remoteFileTypes";
 import { SettingsView } from "../settings/SettingsView";
 import {
   getTerminalColorScheme,
   getTerminalColorSchemeTone,
 } from "../settings/terminalColorSchemes";
-import { resolveSettingsStyle, resolveTerminalFontFamily } from "../settings/settingsTypes";
+import {
+  resolveSettingsStyle,
+  resolveTerminalFontFamily,
+  type FileTransferTimestampFormat,
+} from "../settings/settingsTypes";
 import { useSettings } from "../settings/useSettings";
 import { useConnections } from "../connections/useConnections";
 import { TerminalPanel } from "../terminal/TerminalPanel";
@@ -57,7 +72,9 @@ import {
   remoteFileCreateDirectory,
   remoteFileCreateFile,
   remoteFileDelete,
-  remoteFileDownload,
+  remoteFileDownloadToLocal,
+  remoteFileMetadata,
+  remoteFileUploadArchive,
   remoteFileRead,
   remoteFileRename,
   remoteFileUploadFile,
@@ -111,6 +128,35 @@ type LatencyProbeState =
   | { status: "failed" };
 type ResizablePaneSide = "left" | "right";
 type ResizingPane = ResizablePaneSide | "editor-terminal";
+type TransferDirection = "upload" | "download";
+type TransferKind = "file" | "directory";
+type TransferStatus = "queued" | "running" | "success" | "error" | "skipped" | "canceled";
+
+interface RemoteFileTransferItem {
+  id: string;
+  createdAt: number;
+  direction: TransferDirection;
+  error?: string | null;
+  kind: TransferKind;
+  localPath?: string | null;
+  name: string;
+  remotePath: string;
+  stage: string;
+  status: TransferStatus;
+}
+
+interface RemoteFilePropertiesState {
+  entry: RemoteFileEntry;
+  error?: string | null;
+  loading: boolean;
+  metadata?: RemoteFileEntryMetadata | null;
+}
+
+interface TransferConflictPromptState {
+  id: string;
+  name: string;
+  resolve: (policy: RemoteFileTransferConflictPolicy | null) => void;
+}
 
 const defaultLeftPaneWidth = 336;
 const minLeftPaneWidth = 248;
@@ -127,7 +173,14 @@ const editorTerminalKeyboardResizeStep = 3;
 
 export function WorkspaceShell() {
   const { connections, error, loading, reload, remove, upsert } = useConnections();
-  const { reset, settings, updateAppearance, updateBasic, updateTerminalTheme } = useSettings();
+  const {
+    reset,
+    settings,
+    updateAppearance,
+    updateBasic,
+    updateFileTransfer,
+    updateTerminalTheme,
+  } = useSettings();
   const [activeConnectionId, setActiveConnectionId] = useState<string | null>(null);
   const [activeTabId, setActiveTabId] = useState<string | null>(null);
   const [activeTabByConnectionId, setActiveTabByConnectionId] = useState<Record<string, string>>({});
@@ -148,6 +201,12 @@ export function WorkspaceShell() {
   const [remoteFileTextAction, setRemoteFileTextAction] = useState<RemoteFileTextAction | null>(null);
   const [remoteFileTextValue, setRemoteFileTextValue] = useState("");
   const [remoteFileTextError, setRemoteFileTextError] = useState<string | null>(null);
+  const [rightTool, setRightTool] = useState<RemoteFileTool>("files");
+  const [remoteFileTransfers, setRemoteFileTransfers] = useState<RemoteFileTransferItem[]>([]);
+  const [remoteFileProperties, setRemoteFileProperties] =
+    useState<RemoteFilePropertiesState | null>(null);
+  const [transferConflictPrompt, setTransferConflictPrompt] =
+    useState<TransferConflictPromptState | null>(null);
   const [homeActive, setHomeActive] = useState(true);
   const [leftPaneCollapsed, setLeftPaneCollapsed] = useState(false);
   const [rightPaneCollapsed, setRightPaneCollapsed] = useState(false);
@@ -222,6 +281,10 @@ export function WorkspaceShell() {
       )
     : [];
   const remoteFileDeleteDirtyCount = remoteFileDeleteAffectedTabs.filter((tab) => tab.dirty).length;
+  const transferBadgeCount = remoteFileTransfers.filter((item) =>
+    ["queued", "running", "error"].includes(item.status),
+  ).length;
+  const transferAttention = remoteFileTransfers.some((item) => item.status === "error");
   const appShellStyle = {
     ...resolveSettingsStyle(settings),
     "--editor-terminal-split-percent": `${editorTerminalSplitPercent.toString()}%`,
@@ -257,6 +320,93 @@ export function WorkspaceShell() {
       id: (request?.id || 0) + 1,
       path: normalizeRemotePath(path),
     }));
+  }
+
+  function addRemoteFileTransfer(input: {
+    direction: TransferDirection;
+    kind: TransferKind;
+    name: string;
+    remotePath: string;
+    stage: string;
+  }) {
+    const id = `transfer-${Date.now().toString()}-${Math.random().toString(36).slice(2, 8)}`;
+    const item: RemoteFileTransferItem = {
+      createdAt: Date.now(),
+      direction: input.direction,
+      error: null,
+      id,
+      kind: input.kind,
+      localPath: null,
+      name: input.name,
+      remotePath: normalizeRemotePath(input.remotePath),
+      stage: input.stage,
+      status: "queued",
+    };
+    setRemoteFileTransfers((items) => [item, ...items]);
+    return id;
+  }
+
+  function updateRemoteFileTransfer(
+    transferId: string,
+    update: Partial<Omit<RemoteFileTransferItem, "id" | "createdAt">>,
+  ) {
+    setRemoteFileTransfers((items) =>
+      items.map((item) => (item.id === transferId ? { ...item, ...update } : item)),
+    );
+  }
+
+  function cancelQueuedTransfer(transferId: string) {
+    updateRemoteFileTransfer(transferId, {
+      error: null,
+      stage: "已取消",
+      status: "canceled",
+    });
+  }
+
+  function clearFinishedTransfers() {
+    setRemoteFileTransfers((items) =>
+      items.filter((item) => item.status === "queued" || item.status === "running"),
+    );
+  }
+
+  function resolveTransferConflictPolicy(name: string) {
+    const defaultPolicy = settings.fileTransfer.conflictPolicyDefault;
+    if (defaultPolicy !== "ask") {
+      return Promise.resolve(toRemoteFileConflictPolicy(defaultPolicy));
+    }
+
+    return new Promise<RemoteFileTransferConflictPolicy | null>((resolve) => {
+      setTransferConflictPrompt({
+        id: `conflict-${Date.now().toString()}`,
+        name,
+        resolve,
+      });
+    });
+  }
+
+  function settleTransferConflictPrompt(policy: RemoteFileTransferConflictPolicy | null) {
+    const prompt = transferConflictPrompt;
+    if (!prompt) {
+      return;
+    }
+    prompt.resolve(policy);
+    setTransferConflictPrompt(null);
+  }
+
+  function openLocalTransferPath(path: string) {
+    if (!hasTauriRuntime()) {
+      void copyText(path);
+      return;
+    }
+    void openPath(path);
+  }
+
+  function revealLocalTransferPath(path: string) {
+    if (!hasTauriRuntime()) {
+      void copyText(path);
+      return;
+    }
+    void revealItemInDir(path);
   }
 
   function activateRemoteFileTab(tab: RemoteFileEditorTab) {
@@ -544,7 +694,7 @@ export function WorkspaceShell() {
       return;
     }
     setRemoteFileTextAction({ action: "rename", connectionId: activeConnection.id, entry });
-    setRemoteFileTextValue(entry.path);
+    setRemoteFileTextValue(entry.name);
     setRemoteFileTextError(null);
   }
 
@@ -558,12 +708,20 @@ export function WorkspaceShell() {
   async function submitRemoteFileTextAction(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const action = remoteFileTextAction;
-    const value = normalizeRemotePath(remoteFileTextValue);
     if (!action) {
       return;
     }
-    if (!value || value === "/") {
-      setRemoteFileTextError("请输入有效路径。");
+
+    const value =
+      action.action === "rename"
+        ? remoteFileTextValue.trim()
+        : normalizeRemotePath(remoteFileTextValue);
+    if (!value || (action.action !== "rename" && value === "/")) {
+      setRemoteFileTextError(action.action === "rename" ? "请输入有效名称。" : "请输入有效路径。");
+      return;
+    }
+    if (action.action === "rename" && !isValidRemoteBaseName(value)) {
+      setRemoteFileTextError("名称不能为空，不能包含 / 或 \\，也不能是 . 或 ..。");
       return;
     }
 
@@ -586,16 +744,17 @@ export function WorkspaceShell() {
         }
         triggerRemoteFileRefresh(remotePathParent(value));
       } else {
+        const newPath = joinRemotePath(remotePathParent(action.entry.path), value);
         if (hasTauriRuntime()) {
           await remoteFileRename({
             connectionId: action.connectionId,
-            newPath: value,
+            newPath,
             path: action.entry.path,
           });
         }
-        renameRemoteFileTabs(action.connectionId, action.entry.path, value);
+        renameRemoteFileTabs(action.connectionId, action.entry.path, newPath);
         triggerRemoteFileRefresh(remotePathParent(action.entry.path));
-        triggerRemoteFileRefresh(remotePathParent(value));
+        triggerRemoteFileRefresh(remotePathParent(newPath));
       }
       setRemoteFileTextAction(null);
       setRemoteFileTextValue("");
@@ -674,54 +833,251 @@ export function WorkspaceShell() {
     }
     const input = document.createElement("input");
     input.type = "file";
+    input.multiple = true;
     input.onchange = () => {
-      const file = input.files?.[0];
-      if (!file || !activeConnection) {
+      const files = Array.from(input.files || []);
+      if (files.length === 0) {
         return;
       }
-      const uploadPath = joinRemotePath(parentPath, file.name);
-      void file.arrayBuffer().then((buffer) => (
-        hasTauriRuntime()
-          ? remoteFileUploadFile({
-              connectionId: activeConnection.id,
-              content: new Uint8Array(buffer),
-              path: uploadPath,
-            })
-          : Promise.resolve({
-              ...previewRemoteFileMetadata(uploadPath),
-              mtime: Date.now(),
-              size: file.size,
-            })
-      )).then((metadata) => {
-        triggerRemoteFileRefresh(remotePathParent(metadata.path));
-      }).catch((error: unknown) => {
-        setRemoteFileTextError(formatError(error));
-      });
+      uploadRemoteItems(parentPath, files.map((file) => ({ file, relativePath: file.name })));
     };
     input.click();
   }
 
-  function downloadRemoteFile(entry: RemoteFileEntry) {
-    if (!activeConnection || entry.type === "directory") {
+  function uploadRemoteDirectory(parentPath: string) {
+    if (!activeConnection) {
+      return;
+    }
+    const input = document.createElement("input");
+    input.type = "file";
+    input.multiple = true;
+    input.setAttribute("webkitdirectory", "");
+    input.onchange = () => {
+      const files = Array.from(input.files || []);
+      if (files.length === 0) {
+        return;
+      }
+      uploadRemoteItems(
+        parentPath,
+        files.map((file) => ({
+          file,
+          relativePath: getFileRelativePath(file),
+        })),
+      );
+    };
+    input.click();
+  }
+
+  function uploadRemoteItems(parentPath: string, items: RemoteFileUploadItem[]) {
+    if (!activeConnection || items.length === 0) {
       return;
     }
 
-    void (hasTauriRuntime()
-      ? remoteFileDownload(activeConnection.id, entry.path)
-      : Promise.resolve({
-          content: Array.from(new TextEncoder().encode("preview download")),
-          name: entry.name,
-          path: entry.path,
-        }))
-      .then((result) => {
-        const blob = new Blob([new Uint8Array(result.content)]);
-        const url = URL.createObjectURL(blob);
-        const anchor = document.createElement("a");
-        anchor.href = url;
-        anchor.download = result.name;
-        anchor.click();
-        URL.revokeObjectURL(url);
+    const normalizedParent = normalizeRemotePath(parentPath);
+    const directFiles = items.filter((item) => !normalizeUploadRelativePath(item.relativePath).includes("/"));
+    const directoryGroups = groupUploadDirectories(items);
+
+    directFiles.forEach((item) => {
+      void runSingleFileUpload(normalizedParent, item);
+    });
+    Array.from(directoryGroups.entries()).forEach(([rootName, groupItems]) => {
+      void runDirectoryUpload(normalizedParent, rootName, groupItems);
+    });
+  }
+
+  async function runSingleFileUpload(parentPath: string, item: RemoteFileUploadItem) {
+    if (!activeConnection) {
+      return;
+    }
+    const uploadPath = joinRemotePath(parentPath, item.file.name);
+    const transferId = addRemoteFileTransfer({
+      direction: "upload",
+      kind: "file",
+      name: item.file.name,
+      remotePath: uploadPath,
+      stage: "等待上传",
+    });
+
+    const conflictPolicy = await resolveTransferConflictPolicy(item.file.name);
+    if (!conflictPolicy) {
+      updateRemoteFileTransfer(transferId, { status: "canceled", stage: "已取消" });
+      return;
+    }
+
+    updateRemoteFileTransfer(transferId, { status: "running", stage: "读取本地文件" });
+
+    try {
+      const buffer = await item.file.arrayBuffer();
+      updateRemoteFileTransfer(transferId, { stage: "上传中" });
+      const result = hasTauriRuntime()
+        ? await remoteFileUploadFile({
+            connectionId: activeConnection.id,
+            conflictPolicy,
+            content: new Uint8Array(buffer),
+            path: uploadPath,
+          })
+        : previewRemoteFileUploadResult(uploadPath, item.file.size);
+      finishUploadTransfer(transferId, result);
+    } catch (error) {
+      updateRemoteFileTransfer(transferId, {
+        error: formatError(error),
+        stage: "上传失败",
+        status: "error",
       });
+    }
+  }
+
+  async function runDirectoryUpload(
+    parentPath: string,
+    rootName: string,
+    items: RemoteFileUploadItem[],
+  ) {
+    if (!activeConnection) {
+      return;
+    }
+    const remotePath = joinRemotePath(parentPath, rootName);
+    const transferId = addRemoteFileTransfer({
+      direction: "upload",
+      kind: "directory",
+      name: rootName,
+      remotePath,
+      stage: "等待打包",
+    });
+
+    const conflictPolicy = await resolveTransferConflictPolicy(rootName);
+    if (!conflictPolicy) {
+      updateRemoteFileTransfer(transferId, { status: "canceled", stage: "已取消" });
+      return;
+    }
+
+    try {
+      updateRemoteFileTransfer(transferId, { status: "running", stage: "本地打包 tar.gz" });
+      const archiveContent = await buildTarGzArchive(items);
+      updateRemoteFileTransfer(transferId, { stage: "上传归档" });
+      const result = hasTauriRuntime()
+        ? await remoteFileUploadArchive({
+            archiveContent,
+            connectionId: activeConnection.id,
+            conflictPolicy,
+            keepArchive: settings.fileTransfer.keepArchives,
+            rootName,
+            targetDir: parentPath,
+          })
+        : previewRemoteFileArchiveUploadResult(remotePath);
+      finishArchiveUploadTransfer(transferId, result);
+    } catch (error) {
+      updateRemoteFileTransfer(transferId, {
+        error: formatError(error),
+        stage: "目录上传失败",
+        status: "error",
+      });
+    }
+  }
+
+  function finishUploadTransfer(transferId: string, result: RemoteFileUploadResult) {
+    updateRemoteFileTransfer(transferId, {
+      name: result.name,
+      remotePath: result.path,
+      stage: result.skipped ? "已跳过" : "上传完成",
+      status: result.skipped ? "skipped" : "success",
+    });
+    triggerRemoteFileRefresh(remotePathParent(result.path));
+  }
+
+  function finishArchiveUploadTransfer(transferId: string, result: RemoteFileArchiveUploadResult) {
+    updateRemoteFileTransfer(transferId, {
+      name: result.name,
+      remotePath: result.path,
+      stage: result.skipped ? "已跳过" : "远端解压完成",
+      status: result.skipped ? "skipped" : "success",
+    });
+    triggerRemoteFileRefresh(remotePathParent(result.path));
+  }
+
+  function downloadRemoteFile(entry: RemoteFileEntry) {
+    if (!activeConnection) {
+      return;
+    }
+    void runRemoteFileDownload(entry);
+  }
+
+  async function runRemoteFileDownload(entry: RemoteFileEntry) {
+    if (!activeConnection) {
+      return;
+    }
+    const isDirectory = entry.type === "directory";
+    const transferId = addRemoteFileTransfer({
+      direction: "download",
+      kind: isDirectory ? "directory" : "file",
+      name: entry.name,
+      remotePath: entry.path,
+      stage: isDirectory ? "等待远端打包" : "等待下载",
+    });
+
+    const conflictPolicy = await resolveTransferConflictPolicy(entry.name);
+    if (!conflictPolicy) {
+      updateRemoteFileTransfer(transferId, { status: "canceled", stage: "已取消" });
+      return;
+    }
+
+    updateRemoteFileTransfer(transferId, {
+      status: "running",
+      stage: isDirectory ? "远端打包并下载" : "下载到本地",
+    });
+
+    try {
+      const result = hasTauriRuntime()
+        ? await remoteFileDownloadToLocal({
+            connectionId: activeConnection.id,
+            conflictPolicy,
+            directory: isDirectory,
+            downloadRoot: settings.fileTransfer.downloadRoot || undefined,
+            groupBySession: settings.fileTransfer.groupBySession,
+            keepArchives: settings.fileTransfer.keepArchives,
+            path: entry.path,
+            sessionName: transferSessionName(activeConnection, terminalTabs, activeTabId),
+            timestampDirectory: settings.fileTransfer.timestampDirectory,
+            timestampName: formatTransferTimestamp(new Date(), settings.fileTransfer.timestampFormat),
+          })
+        : previewRemoteFileDownloadToLocalResult(entry, isDirectory);
+      finishDownloadTransfer(transferId, result);
+    } catch (error) {
+      updateRemoteFileTransfer(transferId, {
+        error: formatError(error),
+        stage: "下载失败",
+        status: "error",
+      });
+    }
+  }
+
+  function finishDownloadTransfer(transferId: string, result: RemoteFileDownloadToLocalResult) {
+    updateRemoteFileTransfer(transferId, {
+      localPath: result.local_path,
+      name: result.name,
+      remotePath: result.remote_path,
+      stage: result.skipped ? "已跳过" : result.directory ? "本地解压完成" : "下载完成",
+      status: result.skipped ? "skipped" : "success",
+    });
+  }
+
+  function showRemoteFileProperties(entry: RemoteFileEntry) {
+    if (!activeConnection) {
+      return;
+    }
+    setRemoteFileProperties({ entry, loading: true, metadata: null });
+    void (hasTauriRuntime()
+      ? remoteFileMetadata(activeConnection.id, entry.path)
+      : Promise.resolve(previewRemoteFileEntryMetadata(entry)))
+      .then((metadata) => {
+        setRemoteFileProperties({ entry, loading: false, metadata });
+      })
+      .catch((error: unknown) => {
+        setRemoteFileProperties({ entry, error: formatError(error), loading: false, metadata: null });
+      });
+  }
+
+  function copyRemotePath(path: string) {
+    void copyText(path);
   }
 
   function createConnection(groupId?: string) {
@@ -1377,17 +1733,35 @@ export function WorkspaceShell() {
 
         {hasSessionWorkspace ? (
           <RemoteFilePanel
+            activeTool={rightTool}
             connection={activeConnection}
             key={remoteFilePanelKey}
             refreshRequest={remoteFileRefreshRequest}
+            transferAttention={transferAttention}
+            transferCount={transferBadgeCount}
+            transferPanel={
+              <RemoteFileTransferPanel
+                transfers={remoteFileTransfers}
+                onCancel={cancelQueuedTransfer}
+                onClearFinished={clearFinishedTransfers}
+                onCopyPath={copyRemotePath}
+                onOpenLocalPath={openLocalTransferPath}
+                onRevealLocalPath={revealLocalTransferPath}
+              />
+            }
+            onCopyPath={copyRemotePath}
             onCreateDirectory={requestCreateRemoteDirectory}
             onCreateFile={requestCreateRemoteFile}
             onDeleteEntry={requestDeleteRemoteEntry}
-            onDownloadFile={downloadRemoteFile}
+            onDownloadEntry={downloadRemoteFile}
             onOpenFile={openRemoteFile}
             onRenameEntry={requestRenameRemoteEntry}
+            onShowProperties={showRemoteFileProperties}
+            onToolChange={setRightTool}
             onToggleRightPane={() => setRightPaneCollapsed((collapsed) => !collapsed)}
+            onUploadDirectory={uploadRemoteDirectory}
             onUploadFile={uploadRemoteFile}
+            onUploadItems={uploadRemoteItems}
             terminalPath={activeTerminalDirectory}
           />
         ) : null}
@@ -1539,7 +1913,7 @@ export function WorkspaceShell() {
               </header>
               <div className="dialog-body">
                 <label className="remote-file-path-field">
-                  <span>远程路径</span>
+                  <span>{remoteFileTextAction?.action === "rename" ? "名称" : "远程路径"}</span>
                   <input
                     autoFocus
                     spellCheck={false}
@@ -1565,6 +1939,105 @@ export function WorkspaceShell() {
         </Dialog.Portal>
       </Dialog.Root>
 
+      <Dialog.Root
+        open={Boolean(remoteFileProperties)}
+        onOpenChange={(open) => {
+          if (!open) {
+            setRemoteFileProperties(null);
+          }
+        }}
+      >
+        <Dialog.Portal>
+          <Dialog.Overlay className="dialog-backdrop" />
+          <Dialog.Content className="remote-file-properties-dialog">
+            <header className="dialog-head">
+              <div className="dialog-title-group">
+                <Dialog.Title asChild>
+                  <strong>查看属性</strong>
+                </Dialog.Title>
+                <Dialog.Description className="dialog-subtitle">
+                  {remoteFileProperties?.entry.path || ""}
+                </Dialog.Description>
+              </div>
+              <Dialog.Close asChild>
+                <button className="icon-button dialog-close-button" type="button" aria-label="关闭">
+                  <X className="ui-icon" aria-hidden="true" />
+                </button>
+              </Dialog.Close>
+            </header>
+            <div className="dialog-body">
+              {remoteFileProperties?.loading ? (
+                <p className="file-panel-empty">读取属性中...</p>
+              ) : remoteFileProperties?.error ? (
+                <p className="remote-file-dialog-error">{remoteFileProperties.error}</p>
+              ) : remoteFileProperties?.metadata ? (
+                <RemoteFilePropertiesTable metadata={remoteFileProperties.metadata} />
+              ) : null}
+            </div>
+            <footer className="dialog-actions remote-file-text-actions">
+              <span />
+              <button
+                type="button"
+                onClick={() => {
+                  if (remoteFileProperties?.entry.path) {
+                    copyRemotePath(remoteFileProperties.entry.path);
+                  }
+                }}
+              >
+                复制路径
+              </button>
+              <Dialog.Close asChild>
+                <button className="primary-button" type="button">关闭</button>
+              </Dialog.Close>
+            </footer>
+          </Dialog.Content>
+        </Dialog.Portal>
+      </Dialog.Root>
+
+      <Dialog.Root
+        open={Boolean(transferConflictPrompt)}
+        onOpenChange={(open) => {
+          if (!open) {
+            settleTransferConflictPrompt(null);
+          }
+        }}
+      >
+        <Dialog.Portal>
+          <Dialog.Overlay className="dialog-backdrop confirm-backdrop" />
+          <Dialog.Content
+            className="confirm-dialog transfer-conflict-dialog"
+            onInteractOutside={(event) => event.preventDefault()}
+            onPointerDownOutside={(event) => event.preventDefault()}
+          >
+            <div className="confirm-dialog-icon" aria-hidden="true">
+              <RefreshCw className="ui-icon" />
+            </div>
+            <div className="confirm-dialog-copy">
+              <Dialog.Title className="confirm-dialog-title">同名目标策略</Dialog.Title>
+              <Dialog.Description className="confirm-dialog-description">
+                {transferConflictPrompt
+                  ? `如果“${transferConflictPrompt.name}”已经存在，本次传输如何处理？`
+                  : ""}
+              </Dialog.Description>
+            </div>
+            <footer className="confirm-dialog-actions transfer-conflict-actions">
+              <button type="button" onClick={() => settleTransferConflictPrompt("rename")}>
+                重命名
+              </button>
+              <button type="button" onClick={() => settleTransferConflictPrompt("skip")}>
+                跳过
+              </button>
+              <button className="danger-button" type="button" onClick={() => settleTransferConflictPrompt("overwrite")}>
+                覆盖
+              </button>
+              <button type="button" onClick={() => settleTransferConflictPrompt(null)}>
+                取消
+              </button>
+            </footer>
+          </Dialog.Content>
+        </Dialog.Portal>
+      </Dialog.Root>
+
       <SettingsView
         hidden={activeView !== "settings"}
         settings={settings}
@@ -1572,6 +2045,7 @@ export function WorkspaceShell() {
         onReturnWorkspace={() => setActiveView("workspace")}
         onUpdateAppearance={updateAppearance}
         onUpdateBasic={updateBasic}
+        onUpdateFileTransfer={updateFileTransfer}
         onUpdateTerminalTheme={updateTerminalTheme}
       />
     </div>
@@ -1581,6 +2055,117 @@ export function WorkspaceShell() {
     setDialogOpen(false);
     setPendingConnectionGroupId(null);
   }
+}
+
+function RemoteFileTransferPanel({
+  transfers,
+  onCancel,
+  onClearFinished,
+  onCopyPath,
+  onOpenLocalPath,
+  onRevealLocalPath,
+}: {
+  transfers: RemoteFileTransferItem[];
+  onCancel: (transferId: string) => void;
+  onClearFinished: () => void;
+  onCopyPath: (path: string) => void;
+  onOpenLocalPath: (path: string) => void;
+  onRevealLocalPath: (path: string) => void;
+}) {
+  const finishedCount = transfers.filter((item) =>
+    ["success", "skipped", "canceled"].includes(item.status),
+  ).length;
+
+  return (
+    <section className="transfer-panel" aria-label="文件传输">
+      <header className="transfer-panel-head">
+        <span>
+          <strong>传输</strong>
+          <small>{transfers.length === 0 ? "无任务" : `${transfers.length.toString()} 项任务`}</small>
+        </span>
+        <button type="button" disabled={finishedCount === 0} onClick={onClearFinished}>
+          清理完成项
+        </button>
+      </header>
+
+      <div className="transfer-list">
+        {transfers.length === 0 ? (
+          <p className="file-panel-empty">上传和下载任务会显示在这里。</p>
+        ) : (
+          transfers.map((item) => (
+            <article className={`transfer-item ${item.status}`} key={item.id}>
+              <header>
+                <span className="transfer-kind">
+                  {item.direction === "upload" ? "上传" : "下载"}
+                  {" / "}
+                  {item.kind === "directory" ? "目录" : "文件"}
+                </span>
+                <span className="transfer-status">{transferStatusLabel(item.status)}</span>
+              </header>
+              <strong title={item.name}>{item.name}</strong>
+              <small>{item.stage}</small>
+              <code title={item.remotePath}>{item.remotePath}</code>
+              {item.localPath ? <code title={item.localPath}>{item.localPath}</code> : null}
+              {item.error ? <p className="transfer-error">{item.error}</p> : null}
+              <footer>
+                <button type="button" onClick={() => onCopyPath(item.localPath || item.remotePath)}>
+                  <Clipboard className="ui-icon" aria-hidden="true" />
+                  复制路径
+                </button>
+                {item.localPath ? (
+                  <>
+                    <button type="button" onClick={() => onOpenLocalPath(item.localPath || "")}>
+                      打开
+                    </button>
+                    <button type="button" onClick={() => onRevealLocalPath(item.localPath || "")}>
+                      定位
+                    </button>
+                  </>
+                ) : null}
+                {item.status === "queued" ? (
+                  <button type="button" onClick={() => onCancel(item.id)}>
+                    <X className="ui-icon" aria-hidden="true" />
+                    取消
+                  </button>
+                ) : null}
+              </footer>
+            </article>
+          ))
+        )}
+      </div>
+    </section>
+  );
+}
+
+function RemoteFilePropertiesTable({ metadata }: { metadata: RemoteFileEntryMetadata }) {
+  return (
+    <dl className="remote-file-properties">
+      <div>
+        <dt>名称</dt>
+        <dd>{metadata.name}</dd>
+      </div>
+      <div>
+        <dt>类型</dt>
+        <dd>{remoteKindLabel(metadata.type)}</dd>
+      </div>
+      <div>
+        <dt>大小</dt>
+        <dd>{formatFileSize(metadata.size)}</dd>
+      </div>
+      <div>
+        <dt>权限</dt>
+        <dd>{metadata.mode || "未知"}</dd>
+      </div>
+      <div>
+        <dt>修改时间</dt>
+        <dd>{formatRemoteMtime(metadata.mtime)}</dd>
+      </div>
+      <div>
+        <dt>绝对路径</dt>
+        <dd title={metadata.path}>{metadata.path}</dd>
+      </div>
+    </dl>
+  );
 }
 
 function ConnectionHome({
@@ -2307,7 +2892,313 @@ function remoteFileActionTitle(action: RemoteFileTextAction) {
 
 function remoteFileActionDescription(action: RemoteFileTextAction) {
   if (action.action === "rename") {
-    return `原路径：${action.entry.path}`;
+    return `父目录：${remotePathParent(action.entry.path)}`;
   }
   return `父目录：${action.parentPath}`;
+}
+
+function toRemoteFileConflictPolicy(
+  policy: RemoteFileTransferConflictPolicy,
+): RemoteFileTransferConflictPolicy {
+  return policy === "ask" ? "rename" : policy;
+}
+
+async function copyText(text: string) {
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(text);
+    return;
+  }
+
+  const textArea = document.createElement("textarea");
+  textArea.value = text;
+  textArea.style.position = "fixed";
+  textArea.style.left = "-9999px";
+  document.body.appendChild(textArea);
+  textArea.focus();
+  textArea.select();
+  document.execCommand("copy");
+  document.body.removeChild(textArea);
+}
+
+function isValidRemoteBaseName(name: string) {
+  const trimmed = name.trim();
+  return Boolean(trimmed) && trimmed !== "." && trimmed !== ".." && !/[\\/]/.test(trimmed);
+}
+
+function getFileRelativePath(file: File) {
+  const withRelativePath = file as File & { webkitRelativePath?: string };
+  return normalizeUploadRelativePath(withRelativePath.webkitRelativePath || file.name);
+}
+
+function normalizeUploadRelativePath(path: string) {
+  return path
+    .replace(/\\/g, "/")
+    .split("/")
+    .map((part) => part.trim())
+    .filter((part) => part && part !== "." && part !== "..")
+    .join("/");
+}
+
+function groupUploadDirectories(items: RemoteFileUploadItem[]) {
+  const groups = new Map<string, RemoteFileUploadItem[]>();
+
+  items.forEach((item) => {
+    const relativePath = normalizeUploadRelativePath(item.relativePath);
+    const [rootName] = relativePath.split("/");
+    if (!rootName || !relativePath.includes("/")) {
+      return;
+    }
+    const group = groups.get(rootName) || [];
+    group.push({
+      file: item.file,
+      relativePath,
+    });
+    groups.set(rootName, group);
+  });
+
+  return groups;
+}
+
+async function buildTarGzArchive(items: RemoteFileUploadItem[]) {
+  const tarContent = await buildTarArchive(items);
+  const compression = new CompressionStream("gzip");
+  const writer = compression.writable.getWriter();
+  await writer.write(tarContent);
+  await writer.close();
+  const gzipped = await new Response(compression.readable).arrayBuffer();
+  return new Uint8Array(gzipped);
+}
+
+async function buildTarArchive(items: RemoteFileUploadItem[]) {
+  const chunks: Uint8Array[] = [];
+  const encoder = new TextEncoder();
+  const directories = collectTarDirectories(items);
+
+  directories.forEach((directory) => {
+    chunks.push(buildTarHeader(`${directory}/`, 0, true, encoder));
+  });
+
+  for (const item of items) {
+    const relativePath = normalizeUploadRelativePath(item.relativePath);
+    if (!relativePath) {
+      continue;
+    }
+    const content = new Uint8Array(await item.file.arrayBuffer());
+    chunks.push(buildTarHeader(relativePath, content.length, false, encoder));
+    chunks.push(content);
+    chunks.push(new Uint8Array(paddingForTarBlock(content.length)));
+  }
+
+  chunks.push(new Uint8Array(1024));
+  return concatenateUint8Arrays(chunks);
+}
+
+function collectTarDirectories(items: RemoteFileUploadItem[]) {
+  const directories = new Set<string>();
+  items.forEach((item) => {
+    const parts = normalizeUploadRelativePath(item.relativePath).split("/");
+    for (let index = 1; index < parts.length; index += 1) {
+      directories.add(parts.slice(0, index).join("/"));
+    }
+  });
+  return Array.from(directories).sort((left, right) => left.localeCompare(right));
+}
+
+function buildTarHeader(
+  path: string,
+  size: number,
+  directory: boolean,
+  encoder: TextEncoder,
+) {
+  const header = new Uint8Array(512);
+  const normalizedPath = normalizeUploadRelativePath(path).slice(0, 255);
+  const splitPath = splitTarPath(normalizedPath);
+
+  writeTarString(header, 0, 100, splitPath.name, encoder);
+  writeTarOctal(header, 100, 8, directory ? 0o755 : 0o644);
+  writeTarOctal(header, 108, 8, 0);
+  writeTarOctal(header, 116, 8, 0);
+  writeTarOctal(header, 124, 12, directory ? 0 : size);
+  writeTarOctal(header, 136, 12, Math.floor(Date.now() / 1000));
+  header.fill(32, 148, 156);
+  header[156] = directory ? "5".charCodeAt(0) : "0".charCodeAt(0);
+  writeTarString(header, 257, 6, "ustar", encoder);
+  writeTarString(header, 263, 2, "00", encoder);
+  writeTarString(header, 345, 155, splitPath.prefix, encoder);
+
+  const checksum = header.reduce((sum, byte) => sum + byte, 0);
+  writeTarOctal(header, 148, 8, checksum);
+  return header;
+}
+
+function splitTarPath(path: string) {
+  if (path.length <= 100) {
+    return { name: path, prefix: "" };
+  }
+
+  const segments = path.split("/");
+  let name = segments.pop() || path.slice(-100);
+  let prefix = segments.join("/");
+  if (name.length > 100) {
+    name = name.slice(-100);
+  }
+  if (prefix.length > 155) {
+    prefix = prefix.slice(-155);
+  }
+  return { name, prefix };
+}
+
+function writeTarString(
+  header: Uint8Array,
+  offset: number,
+  length: number,
+  value: string,
+  encoder: TextEncoder,
+) {
+  header.set(encoder.encode(value).slice(0, length), offset);
+}
+
+function writeTarOctal(header: Uint8Array, offset: number, length: number, value: number) {
+  const text = value.toString(8).padStart(length - 1, "0").slice(0, length - 1);
+  for (let index = 0; index < text.length; index += 1) {
+    header[offset + index] = text.charCodeAt(index);
+  }
+  header[offset + length - 1] = 0;
+}
+
+function paddingForTarBlock(size: number) {
+  return (512 - (size % 512)) % 512;
+}
+
+function concatenateUint8Arrays(chunks: Uint8Array[]) {
+  const totalLength = chunks.reduce((total, chunk) => total + chunk.length, 0);
+  const output = new Uint8Array(totalLength);
+  let offset = 0;
+  chunks.forEach((chunk) => {
+    output.set(chunk, offset);
+    offset += chunk.length;
+  });
+  return output;
+}
+
+function transferSessionName(
+  connection: ConnectionProfile,
+  terminalTabs: TerminalTab[],
+  activeTabId: string | null,
+) {
+  const activeTab = activeTabId ? terminalTabs.find((tab) => tab.id === activeTabId) : null;
+  return sanitizeLocalSegment(activeTab?.title || connection.name || connection.host || "mxterm-session");
+}
+
+function formatTransferTimestamp(date: Date, format: FileTransferTimestampFormat) {
+  const year = date.getFullYear().toString();
+  const month = padDatePart(date.getMonth() + 1);
+  const day = padDatePart(date.getDate());
+  const hour = padDatePart(date.getHours());
+  const minute = padDatePart(date.getMinutes());
+
+  if (format === "yyyy-MM-dd-HHmm") {
+    return `${year}-${month}-${day}-${hour}${minute}`;
+  }
+  if (format === "yyyyMMdd-HHmm") {
+    return `${year}${month}${day}-${hour}${minute}`;
+  }
+  return `${year}${month}${day}${hour}${minute}`;
+}
+
+function padDatePart(value: number) {
+  return value.toString().padStart(2, "0");
+}
+
+function sanitizeLocalSegment(value: string) {
+  const sanitized = value.trim().replace(/[<>:"/\\|?*\u0000-\u001f]/g, "_");
+  return sanitized || "mxterm-session";
+}
+
+function previewRemoteFileUploadResult(path: string, size: number): RemoteFileUploadResult {
+  const metadata = {
+    ...previewRemoteFileMetadata(path),
+    size,
+  };
+  return {
+    metadata,
+    name: metadata.name,
+    path: metadata.path,
+    skipped: false,
+  };
+}
+
+function previewRemoteFileArchiveUploadResult(path: string): RemoteFileArchiveUploadResult {
+  const normalizedPath = normalizeRemotePath(path);
+  return {
+    archive_path: null,
+    name: remoteFileName(normalizedPath),
+    path: normalizedPath,
+    skipped: false,
+  };
+}
+
+function previewRemoteFileDownloadToLocalResult(
+  entry: RemoteFileEntry,
+  directory: boolean,
+): RemoteFileDownloadToLocalResult {
+  const localDirectory = `Downloads\\${sanitizeLocalSegment(entry.name)}\\preview`;
+  return {
+    archive_path: null,
+    directory,
+    local_directory: localDirectory,
+    local_path: `${localDirectory}\\${entry.name}`,
+    name: entry.name,
+    remote_path: entry.path,
+    skipped: false,
+  };
+}
+
+function previewRemoteFileEntryMetadata(entry: RemoteFileEntry): RemoteFileEntryMetadata {
+  return {
+    mode: entry.type === "directory" ? "755" : "644",
+    mtime: Date.now() / 1000,
+    name: entry.name,
+    path: entry.path,
+    size: entry.type === "directory" ? 0 : previewRemoteFileMetadata(entry.path).size,
+    type: entry.type,
+  };
+}
+
+function transferStatusLabel(status: TransferStatus) {
+  const labels: Record<TransferStatus, string> = {
+    canceled: "已取消",
+    error: "失败",
+    queued: "等待",
+    running: "进行中",
+    skipped: "已跳过",
+    success: "完成",
+  };
+  return labels[status];
+}
+
+function remoteKindLabel(kind: RemoteFileEntry["type"]) {
+  const labels: Record<RemoteFileEntry["type"], string> = {
+    directory: "目录",
+    file: "文件",
+    other: "其他",
+    symlink: "符号链接",
+  };
+  return labels[kind];
+}
+
+function formatFileSize(size: number) {
+  if (size < 1024) return `${size.toString()} B`;
+  if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
+  if (size < 1024 * 1024 * 1024) return `${(size / 1024 / 1024).toFixed(1)} MB`;
+  return `${(size / 1024 / 1024 / 1024).toFixed(1)} GB`;
+}
+
+function formatRemoteMtime(mtime: number) {
+  const milliseconds = mtime > 10_000_000_000 ? mtime : mtime * 1000;
+  const date = new Date(milliseconds);
+  if (Number.isNaN(date.getTime())) {
+    return "未知";
+  }
+  return date.toLocaleString();
 }

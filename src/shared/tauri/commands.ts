@@ -5,12 +5,18 @@ import type {
 } from "../../features/connections/connectionTypes";
 import type {
   RemoteFileDeleteInput,
+  RemoteFileDownloadToLocalInput,
+  RemoteFileDownloadToLocalResult,
   RemoteFileDownloadResult,
   RemoteFileEntry,
+  RemoteFileEntryMetadata,
+  RemoteFileArchiveUploadInput,
+  RemoteFileArchiveUploadResult,
   RemoteFileMetadata,
   RemoteFileReadResult,
   RemoteFileRenameInput,
   RemoteFileUploadInput,
+  RemoteFileUploadResult,
   RemoteFileWriteInput,
   RemoteFileWriteResult,
 } from "../../features/files/remoteFileTypes";
@@ -139,12 +145,47 @@ export function remoteFileDelete({ connectionId, path, recursive = false }: Remo
   });
 }
 
-export function remoteFileUploadFile({ connectionId, content, path }: RemoteFileUploadInput) {
-  return invoke<RemoteFileMetadata>("remote_file_upload_file", {
+export function remoteFileMetadata(connectionId: string, path: string) {
+  return invoke<RemoteFileEntryMetadata>("remote_file_metadata", {
+    request: {
+      connection_id: connectionId,
+      path,
+    },
+  });
+}
+
+export function remoteFileUploadFile({
+  connectionId,
+  content,
+  conflictPolicy = "rename",
+  path,
+}: RemoteFileUploadInput) {
+  return invoke<RemoteFileUploadResult>("remote_file_upload_file", {
     request: {
       connection_id: connectionId,
       content: Array.from(content),
+      conflict_policy: conflictPolicy,
       path,
+    },
+  });
+}
+
+export function remoteFileUploadArchive({
+  archiveContent,
+  connectionId,
+  conflictPolicy = "rename",
+  keepArchive = false,
+  rootName,
+  targetDir,
+}: RemoteFileArchiveUploadInput) {
+  return invoke<RemoteFileArchiveUploadResult>("remote_file_upload_archive", {
+    request: {
+      archive_content: Array.from(archiveContent),
+      connection_id: connectionId,
+      conflict_policy: conflictPolicy,
+      keep_archive: keepArchive,
+      root_name: rootName,
+      target_dir: targetDir,
     },
   });
 }
@@ -154,6 +195,34 @@ export function remoteFileDownload(connectionId: string, path: string) {
     request: {
       connection_id: connectionId,
       path,
+    },
+  });
+}
+
+export function remoteFileDownloadToLocal({
+  connectionId,
+  conflictPolicy = "rename",
+  directory = false,
+  downloadRoot,
+  groupBySession = true,
+  keepArchives = false,
+  path,
+  sessionName,
+  timestampDirectory = true,
+  timestampName,
+}: RemoteFileDownloadToLocalInput) {
+  return invoke<RemoteFileDownloadToLocalResult>("remote_file_download_to_local", {
+    request: {
+      connection_id: connectionId,
+      conflict_policy: conflictPolicy,
+      directory,
+      download_root: downloadRoot,
+      group_by_session: groupBySession,
+      keep_archives: keepArchives,
+      path,
+      session_name: sessionName,
+      timestamp_directory: timestampDirectory,
+      timestamp_name: timestampName,
     },
   });
 }

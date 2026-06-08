@@ -27,8 +27,11 @@ pub fn run() {
             commands::remote_file_create_directory,
             commands::remote_file_rename,
             commands::remote_file_delete,
+            commands::remote_file_metadata,
             commands::remote_file_upload_file,
+            commands::remote_file_upload_archive,
             commands::remote_file_download,
+            commands::remote_file_download_to_local,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

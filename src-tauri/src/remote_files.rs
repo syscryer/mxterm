@@ -60,6 +60,17 @@ pub struct RemoteFileMetadata {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct RemoteFileEntryMetadata {
+    pub path: String,
+    pub name: String,
+    pub size: u64,
+    pub mtime: u64,
+    pub mode: Option<String>,
+    #[serde(rename = "type")]
+    pub kind: RemoteFileKind,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct RemoteFileReadResult {
     pub content: String,
     pub encoding: String,
@@ -77,6 +88,50 @@ pub struct RemoteFileReadResult {
 pub struct RemoteFileWriteResult {
     pub metadata: RemoteFileMetadata,
     pub conflict: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TransferConflictPolicy {
+    Overwrite,
+    Skip,
+    Rename,
+}
+
+impl TransferConflictPolicy {
+    pub fn from_request(value: Option<&str>) -> Self {
+        match value.unwrap_or("rename").trim().to_ascii_lowercase().as_str() {
+            "overwrite" => Self::Overwrite,
+            "skip" => Self::Skip,
+            // Frontend should resolve "ask" before invoking Rust. If an old caller sends it,
+            // keep the non-destructive behavior.
+            "ask" | "rename" => Self::Rename,
+            _ => Self::Rename,
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Overwrite => "overwrite",
+            Self::Skip => "skip",
+            Self::Rename => "rename",
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct RemoteFileUploadResult {
+    pub path: String,
+    pub name: String,
+    pub skipped: bool,
+    pub metadata: Option<RemoteFileMetadata>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct RemoteFileArchiveUploadResult {
+    pub path: String,
+    pub name: String,
+    pub archive_path: Option<String>,
+    pub skipped: bool,
 }
 
 #[derive(Clone, Default)]
@@ -157,6 +212,19 @@ pub fn build_remote_metadata_command(path: &str) -> String {
     )
 }
 
+pub fn build_remote_entry_metadata_command(path: &str) -> String {
+    let quoted_path = quote_posix_shell(path);
+    format!(
+        "path={quoted_path}; \
+         if [ ! -e \"$path\" ] && [ ! -L \"$path\" ]; then printf '%s\\n' \"missing: $path\" >&2; exit 2; fi; \
+         if [ -L \"$path\" ]; then kind=l; elif [ -d \"$path\" ]; then kind=d; elif [ -f \"$path\" ]; then kind=f; else kind=o; fi; \
+         size=$(stat -c %s \"$path\" 2>/dev/null || stat -f %z \"$path\" 2>/dev/null || printf 0); \
+         mtime=$(stat -c %Y \"$path\" 2>/dev/null || stat -f %m \"$path\" 2>/dev/null) || exit 4; \
+         mode=$(stat -c %a \"$path\" 2>/dev/null || stat -f %Lp \"$path\" 2>/dev/null || printf ''); \
+         printf '%s\\000%s\\000%s\\000%s\\000%s\\000' \"$kind\" \"$path\" \"$size\" \"$mtime\" \"$mode\""
+    )
+}
+
 pub fn build_remote_read_command(path: &str) -> String {
     let quoted_path = quote_posix_shell(path);
     format!("path={quoted_path}; cat \"$path\"")
@@ -178,6 +246,106 @@ pub fn build_remote_write_command(path: &str) -> String {
     )
 }
 
+pub fn build_remote_upload_command(path: &str, policy: TransferConflictPolicy) -> String {
+    let quoted_path = quote_posix_shell(path);
+    let policy = policy.as_str();
+    let tmp_suffix = timestamp_millis();
+    format!(
+        "target={quoted_path}; policy={policy}; \
+         final=\"$target\"; \
+         if [ -e \"$target\" ] || [ -L \"$target\" ]; then \
+           case \"$policy\" in \
+             skip) printf 'SKIP\\000%s\\000' \"$target\"; exit 0 ;; \
+             overwrite) final=\"$target\" ;; \
+             *) final=$(mx_target=\"$target\" sh -c 'dir=${{mx_target%/*}}; base=${{mx_target##*/}}; [ \"$dir\" = \"$base\" ] && dir=.; case \"$base\" in .*|*.*) stem=${{base%.*}}; ext=.${{base##*.}} ;; *) stem=$base; ext= ;; esac; if [ -z \"$stem\" ] || [ \"$stem\" = \"$base\" ]; then stem=$base; ext=; fi; i=1; while :; do candidate=\"$dir/$stem ($i)$ext\"; [ \"$dir\" = . ] && candidate=\"$stem ($i)$ext\"; if [ ! -e \"$candidate\" ] && [ ! -L \"$candidate\" ]; then printf %s \"$candidate\"; exit 0; fi; i=$((i + 1)); done') ;; \
+           esac; \
+         fi; \
+         path=\"$final\"; \
+         case \"$path\" in */*) dir=${{path%/*}}; [ -z \"$dir\" ] && dir=/ ;; *) dir=. ;; esac; \
+         base=${{path##*/}}; \
+         tmp=\"$dir/.${{base}}.mxterm.{tmp_suffix}.$$\"; \
+         cleanup() {{ rm -f \"$tmp\"; }}; trap cleanup INT TERM HUP; \
+         cat > \"$tmp\" || {{ cleanup; exit 2; }}; \
+         if [ -f \"$path\" ]; then mode=$(stat -c %a \"$path\" 2>/dev/null || stat -f %Lp \"$path\" 2>/dev/null || printf ''); [ -n \"$mode\" ] && chmod \"$mode\" \"$tmp\" 2>/dev/null || true; fi; \
+         mv \"$tmp\" \"$path\" || {{ cleanup; exit 3; }}; \
+         trap - INT TERM HUP; \
+         printf 'OK\\000%s\\000' \"$path\""
+    )
+}
+
+pub fn build_remote_resolve_child_command(
+    parent_path: &str,
+    name: &str,
+    policy: TransferConflictPolicy,
+) -> String {
+    let quoted_parent = quote_posix_shell(parent_path);
+    let quoted_name = quote_posix_shell(name);
+    let policy = policy.as_str();
+    format!(
+        "parent={quoted_parent}; name={quoted_name}; policy={policy}; \
+         [ -d \"$parent\" ] || {{ printf '%s\\n' \"not a directory: $parent\" >&2; exit 2; }}; \
+         case \"$parent\" in /) target=\"/$name\" ;; *) target=\"$parent/$name\" ;; esac; \
+         final=\"$target\"; skipped=0; \
+         if [ -e \"$target\" ] || [ -L \"$target\" ]; then \
+           case \"$policy\" in \
+             skip) skipped=1 ;; \
+             overwrite) final=\"$target\" ;; \
+             *) dir=${{target%/*}}; base=${{target##*/}}; i=1; while :; do candidate=\"$dir/$base ($i)\"; if [ ! -e \"$candidate\" ] && [ ! -L \"$candidate\" ]; then final=\"$candidate\"; break; fi; i=$((i + 1)); done ;; \
+           esac; \
+         fi; \
+         printf '%s\\000%s\\000' \"$skipped\" \"$final\""
+    )
+}
+
+pub fn build_remote_extract_archive_command(
+    archive_path: &str,
+    target_dir: &str,
+    root_name: &str,
+    final_path: &str,
+    overwrite: bool,
+    keep_archive: bool,
+) -> String {
+    let quoted_archive = quote_posix_shell(archive_path);
+    let quoted_target_dir = quote_posix_shell(target_dir);
+    let quoted_root_name = quote_posix_shell(root_name);
+    let quoted_final_path = quote_posix_shell(final_path);
+    let tmp_suffix = timestamp_millis();
+    let overwrite_flag = if overwrite { "1" } else { "0" };
+    let keep_archive_flag = if keep_archive { "1" } else { "0" };
+    format!(
+        "archive={quoted_archive}; target_dir={quoted_target_dir}; root_name={quoted_root_name}; final_path={quoted_final_path}; overwrite={overwrite_flag}; keep_archive={keep_archive_flag}; \
+         [ -d \"$target_dir\" ] || {{ printf '%s\\n' \"not a directory: $target_dir\" >&2; exit 2; }}; \
+         tmp_dir=\"$target_dir/.mxterm-extract-{tmp_suffix}.$$\"; \
+         cleanup() {{ rm -rf \"$tmp_dir\"; [ \"$keep_archive\" = 1 ] || rm -f \"$archive\"; }}; trap cleanup INT TERM HUP; \
+         mkdir -p \"$tmp_dir\" || exit 3; \
+         tar -xzf \"$archive\" -C \"$tmp_dir\" || {{ cleanup; exit 4; }}; \
+         src=\"$tmp_dir/$root_name\"; \
+         [ -e \"$src\" ] || {{ printf '%s\\n' \"archive root missing: $root_name\" >&2; cleanup; exit 5; }}; \
+         if [ -e \"$final_path\" ] || [ -L \"$final_path\" ]; then \
+           [ \"$overwrite\" = 1 ] || {{ printf '%s\\n' \"target exists: $final_path\" >&2; cleanup; exit 6; }}; \
+           rm -rf -- \"$final_path\" || {{ cleanup; exit 7; }}; \
+         fi; \
+         mv \"$src\" \"$final_path\" || {{ cleanup; exit 8; }}; \
+         cleanup; trap - INT TERM HUP"
+    )
+}
+
+pub fn build_remote_archive_download_command(path: &str) -> String {
+    let quoted_path = quote_posix_shell(path);
+    let tmp_suffix = timestamp_millis();
+    format!(
+        "path={quoted_path}; \
+         [ -d \"$path\" ] || {{ printf '%s\\n' \"not a directory: $path\" >&2; exit 2; }}; \
+         case \"$path\" in */*) parent=${{path%/*}}; [ -z \"$parent\" ] && parent=/ ;; *) parent=. ;; esac; \
+         name=${{path##*/}}; \
+         tmp=\"${{TMPDIR:-/tmp}}/.mxterm-download-{tmp_suffix}.$$.tar.gz\"; \
+         cleanup() {{ rm -f \"$tmp\"; }}; trap cleanup INT TERM HUP; \
+         tar -czf \"$tmp\" -C \"$parent\" \"$name\" || {{ cleanup; exit 3; }}; \
+         cat \"$tmp\" || {{ cleanup; exit 4; }}; \
+         cleanup; trap - INT TERM HUP"
+    )
+}
+
 pub fn parse_remote_file_metadata(output: &[u8]) -> Option<RemoteFileMetadata> {
     let mut fields = output.split(|byte| *byte == 0);
     let path = fields.next()?;
@@ -196,6 +364,35 @@ pub fn parse_remote_file_metadata(output: &[u8]) -> Option<RemoteFileMetadata> {
         mtime,
         mode: if mode.is_empty() { None } else { Some(mode) },
     })
+}
+
+pub fn parse_remote_entry_metadata(output: &[u8]) -> Option<RemoteFileEntryMetadata> {
+    let mut fields = output.split(|byte| *byte == 0);
+    let kind = fields.next()?;
+    let path = fields.next()?;
+    let size = fields.next()?;
+    let mtime = fields.next()?;
+    let mode = fields.next().unwrap_or_default();
+
+    let path = String::from_utf8_lossy(path).to_string();
+    let size = String::from_utf8_lossy(size).trim().parse::<u64>().ok()?;
+    let mtime = String::from_utf8_lossy(mtime).trim().parse::<u64>().ok()?;
+    let mode = String::from_utf8_lossy(mode).trim().to_string();
+    Some(RemoteFileEntryMetadata {
+        name: remote_file_name(&path),
+        path,
+        size,
+        mtime,
+        mode: if mode.is_empty() { None } else { Some(mode) },
+        kind: find_kind(kind.first().copied()),
+    })
+}
+
+pub fn parse_remote_transfer_path(output: &[u8]) -> Option<(bool, String)> {
+    let mut fields = output.split(|byte| *byte == 0);
+    let status = String::from_utf8_lossy(fields.next()?).to_string();
+    let path = String::from_utf8_lossy(fields.next()?).to_string();
+    Some((status == "SKIP" || status == "1", path))
 }
 
 pub fn looks_like_binary(bytes: &[u8]) -> bool {
@@ -400,6 +597,32 @@ impl RemoteFileManager {
         Ok(())
     }
 
+    pub async fn entry_metadata(
+        &self,
+        profile: ConnectionProfile,
+        path: &str,
+    ) -> Result<RemoteFileEntryMetadata, AppError> {
+        let config = RemoteFileSessionConfig::from_profile(profile);
+        let output = self
+            .exec_with_reconnect(&config, &build_remote_entry_metadata_command(path))
+            .await?;
+        if output.exit_status != Some(0) {
+            return Err(remote_file_command_error(
+                "remote_file_metadata_failed",
+                "远程条目信息读取失败。",
+                &output,
+            ));
+        }
+        parse_remote_entry_metadata(&output.stdout).ok_or_else(|| {
+            AppError::new(
+                "remote_file_metadata_parse_failed",
+                "远程条目信息解析失败。",
+                String::from_utf8_lossy(&output.stdout),
+                true,
+            )
+        })
+    }
+
     pub async fn delete_entry(
         &self,
         profile: ConnectionProfile,
@@ -431,10 +654,15 @@ impl RemoteFileManager {
         profile: ConnectionProfile,
         path: &str,
         content: &[u8],
-    ) -> Result<RemoteFileMetadata, AppError> {
+        conflict_policy: TransferConflictPolicy,
+    ) -> Result<RemoteFileUploadResult, AppError> {
         let config = RemoteFileSessionConfig::from_profile(profile);
         let output = self
-            .exec_with_reconnect_stdin(&config, &build_remote_write_command(path), content)
+            .exec_with_reconnect_stdin(
+                &config,
+                &build_remote_upload_command(path, conflict_policy),
+                content,
+            )
             .await?;
         if output.exit_status != Some(0) {
             return Err(remote_file_command_error(
@@ -443,7 +671,119 @@ impl RemoteFileManager {
                 &output,
             ));
         }
-        self.metadata(&config, path).await
+
+        let (skipped, final_path) = parse_remote_transfer_path(&output.stdout).ok_or_else(|| {
+            AppError::new(
+                "remote_file_upload_parse_failed",
+                "远程文件上传结果解析失败。",
+                String::from_utf8_lossy(&output.stdout),
+                true,
+            )
+        })?;
+        let metadata = if skipped {
+            None
+        } else {
+            Some(self.metadata(&config, &final_path).await?)
+        };
+
+        Ok(RemoteFileUploadResult {
+            name: remote_file_name(&final_path),
+            path: final_path,
+            skipped,
+            metadata,
+        })
+    }
+
+    pub async fn upload_archive(
+        &self,
+        profile: ConnectionProfile,
+        target_dir: &str,
+        root_name: &str,
+        archive_content: &[u8],
+        conflict_policy: TransferConflictPolicy,
+        keep_archive: bool,
+    ) -> Result<RemoteFileArchiveUploadResult, AppError> {
+        let config = RemoteFileSessionConfig::from_profile(profile);
+        let resolve_output = self
+            .exec_with_reconnect(
+                &config,
+                &build_remote_resolve_child_command(target_dir, root_name, conflict_policy),
+            )
+            .await?;
+        if resolve_output.exit_status != Some(0) {
+            return Err(remote_file_command_error(
+                "remote_file_archive_resolve_failed",
+                "远程目录上传目标解析失败。",
+                &resolve_output,
+            ));
+        }
+
+        let (skipped, final_path) =
+            parse_remote_transfer_path(&resolve_output.stdout).ok_or_else(|| {
+                AppError::new(
+                    "remote_file_archive_resolve_parse_failed",
+                    "远程目录上传目标解析失败。",
+                    String::from_utf8_lossy(&resolve_output.stdout),
+                    true,
+                )
+            })?;
+        if skipped {
+            return Ok(RemoteFileArchiveUploadResult {
+                archive_path: None,
+                name: remote_file_name(&final_path),
+                path: final_path,
+                skipped: true,
+            });
+        }
+
+        let archive_name = format!(
+            ".mxterm-upload-{}-{}.tar.gz",
+            timestamp_millis(),
+            sanitize_remote_temp_name(root_name)
+        );
+        let archive_path = join_remote_path(target_dir, &archive_name);
+        let upload_output = self
+            .exec_with_reconnect_stdin(
+                &config,
+                &build_remote_write_command(&archive_path),
+                archive_content,
+            )
+            .await?;
+        if upload_output.exit_status != Some(0) {
+            return Err(remote_file_command_error(
+                "remote_file_archive_upload_failed",
+                "远程目录归档上传失败。",
+                &upload_output,
+            ));
+        }
+
+        let extract_output = self
+            .exec_with_reconnect(
+                &config,
+                &build_remote_extract_archive_command(
+                    &archive_path,
+                    target_dir,
+                    root_name,
+                    &final_path,
+                    conflict_policy == TransferConflictPolicy::Overwrite,
+                    keep_archive,
+                ),
+            )
+            .await?;
+        if extract_output.exit_status != Some(0) {
+            return Err(remote_file_command_error(
+                "remote_file_archive_extract_failed",
+                "远程目录解压失败。",
+                &extract_output,
+            ));
+        }
+
+        Ok(RemoteFileArchiveUploadResult {
+            archive_path: keep_archive.then_some(archive_path),
+            name: remote_file_name(&final_path),
+            path: final_path,
+            skipped: false,
+        })
     }
 
     pub async fn download_file(
@@ -459,6 +799,25 @@ impl RemoteFileManager {
             return Err(remote_file_command_error(
                 "remote_file_download_failed",
                 "远程文件下载失败。",
+                &output,
+            ));
+        }
+        Ok(output.stdout)
+    }
+
+    pub async fn download_archive(
+        &self,
+        profile: ConnectionProfile,
+        path: &str,
+    ) -> Result<Vec<u8>, AppError> {
+        let config = RemoteFileSessionConfig::from_profile(profile);
+        let output = self
+            .exec_with_reconnect(&config, &build_remote_archive_download_command(path))
+            .await?;
+        if output.exit_status != Some(0) {
+            return Err(remote_file_command_error(
+                "remote_file_archive_download_failed",
+                "远程目录归档下载失败。",
                 &output,
             ));
         }
@@ -674,6 +1033,35 @@ fn remote_file_name(path: &str) -> String {
         .find(|segment| !segment.is_empty())
         .unwrap_or(path)
         .to_string()
+}
+
+fn join_remote_path(parent: &str, name: &str) -> String {
+    let parent = if parent.trim().is_empty() { "/" } else { parent.trim() };
+    let name = name.trim().trim_start_matches('/');
+    if parent == "/" {
+        format!("/{name}")
+    } else {
+        format!("{}/{}", parent.trim_end_matches('/'), name)
+    }
+}
+
+fn sanitize_remote_temp_name(name: &str) -> String {
+    let sanitized = name
+        .chars()
+        .map(|ch| {
+            if ch == '/' || ch == '\\' || ch.is_control() {
+                '_'
+            } else {
+                ch
+            }
+        })
+        .collect::<String>();
+    let sanitized = sanitized.trim_matches(|ch| ch == ' ' || ch == '.');
+    if sanitized.is_empty() {
+        "archive".to_string()
+    } else {
+        sanitized.to_string()
+    }
 }
 
 fn remote_file_command_error(code: &str, message: &str, output: &ExecOutput) -> AppError {

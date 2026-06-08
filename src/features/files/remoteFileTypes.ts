@@ -14,6 +14,10 @@ export interface RemoteFileMetadata {
   mode?: string | null;
 }
 
+export interface RemoteFileEntryMetadata extends RemoteFileMetadata {
+  type: RemoteFileKind;
+}
+
 export interface RemoteFileReadResult {
   content: string;
   editable: boolean;
@@ -56,11 +60,60 @@ export interface RemoteFileDeleteInput {
 export interface RemoteFileUploadInput {
   connectionId: string;
   content: Uint8Array | number[];
+  conflictPolicy?: RemoteFileTransferConflictPolicy;
   path: string;
+}
+
+export type RemoteFileTransferConflictPolicy = "ask" | "overwrite" | "skip" | "rename";
+
+export interface RemoteFileUploadResult {
+  metadata?: RemoteFileMetadata | null;
+  name: string;
+  path: string;
+  skipped: boolean;
+}
+
+export interface RemoteFileArchiveUploadInput {
+  archiveContent: Uint8Array | number[];
+  connectionId: string;
+  conflictPolicy?: RemoteFileTransferConflictPolicy;
+  keepArchive?: boolean;
+  rootName: string;
+  targetDir: string;
+}
+
+export interface RemoteFileArchiveUploadResult {
+  archive_path?: string | null;
+  name: string;
+  path: string;
+  skipped: boolean;
 }
 
 export interface RemoteFileDownloadResult {
   content: number[];
   name: string;
   path: string;
+}
+
+export interface RemoteFileDownloadToLocalInput {
+  connectionId: string;
+  conflictPolicy?: RemoteFileTransferConflictPolicy;
+  directory?: boolean;
+  downloadRoot?: string;
+  groupBySession?: boolean;
+  keepArchives?: boolean;
+  path: string;
+  sessionName?: string;
+  timestampDirectory?: boolean;
+  timestampName?: string;
+}
+
+export interface RemoteFileDownloadToLocalResult {
+  archive_path?: string | null;
+  directory: boolean;
+  local_directory: string;
+  local_path: string;
+  name: string;
+  remote_path: string;
+  skipped: boolean;
 }

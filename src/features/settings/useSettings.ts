@@ -5,6 +5,7 @@ import {
   normalizeSettings,
   type AppearanceSettings,
   type BasicSettings,
+  type FileTransferSettings,
   type MxtermSettings,
   type TerminalThemeSettings,
 } from "./settingsTypes";
@@ -54,12 +55,25 @@ export function useSettings() {
     );
   }, []);
 
+  const updateFileTransfer = useCallback((update: Partial<FileTransferSettings>) => {
+    setSettings((current) =>
+      normalizeSettings({
+        ...current,
+        fileTransfer: {
+          ...current.fileTransfer,
+          ...update,
+        },
+      }),
+    );
+  }, []);
+
   const reset = useCallback(() => setSettings(defaultSettings), []);
 
   return {
     settings,
     updateAppearance,
     updateBasic,
+    updateFileTransfer,
     updateTerminalTheme,
     reset,
   };
