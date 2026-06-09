@@ -84,6 +84,7 @@ import type { TerminalOutputEvent } from "../terminal/terminalTypes";
 import { ConfirmDialog } from "../../shared/ui/ConfirmDialog";
 import {
   connectionTest,
+  connectionTestProfile,
   knownHostTrust,
   connectionProbeLatency,
   remoteFileCheckPath,
@@ -2024,14 +2025,11 @@ export function WorkspaceShell() {
   }
 
   async function testConnectionFromDialog(input: ConnectionProfileInput) {
-    const saved = await saveConnection(input);
     if (!hasTauriRuntime()) {
       await wait(260);
       return;
     }
-    await connectionTest({
-      connection_id: saved.id,
-    });
+    await connectionTestProfile(input);
   }
 
   async function saveCredentialFromSettings(input: CredentialProfileInput) {

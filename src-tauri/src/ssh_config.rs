@@ -4,7 +4,8 @@ use tauri::{AppHandle, Manager};
 
 use crate::app_error::AppError;
 use crate::connections::{
-    ConnectionAuthKind, ConnectionCredentialMode, ConnectionProfile, ConnectionStore,
+    validate_profile_input, ConnectionAuthKind, ConnectionCredentialMode, ConnectionProfile,
+    ConnectionProfileInput, ConnectionStore,
 };
 use crate::credentials::{CredentialProfile, CredentialStore};
 use crate::known_hosts::HostKeyInfo;
@@ -54,6 +55,41 @@ pub fn resolve_saved_connection(
 ) -> Result<ResolvedSshConfig, AppError> {
     let profile = load_connection_profile(app, connection_id)?;
     resolve_profile(app, profile, prompt)
+}
+
+pub fn resolve_transient_connection(
+    app: &AppHandle,
+    input: ConnectionProfileInput,
+) -> Result<ResolvedSshConfig, AppError> {
+    let validated = validate_profile_input(&input)?;
+    let profile = ConnectionProfile {
+        id: "__transient_connection_test__".to_string(),
+        name: validated.name,
+        group: validated.group,
+        host: validated.host,
+        port: validated.port,
+        username: validated.username,
+        credential_mode: validated.credential_mode,
+        credential_id: validated.credential_id,
+        inline_auth_kind: validated.inline_auth_kind,
+        inline_password: validated.inline_password,
+        inline_private_key_path: validated.inline_private_key_path,
+        inline_private_key_passphrase: validated.inline_private_key_passphrase,
+        prompt_auth_kind: validated.prompt_auth_kind,
+        proxy: validated.proxy,
+        advanced: validated.advanced,
+        notes: validated.notes,
+        is_favorite: false,
+        last_connected_at: None,
+        created_at: String::new(),
+        updated_at: String::new(),
+        auth_kind: None,
+        password: None,
+        private_key_path: None,
+        private_key_passphrase: None,
+    };
+
+    resolve_profile(app, profile, None)
 }
 
 pub fn load_connection_profile(

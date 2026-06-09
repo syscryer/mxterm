@@ -88,7 +88,7 @@ type DeleteRequest =
   | { type: "group"; group: CustomGroup };
 
 const systemFolders: SystemFolder[] = [
-  { id: "favorites", color: "#e0b341", icon: Star, label: "收藏" },
+  { id: "favorites", color: "#64748b", icon: Star, label: "收藏" },
   { id: "recent", color: "#64748b", icon: Clock3, label: "最近" },
 ];
 
