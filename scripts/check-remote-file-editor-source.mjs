@@ -264,10 +264,29 @@ for (const workspaceNeedle of [
   "buildTarGzArchiveToTemp",
   "writeFileToTarGzipStream",
   "yieldToBrowser",
+  "setRemoteFileTextValue(\"untitled.txt\")",
+  "setRemoteFileTextValue(\"new-folder\")",
   "setRemoteFileTextValue(entry.name)",
+  "remote-file-name-field",
+  "remoteFileNameValidationMessage",
+  "joinRemotePath(action.parentPath, value)",
 ]) {
   if (!workspaceShell.includes(workspaceNeedle)) {
     throw new Error(`WorkspaceShell should include ${workspaceNeedle}`);
+  }
+}
+
+for (const forbiddenNameDialogNeedle of [
+  "setRemoteFileTextValue(joinRemotePath",
+  "remote-file-path-field",
+  "请输入有效路径",
+  "remoteFileCreateFile(action.connectionId, value",
+  "remoteFileCreateDirectory(action.connectionId, value",
+]) {
+  if (workspaceShell.includes(forbiddenNameDialogNeedle)) {
+    throw new Error(
+      `Remote file create/rename dialogs should edit names only, found ${forbiddenNameDialogNeedle}`,
+    );
   }
 }
 

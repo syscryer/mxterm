@@ -102,6 +102,10 @@ pub struct ConnectionProfileInput {
     #[serde(default)]
     pub notes: Option<String>,
     #[serde(default)]
+    pub is_favorite: Option<bool>,
+    #[serde(default)]
+    pub last_connected_at: Option<String>,
+    #[serde(default)]
     pub auth_kind: Option<ConnectionAuthKind>,
     #[serde(default)]
     pub password: Option<String>,
@@ -160,6 +164,10 @@ pub struct ConnectionProfile {
     pub advanced: ConnectionAdvancedConfig,
     #[serde(default)]
     pub notes: Option<String>,
+    #[serde(default)]
+    pub is_favorite: bool,
+    #[serde(default)]
+    pub last_connected_at: Option<String>,
     pub created_at: String,
     pub updated_at: String,
     #[serde(default)]
@@ -247,10 +255,17 @@ impl ConnectionStore {
             .profiles
             .iter()
             .position(|profile| profile.id == id);
-        let created_at = existing_index
-            .and_then(|index| self.document.profiles.get(index))
+        let existing_profile = existing_index.and_then(|index| self.document.profiles.get(index));
+        let created_at = existing_profile
             .map(|profile| profile.created_at.clone())
             .unwrap_or_else(|| now.to_string());
+        let is_favorite = input.is_favorite.unwrap_or_else(|| {
+            existing_profile
+                .map(|profile| profile.is_favorite)
+                .unwrap_or(false)
+        });
+        let last_connected_at = trim_optional(input.last_connected_at.as_ref())
+            .or_else(|| existing_profile.and_then(|profile| profile.last_connected_at.clone()));
 
         let profile = ConnectionProfile {
             id,
@@ -269,6 +284,8 @@ impl ConnectionStore {
             proxy: validated.proxy,
             advanced: validated.advanced,
             notes: validated.notes,
+            is_favorite,
+            last_connected_at,
             created_at,
             updated_at: now.to_string(),
             auth_kind: None,
@@ -300,6 +317,54 @@ impl ConnectionStore {
         }
 
         self.save()
+    }
+
+    pub fn set_favorite(
+        &mut self,
+        id: &str,
+        is_favorite: bool,
+        now: &str,
+    ) -> Result<ConnectionProfile, AppError> {
+        let index = self
+            .document
+            .profiles
+            .iter()
+            .position(|profile| profile.id == id)
+            .ok_or_else(|| {
+                AppError::new(
+                    "connection_missing",
+                    "连接不存在。",
+                    format!("connection_id={id}"),
+                    false,
+                )
+            })?;
+
+        self.document.profiles[index].is_favorite = is_favorite;
+        self.document.profiles[index].updated_at = now.to_string();
+        let profile = self.document.profiles[index].clone();
+        self.save()?;
+        Ok(profile)
+    }
+
+    pub fn mark_connected(&mut self, id: &str, now: &str) -> Result<ConnectionProfile, AppError> {
+        let index = self
+            .document
+            .profiles
+            .iter()
+            .position(|profile| profile.id == id)
+            .ok_or_else(|| {
+                AppError::new(
+                    "connection_missing",
+                    "连接不存在。",
+                    format!("connection_id={id}"),
+                    false,
+                )
+            })?;
+
+        self.document.profiles[index].last_connected_at = Some(now.to_string());
+        let profile = self.document.profiles[index].clone();
+        self.save()?;
+        Ok(profile)
     }
 
     fn save(&self) -> Result<(), AppError> {
@@ -632,6 +697,8 @@ mod tests {
             proxy: ConnectionProxyConfig::default(),
             advanced: ConnectionAdvancedConfig::default(),
             notes: None,
+            is_favorite: None,
+            last_connected_at: None,
             auth_kind: None,
             password: None,
             private_key_path: None,
@@ -813,6 +880,41 @@ mod tests {
         assert_eq!(updated.created_at, "2026-06-05T09:30:00+08:00");
         assert_eq!(updated.updated_at, "2026-06-05T09:45:00+08:00");
         assert_eq!(store.list().len(), 1);
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn store_tracks_favorite_and_last_connected_at() {
+        let path = temp_store_path("activity");
+        let _ = fs::remove_file(&path);
+        let mut store = ConnectionStore::load(path.clone()).unwrap();
+        let saved = store
+            .upsert(password_input(), "2026-06-05T09:30:00+08:00")
+            .unwrap();
+
+        let favorited = store
+            .set_favorite(&saved.id, true, "2026-06-05T09:35:00+08:00")
+            .unwrap();
+        assert!(favorited.is_favorite);
+        assert_eq!(favorited.last_connected_at, None);
+
+        let connected = store
+            .mark_connected(&saved.id, "2026-06-05T09:40:00+08:00")
+            .unwrap();
+        assert!(connected.is_favorite);
+        assert_eq!(
+            connected.last_connected_at,
+            Some("2026-06-05T09:40:00+08:00".to_string())
+        );
+
+        let reloaded = ConnectionStore::load(path.clone()).unwrap();
+        let profile = reloaded.get(&saved.id).unwrap();
+        assert!(profile.is_favorite);
+        assert_eq!(
+            profile.last_connected_at,
+            Some("2026-06-05T09:40:00+08:00".to_string())
+        );
 
         let _ = fs::remove_file(path);
     }

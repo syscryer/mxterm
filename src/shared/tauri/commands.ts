@@ -9,6 +9,7 @@ import type {
   HostKeyInfo,
 } from "../../features/connections/connectionTypes";
 import type {
+  LocalPathMetadataResult,
   LocalUploadTempResult,
   RemoteFileDeleteInput,
   RemoteFileDownloadToLocalInput,
@@ -39,6 +40,23 @@ export function connectionList() {
 
 export function connectionUpsert(request: ConnectionProfileInput) {
   return invoke<ConnectionProfile>("connection_upsert", { request });
+}
+
+export function connectionSetFavorite(connectionId: string, isFavorite: boolean) {
+  return invoke<ConnectionProfile>("connection_set_favorite", {
+    request: {
+      connection_id: connectionId,
+      is_favorite: isFavorite,
+    },
+  });
+}
+
+export function connectionMarkConnected(connectionId: string) {
+  return invoke<ConnectionProfile>("connection_mark_connected", {
+    request: {
+      connection_id: connectionId,
+    },
+  });
 }
 
 export function connectionDelete(id: string) {
@@ -299,6 +317,14 @@ export function remoteFileDeleteUploadTemp(localPath: string) {
   return invoke<void>("remote_file_delete_upload_temp", {
     request: {
       local_path: localPath,
+    },
+  });
+}
+
+export function localPathMetadata(path: string) {
+  return invoke<LocalPathMetadataResult>("local_path_metadata", {
+    request: {
+      path,
     },
   });
 }

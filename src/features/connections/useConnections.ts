@@ -3,6 +3,8 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   connectionDelete,
   connectionList,
+  connectionMarkConnected,
+  connectionSetFavorite,
   connectionUpsert,
 } from "../../shared/tauri/commands";
 import { hasTauriRuntime } from "../../shared/tauri/runtime";
@@ -27,6 +29,8 @@ const demoConnections: ConnectionProfile[] = [
     proxy: defaultProxyConfig,
     advanced: defaultAdvancedConfig,
     notes: "开发 收藏 k8s",
+    is_favorite: true,
+    last_connected_at: "demo",
     created_at: "demo",
     updated_at: "demo",
   },
@@ -43,6 +47,8 @@ const demoConnections: ConnectionProfile[] = [
     proxy: defaultProxyConfig,
     advanced: defaultAdvancedConfig,
     notes: "测试 qa",
+    is_favorite: false,
+    last_connected_at: "demo",
     created_at: "demo",
     updated_at: "demo",
   },
@@ -60,6 +66,8 @@ const demoConnections: ConnectionProfile[] = [
     proxy: defaultProxyConfig,
     advanced: defaultAdvancedConfig,
     notes: "跳板 tailscale bastion",
+    is_favorite: false,
+    last_connected_at: "demo",
     created_at: "demo",
     updated_at: "demo",
   },
@@ -77,6 +85,8 @@ const demoConnections: ConnectionProfile[] = [
     proxy: defaultProxyConfig,
     advanced: defaultAdvancedConfig,
     notes: "云 aws",
+    is_favorite: false,
+    last_connected_at: "demo",
     created_at: "demo",
     updated_at: "demo",
   },
@@ -92,6 +102,8 @@ const demoConnections: ConnectionProfile[] = [
     proxy: defaultProxyConfig,
     advanced: defaultAdvancedConfig,
     notes: "开发 k8s preview",
+    is_favorite: false,
+    last_connected_at: "demo",
     created_at: "demo",
     updated_at: "demo",
   },
@@ -108,6 +120,8 @@ const demoConnections: ConnectionProfile[] = [
     proxy: defaultProxyConfig,
     advanced: defaultAdvancedConfig,
     notes: "stage 测试",
+    is_favorite: false,
+    last_connected_at: "demo",
     created_at: "demo",
     updated_at: "demo",
   },
@@ -150,6 +164,8 @@ export function useConnections() {
         const profile: ConnectionProfile = {
           ...normalized,
           id: normalized.id || `preview-${Date.now().toString()}`,
+          is_favorite: Boolean(normalized.is_favorite),
+          last_connected_at: normalized.last_connected_at || null,
           name:
             normalized.name ||
             `${normalized.username.trim()}@${normalized.host.trim()}`,
@@ -184,6 +200,65 @@ export function useConnections() {
     [isTauri],
   );
 
+  const setFavorite = useCallback(
+    async (connectionId: string, isFavorite: boolean) => {
+      if (isTauri) {
+        const profile = await connectionSetFavorite(connectionId, isFavorite);
+        setConnections((items) =>
+          items.map((item) => (item.id === profile.id ? profile : item)),
+        );
+        return profile;
+      }
+
+      const now = new Date().toISOString();
+      let nextProfile: ConnectionProfile | null = null;
+      setConnections((items) =>
+        items.map((item) => {
+          if (item.id !== connectionId) {
+            return item;
+          }
+          nextProfile = {
+            ...item,
+            is_favorite: isFavorite,
+            updated_at: now,
+          };
+          return nextProfile;
+        }),
+      );
+      return nextProfile;
+    },
+    [isTauri],
+  );
+
+  const markConnected = useCallback(
+    async (connectionId: string) => {
+      if (isTauri) {
+        const profile = await connectionMarkConnected(connectionId);
+        setConnections((items) =>
+          items.map((item) => (item.id === profile.id ? profile : item)),
+        );
+        return profile;
+      }
+
+      const now = new Date().toISOString();
+      let nextProfile: ConnectionProfile | null = null;
+      setConnections((items) =>
+        items.map((item) => {
+          if (item.id !== connectionId) {
+            return item;
+          }
+          nextProfile = {
+            ...item,
+            last_connected_at: now,
+          };
+          return nextProfile;
+        }),
+      );
+      return nextProfile;
+    },
+    [isTauri],
+  );
+
   const remove = useCallback(
     async (id: string) => {
       if (isTauri) {
@@ -200,11 +275,13 @@ export function useConnections() {
       connections,
       error,
       loading,
+      markConnected,
       reload,
       remove,
+      setFavorite,
       upsert,
     }),
-    [connections, error, loading, reload, remove, upsert],
+    [connections, error, loading, markConnected, reload, remove, setFavorite, upsert],
   );
 }
 
@@ -259,6 +336,8 @@ export function normalizeConnectionInput(input: ConnectionProfileInput): Connect
         defaultAdvancedConfig.keepalive_interval_ms,
     },
     notes: trim(input.notes),
+    is_favorite: input.is_favorite,
+    last_connected_at: trim(input.last_connected_at),
   };
 }
 

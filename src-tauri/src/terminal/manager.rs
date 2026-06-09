@@ -198,7 +198,8 @@ fn spawn_reader(
                 ChannelMsg::ExitStatus { exit_status: code } => {
                     exit_status = Some(code);
                 }
-                ChannelMsg::Eof | ChannelMsg::Close => break,
+                ChannelMsg::Eof => {}
+                ChannelMsg::Close => break,
                 _ => {}
             }
         }

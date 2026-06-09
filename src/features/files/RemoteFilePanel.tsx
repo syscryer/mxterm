@@ -58,6 +58,7 @@ interface RemoteFilePanelProps {
   transferAttention?: boolean;
   transferCount?: number;
   transferPanel?: ReactNode;
+  nativeDropTargetPath?: string | null;
   onCopyPath?: (path: string) => void;
   onCreateDirectory?: (parentPath: string) => void;
   onCreateFile?: (parentPath: string) => void;
@@ -134,6 +135,7 @@ export function RemoteFilePanel({
   transferAttention = false,
   transferCount = 0,
   transferPanel,
+  nativeDropTargetPath = null,
   onCopyPath,
   onCreateDirectory,
   onCreateFile,
@@ -208,6 +210,7 @@ export function RemoteFilePanel({
   const isCurrentPathLoading = loadingPath === currentPath;
   const showCurrentPathLoading = visibleLoadingPath === currentPath;
   const disabled = !connection;
+  const effectiveDropTargetPath = dropTargetPath || nativeDropTargetPath;
 
   return (
     <aside className="tool-pane" aria-label="右侧工具面板">
@@ -254,10 +257,11 @@ export function RemoteFilePanel({
               <ContextMenu.Root>
                 <ContextMenu.Trigger asChild>
                   <div
-                    className={`file-list ${dropTargetPath === activeDirectoryPath ? "is-drop-target" : ""}`}
+                    className={`file-list ${effectiveDropTargetPath === activeDirectoryPath ? "is-drop-target" : ""}`}
+                    data-remote-file-drop-target={activeDirectoryPath}
                     onDragEnter={(event) => handleLocalDragEnter(event, activeDirectoryPath)}
                     onDragLeave={(event) => handleLocalDragLeave(event, activeDirectoryPath)}
-                    onDragOver={handleLocalDragOver}
+                    onDragOver={(event) => handleLocalDragOver(event, activeDirectoryPath)}
                     onDrop={(event) => handleDropUpload(event, activeDirectoryPath)}
                   >
                     <section className="remote-file-tree" aria-label="远程文件树">
@@ -415,8 +419,9 @@ export function RemoteFilePanel({
               className={`remote-file-row ${isActiveDirectory ? "is-active-directory" : ""} ${
                 isLocatedDirectory ? "is-located" : ""
               } ${
-                dropTargetPath === entry.path ? "is-drop-target" : ""
+                effectiveDropTargetPath === entry.path ? "is-drop-target" : ""
               }`}
+              data-remote-file-drop-target={isDirectory ? entry.path : undefined}
               draggable
               style={{
                 paddingLeft: `${8 + depth * 16}px`,
@@ -450,7 +455,7 @@ export function RemoteFilePanel({
               }}
               onDragOver={(event) => {
                 if (isDirectory) {
-                  handleLocalDragOver(event);
+                  handleLocalDragOver(event, entry.path);
                 }
               }}
               onDragStart={(event) => handleRemoteDragStart(event, entry)}
@@ -643,6 +648,10 @@ export function RemoteFilePanel({
   }
 
   function handleLocalDragLeave(event: DragEvent<HTMLElement>, path: string) {
+    if (!hasLocalFileDrop(event.dataTransfer)) {
+      return;
+    }
+    event.stopPropagation();
     if (dropTargetPath !== path) {
       return;
     }
@@ -653,12 +662,16 @@ export function RemoteFilePanel({
     setDropTargetPath(null);
   }
 
-  function handleLocalDragOver(event: DragEvent<HTMLElement>) {
+  function handleLocalDragOver(event: DragEvent<HTMLElement>, path: string) {
     if (!hasLocalFileDrop(event.dataTransfer)) {
       return;
     }
     event.preventDefault();
+    event.stopPropagation();
     event.dataTransfer.dropEffect = "copy";
+    if (dropTargetPath !== path) {
+      setDropTargetPath(path);
+    }
   }
 
   function handleRemoteDragStart(event: DragEvent<HTMLElement>, entry: RemoteFileEntry) {
@@ -1073,7 +1086,17 @@ function relativePathForFile(file: File) {
 }
 
 function hasLocalFileDrop(dataTransfer: DataTransfer) {
-  return Array.from(dataTransfer.types || []).includes("Files");
+  const types = Array.from(dataTransfer.types || []).map((type) => type.toLowerCase());
+  if (types.includes("application/x-mxterm-remote-file")) {
+    return false;
+  }
+  if (types.includes("files")) {
+    return true;
+  }
+  if (Array.from(dataTransfer.items || []).some((item) => item.kind === "file")) {
+    return true;
+  }
+  return (dataTransfer.files?.length || 0) > 0;
 }
 
 function formatError(error: unknown) {
