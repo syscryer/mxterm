@@ -20,6 +20,7 @@
 - `credential_delete(app: AppHandle, id: String) -> Result<(), AppError>`
 - `known_host_trust(app: AppHandle, request: KnownHostTrustRequest) -> Result<(), AppError>`
 - `connection_test(app: AppHandle, request: ConnectionRuntimeCredentialRequest) -> Result<ConnectionStepResult, AppError>`
+- `connection_test_profile(app: AppHandle, request: ConnectionProfileInput) -> Result<ConnectionStepResult, AppError>`
 - `connection_probe_latency(app: AppHandle, request: ConnectionLatencyProbeRequest) -> Result<ConnectionLatencyProbeResult, AppError>`
 - `terminal_connect(app: AppHandle, manager: State<TerminalManager>, request: TerminalConnectRequest) -> Result<String, AppError>`
 - `terminal_write(manager: State<TerminalManager>, request: TerminalWriteRequest) -> Result<(), AppError>`
@@ -147,6 +148,7 @@ reachable: bool
 - `credential_delete` must check saved connection references and return `credential_in_use` instead of deleting a credential currently referenced by `credential_mode=saved`.
 - Host-key verification is stateful. Unknown host keys return `host_key_unknown` with serialized `HostKeyInfo` in `raw_message`; changed host keys return `host_key_changed` with the new key and old fingerprint. Only `known_host_trust` may write or update trusted host keys.
 - `connection_test`, `terminal_connect`, and remote-file commands must use the same saved-connection resolution path in `ssh_config.rs`; do not re-resolve credentials independently in UI-facing command handlers.
+- `connection_test_profile` is only for testing the current `ConnectionDialog` form before it is saved. It must validate and resolve a transient profile through `resolve_transient_connection(...)`, may read `credentials.json` when `credential_mode=saved`, and must not call `ConnectionStore::upsert`, persist `connections.json`, mark recent activity, or synthesize a permanent connection id.
 - `connection_probe_latency` must load the saved profile by `connection_id` and probe only the saved `host`/`port` with a short TCP timeout. It must not require or log passwords, private keys, or passphrases.
 - Terminal output and state events include both `session_id` and the optional frontend `request_id`. Keep `request_id` on early connection events so React can display shell output that arrives before the `terminal_connect` promise resolves.
 - The interactive terminal reader must not stop on `ChannelMsg::Eof`; continue reading until `ChannelMsg::Close` or channel end so a shell prompt or late startup output cannot be lost during frontend handoff.
@@ -169,6 +171,7 @@ reachable: bool
 | Advanced auth timeout outside allowed range | `connection_auth_timeout_invalid` | true |
 | Advanced keepalive interval outside allowed range | `connection_keepalive_invalid` | true |
 | Delete/open unknown connection id | `connection_missing` | false |
+| Transient dialog test has invalid profile input | same validation code as `connection_upsert` | true |
 | Credential name is blank | `credential_name_missing` | true |
 | Credential password auth has blank password | `credential_password_missing` | true |
 | Credential private-key auth has blank key path | `credential_private_key_missing` | true |
@@ -191,9 +194,10 @@ reachable: bool
 ### 5. Good / Base / Bad Cases
 
 - Good: `connection_upsert` receives inline password auth, trims `host` and `username`, defaults `name`, clears private-key fields, persists the JSON store, and returns the saved profile.
+- Good: `connection_test_profile` receives the unsaved dialog form, validates it, resolves inline or saved credential material, opens and closes a test SSH session, and leaves `connections.json` unchanged.
 - Good: `terminal_connect` receives `connection_id` for a saved-credential connection plus stale frontend host fields; Rust loads the saved profile, resolves the credential, verifies the host key, applies proxy/timeout settings, and uses the saved values.
 - Base: `connection_test` receives prompt credentials, resolves the saved connection with those runtime credentials, opens a reusable exec session, closes it, and returns `{ ok: true }`.
-- Bad: `credential_delete` deletes a credential referenced by an existing connection or a command handler accepts frontend-supplied raw credentials for remote-file commands.
+- Bad: `credential_delete` deletes a credential referenced by an existing connection, a dialog test calls `ConnectionStore::upsert` before connecting, or a command handler accepts frontend-supplied raw credentials for remote-file commands.
 
 ### 6. Tests Required
 
@@ -202,6 +206,7 @@ reachable: bool
 - Unit-test known-host store behavior for unknown, trusted, and changed fingerprints.
 - Unit-test saved connection resolution for saved, inline, prompt, missing credential, proxy, and advanced timeout behavior.
 - Unit-test terminal connection validation for missing runtime prompt credentials and invalid direct SSH request fields.
+- Source-check that `connection_test_profile`, `resolve_transient_connection`, and the frontend `connectionTestProfile` wrapper are registered together, and that dialog testing does not call `saveConnection` / `connectionUpsert`.
 - Run `cargo test --manifest-path src-tauri/Cargo.toml` and `cargo check --manifest-path src-tauri/Cargo.toml` after changing command payloads or storage behavior.
 
 ### 7. Wrong vs Correct

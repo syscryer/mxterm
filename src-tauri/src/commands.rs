@@ -21,7 +21,8 @@ use crate::remote_files::{
 };
 use crate::ssh_config::{
     connection_store_path, credential_store_path, known_host_store_path, load_connection_profile,
-    resolve_saved_connection, ResolvedSshConfig, RuntimeCredentialInput,
+    resolve_saved_connection, resolve_transient_connection, ResolvedSshConfig,
+    RuntimeCredentialInput,
 };
 use crate::terminal::manager::TerminalManager;
 use crate::terminal::session::ExecProgressCallback;
@@ -1033,6 +1034,23 @@ pub async fn connection_test(
             private_key_passphrase: request.private_key_passphrase,
         }),
     )?;
+
+    crate::terminal::session::ReusableExecSession::connect_resolved(&app, &config)
+        .await?
+        .close()
+        .await;
+    Ok(ConnectionStepResult {
+        ok: true,
+        message: "连接测试通过。".to_string(),
+    })
+}
+
+#[tauri::command]
+pub async fn connection_test_profile(
+    app: AppHandle,
+    request: ConnectionProfileInput,
+) -> Result<ConnectionStepResult, AppError> {
+    let config = resolve_transient_connection(&app, request)?;
 
     crate::terminal::session::ReusableExecSession::connect_resolved(&app, &config)
         .await?

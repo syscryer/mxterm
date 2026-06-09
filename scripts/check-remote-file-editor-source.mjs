@@ -6,6 +6,7 @@ const commandsRs = readFileSync(new URL("../src-tauri/src/commands.rs", import.m
 const eventsRs = readFileSync(new URL("../src-tauri/src/events.rs", import.meta.url), "utf8");
 const libRs = readFileSync(new URL("../src-tauri/src/lib.rs", import.meta.url), "utf8");
 const remoteFilesRs = readFileSync(new URL("../src-tauri/src/remote_files.rs", import.meta.url), "utf8");
+const sshConfigRs = readFileSync(new URL("../src-tauri/src/ssh_config.rs", import.meta.url), "utf8");
 const terminalSessionRs = readFileSync(new URL("../src-tauri/src/terminal/session.rs", import.meta.url), "utf8");
 const tauriCapability = readFileSync(new URL("../src-tauri/capabilities/default.json", import.meta.url), "utf8");
 const tauriEventsTs = readFileSync(new URL("../src/shared/tauri/events.ts", import.meta.url), "utf8");
@@ -31,6 +32,7 @@ for (const needle of ["monaco-editor", "RemoteFileEditor", "remoteFileLanguageFo
 }
 
 for (const wrapper of [
+  "connectionTestProfile",
   "remoteFileRead",
   "remoteFileWrite",
   "remoteFileCreateFile",
@@ -55,6 +57,10 @@ for (const wrapper of [
   }
 }
 
+if (!commandsTs.includes('"connection_test_profile"')) {
+  throw new Error("connectionTestProfile should invoke connection_test_profile");
+}
+
 if (/remoteFileAppendUploadTemp[\s\S]*Array\.from\(chunk\)/.test(commandsTs)) {
   throw new Error("remoteFileAppendUploadTemp should pass Uint8Array chunks without Array.from on the hot path");
 }
@@ -74,6 +80,7 @@ for (const dialogNeedle of [
 }
 
 for (const command of [
+  "connection_test_profile",
   "remote_file_read",
   "remote_file_write",
   "remote_file_create_file",
@@ -96,6 +103,38 @@ for (const command of [
   if (!commandsRs.includes(command) || !libRs.includes(`commands::${command}`)) {
     throw new Error(`Rust command ${command} should be defined and registered`);
   }
+}
+
+if (!commandsRs.includes("resolve_transient_connection") || !sshConfigRs.includes("pub fn resolve_transient_connection")) {
+  throw new Error("Dialog connection tests should resolve a transient profile without persisting it");
+}
+
+const transientResolverMatch = sshConfigRs.match(
+  /pub fn resolve_transient_connection\([\s\S]*?\n\}/,
+);
+if (!transientResolverMatch) {
+  throw new Error("ssh_config.rs should define resolve_transient_connection");
+}
+const transientResolver = transientResolverMatch[0];
+if (!transientResolver.includes("validate_profile_input(&input)")) {
+  throw new Error("resolve_transient_connection should validate the current dialog profile input");
+}
+if (/ConnectionStore::load|store\.upsert|\.save\(\)/.test(transientResolver)) {
+  throw new Error("resolve_transient_connection must not write or upsert connection profiles");
+}
+
+const dialogTestMatch = workspaceShell.match(
+  /async function testConnectionFromDialog\([^)]*\)\s*\{([\s\S]*?)\n  \}/,
+);
+if (!dialogTestMatch) {
+  throw new Error("WorkspaceShell should define testConnectionFromDialog");
+}
+const dialogTestBody = dialogTestMatch[1];
+if (!dialogTestBody.includes("connectionTestProfile(input)")) {
+  throw new Error("Dialog connection tests should call connectionTestProfile(input)");
+}
+if (/saveConnection\(|connectionUpsert|connectionTest\(\s*\{/.test(dialogTestBody)) {
+  throw new Error("Dialog connection tests must not save/upsert the profile before testing");
 }
 
 for (const backendSymbol of [

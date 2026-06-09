@@ -1,6 +1,6 @@
 import * as Dialog from "@radix-ui/react-dialog";
 import { AlertTriangle, CheckCircle2, Eye, EyeOff, Loader2, X } from "lucide-react";
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 
 import { ConfirmDialog } from "../../shared/ui/ConfirmDialog";
 import type {
@@ -87,6 +87,7 @@ export function ConnectionDialog({
   const [showPassphrase, setShowPassphrase] = useState(false);
   const [showProxyPassword, setShowProxyPassword] = useState(false);
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
+  const busyRef = useRef(false);
   const groupOptions = useMemo(
     () => buildGroupOptions(groups, form.group || ""),
     [form.group, groups],
@@ -98,6 +99,7 @@ export function ConnectionDialog({
     }
 
     setActiveTab("basic");
+    busyRef.current = false;
     setBusy(false);
     setFeedback(null);
     setTestState("idle");
@@ -121,6 +123,11 @@ export function ConnectionDialog({
   }
 
   async function testConnection() {
+    if (busyRef.current) {
+      return;
+    }
+
+    busyRef.current = true;
     setBusy(true);
     setFeedback({
       detail: "测试会复用当前表单配置，不会打开终端。",
@@ -140,6 +147,7 @@ export function ConnectionDialog({
       setTestState("error");
       setFeedback(describeDialogError(nextError));
     } finally {
+      busyRef.current = false;
       setBusy(false);
     }
   }
@@ -156,6 +164,11 @@ export function ConnectionDialog({
   }
 
   async function runAction(action: () => Promise<void>) {
+    if (busyRef.current) {
+      return;
+    }
+
+    busyRef.current = true;
     setBusy(true);
     setFeedback(null);
 
@@ -166,6 +179,7 @@ export function ConnectionDialog({
       setTestState("error");
       setFeedback(describeDialogError(nextError));
     } finally {
+      busyRef.current = false;
       setBusy(false);
     }
   }

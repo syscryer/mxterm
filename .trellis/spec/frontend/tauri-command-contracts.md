@@ -20,6 +20,7 @@ credentialList(): Promise<CredentialProfile[]>
 credentialUpsert(request: CredentialProfileInput): Promise<CredentialProfile>
 credentialDelete(id: string): Promise<void>
 connectionTest(request: ConnectionRuntimeCredentialRequest): Promise<ConnectionStepResult>
+connectionTestProfile(request: ConnectionProfileInput): Promise<ConnectionStepResult>
 knownHostTrust(hostKey: HostKeyInfo): Promise<void>
 connectionProbeLatency(connectionId: string): Promise<{ latency_ms: number | null; reachable: boolean }>
 terminalConnect(request: TerminalConnectRequest): Promise<string>
@@ -107,7 +108,7 @@ type HostKeyInfo = {
 - Credential profiles own only authentication material: password or private key path/passphrase plus local notes. They must not store host, port, or username.
 - When opening a saved connection, the connection-preparation flow should pass `connection_id` plus prompt credentials only when `credential_mode === "prompt"`; Rust treats the saved profile as authoritative.
 - After a terminal connection succeeds, call `connectionMarkConnected(connection.id)` so the repository's recent views sort by real connection activity. Favorite toggles must call `connectionSetFavorite(...)` and preserve both fields when editing or moving a connection.
-- `ConnectionDialog` can test the current form by saving/upserting the profile, then calling `connectionTest({ connection_id })` or including prompt runtime credentials when required. It must show validation and connection errors as dialog feedback instead of writing them into a terminal.
+- `ConnectionDialog` must test the current form with `connectionTestProfile(input)`. It must not call `connectionUpsert`, `saveConnection`, or `connectionTest({ connection_id })` for unsaved dialog tests, because testing must not persist a profile or create a connection id. It must show validation and connection errors as dialog feedback instead of writing them into a terminal.
 - Host-key confirmation UI must call `knownHostTrust(hostKey)` with the `HostKeyInfo` returned by a recoverable host-key error; do not synthesize fingerprints on the frontend.
 - Connection latency probing must go through `connectionProbeLatency(connection.id)`. The UI sends only a saved connection id; Rust reloads the saved host/port and never needs credential fields for this probe.
 - The connection preparation page owns startup, host-key confirmation, prompt credentials, retry, edit, and failure UI. A terminal tab is created only after `terminalConnect` returns a session id.
@@ -123,6 +124,7 @@ type HostKeyInfo = {
 | --- | --- |
 | `connectionList` fails in a browser preview without Tauri | Show the static fallback profile from `useConnections` so the layout remains inspectable. |
 | `connectionUpsert` rejects validation | Surface the Rust `AppError.message` as user-facing form feedback. |
+| `connectionTestProfile` rejects validation or connection setup | Keep the dialog open, show the Rust `AppError.message`, and do not add or update the connection list. |
 | `credentialList` fails in a browser preview without Tauri | Show preview credentials from `useCredentials` so the credential management layout remains inspectable. |
 | `credentialUpsert` rejects validation | Surface the Rust `AppError.message` near the credential form. |
 | `credentialDelete` returns `credential_in_use` | Keep the credential, show that existing connections must be edited before deletion, and do not remove local UI state. |
@@ -140,13 +142,15 @@ type HostKeyInfo = {
 ### 5. Good / Base / Bad Cases
 
 - Good: `ConnectionDialog` holds editable strings, clears fields when credential or auth mode changes, and delegates normalization to `useConnections` before saving.
+- Good: `ConnectionDialog` tests the current unsaved form through `connectionTestProfile(input)`, leaving the connection repository unchanged until the user clicks save.
 - Good: `SettingsView` edits credential-only records through `useCredentials`; it never asks for host, port, or username in credential management.
 - Base: `ConnectionPane` displays `username@host:port`, calls `onOpen(connection)`, and does not know about Tauri details.
-- Bad: A component calls `invoke("connection_upsert", ...)` directly, stores runtime session ids inside `ConnectionProfile`, or sends raw passwords to remote-file commands.
+- Bad: A component calls `invoke("connection_upsert", ...)` directly, tests an unsaved dialog form by saving/upserting it first, stores runtime session ids inside `ConnectionProfile`, or sends raw passwords to remote-file commands.
 
 ### 6. Tests Required
 
 - Run `npm run check -- --pretty false` after changing command wrappers, connection types, credential types, terminal request types, or component props that carry command payloads.
+- Run `node scripts/check-remote-file-editor-source.mjs` after changing `ConnectionDialog`, `WorkspaceShell` dialog test handlers, or connection command wrappers so the no-save dialog-test guard is checked.
 - Add focused tests once the frontend test runner exists for credential-mode field clearing, credential delete handling, host-key recoverable states, fallback behavior, and error display.
 - Cross-check changed TypeScript payload fields against `src-tauri/src/commands.rs` and `src-tauri/src/connections/mod.rs` in the same task.
 

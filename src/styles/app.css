@@ -2141,19 +2141,18 @@ button {
 
 .tree-connection-row:hover .tree-connection-favorite,
 .tree-connection-row:focus-within .tree-connection-favorite,
-.tree-connection-favorite.active,
 .tree-connection-favorite:focus-visible {
   opacity: 1;
   pointer-events: auto;
 }
 
 .tree-connection-favorite:hover {
-  color: color-mix(in srgb, #e0b341 84%, var(--mx-text) 16%);
-  background: rgb(224 179 65 / 10%);
+  color: var(--mx-muted);
+  background: rgb(15 23 42 / 4.5%);
 }
 
 .tree-connection-favorite.active {
-  color: #c49116;
+  color: var(--mx-muted);
 }
 
 .tree-connection-favorite.active .ui-icon {
@@ -3454,8 +3453,8 @@ button {
 }
 
 .connection-action-icon.favorite.active {
-  color: #b7791f;
-  background: rgb(183 121 31 / 8%);
+  color: var(--mx-muted);
+  background: rgb(15 23 42 / 4.5%);
 }
 
 .connection-action-icon.favorite.active .ui-icon {
