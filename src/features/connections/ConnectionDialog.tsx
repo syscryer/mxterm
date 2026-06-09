@@ -750,6 +750,8 @@ function formFromConnection(connection: ConnectionProfile): ConnectionProfileInp
       ...connection.advanced,
     },
     notes: connection.notes || "",
+    is_favorite: connection.is_favorite,
+    last_connected_at: connection.last_connected_at || "",
   };
 }
 

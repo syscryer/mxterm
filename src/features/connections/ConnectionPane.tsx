@@ -48,10 +48,11 @@ interface ConnectionPaneProps {
   onOpenSettings: () => void;
   onRefresh: () => void;
   onSelect: (connection: ConnectionProfile) => void;
+  onToggleFavorite: (connection: ConnectionProfile) => void | Promise<void>;
   selectedId: string | null;
 }
 
-type SystemFolderId = "favorites" | "recent" | "common";
+type SystemFolderId = "favorites" | "recent";
 type FolderId = SystemFolderId | `group-${string}`;
 type DropTargetId = "root" | `group-${string}`;
 type ConnectionGroupAssignments = Record<string, string>;
@@ -89,7 +90,6 @@ type DeleteRequest =
 const systemFolders: SystemFolder[] = [
   { id: "favorites", color: "#e0b341", icon: Star, label: "收藏" },
   { id: "recent", color: "#64748b", icon: Clock3, label: "最近" },
-  { id: "common", color: "#4f7d63", icon: Folder, label: "常用" },
 ];
 
 const customGroupStorageKey = "mxterm.connectionGroups.v2";
@@ -110,6 +110,7 @@ export function ConnectionPane({
   onOpenSettings,
   onRefresh,
   onSelect,
+  onToggleFavorite,
   selectedId,
 }: ConnectionPaneProps) {
   const [customGroups, setCustomGroups] = useState<CustomGroup[]>(readStoredGroups);
@@ -125,16 +126,11 @@ export function ConnectionPane({
   const [mouseDrag, setMouseDrag] = useState<MouseDragState | null>(null);
   const [quickSelectedId, setQuickSelectedId] = useState<string | null>(null);
   const [expandedFolders, setExpandedFolders] = useState<Record<FolderId, boolean>>({
-    common: true,
     favorites: true,
     recent: true,
   });
 
   const catalog = useMemo(() => buildCatalog(connections), [connections]);
-  const visibleSystemFolders = useMemo(
-    () => systemFolders.filter((folder) => catalog[folder.id].length > 0),
-    [catalog],
-  );
   const customGroupIds = useMemo(
     () => new Set(customGroups.map((group) => group.id)),
     [customGroups],
@@ -231,32 +227,31 @@ export function ConnectionPane({
           {loading ? <p className="pane-note">加载连接中...</p> : null}
           {error ? <p className="pane-error">{error}</p> : null}
 
-          {visibleSystemFolders.length > 0 ? (
-            <div className="tree-block" aria-label="固定分组">
-              {visibleSystemFolders.map((folder) => (
-                <TreeFolder
-                  color={folder.color}
-                  connections={catalog[folder.id]}
-                  expanded={expandedFolders[folder.id]}
-                  icon={folder.icon}
-                  key={folder.id}
-                  label={folder.label}
-                  onEdit={onEdit}
-                  onOpen={onOpen}
-                  onSelect={selectQuickConnection}
-                  onCreateConnection={() => onCreate()}
-                  onCreateGroup={() => beginCreateGroup(null)}
-                  onConnect={connectQuickConnection}
-                  onDeleteConnection={requestDeleteConnection}
-                  onConnectionDragEnd={finishConnectionDrag}
-                  onConnectionDragStart={beginConnectionDrag}
-                  onMouseConnectionDragStart={beginMouseConnectionDrag}
-                  onToggle={() => toggleFolder(folder.id)}
-                  selectedId={quickSelectedId}
-                />
-              ))}
-            </div>
-          ) : null}
+          <div className="tree-block" aria-label="固定分组">
+            {systemFolders.map((folder) => (
+              <TreeFolder
+                color={folder.color}
+                connections={catalog[folder.id]}
+                expanded={expandedFolders[folder.id]}
+                icon={folder.icon}
+                key={folder.id}
+                label={folder.label}
+                onEdit={onEdit}
+                onOpen={onOpen}
+                onSelect={selectQuickConnection}
+                onToggleFavorite={onToggleFavorite}
+                onCreateConnection={() => onCreate()}
+                onCreateGroup={() => beginCreateGroup(null)}
+                onConnect={connectQuickConnection}
+                onDeleteConnection={requestDeleteConnection}
+                onConnectionDragEnd={finishConnectionDrag}
+                onConnectionDragStart={beginConnectionDrag}
+                onMouseConnectionDragStart={beginMouseConnectionDrag}
+                onToggle={() => toggleFolder(folder.id)}
+                selectedId={quickSelectedId}
+              />
+            ))}
+          </div>
 
           <div className="tree-section-head">
             <span>连接</span>
@@ -314,6 +309,7 @@ export function ConnectionPane({
                 onEdit={onEdit}
                 onOpen={onOpen}
                 onSelect={selectTreeConnection}
+                onToggleFavorite={onToggleFavorite}
                 selected={connection.id === selectedId}
               />
             ))}
@@ -478,6 +474,7 @@ export function ConnectionPane({
         onEdit={onEdit}
         onOpen={onOpen}
         onSelect={selectTreeConnection}
+        onToggleFavorite={onToggleFavorite}
         onCreateConnection={() => onCreate(group.id)}
         onCreateGroup={() => beginCreateGroup(group.id)}
         onConnect={onConnect}
@@ -727,6 +724,7 @@ function TreeFolder({
   onEdit,
   onOpen,
   onSelect,
+  onToggleFavorite,
   onCreateConnection,
   onCreateGroup,
   onConnect,
@@ -754,6 +752,7 @@ function TreeFolder({
   onEdit: (connection: ConnectionProfile) => void;
   onOpen: (connection: ConnectionProfile) => void;
   onSelect: (connection: ConnectionProfile) => void;
+  onToggleFavorite: (connection: ConnectionProfile) => void | Promise<void>;
   onCreateConnection: () => void;
   onCreateGroup: () => void;
   onConnect: (connection: ConnectionProfile) => void;
@@ -853,6 +852,7 @@ function TreeFolder({
               onEdit={onEdit}
               onOpen={onOpen}
               onSelect={onSelect}
+              onToggleFavorite={onToggleFavorite}
               selected={connection.id === selectedId}
             />
           ))}
@@ -890,6 +890,7 @@ function ConnectionTreeLeaf({
   onEdit,
   onOpen,
   onSelect,
+  onToggleFavorite,
   selected,
 }: {
   connection: ConnectionProfile;
@@ -906,8 +907,11 @@ function ConnectionTreeLeaf({
   onEdit: (connection: ConnectionProfile) => void;
   onOpen: (connection: ConnectionProfile) => void;
   onSelect: (connection: ConnectionProfile) => void;
+  onToggleFavorite: (connection: ConnectionProfile) => void | Promise<void>;
   selected: boolean;
 }) {
+  const favoriteLabel = connection.is_favorite ? "取消收藏" : "加入收藏";
+
   return (
     <ContextMenu.Root>
       <ContextMenu.Trigger asChild>
@@ -927,6 +931,20 @@ function ConnectionTreeLeaf({
               <small>{formatAddress(connection)}</small>
             </span>
           </button>
+          <Tooltip label={favoriteLabel}>
+            <button
+              className={`tree-connection-favorite ${connection.is_favorite ? "active" : ""}`}
+              type="button"
+              aria-label={`${favoriteLabel} ${connection.name}`}
+              onMouseDown={(event) => event.stopPropagation()}
+              onClick={(event) => {
+                event.stopPropagation();
+                void onToggleFavorite(connection);
+              }}
+            >
+              <Star className="ui-icon" aria-hidden="true" />
+            </button>
+          </Tooltip>
         </div>
       </ContextMenu.Trigger>
       <ContextMenu.Portal>
@@ -938,6 +956,10 @@ function ConnectionTreeLeaf({
           <ContextMenu.Item className="context-menu-item" onSelect={() => onEdit(connection)}>
             <Pencil className="ui-icon" aria-hidden="true" />
             <span>编辑连接</span>
+          </ContextMenu.Item>
+          <ContextMenu.Item className="context-menu-item" onSelect={() => void onToggleFavorite(connection)}>
+            <Star className="ui-icon" aria-hidden="true" />
+            <span>{favoriteLabel}</span>
           </ContextMenu.Item>
           <ContextMenu.Separator className="context-menu-separator" />
           <ContextMenu.Item className="context-menu-item danger" onSelect={requestDelete}>
@@ -982,32 +1004,32 @@ function buildCatalog(connections: ConnectionProfile[]) {
   const recent = [...connections].sort(sortByRecent);
 
   return {
-    common: recent.filter((connection) => hasKeywords(connection, ["common", "常用"])),
-    favorites: recent.filter((connection) =>
-      hasKeywords(connection, ["favorite", "fav", "收藏", "star"]),
-    ),
+    favorites: recent.filter((connection) => connection.is_favorite),
     recent,
   } satisfies Record<SystemFolderId, ConnectionProfile[]>;
 }
 
-function hasKeywords(connection: ConnectionProfile, keywords: string[]) {
-  const haystack = [
-    connection.name,
-    connection.notes || "",
-    connection.host,
-    connection.username,
-  ]
-    .join(" ")
-    .toLowerCase();
-
-  return keywords.some((keyword) => haystack.includes(keyword.toLowerCase()));
-}
-
 function sortByRecent(left: ConnectionProfile, right: ConnectionProfile) {
-  return timestampOf(right.updated_at) - timestampOf(left.updated_at);
+  const rightConnectedAt = timestampOf(right.last_connected_at);
+  const leftConnectedAt = timestampOf(left.last_connected_at);
+
+  if (rightConnectedAt !== leftConnectedAt) {
+    return rightConnectedAt - leftConnectedAt;
+  }
+
+  const createdDiff = timestampOf(right.created_at) - timestampOf(left.created_at);
+  if (createdDiff !== 0) {
+    return createdDiff;
+  }
+
+  return left.name.localeCompare(right.name, "zh-Hans");
 }
 
-function timestampOf(value: string) {
+function timestampOf(value?: string | null) {
+  if (!value) {
+    return 0;
+  }
+
   const parsed = Date.parse(value);
   return Number.isNaN(parsed) ? 0 : parsed;
 }

@@ -580,13 +580,13 @@ async fn open_proxy_stream(request: &ResolvedSshConfig) -> Result<TcpStream, App
         )
         .await?
         .map_err(|error| {
-                AppError::new(
-                    "terminal_tcp_connect_failed",
-                    "SSH TCP 连接失败。",
-                    error,
-                    true,
-                )
-            }),
+            AppError::new(
+                "terminal_tcp_connect_failed",
+                "SSH TCP 连接失败。",
+                error,
+                true,
+            )
+        }),
         ConnectionProxyKind::HttpConnect => open_http_connect_stream(request).await,
         ConnectionProxyKind::Socks5 => open_socks5_stream(request).await,
     }

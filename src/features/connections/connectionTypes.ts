@@ -33,6 +33,8 @@ export interface ConnectionProfile {
   proxy: ConnectionProxyConfig;
   advanced: ConnectionAdvancedConfig;
   notes?: string | null;
+  is_favorite: boolean;
+  last_connected_at?: string | null;
   created_at: string;
   updated_at: string;
   auth_kind?: ConnectionAuthKind | null;
@@ -58,6 +60,8 @@ export interface ConnectionProfileInput {
   proxy: ConnectionProxyConfig;
   advanced: ConnectionAdvancedConfig;
   notes?: string;
+  is_favorite?: boolean;
+  last_connected_at?: string;
   auth_kind?: ConnectionAuthKind;
   password?: string;
   private_key_path?: string;

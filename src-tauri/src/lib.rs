@@ -18,6 +18,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::connection_list,
             commands::connection_upsert,
+            commands::connection_set_favorite,
+            commands::connection_mark_connected,
             commands::connection_delete,
             commands::connection_probe_latency,
             commands::connection_test,
@@ -45,6 +47,7 @@ pub fn run() {
             commands::remote_file_prepare_upload_temp,
             commands::remote_file_append_upload_temp,
             commands::remote_file_delete_upload_temp,
+            commands::local_path_metadata,
             commands::remote_file_download,
             commands::remote_file_check_download_target,
             commands::remote_file_download_to_local,

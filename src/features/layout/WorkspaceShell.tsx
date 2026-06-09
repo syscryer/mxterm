@@ -11,6 +11,7 @@ import {
 } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
 import { openPath, revealItemInDir } from "@tauri-apps/plugin-opener";
+import { getCurrentWebview, type DragDropEvent } from "@tauri-apps/api/webview";
 import {
   AlertTriangle,
   Clock3,
@@ -86,6 +87,7 @@ import {
   knownHostTrust,
   connectionProbeLatency,
   remoteFileCheckPath,
+  localPathMetadata,
   remoteFileCheckDownloadTarget,
   remoteFileCreateDirectory,
   remoteFileCreateFile,
@@ -248,9 +250,12 @@ const maxEditorTerminalSplitPercent = 72;
 const editorTerminalKeyboardResizeStep = 3;
 const fileReadChunkBytes = 4 * 1024 * 1024;
 const uploadTempAppendChunkBytes = fileReadChunkBytes;
+const remoteFileDropTargetAttribute = "data-remote-file-drop-target";
+
+type NativeFileDropPosition = Extract<DragDropEvent, { type: "enter" | "over" | "drop" }>["position"];
 
 export function WorkspaceShell() {
-  const { connections, error, loading, reload, remove, upsert } = useConnections();
+  const { connections, error, loading, markConnected, reload, remove, setFavorite, upsert } = useConnections();
   const {
     credentials,
     error: credentialError,
@@ -291,6 +296,7 @@ export function WorkspaceShell() {
   const [remoteFileTextError, setRemoteFileTextError] = useState<string | null>(null);
   const [rightTool, setRightTool] = useState<RemoteFileTool>("files");
   const [remoteFileTransfers, setRemoteFileTransfers] = useState<RemoteFileTransferItem[]>([]);
+  const [nativeFileDropTargetPath, setNativeFileDropTargetPath] = useState<string | null>(null);
   const [remoteFileProperties, setRemoteFileProperties] =
     useState<RemoteFilePropertiesState | null>(null);
   const [transferConflictPrompt, setTransferConflictPrompt] =
@@ -414,6 +420,39 @@ export function WorkspaceShell() {
       unlisten?.();
     };
   }, []);
+
+  useEffect(() => {
+    if (!hasTauriRuntime()) {
+      return;
+    }
+
+    let disposed = false;
+    let unlisten: (() => void) | null = null;
+    void getCurrentWebview().onDragDropEvent((event) => {
+      if (!disposed) {
+        handleNativeFileDropEvent(event.payload);
+      }
+    }).then((cleanup) => {
+      if (disposed) {
+        cleanup();
+      } else {
+        unlisten = cleanup;
+      }
+    });
+
+    return () => {
+      disposed = true;
+      unlisten?.();
+      setNativeFileDropTargetPath(null);
+    };
+  }, [
+    remoteFileConnection?.id,
+    rightPaneCollapsed,
+    rightTool,
+    settings.fileTransfer.conflictPolicyDefault,
+    settings.fileTransfer.keepArchives,
+    showSessionWorkspace,
+  ]);
 
   const updateTabStatus = useCallback((tabId: string, status: string) => {
     setTerminalTabs((tabs) =>
@@ -989,7 +1028,7 @@ export function WorkspaceShell() {
       connectionId: activeConnection.id,
       parentPath: normalizeRemotePath(parentPath),
     });
-    setRemoteFileTextValue(joinRemotePath(parentPath, "untitled.txt"));
+    setRemoteFileTextValue("untitled.txt");
     setRemoteFileTextError(null);
   }
 
@@ -1002,7 +1041,7 @@ export function WorkspaceShell() {
       connectionId: activeConnection.id,
       parentPath: normalizeRemotePath(parentPath),
     });
-    setRemoteFileTextValue(joinRemotePath(parentPath, "new-folder"));
+    setRemoteFileTextValue("new-folder");
     setRemoteFileTextError(null);
   }
 
@@ -1029,24 +1068,18 @@ export function WorkspaceShell() {
       return;
     }
 
-    const value =
-      action.action === "rename"
-        ? remoteFileTextValue.trim()
-        : normalizeRemotePath(remoteFileTextValue);
-    if (!value || (action.action !== "rename" && value === "/")) {
-      setRemoteFileTextError(action.action === "rename" ? "请输入有效名称。" : "请输入有效路径。");
-      return;
-    }
-    if (action.action === "rename" && !isValidRemoteBaseName(value)) {
-      setRemoteFileTextError("名称不能为空，不能包含 / 或 \\，也不能是 . 或 ..。");
+    const value = remoteFileTextValue.trim();
+    if (!isValidRemoteBaseName(value)) {
+      setRemoteFileTextError(remoteFileNameValidationMessage(value));
       return;
     }
 
     try {
       if (action.action === "create-file") {
+        const path = joinRemotePath(action.parentPath, value);
         const metadata = hasTauriRuntime()
-          ? await remoteFileCreateFile(action.connectionId, value)
-          : previewRemoteFileMetadata(value);
+          ? await remoteFileCreateFile(action.connectionId, path)
+          : previewRemoteFileMetadata(path);
         triggerRemoteFileRefresh(remotePathParent(metadata.path));
         if (activeConnection) {
           openRemoteFile({
@@ -1056,10 +1089,11 @@ export function WorkspaceShell() {
           });
         }
       } else if (action.action === "create-directory") {
+        const path = joinRemotePath(action.parentPath, value);
         if (hasTauriRuntime()) {
-          await remoteFileCreateDirectory(action.connectionId, value);
+          await remoteFileCreateDirectory(action.connectionId, path);
         }
-        triggerRemoteFileRefresh(remotePathParent(value));
+        triggerRemoteFileRefresh(action.parentPath);
       } else {
         const newPath = joinRemotePath(remotePathParent(action.entry.path), value);
         if (hasTauriRuntime()) {
@@ -1224,6 +1258,53 @@ export function WorkspaceShell() {
     Array.from(directoryGroups.entries()).forEach(([rootName, groupItems]) => {
       void runDirectoryUpload(normalizedParent, rootName, groupItems);
     });
+  }
+
+  function handleNativeFileDropEvent(event: DragDropEvent) {
+    if (!remoteFileConnection || rightPaneCollapsed || rightTool !== "files" || !showSessionWorkspace) {
+      setNativeFileDropTargetPath(null);
+      return;
+    }
+
+    if (event.type === "leave") {
+      setNativeFileDropTargetPath(null);
+      return;
+    }
+
+    const targetPath = resolveNativeFileDropTargetPath(event.position);
+    if (event.type === "drop") {
+      setNativeFileDropTargetPath(null);
+      if (!targetPath || event.paths.length === 0) {
+        return;
+      }
+      uploadNativeDroppedPaths(targetPath, event.paths);
+      return;
+    }
+
+    setNativeFileDropTargetPath(targetPath);
+  }
+
+  function uploadNativeDroppedPaths(parentPath: string, paths: string[]) {
+    paths.forEach((path) => {
+      void uploadNativeDroppedPath(parentPath, path);
+    });
+  }
+
+  async function uploadNativeDroppedPath(parentPath: string, localPath: string) {
+    try {
+      const metadata = await localPathMetadata(localPath);
+      if (metadata.kind === "directory") {
+        await runLocalDirectoryUpload(parentPath, metadata.path);
+        return;
+      }
+      if (metadata.kind === "file") {
+        await runLocalFileUpload(parentPath, metadata.path);
+        return;
+      }
+      showTransferPickerError("Unsupported local item", parentPath, new Error(`Unsupported local path: ${localPath}`));
+    } catch (error) {
+      showTransferPickerError("Drop upload", parentPath, error);
+    }
   }
 
   function showTransferPickerError(action: string, parentPath: string, error: unknown) {
@@ -1757,6 +1838,31 @@ export function WorkspaceShell() {
     );
   }
 
+  function appendTerminalWarmupOutput(tabId: string, data: number[]) {
+    if (data.length === 0) {
+      return;
+    }
+
+    setTerminalTabs((tabs) => {
+      let changed = false;
+      const nextTabs = tabs.map((tab) => {
+        if (tab.id !== tabId || tab.type !== "terminal") {
+          return tab;
+        }
+        changed = true;
+        return {
+          ...tab,
+          warmupOutput: [...tab.warmupOutput, ...data],
+        };
+      });
+      if (!changed) {
+        return tabs;
+      }
+      terminalTabsRef.current = nextTabs;
+      return nextTabs;
+    });
+  }
+
   function connectingTabExists(tabId: string) {
     return terminalTabsRef.current.some((tab) => tab.id === tabId && tab.type === "connecting");
   }
@@ -1904,6 +2010,10 @@ export function WorkspaceShell() {
     await upsert(connectionToInput({ ...connection, group: groupId || undefined }));
   }
 
+  async function toggleConnectionFavorite(connection: ConnectionProfile) {
+    await setFavorite(connection.id, !connection.is_favorite);
+  }
+
   function openCredentialSettings() {
     setSettingsSectionRequest("credentials");
     setActiveView("settings");
@@ -1991,6 +2101,7 @@ export function WorkspaceShell() {
         status: "success" as ConnectionStepStatus,
       };
       if (step.mode === "terminal") {
+        void markConnected(step.connection.id);
         replaceConnectingTabWithTerminal(tabId, `preview-${Date.now().toString()}`);
       } else {
         updateConnectingTabStep(tabId, previewStep);
@@ -2001,11 +2112,16 @@ export function WorkspaceShell() {
     const prepareRequestId = `prepare-${step.id.toString()}`;
     const warmupOutput: number[] = [];
     let stopWarmupCapture: (() => void) | null = null;
+    let handoffComplete = false;
 
     try {
       if (step.mode === "terminal") {
         stopWarmupCapture = await listenTerminalOutput((event: TerminalOutputEvent) => {
           if (event.request_id !== prepareRequestId) {
+            return;
+          }
+          if (handoffComplete) {
+            appendTerminalWarmupOutput(tabId, event.data);
             return;
           }
           warmupOutput.push(...event.data);
@@ -2038,13 +2154,20 @@ export function WorkspaceShell() {
         rows: 24,
         username: step.connection.username,
       });
-      stopWarmupCapture?.();
-      stopWarmupCapture = null;
       if (!connectingTabExists(tabId)) {
+        stopWarmupCapture?.();
+        stopWarmupCapture = null;
         await terminalClose(sessionId).catch(() => {});
         return;
       }
-      replaceConnectingTabWithTerminal(tabId, sessionId, warmupOutput, prepareRequestId);
+      void markConnected(step.connection.id);
+      handoffComplete = true;
+      replaceConnectingTabWithTerminal(tabId, sessionId, [...warmupOutput], prepareRequestId);
+      const cleanupWarmupCapture = stopWarmupCapture;
+      stopWarmupCapture = null;
+      window.setTimeout(() => {
+        cleanupWarmupCapture?.();
+      }, 3000);
     } catch (nextError) {
       stopWarmupCapture?.();
       if (!connectingTabExists(tabId)) {
@@ -2357,6 +2480,7 @@ export function WorkspaceShell() {
           onOpenSettings={() => setActiveView("settings")}
           onRefresh={reload}
           onSelect={selectConnection}
+          onToggleFavorite={toggleConnectionFavorite}
           selectedId={selectedConnectionId}
         />
 
@@ -2387,6 +2511,7 @@ export function WorkspaceShell() {
             onDelete={deleteConnection}
             onEdit={editConnection}
             onRefresh={reload}
+            onToggleFavorite={toggleConnectionFavorite}
             hidden={!showingHome}
           />
 
@@ -2604,6 +2729,7 @@ export function WorkspaceShell() {
             refreshRequest={remoteFileRefreshRequest}
             transferAttention={transferAttention}
             transferCount={transferBadgeCount}
+            nativeDropTargetPath={nativeFileDropTargetPath}
             transferPanel={
               <RemoteFileTransferPanel
                 transfers={remoteFileTransfers}
@@ -2782,8 +2908,8 @@ export function WorkspaceShell() {
                 </Dialog.Close>
               </header>
               <div className="dialog-body">
-                <label className="remote-file-path-field">
-                  <span>{remoteFileTextAction?.action === "rename" ? "名称" : "远程路径"}</span>
+                <label className="remote-file-name-field">
+                  <span>名称</span>
                   <input
                     autoFocus
                     spellCheck={false}
@@ -3463,6 +3589,7 @@ function ConnectionHome({
   onDelete,
   onEdit,
   onRefresh,
+  onToggleFavorite,
 }: {
   connections: ConnectionProfile[];
   error: string | null;
@@ -3474,6 +3601,7 @@ function ConnectionHome({
   onDelete: (connection: ConnectionProfile) => void | Promise<void>;
   onEdit: (connection: ConnectionProfile) => void;
   onRefresh: () => void | Promise<void>;
+  onToggleFavorite: (connection: ConnectionProfile) => void | Promise<void>;
 }) {
   const [filter, setFilter] = useState<ConnectionFilter>("recent");
   const [query, setQuery] = useState("");
@@ -3493,7 +3621,7 @@ function ConnectionHome({
       }
 
       if (filter === "favorites") {
-        return isFavoriteConnection(connection);
+        return connection.is_favorite;
       }
 
       return true;
@@ -3516,10 +3644,14 @@ function ConnectionHome({
     });
   }, [connections, filter, query]);
   const favoriteCount = useMemo(
-    () => connections.filter(isFavoriteConnection).length,
+    () => connections.filter((connection) => connection.is_favorite).length,
     [connections],
   );
-  const weekCount = useMemo(() => countUpdatedWithinWeek(connections), [connections]);
+  const weekCount = useMemo(() => countConnectedWithinWeek(connections), [connections]);
+  const activityConnections = useMemo(
+    () => [...connections].sort(sortConnectionsByRecent).slice(0, 2),
+    [connections],
+  );
   const isProbingLatency = useMemo(
     () => Object.values(latencyByConnectionId).some((state) => state.status === "checking"),
     [latencyByConnectionId],
@@ -3649,6 +3781,9 @@ function ConnectionHome({
           {rows.map((connection) => {
             const group = groupById.get(groups.assignments[connection.id]);
             const latencyState = latencyByConnectionId[connection.id];
+            const lastConnectedAt = connection.last_connected_at;
+            const hasLastConnectedAt = Boolean(lastConnectedAt);
+            const favoriteLabel = connection.is_favorite ? "取消收藏" : "加入收藏";
 
             return (
               <div className="connection-row" role="row" key={connection.id}>
@@ -3656,8 +3791,14 @@ function ConnectionHome({
                   <SystemLogo kind={inferSystemKind(connection)} />
                 </span>
                 <span className="last-cell">
-                  <strong>{formatRelativeTime(connection.updated_at)}</strong>
-                  <span>{connection.updated_at === "demo" ? "最近使用" : "已保存"}</span>
+                  <strong>{hasLastConnectedAt ? formatRelativeTime(lastConnectedAt) : "未连接"}</strong>
+                  <span>
+                    {lastConnectedAt === "demo"
+                      ? "最近使用"
+                      : hasLastConnectedAt
+                        ? "最近连接"
+                        : "等待首次连接"}
+                  </span>
                 </span>
                 <span className="latency-cell">
                   <LatencyIndicator state={latencyState} />
@@ -3692,6 +3833,15 @@ function ConnectionHome({
                     onClick={() => onConnect(connection)}
                   >
                     <Play className="ui-icon" aria-hidden="true" />
+                  </button>
+                  <button
+                    className={`connection-action-icon favorite ${connection.is_favorite ? "active" : ""}`}
+                    type="button"
+                    aria-label={`${favoriteLabel} ${connection.name}`}
+                    title={favoriteLabel}
+                    onClick={() => void onToggleFavorite(connection)}
+                  >
+                    <Star className="ui-icon" aria-hidden="true" />
                   </button>
                   <button
                     className="connection-action-icon"
@@ -3756,7 +3906,7 @@ function ConnectionHome({
           <section className="summary-block">
             <p className="summary-title">最近活动</p>
             <div className="activity-list">
-              {connections.slice(0, 2).map((connection) => (
+              {activityConnections.map((connection) => (
                 <button
                   className="activity-row"
                   key={connection.id}
@@ -3766,7 +3916,11 @@ function ConnectionHome({
                   <span className="latency-dot" />
                   <span>
                     <strong>{connection.name}</strong>
-                    <span>{formatRelativeTime(connection.updated_at)}</span>
+                    <span>
+                      {connection.last_connected_at
+                        ? formatRelativeTime(connection.last_connected_at)
+                        : "未连接"}
+                    </span>
                   </span>
                 </button>
               ))}
@@ -3930,20 +4084,28 @@ function systemLabel(kind: SystemKind) {
 }
 
 function sortConnectionsByRecent(left: ConnectionProfile, right: ConnectionProfile) {
-  return timestampOf(right.updated_at) - timestampOf(left.updated_at);
+  const rightConnectedAt = timestampOf(right.last_connected_at);
+  const leftConnectedAt = timestampOf(left.last_connected_at);
+
+  if (rightConnectedAt !== leftConnectedAt) {
+    return rightConnectedAt - leftConnectedAt;
+  }
+
+  const createdDiff = timestampOf(right.created_at) - timestampOf(left.created_at);
+  if (createdDiff !== 0) {
+    return createdDiff;
+  }
+
+  return left.name.localeCompare(right.name, "zh-Hans");
 }
 
-function timestampOf(value: string) {
+function timestampOf(value?: string | null) {
+  if (!value) {
+    return 0;
+  }
+
   const parsed = Date.parse(value);
   return Number.isNaN(parsed) ? 0 : parsed;
-}
-
-function isFavoriteConnection(connection: ConnectionProfile) {
-  return ["favorite", "fav", "收藏", "star"].some((keyword) =>
-    `${connection.name} ${connection.notes || ""} ${connection.host}`
-      .toLowerCase()
-      .includes(keyword.toLowerCase()),
-  );
 }
 
 function primaryNote(connection: ConnectionProfile) {
@@ -3981,7 +4143,7 @@ function wait(ms: number) {
   return new Promise((resolve) => window.setTimeout(resolve, ms));
 }
 
-function formatRelativeTime(value: string) {
+function formatRelativeTime(value?: string | null) {
   const timestamp = timestampOf(value);
 
   if (!timestamp) {
@@ -4000,16 +4162,12 @@ function formatRelativeTime(value: string) {
   return `${Math.floor(diffMs / day).toString()} 天前`;
 }
 
-function countUpdatedWithinWeek(connections: ConnectionProfile[]) {
+function countConnectedWithinWeek(connections: ConnectionProfile[]) {
   const now = Date.now();
   const week = 7 * 24 * 60 * 60 * 1000;
-  const dated = connections.filter((connection) => timestampOf(connection.updated_at) > 0);
+  const dated = connections.filter((connection) => timestampOf(connection.last_connected_at) > 0);
 
-  if (dated.length === 0) {
-    return connections.length;
-  }
-
-  return dated.filter((connection) => now - timestampOf(connection.updated_at) <= week).length;
+  return dated.filter((connection) => now - timestampOf(connection.last_connected_at) <= week).length;
 }
 
 function getWorkspaceWidth(element: HTMLElement | null) {
@@ -4228,6 +4386,8 @@ function connectionToInput(connection: ConnectionProfile): ConnectionProfileInpu
     inline_password: connection.inline_password || undefined,
     inline_private_key_passphrase: connection.inline_private_key_passphrase || undefined,
     inline_private_key_path: connection.inline_private_key_path || undefined,
+    is_favorite: connection.is_favorite,
+    last_connected_at: connection.last_connected_at || undefined,
     name: connection.name,
     notes: connection.notes || undefined,
     port: connection.port,
@@ -4463,6 +4623,20 @@ async function copyText(text: string) {
 function isValidRemoteBaseName(name: string) {
   const trimmed = name.trim();
   return Boolean(trimmed) && trimmed !== "." && trimmed !== ".." && !/[\\/]/.test(trimmed);
+}
+
+function remoteFileNameValidationMessage(name: string) {
+  const trimmed = name.trim();
+  if (!trimmed) {
+    return "请输入名称。";
+  }
+  if (trimmed === "." || trimmed === "..") {
+    return "名称不能是 . 或 ..。";
+  }
+  if (/[\\/]/.test(trimmed)) {
+    return "这里只能填写名称，不能包含路径。";
+  }
+  return "请输入有效名称。";
 }
 
 function getFileRelativePath(file: File) {
@@ -4884,6 +5058,13 @@ function previewRemoteFileDownloadToLocalResult(
     remote_path: entry.path,
     skipped: false,
   };
+}
+
+function resolveNativeFileDropTargetPath(position: NativeFileDropPosition) {
+  const scaleFactor = window.devicePixelRatio || 1;
+  const element = document.elementFromPoint(position.x / scaleFactor, position.y / scaleFactor);
+  const target = element?.closest<HTMLElement>(`[${remoteFileDropTargetAttribute}]`);
+  return target?.dataset.remoteFileDropTarget || null;
 }
 
 function previewRemoteFileEntryMetadata(entry: RemoteFileEntry): RemoteFileEntryMetadata {

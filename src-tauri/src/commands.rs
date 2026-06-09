@@ -202,6 +202,18 @@ pub struct LocalUploadTempResult {
     pub local_path: String,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct LocalPathMetadataRequest {
+    pub path: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct LocalPathMetadataResult {
+    pub path: String,
+    pub name: String,
+    pub kind: String,
+}
+
 #[derive(Debug, Serialize)]
 pub struct RemoteFileDownloadResult {
     pub path: String,
@@ -281,6 +293,17 @@ pub struct ConnectionLatencyProbeRequest {
 pub struct ConnectionLatencyProbeResult {
     pub latency_ms: Option<u64>,
     pub reachable: bool,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ConnectionFavoriteRequest {
+    pub connection_id: String,
+    pub is_favorite: bool,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ConnectionActivityRequest {
+    pub connection_id: String,
 }
 
 #[tauri::command]
@@ -561,7 +584,8 @@ pub async fn remote_file_upload_local_archive(
 ) -> Result<RemoteFileArchiveUploadResult, AppError> {
     let profile = resolve_remote_connection_profile(&app, &request.connection_id)?;
     let target_dir = require_remote_path(&request.target_dir)?;
-    let requested_root_name = require_safe_name(&request.root_name, "remote_file_archive_root_missing")?;
+    let requested_root_name =
+        require_safe_name(&request.root_name, "remote_file_archive_root_missing")?;
     let local_path = require_existing_local_path(&request.local_path)?;
     let (upload_path, root_name, cleanup_path) = if local_path.is_dir() {
         let root_name = local_path
@@ -576,7 +600,8 @@ pub async fn remote_file_upload_local_archive(
                 )
             })?
             .to_string();
-        let root_name = require_safe_name(&root_name, "remote_file_archive_root_missing")?.to_string();
+        let root_name =
+            require_safe_name(&root_name, "remote_file_archive_root_missing")?.to_string();
         let archive_path = create_local_directory_archive(&local_path, &root_name)?;
         (archive_path.clone(), root_name, Some(archive_path))
     } else {
@@ -686,6 +711,31 @@ pub async fn remote_file_delete_upload_temp(
             true,
         )),
     }
+}
+
+#[tauri::command]
+pub async fn local_path_metadata(
+    request: LocalPathMetadataRequest,
+) -> Result<LocalPathMetadataResult, AppError> {
+    let path = require_existing_local_path(&request.path)?;
+    let name = path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .map(str::to_string)
+        .unwrap_or_else(|| path.to_string_lossy().to_string());
+    let kind = if path.is_dir() {
+        "directory"
+    } else if path.is_file() {
+        "file"
+    } else {
+        "other"
+    };
+
+    Ok(LocalPathMetadataResult {
+        path: path.to_string_lossy().to_string(),
+        name,
+        kind: kind.to_string(),
+    })
 }
 
 #[tauri::command]
@@ -881,6 +931,28 @@ pub async fn connection_upsert(
 ) -> Result<ConnectionProfile, AppError> {
     let mut store = ConnectionStore::load(connection_store_path(&app)?)?;
     store.upsert(request, &now_timestamp()?)
+}
+
+#[tauri::command]
+pub async fn connection_set_favorite(
+    app: AppHandle,
+    request: ConnectionFavoriteRequest,
+) -> Result<ConnectionProfile, AppError> {
+    let mut store = ConnectionStore::load(connection_store_path(&app)?)?;
+    store.set_favorite(
+        request.connection_id.trim(),
+        request.is_favorite,
+        &now_timestamp()?,
+    )
+}
+
+#[tauri::command]
+pub async fn connection_mark_connected(
+    app: AppHandle,
+    request: ConnectionActivityRequest,
+) -> Result<ConnectionProfile, AppError> {
+    let mut store = ConnectionStore::load(connection_store_path(&app)?)?;
+    store.mark_connected(request.connection_id.trim(), &now_timestamp()?)
 }
 
 #[tauri::command]

@@ -175,3 +175,11 @@ export interface RemoteFileTransferProgressEvent {
 export interface LocalUploadTempResult {
   local_path: string;
 }
+
+export type LocalPathKind = "directory" | "file" | "other";
+
+export interface LocalPathMetadataResult {
+  kind: LocalPathKind;
+  name: string;
+  path: string;
+}

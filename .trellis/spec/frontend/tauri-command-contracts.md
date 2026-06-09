@@ -13,6 +13,8 @@
 ```ts
 connectionList(): Promise<ConnectionProfile[]>
 connectionUpsert(request: ConnectionProfileInput): Promise<ConnectionProfile>
+connectionSetFavorite(connectionId: string, isFavorite: boolean): Promise<ConnectionProfile>
+connectionMarkConnected(connectionId: string): Promise<ConnectionProfile>
 connectionDelete(id: string): Promise<void>
 credentialList(): Promise<CredentialProfile[]>
 credentialUpsert(request: CredentialProfileInput): Promise<CredentialProfile>
@@ -53,6 +55,8 @@ advanced: {
   keepalive_interval_ms: number
 }
 notes?: string
+is_favorite?: boolean
+last_connected_at?: string
 // Legacy migration only:
 auth_kind?: "password" | "private_key"
 password?: string
@@ -99,14 +103,17 @@ type HostKeyInfo = {
 - Wrapper argument objects must match Rust command parameter names exactly, for example `{ request }`, `{ id }`, and `{ sessionId }`.
 - UI state may use empty strings while editing, but `useConnections` and `useCredentials` must trim optional fields and convert blanks to `undefined` before calling `connectionUpsert` or `credentialUpsert`.
 - Connection profiles own target and behavior fields: group, host, port, username, credential mode, proxy, advanced settings, and notes.
+- Connection profiles also own repository UI metadata: `is_favorite` is the explicit favorite flag and `last_connected_at` is the last successful terminal connection timestamp. Do not infer favorites from notes or recent activity from `updated_at`.
 - Credential profiles own only authentication material: password or private key path/passphrase plus local notes. They must not store host, port, or username.
 - When opening a saved connection, the connection-preparation flow should pass `connection_id` plus prompt credentials only when `credential_mode === "prompt"`; Rust treats the saved profile as authoritative.
+- After a terminal connection succeeds, call `connectionMarkConnected(connection.id)` so the repository's recent views sort by real connection activity. Favorite toggles must call `connectionSetFavorite(...)` and preserve both fields when editing or moving a connection.
 - `ConnectionDialog` can test the current form by saving/upserting the profile, then calling `connectionTest({ connection_id })` or including prompt runtime credentials when required. It must show validation and connection errors as dialog feedback instead of writing them into a terminal.
 - Host-key confirmation UI must call `knownHostTrust(hostKey)` with the `HostKeyInfo` returned by a recoverable host-key error; do not synthesize fingerprints on the frontend.
 - Connection latency probing must go through `connectionProbeLatency(connection.id)`. The UI sends only a saved connection id; Rust reloads the saved host/port and never needs credential fields for this probe.
 - The connection preparation page owns startup, host-key confirmation, prompt credentials, retry, edit, and failure UI. A terminal tab is created only after `terminalConnect` returns a session id.
 - `TerminalPanel` receives an already-created `initialSessionId`; it must not start a second SSH connection for that tab.
 - During terminal handoff, match terminal output/state events by `request_id` as well as by `session_id`; shell prompts can arrive before the frontend receives the returned session id.
+- Keep the terminal handoff warmup listener alive briefly after replacing the connecting tab, and make `TerminalPanel` consume appended `initialOutput` bytes. Otherwise the remote prompt can land between `terminalConnect` resolving and the xterm listener mounting, leaving a connected but visually blank terminal while remote file browsing works.
 - Do not store terminal session runtime state inside a `ConnectionProfile`. Connection profiles are persistent data; terminal tabs and session ids are runtime state.
 - Do not log passwords, private-key passphrases, or full command payloads.
 
@@ -128,7 +135,7 @@ type HostKeyInfo = {
 | Auth kind changes to `password` | Clear private-key fields in form state. |
 | Auth kind changes to `private_key` | Clear password in form state. |
 | `terminalConnect` fails before session id exists | Keep the connection-preparation tab open and show structured failure, retry, edit, and close actions. |
-| Shell output arrives before `terminalConnect` resolves | Capture warmup output by `request_id` and pass it into `TerminalPanel` as initial output. |
+| Shell output arrives before or immediately after `terminalConnect` resolves | Capture warmup output by `request_id`, pass it into `TerminalPanel` as initial output, and append any late handoff bytes until the xterm listener is ready. |
 
 ### 5. Good / Base / Bad Cases
 
@@ -303,6 +310,7 @@ remoteFileUploadLocalArchive(input: RemoteFileArchiveUploadLocalInput): Promise<
 remoteFilePrepareUploadTemp(fileName: string): Promise<LocalUploadTempResult>
 remoteFileAppendUploadTemp(localPath: string, chunk: Uint8Array | number[]): Promise<void>
 remoteFileDeleteUploadTemp(localPath: string): Promise<void>
+localPathMetadata(path: string): Promise<LocalPathMetadataResult>
 remoteFileDownload(connectionId: string, path: string): Promise<RemoteFileDownloadResult>
 remoteFileCheckDownloadTarget(input: RemoteFileDownloadTargetCheckInput): Promise<RemoteFileDownloadTargetCheckResult>
 remoteFileDownloadToLocal(input: RemoteFileDownloadToLocalInput): Promise<RemoteFileDownloadToLocalResult>
@@ -406,6 +414,12 @@ type LocalUploadTempResult = {
   local_path: string;
 };
 
+type LocalPathMetadataResult = {
+  kind: "directory" | "file" | "other";
+  name: string;
+  path: string;
+};
+
 type RemoteFileDownloadTargetCheckInput = {
   connectionId: string;
   path: string;
@@ -470,6 +484,7 @@ type RemoteFileTransferProgressEvent = {
 - Binary or too-large read failures must not create an editable Monaco model. Keep the tab content safe and show retry/close or download-oriented UI.
 - Browser preview must not fire real upload/download or SSH commands when Tauri is unavailable; preview-only mock behavior is acceptable for layout checks.
 - Legacy byte upload wrappers convert `Uint8Array | number[]` to a plain number array before invoking Rust, but WorkspaceShell must not use them for real desktop uploads. Toolbar and context-menu uploads must use the Tauri dialog wrapper to get real local paths, then call `remoteFileUploadLocalFile(...)` or `remoteFileUploadLocalArchive(...)` with that original `localPath` so there is no pre-upload cache copy. Browser `File` uploads from drag/drop are the fallback path: they may write small chunks into a backend-owned local upload temp file before calling the same local upload wrappers because the browser does not expose a trusted original file path.
+- Windows/Tauri native file drops must use `getCurrentWebview().onDragDropEvent(...)` to receive absolute local paths, resolve the remote target from `data-remote-file-drop-target`, call `localPathMetadata(...)`, then dispatch files to `remoteFileUploadLocalFile(...)` and directories to `remoteFileUploadLocalArchive(...)`.
 - File upload, archive upload, and download-to-local calls may pass `transferId`. The value must be the matching `RemoteFileTransferItem.id`, and `WorkspaceShell` must listen for `remote_file:transfer_progress` events to update bytes, progress, and transfer speed for that item only.
 - Remote transfer progress events are advisory UI events. The command result remains the source of truth for success, skipped state, final remote path, and final local path.
 - Folder upload from the Tauri dialog must pass the selected directory path to `remoteFileUploadLocalArchive(...)` and let Rust create the local `tar.gz` before uploading. Folder upload from drag/drop must stream tar entries directly into `CompressionStream("gzip")` and persist gzip output chunks with `remoteFileAppendUploadTemp(...)`, then call `remoteFileUploadLocalArchive(...)`; do not recursively invoke `remoteFileUploadFile` per file, and do not build a full uncompressed tar buffer or full compressed archive in JS memory for large folders.
@@ -480,7 +495,7 @@ type RemoteFileTransferProgressEvent = {
 - The download `sessionName` segment is the connection grouping name: derive it from `ConnectionProfile.name`, fall back to `ConnectionProfile.host`, then `mxterm-session`. Do not use the active terminal tab title such as the default `终端`, because terminal tabs are runtime UI state and should not change the local download directory.
 - File transfer settings live under `settings.fileTransfer` and include `downloadRoot`, `groupBySession`, `timestampDirectory`, `timestampFormat`, `keepArchives`, and `conflictPolicyDefault`.
 - `settings.fileTransfer.downloadRoot` is optional. Blank means Rust resolves the system Downloads directory; the settings UI should make that clear through the row copy and placeholder, allow manual path entry, and offer a Tauri directory picker for choosing a custom root.
-- Copy path actions copy the remote absolute path only. Rename dialogs edit the entry basename only and submit `joinRemotePath(remotePathParent(entry.path), newName)`.
+- Copy path actions copy the remote absolute path only. Create-file, create-directory, and rename dialogs edit the entry basename only, show the parent directory as read-only context, and submit `joinRemotePath(parentPath, name)` / `joinRemotePath(remotePathParent(entry.path), newName)`. Do not prefill or accept a full remote path in these dialogs; slash-containing input should show a name-only validation message.
 
 ### 4. Validation & Error Matrix
 

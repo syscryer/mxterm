@@ -12,6 +12,8 @@
 
 - `connection_list(app: AppHandle) -> Result<Vec<ConnectionProfile>, AppError>`
 - `connection_upsert(app: AppHandle, request: ConnectionProfileInput) -> Result<ConnectionProfile, AppError>`
+- `connection_set_favorite(app: AppHandle, request: ConnectionFavoriteRequest) -> Result<ConnectionProfile, AppError>`
+- `connection_mark_connected(app: AppHandle, request: ConnectionActivityRequest) -> Result<ConnectionProfile, AppError>`
 - `connection_delete(app: AppHandle, id: String) -> Result<(), AppError>`
 - `credential_list(app: AppHandle) -> Result<Vec<CredentialProfile>, AppError>`
 - `credential_upsert(app: AppHandle, request: CredentialProfileInput) -> Result<CredentialProfile, AppError>`
@@ -43,6 +45,8 @@ prompt_auth_kind: Option<ConnectionAuthKind>
 proxy: ConnectionProxyConfig
 advanced: ConnectionAdvancedConfig
 notes: Option<String>
+is_favorite: Option<bool>
+last_connected_at: Option<String>
 // Legacy migration only:
 auth_kind: Option<ConnectionAuthKind>
 password: Option<String>
@@ -50,7 +54,20 @@ private_key_path: Option<String>
 private_key_passphrase: Option<String>
 ```
 
-`ConnectionProfile` adds `id`, normalized `name`, `created_at`, and `updated_at`.
+`ConnectionProfile` adds `id`, normalized `name`, `is_favorite`, `last_connected_at`, `created_at`, and `updated_at`.
+
+`ConnectionFavoriteRequest` fields:
+
+```rust
+connection_id: String
+is_favorite: bool
+```
+
+`ConnectionActivityRequest` fields:
+
+```rust
+connection_id: String
+```
 
 `CredentialProfileInput` fields:
 
@@ -116,6 +133,9 @@ reachable: bool
 - `ConnectionProxyKind` uses `none`, `http_connect`, or `socks5`.
 - Empty optional strings are normalized to `None`; non-empty target, credential, proxy, and note fields are trimmed.
 - Blank `name` defaults to `{username}@{host}`.
+- `is_favorite` is the explicit favorite flag. `last_connected_at` stores the last successful terminal connection timestamp. Upserting an existing connection must preserve both values unless the input explicitly supplies them.
+- `connection_set_favorite` updates only `is_favorite` plus `updated_at`; it must not change `last_connected_at`.
+- `connection_mark_connected` updates only `last_connected_at`; recent views must not be derived from `updated_at`.
 - `credential_mode=saved` requires `credential_id` and clears inline secrets.
 - `credential_mode=inline` requires inline password or inline private key path depending on `inline_auth_kind`.
 - `credential_mode=prompt` stores no password or private key passphrase; runtime prompt credentials must be supplied by `TerminalConnectRequest` or `ConnectionRuntimeCredentialRequest`.
@@ -129,6 +149,7 @@ reachable: bool
 - `connection_test`, `terminal_connect`, and remote-file commands must use the same saved-connection resolution path in `ssh_config.rs`; do not re-resolve credentials independently in UI-facing command handlers.
 - `connection_probe_latency` must load the saved profile by `connection_id` and probe only the saved `host`/`port` with a short TCP timeout. It must not require or log passwords, private keys, or passphrases.
 - Terminal output and state events include both `session_id` and the optional frontend `request_id`. Keep `request_id` on early connection events so React can display shell output that arrives before the `terminal_connect` promise resolves.
+- The interactive terminal reader must not stop on `ChannelMsg::Eof`; continue reading until `ChannelMsg::Close` or channel end so a shell prompt or late startup output cannot be lost during frontend handoff.
 - Tauri event names must use allowed characters only. Use colon-separated names such as `terminal:output`, `terminal:state_changed`, and `terminal:connect_progress`; do not use dot-separated names.
 
 ### 4. Validation & Error Matrix
@@ -382,6 +403,7 @@ let output = TerminalSession::exec(
 - `remote_file_prepare_upload_temp(request: LocalUploadTempRequest) -> Result<LocalUploadTempResult, AppError>`
 - `remote_file_append_upload_temp(request: LocalUploadTempAppendRequest) -> Result<(), AppError>`
 - `remote_file_delete_upload_temp(request: LocalUploadTempDeleteRequest) -> Result<(), AppError>`
+- `local_path_metadata(request: LocalPathMetadataRequest) -> Result<LocalPathMetadataResult, AppError>`
 - `remote_file_download(app: AppHandle, manager: State<RemoteFileManager>, request: RemoteFilePathRequest) -> Result<RemoteFileDownloadResult, AppError>`
 - `remote_file_check_download_target(app: AppHandle, request: RemoteFileDownloadTargetCheckRequest) -> Result<RemoteFileDownloadTargetCheckResult, AppError>`
 - `remote_file_download_to_local(app: AppHandle, manager: State<RemoteFileManager>, request: RemoteFileDownloadToLocalRequest) -> Result<RemoteFileDownloadToLocalResult, AppError>`
@@ -460,6 +482,10 @@ RemoteFileUploadLocalArchiveRequest {
 LocalUploadTempAppendRequest {
     local_path: String,
     chunk: Vec<u8>,
+}
+
+LocalPathMetadataRequest {
+    path: String,
 }
 
 RemoteFileDownloadTargetCheckRequest {
@@ -577,6 +603,12 @@ RemoteFileTransferProgressEvent {
     loaded_bytes: u64,
     total_bytes: Option<u64>,
 }
+
+LocalPathMetadataResult {
+    path: String,
+    name: String,
+    kind: String, // "file" | "directory" | "other"
+}
 ```
 
 ### 3. Contracts
@@ -601,6 +633,7 @@ RemoteFileTransferProgressEvent {
 - `remote_file_upload_local_file` accepts a trusted local file path from the Tauri dialog path or a backend-owned upload temp path from the drag/drop fallback, streams that file through SSH stdin, and emits transfer progress from bytes read on the Rust side.
 - `remote_file_upload_archive` accepts a legacy frontend-built `tar.gz` archive, uploads it through stdin to a remote temporary archive, extracts it with remote `tar -xzf`, and removes the remote archive unless `keep_archive == true`. Desktop UI should prefer `remote_file_upload_local_archive` so the selected directory path or compressed archive stays in Rust-owned local IO instead of crossing IPC as one `Vec<u8>`.
 - `remote_file_upload_local_archive` accepts either a local `tar.gz` path or a local directory path. Directory paths must be packed into a backend-owned temporary `tar.gz` before upload, then cleaned up after upload/extract completes.
+- `local_path_metadata` is a read-only helper for native desktop drops. It canonicalizes a local path and returns whether it is a file, directory, or other local item before the UI chooses the file or archive upload command.
 - Directory upload conflict handling is root-folder level: resolve `target_dir/root_name` using overwrite / skip / rename before extraction. Do not silently extract over an existing directory.
 - `remote_file_check_download_target` resolves the same system/custom download directory shape as `remote_file_download_to_local`, checks only the final local path with `Path::exists`, and returns the path plus `exists`. It must not contact SSH or create directories/files.
 - `remote_file_download_to_local` resolves the system or custom download root on the Rust side, creates optional session and timestamp subdirectories, writes files directly to disk, and returns the final local path.

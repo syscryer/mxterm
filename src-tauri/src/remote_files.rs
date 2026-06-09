@@ -1509,7 +1509,10 @@ mod tests {
             .expect("existing path check should parse");
         assert!(existing.exists);
         assert_eq!(existing.path, "/opt/app/dist");
-        assert_eq!(existing.kind.as_ref().map(|kind| kind.as_str()), Some("directory"));
+        assert_eq!(
+            existing.kind.as_ref().map(|kind| kind.as_str()),
+            Some("directory")
+        );
     }
 
     #[test]

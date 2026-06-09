@@ -61,6 +61,7 @@ export function TerminalPanel({
   const sessionIdRef = useRef<string | null>(null);
   const osc7BufferRef = useRef("");
   const inputDirectoryStateRef = useRef(createTerminalInputDirectoryState());
+  const initialOutputWrittenLengthRef = useRef(0);
   const startedRef = useRef(false);
   const decoderRef = useRef(new TextDecoder());
   const [sessionId, setSessionId] = useState<string | null>(null);
@@ -106,12 +107,14 @@ export function TerminalPanel({
     terminal.open(hostRef.current);
     fitAddon.fit();
     startedRef.current = false;
+    initialOutputWrittenLengthRef.current = 0;
     if (initialSessionId) {
       sessionIdRef.current = initialSessionId;
       setSessionId(initialSessionId);
       setStatus(hasTauriRuntime() ? "已连接" : "预览");
       if (initialOutput.length > 0) {
         terminal.write(decoderRef.current.decode(Uint8Array.from(initialOutput), { stream: true }));
+        initialOutputWrittenLengthRef.current = initialOutput.length;
       }
     }
 
@@ -228,6 +231,22 @@ export function TerminalPanel({
       fitAddonRef.current = null;
     };
   }, [initialRequestId, initialSessionId, tabId]);
+
+  useEffect(() => {
+    const terminal = terminalRef.current;
+    if (!terminal || !initialSessionId) {
+      return;
+    }
+
+    const writtenLength = initialOutputWrittenLengthRef.current;
+    if (initialOutput.length <= writtenLength) {
+      return;
+    }
+
+    const nextBytes = initialOutput.slice(writtenLength);
+    terminal.write(decoderRef.current.decode(Uint8Array.from(nextBytes), { stream: true }));
+    initialOutputWrittenLengthRef.current = initialOutput.length;
+  }, [initialOutput, initialSessionId]);
 
   useEffect(() => {
     const terminal = terminalRef.current;
