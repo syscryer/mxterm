@@ -5345,3 +5345,392 @@ button {
   gap: 8px;
   padding-top: 2px;
 }
+
+/* Codem-inspired theme adapter: keep mXterm selectors, drive them from --mx-* tokens. */
+.app-shell {
+  color: var(--mx-text);
+  background: var(--mx-material-bg, var(--mx-bg));
+}
+
+.workspace-shell,
+.settings-view,
+.connection-home,
+.session-workbench,
+.connection-step-page,
+.main-workbench {
+  background: var(--mx-material-panel, var(--mx-panel));
+}
+
+.settings-content {
+  background:
+    radial-gradient(circle at 24% 0%, color-mix(in srgb, var(--mx-primary) 7%, transparent), transparent 34%),
+    var(--mx-material-bg, var(--mx-bg));
+}
+
+.settings-panel,
+.appearance-preview,
+.credential-list-panel,
+.credential-form-panel,
+.terminal-scheme-card,
+.connection-board,
+.summary-block,
+.connection-step-shell,
+.transfer-panel,
+.transfer-item,
+.connection-dialog,
+.group-dialog,
+.remote-file-text-dialog,
+.remote-file-properties-dialog,
+.confirm-dialog {
+  background: var(--mx-material-panel, var(--mx-panel));
+  border-color: var(--mx-line);
+}
+
+.settings-sidebar,
+.appearance-preview-sidebar,
+.credential-form-actions,
+.terminal-scheme-actions,
+.connection-step-rail,
+.transfer-panel-head,
+.dialog-head,
+.dialog-actions,
+.dialog-tabs,
+.connection-dialog-tabs {
+  background: var(--mx-material-panel-soft, var(--mx-panel-soft));
+}
+
+.appearance-preview-files,
+.credential-search,
+.credential-secret-field,
+.connection-step-status,
+.connection-step-running,
+.connection-step-success,
+.connection-dialog-test-result,
+.summary-item,
+.action-cell,
+.action-head,
+.remote-file-editor-compactbar,
+.path-bar,
+.path-input,
+.field-toggle,
+.remote-file-properties div {
+  background: var(--mx-panel);
+}
+
+.app-shell :is(
+  .settings-input,
+  .settings-select,
+  .connection-dialog input,
+  .connection-dialog select,
+  .connection-dialog textarea,
+  .group-dialog input,
+  .remote-file-name-field input,
+  .connection-prompt-form input,
+  .connection-prompt-form select
+) {
+  color: var(--mx-text);
+  background: var(--mx-panel);
+  border-color: var(--mx-line);
+}
+
+.app-shell :is(
+  .settings-segmented,
+  .settings-stepper,
+  .settings-accent-picker button,
+  .settings-accent-custom,
+  .settings-action-button,
+  .settings-path-button,
+  .credential-form-actions button,
+  .connection-step-actions button,
+  .connection-step-error button,
+  .connection-prompt-form button,
+  .host-key-confirm button,
+  .transfer-panel-head button,
+  .transfer-item button,
+  .dialog-actions button,
+  .confirm-dialog-actions button
+) {
+  border-color: var(--mx-line);
+}
+
+.app-shell :is(
+  .settings-segmented button:hover,
+  .settings-stepper button:hover:not(:disabled),
+  .settings-action-button:hover:not(:disabled),
+  .credential-form-actions button:hover:not(:disabled),
+  .connection-step-actions button:hover,
+  .connection-step-error button:hover,
+  .connection-prompt-form button:hover,
+  .host-key-confirm button:hover,
+  .transfer-panel-head button:hover:not(:disabled),
+  .transfer-item button:hover,
+  .dialog-actions button:hover,
+  .confirm-dialog-actions button:hover
+) {
+  color: var(--mx-text);
+  background: var(--mx-active);
+  border-color: var(--mx-line-strong);
+}
+
+.app-shell :is(
+  .settings-segmented button.active,
+  .settings-accent-picker button.active,
+  .settings-accent-custom.active,
+  .terminal-scheme-card.active,
+  .filter-tab.active,
+  .file-tab.active,
+  .terminal-tabs .active,
+  .tool-tabs .active,
+  .tab-shell.active,
+  .subtab-shell.active
+) {
+  color: var(--mx-text);
+  background: color-mix(in srgb, var(--mx-primary) 10%, var(--mx-panel));
+}
+
+.app-shell :is(
+  .dialog-actions .primary-button,
+  .credential-form-actions .primary-button,
+  .connection-prompt-form .primary-button,
+  .host-key-confirm .primary-button,
+  .repository-primary-button
+) {
+  border-color: color-mix(in srgb, var(--mx-primary) 82%, #1e40af);
+  color: #ffffff;
+  background: var(--mx-primary);
+}
+
+.app-shell :is(
+  .dialog-actions .primary-button:hover,
+  .credential-form-actions .primary-button:hover:not(:disabled),
+  .connection-prompt-form .primary-button:hover,
+  .host-key-confirm .primary-button:hover,
+  .repository-primary-button:hover
+) {
+  border-color: color-mix(in srgb, var(--mx-primary) 88%, #1e3a8a);
+  color: #ffffff;
+  background: color-mix(in srgb, var(--mx-primary) 90%, #111827);
+}
+
+.app-shell :is(
+  .pane-error,
+  .form-error,
+  .credential-list-error,
+  .credential-form-error,
+  .remote-file-dialog-error,
+  .file-panel-error,
+  .transfer-error,
+  .connection-step-error,
+  .connection-dialog-test-result.error
+) {
+  color: color-mix(in srgb, var(--mx-danger) 86%, var(--mx-text));
+  background: color-mix(in srgb, var(--mx-danger) 10%, var(--mx-panel));
+}
+
+.app-shell :is(
+  .dialog-actions .danger-button,
+  .confirm-dialog-actions .danger-button,
+  .credential-danger-button
+) {
+  border-color: color-mix(in srgb, var(--mx-danger) 32%, var(--mx-line)) !important;
+  color: color-mix(in srgb, var(--mx-danger) 84%, var(--mx-text)) !important;
+  background: color-mix(in srgb, var(--mx-danger) 9%, var(--mx-panel)) !important;
+}
+
+.app-shell[data-theme-mode="dark"] {
+  --mx-scrollbar-thumb: rgb(148 163 184 / 20%);
+  --mx-scrollbar-thumb-hover: rgb(148 163 184 / 38%);
+  --mx-terminal-scrollbar-thumb: rgb(148 163 184 / 20%);
+  --mx-terminal-scrollbar-thumb-hover: rgb(148 163 184 / 40%);
+}
+
+.app-shell[data-theme-mode="dark"] :where(.settings-toggle span) {
+  background: #f8fafc;
+}
+
+.app-shell[data-theme-mode="dark"] :where(
+  .settings-content,
+  .connection-home,
+  .connection-step-page,
+  .session-workbench,
+  .workspace-shell
+) {
+  background:
+    radial-gradient(circle at 18% 0%, color-mix(in srgb, var(--mx-primary) 8%, transparent), transparent 34%),
+    var(--mx-material-bg, var(--mx-bg));
+}
+
+.app-shell[data-theme-mode="dark"] :where(
+  .appearance-preview-files,
+  .connection-head,
+  .credential-form-actions,
+  .connection-step-rail,
+  .connection-step-status,
+  .connection-step-running,
+  .connection-step-success,
+  .connection-dialog-test-result,
+  .summary-block,
+  .summary-item,
+  .action-cell,
+  .action-head,
+  .dialog-tabs,
+  .connection-dialog-tabs,
+  .dialog-actions,
+  .remote-file-editor-compactbar,
+  .remote-file-properties div
+) {
+  background: var(--mx-panel);
+}
+
+.app-shell[data-theme-mode="dark"] :where(.connection-row:hover) {
+  color: var(--mx-text);
+  background: var(--mx-active);
+}
+
+.app-shell[data-theme-mode="dark"] :where(
+  .remote-editor-tabs,
+  .terminal-subtabs,
+  .top-tabs,
+  .editor-tabs,
+  .tool-tabs
+) {
+  background:
+    linear-gradient(145deg, rgb(255 255 255 / 5%), rgb(255 255 255 / 2%)),
+    color-mix(in srgb, var(--mx-panel) 88%, transparent);
+  border-color: var(--mx-line);
+}
+
+.app-shell[data-theme-mode="dark"] :where(
+  .connection-step-list li.active,
+  .connection-step-list li.active > span,
+  .connection-prompt-form header > .ui-icon,
+  .host-key-confirm header > .ui-icon,
+  .remote-file-row.is-active-directory,
+  .remote-file-row.is-drop-target,
+  .file-list.is-drop-target
+) {
+  background: color-mix(in srgb, var(--mx-primary) 12%, var(--mx-panel));
+}
+
+.app-shell[data-theme-mode="dark"] :where(
+  .remote-file-badge,
+  .remote-file-badge.react,
+  .remote-file-badge.html,
+  .remote-file-badge.style,
+  .remote-file-badge.json,
+  .remote-file-badge.config,
+  .remote-file-badge.log,
+  .remote-file-badge.script,
+  .remote-file-badge.link
+) {
+  color: color-mix(in srgb, var(--mx-primary) 78%, var(--mx-text));
+  background: color-mix(in srgb, var(--mx-primary) 14%, var(--mx-panel));
+}
+
+.app-shell[data-theme-mode="dark"] :where(
+  .transfer-item.error,
+  .connection-step-list li.error,
+  .connection-step-list li.error > span
+) {
+  background: color-mix(in srgb, var(--mx-danger) 10%, var(--mx-panel));
+}
+
+@media (prefers-color-scheme: dark) {
+  .app-shell[data-theme-mode="system"] {
+    --mx-scrollbar-thumb: rgb(148 163 184 / 20%);
+    --mx-scrollbar-thumb-hover: rgb(148 163 184 / 38%);
+    --mx-terminal-scrollbar-thumb: rgb(148 163 184 / 20%);
+    --mx-terminal-scrollbar-thumb-hover: rgb(148 163 184 / 40%);
+  }
+
+  .app-shell[data-theme-mode="system"] :where(.settings-toggle span) {
+    background: #f8fafc;
+  }
+
+  .app-shell[data-theme-mode="system"] :where(
+    .settings-content,
+    .connection-home,
+    .connection-step-page,
+    .session-workbench,
+    .workspace-shell
+  ) {
+    background:
+      radial-gradient(circle at 18% 0%, color-mix(in srgb, var(--mx-primary) 8%, transparent), transparent 34%),
+      var(--mx-material-bg, var(--mx-bg));
+  }
+
+  .app-shell[data-theme-mode="system"] :where(
+    .appearance-preview-files,
+    .connection-head,
+    .credential-form-actions,
+    .connection-step-rail,
+    .connection-step-status,
+    .connection-step-running,
+    .connection-step-success,
+    .connection-dialog-test-result,
+    .summary-block,
+    .summary-item,
+    .action-cell,
+    .action-head,
+    .dialog-tabs,
+    .connection-dialog-tabs,
+    .dialog-actions,
+    .remote-file-editor-compactbar,
+    .remote-file-properties div
+  ) {
+    background: var(--mx-panel);
+  }
+
+  .app-shell[data-theme-mode="system"] :where(.connection-row:hover) {
+    color: var(--mx-text);
+    background: var(--mx-active);
+  }
+
+  .app-shell[data-theme-mode="system"] :where(
+    .remote-editor-tabs,
+    .terminal-subtabs,
+    .top-tabs,
+    .editor-tabs,
+    .tool-tabs
+  ) {
+    background:
+      linear-gradient(145deg, rgb(255 255 255 / 5%), rgb(255 255 255 / 2%)),
+      color-mix(in srgb, var(--mx-panel) 88%, transparent);
+    border-color: var(--mx-line);
+  }
+
+  .app-shell[data-theme-mode="system"] :where(
+    .connection-step-list li.active,
+    .connection-step-list li.active > span,
+    .connection-prompt-form header > .ui-icon,
+    .host-key-confirm header > .ui-icon,
+    .remote-file-row.is-active-directory,
+    .remote-file-row.is-drop-target,
+    .file-list.is-drop-target
+  ) {
+    background: color-mix(in srgb, var(--mx-primary) 12%, var(--mx-panel));
+  }
+
+  .app-shell[data-theme-mode="system"] :where(
+    .remote-file-badge,
+    .remote-file-badge.react,
+    .remote-file-badge.html,
+    .remote-file-badge.style,
+    .remote-file-badge.json,
+    .remote-file-badge.config,
+    .remote-file-badge.log,
+    .remote-file-badge.script,
+    .remote-file-badge.link
+  ) {
+    color: color-mix(in srgb, var(--mx-primary) 78%, var(--mx-text));
+    background: color-mix(in srgb, var(--mx-primary) 14%, var(--mx-panel));
+  }
+
+  .app-shell[data-theme-mode="system"] :where(
+    .transfer-item.error,
+    .connection-step-list li.error,
+    .connection-step-list li.error > span
+  ) {
+    background: color-mix(in srgb, var(--mx-danger) 10%, var(--mx-panel));
+  }
+}

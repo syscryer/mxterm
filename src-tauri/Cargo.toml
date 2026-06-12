@@ -27,3 +27,7 @@ russh = { version = "0.61.1", default-features = false, features = ["ring", "fla
 tokio = { version = "1", features = ["io-util", "net", "sync", "time"] }
 primefield = "=0.14.0-rc.9"
 tauri-plugin-dialog = "2"
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.61", features = ["Win32_Foundation", "Win32_Graphics_Dwm", "Win32_UI_WindowsAndMessaging"] }
+windows-version = "0.1"

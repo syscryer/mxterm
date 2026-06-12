@@ -809,3 +809,114 @@ let output = self
     )
     .await?;
 ```
+
+## Scenario: Window Material Commands
+
+### 1. Scope / Trigger
+
+- Trigger: backend code adds or changes native window material/backdrop support, material ids, platform support detection, or command registration.
+- Source files: `src-tauri/src/commands.rs`, `src-tauri/src/lib.rs`, `src-tauri/Cargo.toml`, `src/shared/tauri/windowMaterial.ts`, and `src/features/settings/settingsTypes.ts`.
+- This is a cross-layer command contract because Rust exposes native platform capabilities while React persists a string appearance setting and maps it to numeric ids only at the command boundary.
+
+### 2. Signatures
+
+- `get_supported_window_materials() -> Vec<WindowMaterial>`
+- `set_window_material(app: AppHandle, material: i32) -> Result<WindowMaterial, AppError>`
+
+Serialized response:
+
+```rust
+WindowMaterial {
+    id: i32,
+    name: &'static str,
+}
+```
+
+Material ids:
+
+```rust
+0 => "Auto"
+2 => "Mica"
+3 => "Acrylic"
+4 => "Mica Alt"
+```
+
+Frontend string mapping:
+
+```ts
+auto = 0
+mica = 2
+acrylic = 3
+micaAlt = 4
+```
+
+### 3. Contracts
+
+- All new Tauri commands must be registered in `src-tauri/src/lib.rs` through `tauri::generate_handler!`.
+- `WindowMaterial.id` is the only cross-layer machine-readable value; `name` is display/debug metadata and must not be parsed by React.
+- Windows support uses DWM `DWMWA_SYSTEMBACKDROP_TYPE`. Keep Windows-only dependencies under `[target.'cfg(windows)'.dependencies]`.
+- Windows should expose `auto` on every build and add `mica`, `acrylic`, and `micaAlt` only when the OS build supports DWM system backdrop types.
+- Non-Windows platforms return only `auto` from `get_supported_window_materials` and reject non-`auto` values from `set_window_material`.
+- Invalid numeric material ids must be rejected before calling platform APIs.
+- Native material failure is recoverable and should return an `AppError` with code `window_material_set_failed`.
+- CSS material tokens remain the visual fallback. Backend command failure must not prevent the app from rendering.
+
+### 4. Validation & Error Matrix
+
+| Condition | Error code / behavior | Recoverable |
+| --- | --- | --- |
+| `get_supported_window_materials` on unsupported platform | Returns `[Auto]` | n/a |
+| `set_window_material` with `0` on unsupported platform | Returns `Auto` | n/a |
+| `set_window_material` with `2`, `3`, or `4` on unsupported platform | `window_material_set_failed` | true |
+| `set_window_material` with any unknown id | `window_material_set_failed` | true |
+| Main window handle cannot be resolved | `window_material_set_failed` | true |
+| DWM backdrop call fails | `window_material_set_failed` | true |
+
+### 5. Good / Base / Bad Cases
+
+- Good: Windows 11 build supporting DWM backdrop returns ids `0`, `2`, `3`, and `4`; React chooses `mica`, sends `2`, and Rust applies `DWMWA_SYSTEMBACKDROP_TYPE`.
+- Good: non-Windows returns only `auto`; React normalizes a previously saved `mica` setting to `auto` and does not keep retrying unsupported native material.
+- Base: browser preview has no Tauri runtime; no backend command is called, and CSS fallback still uses `data-window-material`.
+- Bad: backend returns `"Mica"` as the only payload, accepts arbitrary integer ids, registers the command in Rust but not the frontend wrapper, or adds Windows dependencies as unconditional cross-platform dependencies.
+
+### 6. Tests Required
+
+- Run `cargo check --manifest-path src-tauri/Cargo.toml` after changing command registration, material ids, Windows dependencies, or platform modules.
+- Run `npm run check -- --pretty false` after changing frontend wrappers or `WindowMaterialMode`.
+- Run `npm run build` after changing CSS material tokens or settings UI.
+- Cross-check backend ids against `windowMaterialIds` in `src/shared/tauri/windowMaterial.ts` in the same task.
+- Add unit or integration tests if material support logic gains more platforms or more complex OS-version branching.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```rust
+pub fn set_window_material(material: String) -> Result<(), AppError> {
+    apply_backdrop_by_name(&material)
+}
+```
+
+#### Correct
+
+```rust
+pub fn set_window_material(app: AppHandle, material: i32) -> Result<WindowMaterial, AppError> {
+    window_material::set_window_material(&app, material).map_err(|error| {
+        AppError::new("window_material_set_failed", "窗口材质切换失败。", error, true)
+    })
+}
+```
+
+#### Wrong
+
+```toml
+[dependencies]
+windows = "0.61"
+```
+
+#### Correct
+
+```toml
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.61", features = ["Win32_Foundation", "Win32_Graphics_Dwm", "Win32_UI_WindowsAndMessaging"] }
+```

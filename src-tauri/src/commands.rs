@@ -74,6 +74,12 @@ pub struct ConnectionStepResult {
     pub message: String,
 }
 
+#[derive(Debug, Serialize)]
+pub struct WindowMaterial {
+    pub id: i32,
+    pub name: &'static str,
+}
+
 #[derive(Debug, Deserialize)]
 pub struct TerminalWriteRequest {
     pub session_id: String,
@@ -363,6 +369,23 @@ pub async fn terminal_close(
     session_id: String,
 ) -> Result<(), AppError> {
     manager.close(session_id).await
+}
+
+#[tauri::command]
+pub fn get_supported_window_materials() -> Vec<WindowMaterial> {
+    window_material::supported_window_materials()
+}
+
+#[tauri::command]
+pub fn set_window_material(app: AppHandle, material: i32) -> Result<WindowMaterial, AppError> {
+    window_material::set_window_material(&app, material).map_err(|error| {
+        AppError::new(
+            "window_material_set_failed",
+            "窗口材质切换失败。",
+            error,
+            true,
+        )
+    })
 }
 
 #[tauri::command]
@@ -1558,6 +1581,111 @@ fn remote_transfer_progress_callback(
             },
         );
     }))
+}
+
+fn window_material_info(id: i32) -> WindowMaterial {
+    let name = match id {
+        2 => "Mica",
+        3 => "Acrylic",
+        4 => "Mica Alt",
+        _ => "Auto",
+    };
+
+    WindowMaterial { id, name }
+}
+
+#[cfg(windows)]
+mod window_material {
+    use super::{window_material_info, WindowMaterial};
+    use std::{ffi::c_void, mem::size_of};
+    use tauri::Manager;
+    use windows::{
+        Win32::{
+            Foundation::HWND,
+            Graphics::Dwm::{DwmSetWindowAttribute, DWMWA_SYSTEMBACKDROP_TYPE},
+            UI::WindowsAndMessaging::GetParent,
+        },
+    };
+
+    pub fn supported_window_materials() -> Vec<WindowMaterial> {
+        let mut materials = vec![window_material_info(0)];
+        let build = windows_version::OsVersion::current().build;
+
+        if build >= 22523 {
+            materials.push(window_material_info(2));
+            materials.push(window_material_info(3));
+            materials.push(window_material_info(4));
+        }
+
+        materials
+    }
+
+    pub fn set_window_material(
+        app: &tauri::AppHandle,
+        material: i32,
+    ) -> Result<WindowMaterial, String> {
+        let material = normalize_material(material)?;
+        let hwnd = main_hwnd(app)?;
+
+        unsafe {
+            DwmSetWindowAttribute(
+                hwnd,
+                DWMWA_SYSTEMBACKDROP_TYPE,
+                (&material as *const i32).cast::<c_void>(),
+                size_of::<i32>() as u32,
+            )
+            .map_err(|error| format!("set DWM backdrop failed: {error}"))?;
+        }
+
+        Ok(window_material_info(material))
+    }
+
+    fn main_hwnd(app: &tauri::AppHandle) -> Result<HWND, String> {
+        let window = app
+            .get_webview_window("main")
+            .ok_or_else(|| "main window not found".to_string())?;
+        let mut hwnd = window
+            .hwnd()
+            .map_err(|error| format!("get window handle failed: {error}"))?;
+
+        unsafe {
+            while let Ok(parent) = GetParent(hwnd) {
+                if parent.is_invalid() {
+                    break;
+                }
+                hwnd = parent;
+            }
+        }
+
+        Ok(hwnd)
+    }
+
+    fn normalize_material(material: i32) -> Result<i32, String> {
+        match material {
+            0 | 2 | 3 | 4 => Ok(material),
+            _ => Err(format!("unsupported window material: {material}")),
+        }
+    }
+}
+
+#[cfg(not(windows))]
+mod window_material {
+    use super::{window_material_info, WindowMaterial};
+
+    pub fn supported_window_materials() -> Vec<WindowMaterial> {
+        vec![window_material_info(0)]
+    }
+
+    pub fn set_window_material(
+        _app: &tauri::AppHandle,
+        material: i32,
+    ) -> Result<WindowMaterial, String> {
+        if material == 0 {
+            Ok(window_material_info(0))
+        } else {
+            Err(format!("unsupported window material on this platform: {material}"))
+        }
+    }
 }
 
 fn now_timestamp() -> Result<String, AppError> {
