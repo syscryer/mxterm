@@ -75,6 +75,7 @@ import {
   resolveSettingsStyle,
   resolveTerminalFontFamily,
   type FileTransferTimestampFormat,
+  type WindowMaterialMode,
 } from "../settings/settingsTypes";
 import { useSettings } from "../settings/useSettings";
 import { useConnections } from "../connections/useConnections";
@@ -112,6 +113,13 @@ import {
   listenTerminalOutput,
 } from "../../shared/tauri/events";
 import { hasTauriRuntime } from "../../shared/tauri/runtime";
+import {
+  getPlatformWindowMaterials,
+  getSupportedWindowMaterials,
+  normalizeWindowMaterial,
+  resolveDesktopPlatform,
+  setWindowMaterial,
+} from "../../shared/tauri/windowMaterial";
 import { Tooltip } from "../../shared/ui/Tooltip";
 import { AppTitlebar } from "./AppTitlebar";
 
@@ -314,6 +322,9 @@ export function WorkspaceShell() {
   const [pendingConnectionGroupId, setPendingConnectionGroupId] = useState<string | null>(null);
   const [connectionGroupCatalog, setConnectionGroupCatalog] =
     useState<ConnectionGroupCatalog>({ assignments: {}, groups: [] });
+  const [supportedWindowMaterials, setSupportedWindowMaterials] = useState<WindowMaterialMode[]>(
+    () => getPlatformWindowMaterials(resolveDesktopPlatform()),
+  );
   const workspaceShellRef = useRef<HTMLElement | null>(null);
 
   useEffect(() => {
@@ -390,12 +401,39 @@ export function WorkspaceShell() {
     ["queued", "running", "error"].includes(item.status),
   ).length;
   const transferAttention = remoteFileTransfers.some((item) => item.status === "error");
+  const effectiveWindowMaterial = normalizeWindowMaterial(
+    settings.appearance.windowMaterial,
+    supportedWindowMaterials,
+  );
   const appShellStyle = {
     ...resolveSettingsStyle(settings),
     "--editor-terminal-split-percent": `${editorTerminalSplitPercent.toString()}%`,
     "--left-pane-custom-width": `${leftPaneWidth.toString()}px`,
     "--right-pane-custom-width": `${rightPaneWidth.toString()}px`,
   } as CSSProperties;
+
+  useEffect(() => {
+    let disposed = false;
+    void getSupportedWindowMaterials().then((materials) => {
+      if (!disposed) {
+        setSupportedWindowMaterials(materials);
+      }
+    });
+
+    return () => {
+      disposed = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (settings.appearance.windowMaterial !== effectiveWindowMaterial) {
+      updateAppearance({ windowMaterial: effectiveWindowMaterial });
+    }
+  }, [effectiveWindowMaterial, settings.appearance.windowMaterial, updateAppearance]);
+
+  useEffect(() => {
+    void setWindowMaterial(effectiveWindowMaterial);
+  }, [effectiveWindowMaterial]);
 
   useEffect(() => {
     if (!hasTauriRuntime()) {
@@ -2444,6 +2482,7 @@ export function WorkspaceShell() {
       data-pane-resizing={resizingPane || undefined}
       data-right-collapsed={rightPaneCollapsed}
       data-theme-mode={settings.appearance.themeMode}
+      data-window-material={effectiveWindowMaterial}
       style={appShellStyle}
     >
       <AppTitlebar
@@ -3035,8 +3074,10 @@ export function WorkspaceShell() {
         credentials={credentials}
         credentialError={credentialError}
         credentialLoading={credentialLoading}
+        effectiveWindowMaterial={effectiveWindowMaterial}
         hidden={activeView !== "settings"}
         settings={settings}
+        supportedWindowMaterials={supportedWindowMaterials}
         onDeleteCredential={deleteCredentialFromSettings}
         onReset={reset}
         onReturnWorkspace={() => setActiveView("workspace")}

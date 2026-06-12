@@ -34,6 +34,11 @@ import type {
 } from "../../features/files/remoteFileTypes";
 import type { TerminalConnectRequest } from "../../features/terminal/terminalTypes";
 
+export interface NativeWindowMaterial {
+  id: number;
+  name: string;
+}
+
 export function connectionList() {
   return invoke<ConnectionProfile[]>("connection_list");
 }
@@ -124,6 +129,16 @@ export function terminalResize(sessionId: string, cols: number, rows: number) {
 
 export function terminalClose(sessionId: string) {
   return invoke<void>("terminal_close", { sessionId });
+}
+
+export function getSupportedWindowMaterialsCommand() {
+  return invoke<NativeWindowMaterial[]>("get_supported_window_materials");
+}
+
+export function setWindowMaterialCommand(material: number) {
+  return invoke<NativeWindowMaterial>("set_window_material", {
+    material,
+  });
 }
 
 export function remoteFileList(connectionId: string, path?: string) {

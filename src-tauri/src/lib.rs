@@ -32,6 +32,8 @@ pub fn run() {
             commands::terminal_write,
             commands::terminal_resize,
             commands::terminal_close,
+            commands::get_supported_window_materials,
+            commands::set_window_material,
             commands::remote_file_list,
             commands::remote_file_read,
             commands::remote_file_write,

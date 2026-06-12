@@ -8,10 +8,11 @@ import {
 
 export type SettingsSectionId = "basic" | "credentials" | "appearance" | "terminalTheme";
 export type ThemeMode = "system" | "light" | "dark";
-export type AccentColor = "blue" | "slate" | "emerald" | "rose" | "violet" | "custom";
+export type AccentColor = "blue" | "slate" | "emerald" | "amber" | "rose" | "violet" | "custom";
 export type FontSettingMode = "preset" | "custom";
 export type InterfaceDensity = "comfortable" | "compact";
 export type IconSize = "small" | "medium" | "large";
+export type WindowMaterialMode = "auto" | "mica" | "acrylic" | "micaAlt";
 export type FileTransferConflictPolicy = "ask" | "overwrite" | "skip" | "rename";
 export type FileTransferTimestampFormat =
   | "yyyyMMddHHmm"
@@ -53,6 +54,7 @@ export interface AppearanceSettings {
   uiFontMode: FontSettingMode;
   uiFontPreset: UiFontPreset;
   uiFontSize: 12 | 13 | 14 | 15;
+  windowMaterial: WindowMaterialMode;
 }
 
 export interface TerminalThemeSettings {
@@ -76,16 +78,21 @@ export interface MxtermSettings {
 }
 
 export const accentColorPresets: Array<{
+  dark: string;
   label: string;
   light: string;
-  value: Exclude<AccentColor, "custom">;
+  value: Exclude<AccentColor, "custom" | "slate">;
 }> = [
-  { value: "blue", label: "蓝", light: "#2563EB" },
-  { value: "slate", label: "灰", light: "#64748B" },
-  { value: "emerald", label: "绿", light: "#059669" },
-  { value: "rose", label: "玫", light: "#E11D48" },
-  { value: "violet", label: "紫", light: "#7C3AED" },
+  { value: "blue", label: "蓝", light: "#2374C6", dark: "#73B7FF" },
+  { value: "emerald", label: "绿", light: "#168264", dark: "#57D8AE" },
+  { value: "amber", label: "琥", light: "#C97A19", dark: "#FFBF66" },
+  { value: "rose", label: "玫", light: "#C85F82", dark: "#FF9DB8" },
+  { value: "violet", label: "紫", light: "#7460DE", dark: "#AC9CFF" },
 ];
+
+const legacyAccentColors: Record<Extract<AccentColor, "slate">, { light: string; dark: string }> = {
+  slate: { light: "#64748B", dark: "#94A3B8" },
+};
 
 export const uiFontPresets: Array<{
   label: string;
@@ -173,7 +180,7 @@ export const defaultSettings: MxtermSettings = {
   },
   appearance: {
     accentColor: "blue",
-    accentColorCustom: "#2563EB",
+    accentColorCustom: "#2374C6",
     density: "comfortable",
     iconSize: "medium",
     rememberPaneWidths: true,
@@ -186,6 +193,7 @@ export const defaultSettings: MxtermSettings = {
     uiFontMode: "preset",
     uiFontPreset: "segoe-ui",
     uiFontSize: 14,
+    windowMaterial: "mica",
   },
   terminalTheme: {
     scheme: defaultTerminalColorSchemeId,
@@ -249,7 +257,7 @@ export function normalizeSettings(value: unknown): MxtermSettings {
     appearance: {
       accentColor: normalizeOneOf(
         appearance.accentColor,
-        ["blue", "slate", "emerald", "rose", "violet", "custom"],
+        ["blue", "slate", "emerald", "amber", "rose", "violet", "custom"],
         defaultSettings.appearance.accentColor,
       ),
       accentColorCustom: normalizeHexColor(
@@ -313,6 +321,11 @@ export function normalizeSettings(value: unknown): MxtermSettings {
         [12, 13, 14, 15],
         defaultSettings.appearance.uiFontSize,
       ),
+      windowMaterial: normalizeOneOf(
+        appearance.windowMaterial,
+        ["auto", "mica", "acrylic", "micaAlt"],
+        defaultSettings.appearance.windowMaterial,
+      ),
     },
     terminalTheme: {
       scheme: getTerminalColorScheme(
@@ -323,13 +336,14 @@ export function normalizeSettings(value: unknown): MxtermSettings {
 }
 
 export function resolveSettingsStyle(settings: MxtermSettings): CSSProperties {
-  const accent = resolveAccentColor(settings.appearance);
+  const accent = resolveAccentColors(settings.appearance);
   const terminalScheme = getTerminalColorScheme(settings.terminalTheme.scheme);
 
   return {
     "--font-mono": resolveTerminalFontFamily(settings.appearance),
     "--font-ui": resolveUiFontFamily(settings.appearance),
-    "--mx-primary": accent,
+    "--mx-primary-light": accent.light,
+    "--mx-primary-dark": accent.dark,
     "--mx-settings-ui-font-size": `${settings.appearance.uiFontSize.toString()}px`,
     "--mx-terminal": terminalScheme.theme.background,
     "--mx-terminal-font-size": `${settings.appearance.terminalFontSize.toString()}px`,
@@ -373,12 +387,31 @@ export function resolveTerminalFontFamily(
 }
 
 export function resolveAccentColor(appearance: Pick<AppearanceSettings, "accentColor" | "accentColorCustom">) {
+  return resolveAccentColors(appearance).light;
+}
+
+export function resolveAccentColors(
+  appearance: Pick<AppearanceSettings, "accentColor" | "accentColorCustom">,
+) {
   if (appearance.accentColor === "custom") {
-    return normalizeHexColor(appearance.accentColorCustom, defaultSettings.appearance.accentColorCustom);
+    const light = normalizeHexColor(
+      appearance.accentColorCustom,
+      defaultSettings.appearance.accentColorCustom,
+    );
+    return {
+      light,
+      dark: createDarkAccentColor(light),
+    };
   }
 
-  return accentColorPresets.find((preset) => preset.value === appearance.accentColor)?.light ||
-    defaultSettings.appearance.accentColorCustom;
+  const preset =
+    accentColorPresets.find((item) => item.value === appearance.accentColor) ||
+    legacyAccentColors[appearance.accentColor as keyof typeof legacyAccentColors];
+
+  return preset || {
+    light: defaultSettings.appearance.accentColorCustom,
+    dark: createDarkAccentColor(defaultSettings.appearance.accentColorCustom),
+  };
 }
 
 export function normalizeHexColor(value: unknown, fallback: string) {
@@ -395,6 +428,19 @@ export function normalizeHexColor(value: unknown, fallback: string) {
 
   const full = /^#([0-9a-fA-F]{6})$/.exec(trimmed);
   return full ? `#${full[1].toUpperCase()}` : fallback;
+}
+
+export function createDarkAccentColor(lightHex: string) {
+  const normalized = normalizeHexColor(lightHex, defaultSettings.appearance.accentColorCustom);
+  const red = Number.parseInt(normalized.slice(1, 3), 16);
+  const green = Number.parseInt(normalized.slice(3, 5), 16);
+  const blue = Number.parseInt(normalized.slice(5, 7), 16);
+  const boost = 0.24;
+  const mix = (channel: number) => Math.round(channel + (255 - channel) * boost);
+
+  return `#${[mix(red), mix(green), mix(blue)]
+    .map((channel) => channel.toString(16).padStart(2, "0").toUpperCase())
+    .join("")}`;
 }
 
 function iconSizeToPixels(size: IconSize) {

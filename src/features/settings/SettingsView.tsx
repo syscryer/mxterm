@@ -10,6 +10,7 @@ import {
   Folder,
   FolderOpen,
   KeyRound,
+  Layers,
   LockKeyhole,
   Monitor,
   Moon,
@@ -66,8 +67,10 @@ import {
   type TerminalThemeSettings,
   type TerminalFontPreset,
   type UiFontPreset,
+  type WindowMaterialMode,
   uiFontPresets,
 } from "./settingsTypes";
+import { getWindowMaterialLabel } from "../../shared/tauri/windowMaterial";
 import {
   SegmentedControl,
   SettingsRow,
@@ -79,9 +82,11 @@ interface SettingsViewProps {
   credentials: CredentialProfile[];
   credentialError?: string | null;
   credentialLoading?: boolean;
+  effectiveWindowMaterial: WindowMaterialMode;
   hidden?: boolean;
   settings: MxtermSettings;
   activeSection?: SettingsSectionId;
+  supportedWindowMaterials: WindowMaterialMode[];
   onReset: () => void;
   onReturnWorkspace: () => void;
   onSaveCredential: (input: CredentialProfileInput) => Promise<void>;
@@ -108,9 +113,11 @@ export function SettingsView({
   credentials,
   credentialError,
   credentialLoading = false,
+  effectiveWindowMaterial,
   hidden = false,
   settings,
   activeSection: requestedActiveSection,
+  supportedWindowMaterials,
   onReset,
   onReturnWorkspace,
   onSaveCredential,
@@ -183,7 +190,9 @@ export function SettingsView({
         {activeSection === "appearance" ? (
           <AppearanceSettingsSection
             accentDraft={accentDraft}
+            effectiveWindowMaterial={effectiveWindowMaterial}
             settings={settings.appearance}
+            supportedWindowMaterials={supportedWindowMaterials}
             onAccentDraftChange={setAccentDraft}
             onReset={onReset}
             onUpdate={onUpdateAppearance}
@@ -814,19 +823,27 @@ function BasicSettingsSection({
 
 function AppearanceSettingsSection({
   accentDraft,
+  effectiveWindowMaterial,
   settings,
+  supportedWindowMaterials,
   onAccentDraftChange,
   onReset,
   onUpdate,
 }: {
   accentDraft: string;
+  effectiveWindowMaterial: WindowMaterialMode;
   settings: AppearanceSettings;
+  supportedWindowMaterials: WindowMaterialMode[];
   onAccentDraftChange: (value: string) => void;
   onReset: () => void;
   onUpdate: (update: Partial<AppearanceSettings>) => void;
 }) {
   const [uiFontDraft, setUiFontDraft] = useState(settings.uiFontCustom);
   const [terminalFontDraft, setTerminalFontDraft] = useState(settings.terminalFontCustom);
+  const windowMaterialDescription =
+    supportedWindowMaterials.length > 1
+      ? "选择窗口背景材质；不支持的平台会自动回退。"
+      : "当前平台仅支持默认窗口背景。";
 
   useEffect(() => {
     setUiFontDraft(settings.uiFontCustom);
@@ -898,7 +915,7 @@ function AppearanceSettingsSection({
       </div>
 
       <div className="settings-panel">
-        <SettingsRow icon={Monitor} title="主题模式" description="深色主题暂不应用到全局，后续完整适配。">
+        <SettingsRow icon={Monitor} title="主题模式" description="浅色、深色和系统主题会同步应用到整个工作区。">
           <SegmentedControl
             value={settings.themeMode}
             options={[
@@ -907,6 +924,17 @@ function AppearanceSettingsSection({
               { value: "dark", label: "深色", icon: Moon },
             ]}
             onChange={(themeMode) => onUpdate({ themeMode })}
+          />
+        </SettingsRow>
+
+        <SettingsRow icon={Layers} title="窗口材质" description={windowMaterialDescription}>
+          <SegmentedControl<WindowMaterialMode>
+            value={effectiveWindowMaterial}
+            options={supportedWindowMaterials.map((material) => ({
+              value: material,
+              label: getWindowMaterialLabel(material),
+            }))}
+            onChange={(windowMaterial) => onUpdate({ windowMaterial })}
           />
         </SettingsRow>
 

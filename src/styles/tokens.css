@@ -1,4 +1,6 @@
 :root {
+  --mx-primary-light: #2374c6;
+  --mx-primary-dark: #73b7ff;
   --mx-bg: #f5f6f8;
   --mx-panel: #ffffff;
   --mx-panel-soft: #f8f9fb;
@@ -11,11 +13,14 @@
   --mx-subtle: #8a93a0;
   --mx-active: rgba(156, 163, 175, 0.13);
   --mx-active-strong: rgba(100, 116, 139, 0.16);
-  --mx-primary: #2563eb;
+  --mx-primary: var(--mx-primary-light);
   --mx-success: #15803d;
   --mx-danger: #dc2626;
   --mx-terminal: #111827;
   --mx-terminal-line: #263241;
+  --mx-material-bg: linear-gradient(180deg, #f7f8fa, #eef1f5);
+  --mx-material-panel: rgb(255 255 255 / 90%);
+  --mx-material-panel-soft: rgb(248 249 251 / 86%);
   --mx-glass-border: rgb(214 218 224 / 70%);
   --mx-glass-bg:
     linear-gradient(145deg, rgb(255 255 255 / 36%), rgb(246 248 250 / 30%)),
@@ -36,7 +41,135 @@
     rgb(142 142 147 / 16%);
   --font-ui: "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI", system-ui, sans-serif;
   --font-mono: "Cascadia Mono", Consolas, "Microsoft YaHei UI", monospace;
+  color-scheme: light;
   color: var(--mx-text);
   background: var(--mx-bg);
   font-family: var(--font-ui);
+}
+
+.app-shell {
+  --mx-primary: var(--mx-primary-light, #2374c6);
+  color-scheme: light;
+  color: var(--mx-text);
+}
+
+.app-shell[data-window-material="auto"] {
+  --mx-material-bg:
+    radial-gradient(circle at 22% 0%, color-mix(in srgb, var(--mx-primary) 10%, transparent), transparent 30%),
+    linear-gradient(180deg, var(--mx-bg), color-mix(in srgb, var(--mx-bg) 84%, var(--mx-panel) 16%));
+}
+
+.app-shell[data-window-material="mica"] {
+  --mx-material-bg:
+    radial-gradient(circle at 18% 0%, color-mix(in srgb, var(--mx-primary) 13%, transparent), transparent 34%),
+    linear-gradient(145deg, rgb(255 255 255 / 72%), rgb(235 239 245 / 74%)),
+    var(--mx-bg);
+  --mx-material-panel: rgb(255 255 255 / 84%);
+  --mx-material-panel-soft: rgb(248 250 252 / 76%);
+}
+
+.app-shell[data-window-material="acrylic"] {
+  --mx-material-bg:
+    radial-gradient(circle at 20% 0%, color-mix(in srgb, var(--mx-primary) 18%, transparent), transparent 36%),
+    linear-gradient(145deg, rgb(255 255 255 / 62%), rgb(230 235 242 / 58%)),
+    var(--mx-bg);
+  --mx-material-panel: rgb(255 255 255 / 76%);
+  --mx-material-panel-soft: rgb(248 250 252 / 66%);
+}
+
+.app-shell[data-window-material="micaAlt"] {
+  --mx-material-bg:
+    radial-gradient(circle at 16% 0%, color-mix(in srgb, var(--mx-primary) 16%, transparent), transparent 34%),
+    linear-gradient(145deg, rgb(250 252 255 / 78%), rgb(226 232 240 / 76%)),
+    var(--mx-bg);
+  --mx-material-panel: rgb(255 255 255 / 82%);
+  --mx-material-panel-soft: rgb(245 248 252 / 72%);
+}
+
+.app-shell[data-theme-mode="dark"] {
+  --mx-bg: #101318;
+  --mx-panel: #171b21;
+  --mx-panel-soft: #1d222a;
+  --mx-title: rgb(17 20 26 / 82%);
+  --mx-line: #2a3039;
+  --mx-line-soft: #222832;
+  --mx-line-strong: #3a4250;
+  --mx-text: #e6e9ee;
+  --mx-muted: #a4adb9;
+  --mx-subtle: #737d8b;
+  --mx-active: rgb(148 163 184 / 12%);
+  --mx-active-strong: rgb(148 163 184 / 20%);
+  --mx-primary: var(--mx-primary-dark, #73b7ff);
+  --mx-success: #57d8ae;
+  --mx-danger: #ff8f9b;
+  --mx-terminal-line: #2f3b4b;
+  --mx-material-bg:
+    radial-gradient(circle at 18% 0%, color-mix(in srgb, var(--mx-primary) 12%, transparent), transparent 36%),
+    linear-gradient(180deg, #101318, #0c0f14);
+  --mx-material-panel: rgb(23 27 33 / 86%);
+  --mx-material-panel-soft: rgb(29 34 42 / 78%);
+  --mx-glass-border: rgb(82 94 112 / 56%);
+  --mx-glass-bg:
+    linear-gradient(145deg, rgb(42 49 60 / 52%), rgb(20 24 30 / 44%)),
+    rgb(20 24 30 / 50%);
+  --mx-glass-bg-strong:
+    linear-gradient(145deg, rgb(48 56 68 / 58%), rgb(21 25 32 / 52%)),
+    rgb(18 22 28 / 62%);
+  --mx-glass-highlight:
+    radial-gradient(ellipse at 18% 0%, rgb(255 255 255 / 7%), transparent 42%),
+    linear-gradient(180deg, rgb(255 255 255 / 5%), transparent 36%);
+  --mx-glass-shadow:
+    0 24px 52px rgb(0 0 0 / 32%),
+    0 8px 20px rgb(0 0 0 / 22%),
+    inset 0 1px 0 rgb(255 255 255 / 9%),
+    inset 0 -1px 0 rgb(0 0 0 / 24%);
+  --mx-glass-hover:
+    linear-gradient(180deg, rgb(255 255 255 / 9%), rgb(255 255 255 / 4%)),
+    rgb(148 163 184 / 12%);
+  color-scheme: dark;
+}
+
+@media (prefers-color-scheme: dark) {
+  .app-shell[data-theme-mode="system"] {
+    --mx-bg: #101318;
+    --mx-panel: #171b21;
+    --mx-panel-soft: #1d222a;
+    --mx-title: rgb(17 20 26 / 82%);
+    --mx-line: #2a3039;
+    --mx-line-soft: #222832;
+    --mx-line-strong: #3a4250;
+    --mx-text: #e6e9ee;
+    --mx-muted: #a4adb9;
+    --mx-subtle: #737d8b;
+    --mx-active: rgb(148 163 184 / 12%);
+    --mx-active-strong: rgb(148 163 184 / 20%);
+    --mx-primary: var(--mx-primary-dark, #73b7ff);
+    --mx-success: #57d8ae;
+    --mx-danger: #ff8f9b;
+    --mx-terminal-line: #2f3b4b;
+    --mx-material-bg:
+      radial-gradient(circle at 18% 0%, color-mix(in srgb, var(--mx-primary) 12%, transparent), transparent 36%),
+      linear-gradient(180deg, #101318, #0c0f14);
+    --mx-material-panel: rgb(23 27 33 / 86%);
+    --mx-material-panel-soft: rgb(29 34 42 / 78%);
+    --mx-glass-border: rgb(82 94 112 / 56%);
+    --mx-glass-bg:
+      linear-gradient(145deg, rgb(42 49 60 / 52%), rgb(20 24 30 / 44%)),
+      rgb(20 24 30 / 50%);
+    --mx-glass-bg-strong:
+      linear-gradient(145deg, rgb(48 56 68 / 58%), rgb(21 25 32 / 52%)),
+      rgb(18 22 28 / 62%);
+    --mx-glass-highlight:
+      radial-gradient(ellipse at 18% 0%, rgb(255 255 255 / 7%), transparent 42%),
+      linear-gradient(180deg, rgb(255 255 255 / 5%), transparent 36%);
+    --mx-glass-shadow:
+      0 24px 52px rgb(0 0 0 / 32%),
+      0 8px 20px rgb(0 0 0 / 22%),
+      inset 0 1px 0 rgb(255 255 255 / 9%),
+      inset 0 -1px 0 rgb(0 0 0 / 24%);
+    --mx-glass-hover:
+      linear-gradient(180deg, rgb(255 255 255 / 9%), rgb(255 255 255 / 4%)),
+      rgb(148 163 184 / 12%);
+    color-scheme: dark;
+  }
 }

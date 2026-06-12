@@ -639,3 +639,111 @@ listenRemoteFileTransferProgress((event) => {
   );
 });
 ```
+
+## Scenario: Window Material Commands
+
+### 1. Scope / Trigger
+
+- Trigger: a React feature changes native window backdrop/material behavior, appearance settings normalization, or the `get_supported_window_materials` / `set_window_material` Tauri commands.
+- Source files: `src/shared/tauri/commands.ts`, `src/shared/tauri/windowMaterial.ts`, `src/features/settings/settingsTypes.ts`, `src/features/layout/WorkspaceShell.tsx`, `src/features/settings/SettingsView.tsx`, `src/styles/tokens.css`, and `src-tauri/src/commands.rs`.
+- This is a cross-layer command contract because React owns persisted appearance settings while Rust owns platform support and native DWM application.
+
+### 2. Signatures
+
+```ts
+type WindowMaterialMode = "auto" | "mica" | "acrylic" | "micaAlt";
+
+type NativeWindowMaterial = {
+  id: number;
+  name: string;
+};
+
+getSupportedWindowMaterialsCommand(): Promise<NativeWindowMaterial[]>
+setWindowMaterialCommand(material: number): Promise<NativeWindowMaterial>
+
+getSupportedWindowMaterials(): Promise<WindowMaterialMode[]>
+setWindowMaterial(material: WindowMaterialMode): Promise<boolean>
+normalizeWindowMaterial(
+  material: WindowMaterialMode,
+  supportedMaterials: readonly WindowMaterialMode[],
+): WindowMaterialMode
+```
+
+Material ids:
+
+```ts
+auto = 0
+mica = 2
+acrylic = 3
+micaAlt = 4
+```
+
+### 3. Contracts
+
+- Frontend components must not call `invoke("get_supported_window_materials")` or `invoke("set_window_material")` directly. Use `src/shared/tauri/commands.ts` wrappers or the higher-level `src/shared/tauri/windowMaterial.ts` helpers.
+- `appearance.windowMaterial` is persisted as the string union `WindowMaterialMode`, never as the numeric native id.
+- `WorkspaceShell` must normalize the persisted setting against the supported-material list before writing `data-window-material` or calling the native setter.
+- `.app-shell` must expose the effective material through `data-window-material` so CSS fallback tokens work in browser preview and unsupported platforms.
+- Browser preview must not throw when Tauri is absent. `getSupportedWindowMaterials()` returns a platform-derived fallback and `setWindowMaterial()` returns `false`.
+- Unsupported platform or command failure must be fail-safe. The UI should keep a coherent CSS fallback and eventually normalize the setting to `auto` when the supported list contains only `auto`.
+- CSS material visuals belong in token/style files. Native material commands should not be required for the app to look coherent in preview.
+
+### 4. Validation & Error Matrix
+
+| Condition | Frontend behavior |
+| --- | --- |
+| No Tauri runtime | Use `getPlatformWindowMaterials(resolveDesktopPlatform())`; do not call native commands. |
+| Native supported-material query fails | Fall back to the platform-derived material list. |
+| Native query returns an unknown id | Drop that id during normalization. |
+| Native query returns an empty list | Fall back to the platform-derived material list. |
+| Persisted material is not supported | Normalize to the first supported value, usually `auto`, and persist the normalized value. |
+| `set_window_material` rejects | Swallow the error in the helper and keep CSS fallback active. |
+| User selects a material in Settings | Update `appearance.windowMaterial`; `WorkspaceShell` owns native application as a side effect. |
+
+### 5. Good / Base / Bad Cases
+
+- Good: `SettingsView` renders material options from `supportedWindowMaterials`, writes a `WindowMaterialMode`, and lets `WorkspaceShell` normalize and apply the native side effect.
+- Good: browser preview on Windows shows codem-style material choices as CSS fallback, while a Tauri desktop build replaces that with the Rust-reported support list.
+- Base: non-Windows platforms expose only `auto`; the setting row remains stable and the app uses CSS material tokens.
+- Bad: a component persists `2` for Mica, calls `invoke("set_window_material", ...)` directly, or assumes every Windows version supports Acrylic.
+
+### 6. Tests Required
+
+- Run `npm run check -- --pretty false` after changing `WindowMaterialMode`, material wrappers, `WorkspaceShell`, or settings props.
+- Run `npm run build` after changing material CSS tokens or appearance settings UI.
+- Run `cargo check --manifest-path src-tauri/Cargo.toml` after changing the command names, numeric ids, or backend response shape.
+- Browser-preview check: switch theme to dark, switch material, and verify `.app-shell` has `data-theme-mode` and `data-window-material` plus dark `--mx-*` tokens.
+- Cross-check frontend material ids against backend `window_material_info(...)` in the same task.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```tsx
+await invoke("set_window_material", { material: "mica" });
+```
+
+#### Correct
+
+```tsx
+await setWindowMaterial(normalizeWindowMaterial(settings.appearance.windowMaterial, supported));
+```
+
+#### Wrong
+
+```tsx
+<SegmentedControl value={settings.appearance.windowMaterial} options={allMaterials} />
+```
+
+#### Correct
+
+```tsx
+<SegmentedControl
+  value={effectiveWindowMaterial}
+  options={supportedWindowMaterials.map((material) => ({
+    value: material,
+    label: getWindowMaterialLabel(material),
+  }))}
+  onChange={(windowMaterial) => onUpdate({ windowMaterial })}
+/>
+```
