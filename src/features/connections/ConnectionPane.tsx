@@ -222,7 +222,7 @@ export function ConnectionPane({
 
   return (
     <>
-      <aside className="connection-pane" aria-label="连接仓库">
+      <aside className="connection-pane app-sidebar" aria-label="连接仓库">
         <section className="pane-scroll connection-tree" aria-label="连接树">
           {loading ? <p className="pane-note">加载连接中...</p> : null}
           {error ? <p className="pane-error">{error}</p> : null}

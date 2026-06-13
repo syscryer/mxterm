@@ -429,13 +429,22 @@ button {
 
 .appearance-preview-terminal {
   min-width: 0;
+  border: 1px solid rgb(255 255 255 / 10%);
   border-radius: 8px;
   display: grid;
   align-content: start;
   gap: 8px;
   padding: 13px;
-  color: color-mix(in srgb, var(--mx-terminal) 4%, #f8fafc 96%);
-  background: var(--mx-terminal);
+  color: #f8fafc;
+  background:
+    linear-gradient(
+      180deg,
+      color-mix(in srgb, var(--mx-terminal) 28%, #1f2937 72%),
+      color-mix(in srgb, var(--mx-terminal) 24%, #111827 76%)
+    );
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 8%),
+    0 1px 2px rgb(15 23 42 / 8%);
   font-family: var(--font-mono);
   font-size: var(--mx-terminal-font-size, 13px);
   line-height: 1.25;
@@ -443,6 +452,7 @@ button {
 
 .appearance-preview-terminal code {
   overflow: hidden;
+  opacity: 0.96;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -3711,8 +3721,7 @@ button {
 .add-tab,
 .subtab,
 .add-subtab,
-.file-tab,
-.tool-tabs button {
+.file-tab {
   display: flex;
   align-items: center;
   gap: 6px;
@@ -3724,6 +3733,24 @@ button {
   background: transparent;
   cursor: pointer;
   font-size: 13px;
+}
+
+.tool-tabs button {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 24px;
+  min-width: 0;
+  max-width: 148px;
+  flex: 0 1 auto;
+  border: 0;
+  border-radius: 7px;
+  padding: 0 10px;
+  color: var(--mx-muted);
+  background: transparent;
+  cursor: pointer;
+  font-size: 13px;
+  white-space: nowrap;
 }
 
 .tab-shell {
@@ -5733,4 +5760,217 @@ button {
   ) {
     background: color-mix(in srgb, var(--mx-danger) 10%, var(--mx-panel));
   }
+}
+
+/* Chrome-focused material: one shared layer for titlebar and left sidebars. */
+html,
+body,
+#root {
+  background: transparent;
+}
+
+body {
+  background: transparent;
+}
+
+.app-shell {
+  position: relative;
+  isolation: isolate;
+  color: var(--mx-text);
+  background: transparent;
+}
+
+.app-shell::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  background:
+    linear-gradient(180deg, var(--mx-chrome-glow), transparent 58%),
+    var(--mx-chrome-fill);
+  pointer-events: none;
+}
+
+.app-shell > :where(.workspace-shell, .settings-view) {
+  position: relative;
+  z-index: 1;
+}
+
+.custom-titlebar {
+  overflow: hidden;
+  border-bottom-color: var(--mx-chrome-line);
+  background: transparent;
+  box-shadow: none;
+  backdrop-filter: blur(12px) saturate(1.18);
+  -webkit-backdrop-filter: blur(12px) saturate(1.18);
+}
+
+.custom-titlebar > * {
+  position: relative;
+  z-index: 1;
+}
+
+.title-leading {
+  border-right-color: var(--mx-chrome-line);
+}
+
+.title-sidebar-tools {
+  background: transparent;
+}
+
+.title-sidebar-home:hover {
+  background: var(--mx-sidebar-hover);
+}
+
+.title-sidebar-home.active {
+  background: var(--mx-sidebar-active);
+  box-shadow: none;
+}
+
+.window-control {
+  color: var(--mx-text);
+}
+
+.window-control:hover {
+  background: var(--mx-sidebar-hover);
+}
+
+.workspace-shell,
+.settings-view {
+  background: transparent;
+}
+
+.settings-view {
+  grid-template-columns: minmax(260px, var(--left-pane-custom-width, 336px)) minmax(0, 1fr);
+}
+
+.connection-home,
+.session-workbench,
+.connection-step-page,
+.main-workbench {
+  position: relative;
+  border-left: 1px solid var(--mx-chrome-line);
+  background: var(--mx-panel);
+}
+
+.settings-content {
+  position: relative;
+  border-left: 0;
+  background: var(--mx-panel);
+}
+
+.settings-panel,
+.appearance-preview,
+.credential-list-panel,
+.credential-form-panel,
+.terminal-scheme-card,
+.connection-board,
+.summary-block,
+.connection-step-shell,
+.transfer-panel,
+.transfer-item,
+.connection-dialog,
+.group-dialog,
+.remote-file-text-dialog,
+.remote-file-properties-dialog,
+.confirm-dialog {
+  background: var(--mx-panel);
+}
+
+.app-sidebar {
+  position: relative;
+  color: var(--mx-text);
+  background: transparent;
+  border-right-color: var(--mx-sidebar-border);
+  box-shadow: var(--mx-sidebar-shadow);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  overflow: hidden;
+}
+
+.app-sidebar::before,
+.app-sidebar::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+}
+
+.app-sidebar::before {
+  background: linear-gradient(180deg, var(--mx-sidebar-sheen-top), transparent 54%);
+  opacity: 0.74;
+}
+
+.app-shell[data-platform="windows"] .app-sidebar::before {
+  content: none;
+}
+
+.app-sidebar::after {
+  content: none;
+  background:
+    linear-gradient(90deg, var(--mx-sidebar-sheen-edge), transparent 24%),
+    linear-gradient(270deg, color-mix(in srgb, var(--mx-sidebar-border) 72%, transparent), transparent 68%);
+}
+
+.app-shell[data-platform="macos"] .app-sidebar::after {
+  content: "";
+  background:
+    linear-gradient(90deg, var(--mx-sidebar-sheen-edge), transparent 22%),
+    radial-gradient(circle at 18% 8%, rgb(255 255 255 / 18%), transparent 28%);
+  opacity: 0.72;
+}
+
+.app-sidebar > * {
+  position: relative;
+  z-index: 1;
+}
+
+.app-sidebar :where(.connection-toolbar, .settings-foot) {
+  background: transparent;
+  border-color: var(--mx-sidebar-border);
+}
+
+.app-sidebar :where(.settings-return, .settings-nav-item, .tree-root-row, .tree-folder-row, .tree-connection-row) {
+  color: var(--mx-muted);
+}
+
+.app-sidebar :where(
+  .settings-return:hover,
+  .settings-nav-item:hover,
+  .tree-root-row:hover,
+  .tree-folder-row:hover,
+  .tree-connection-row:hover,
+  .collapse-button:hover,
+  .mini-action:hover
+) {
+  color: var(--mx-text);
+  background: var(--mx-sidebar-hover);
+}
+
+.app-sidebar :where(.settings-nav-item.active, .tree-connection-row.active) {
+  color: var(--mx-text);
+  background: var(--mx-sidebar-active);
+  box-shadow: none;
+}
+
+.app-sidebar :where(.settings-nav-item small, .tree-connection-main small, .tree-section-head, .settings-sidebar-foot) {
+  color: var(--mx-subtle);
+}
+
+.app-sidebar .tree-children::before {
+  background: var(--mx-sidebar-border);
+}
+
+.app-sidebar :where(.text-tool-button, .credential-manage-button) {
+  background: color-mix(in srgb, var(--mx-panel) 22%, transparent);
+  border-color: var(--mx-sidebar-border);
+}
+
+.settings-sidebar {
+  background: transparent;
+}
+
+.settings-nav-item.active {
+  box-shadow: none;
 }

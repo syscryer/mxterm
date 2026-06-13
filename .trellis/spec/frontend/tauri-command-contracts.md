@@ -645,7 +645,7 @@ listenRemoteFileTransferProgress((event) => {
 ### 1. Scope / Trigger
 
 - Trigger: a React feature changes native window backdrop/material behavior, appearance settings normalization, or the `get_supported_window_materials` / `set_window_material` Tauri commands.
-- Source files: `src/shared/tauri/commands.ts`, `src/shared/tauri/windowMaterial.ts`, `src/features/settings/settingsTypes.ts`, `src/features/layout/WorkspaceShell.tsx`, `src/features/settings/SettingsView.tsx`, `src/styles/tokens.css`, and `src-tauri/src/commands.rs`.
+- Source files: `src/shared/tauri/commands.ts`, `src/shared/tauri/windowMaterial.ts`, `src/features/settings/settingsTypes.ts`, `src/features/layout/WorkspaceShell.tsx`, `src/features/settings/SettingsView.tsx`, `src/styles/tokens.css`, `src-tauri/tauri.conf.json`, `src-tauri/src/lib.rs`, and `src-tauri/src/commands.rs`.
 - This is a cross-layer command contract because React owns persisted appearance settings while Rust owns platform support and native DWM application.
 
 ### 2. Signatures
@@ -684,9 +684,13 @@ micaAlt = 4
 - `appearance.windowMaterial` is persisted as the string union `WindowMaterialMode`, never as the numeric native id.
 - `WorkspaceShell` must normalize the persisted setting against the supported-material list before writing `data-window-material` or calling the native setter.
 - `.app-shell` must expose the effective material through `data-window-material` so CSS fallback tokens work in browser preview and unsupported platforms.
+- `.app-shell` must expose `data-platform` from `resolveDesktopPlatform()` so platform-specific chrome CSS can match the native material behavior.
 - Browser preview must not throw when Tauri is absent. `getSupportedWindowMaterials()` returns a platform-derived fallback and `setWindowMaterial()` returns `false`.
 - Unsupported platform or command failure must be fail-safe. The UI should keep a coherent CSS fallback and eventually normalize the setting to `auto` when the supported list contains only `auto`.
 - CSS material visuals belong in token/style files. Native material commands should not be required for the app to look coherent in preview.
+- The desktop window must allow the WebView to reveal native material. Keep the main window `transparent: true` in `src-tauri/tauri.conf.json` and provide an initial `windowEffects.effects` entry such as `mica`; runtime material changes still flow through `setWindowMaterial(...)`.
+- Tauri startup may apply the initial Windows backdrop in `src-tauri/src/lib.rs` setup (for example Mica id `2`) so the native material is visible before React settings finish loading. `WorkspaceShell` remains the owner of persisted runtime material changes after the frontend mounts.
+- CSS fallback material should be chrome-focused: root `.app-shell` material layer, `.custom-titlebar`, and shared `.app-sidebar` rails use the material tokens, while main workspace/settings content remains on clear panel surfaces.
 
 ### 4. Validation & Error Matrix
 
@@ -710,8 +714,8 @@ micaAlt = 4
 ### 6. Tests Required
 
 - Run `npm run check -- --pretty false` after changing `WindowMaterialMode`, material wrappers, `WorkspaceShell`, or settings props.
-- Run `npm run build` after changing material CSS tokens or appearance settings UI.
-- Run `cargo check --manifest-path src-tauri/Cargo.toml` after changing the command names, numeric ids, or backend response shape.
+- Run `npm run build` after changing material CSS tokens, appearance settings UI, or `src-tauri/tauri.conf.json` window material settings.
+- Run `cargo fmt --manifest-path src-tauri/Cargo.toml --check` and `cargo check --manifest-path src-tauri/Cargo.toml` after changing `src-tauri/src/lib.rs`, command names, numeric ids, or backend response shape.
 - Browser-preview check: switch theme to dark, switch material, and verify `.app-shell` has `data-theme-mode` and `data-window-material` plus dark `--mx-*` tokens.
 - Cross-check frontend material ids against backend `window_material_info(...)` in the same task.
 

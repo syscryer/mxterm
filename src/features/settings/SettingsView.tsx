@@ -148,7 +148,7 @@ export function SettingsView({
 
   return (
     <section className="settings-view" hidden={hidden} aria-label="设置" aria-hidden={hidden}>
-      <aside className="settings-sidebar" aria-label="设置分类">
+      <aside className="settings-sidebar app-sidebar" aria-label="设置分类">
         <button className="settings-return" type="button" onClick={onReturnWorkspace}>
           <ArrowLeft className="ui-icon" aria-hidden="true" />
           <span>返回工作区</span>
