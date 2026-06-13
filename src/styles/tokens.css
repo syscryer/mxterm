@@ -21,6 +21,17 @@
   --mx-material-bg: linear-gradient(180deg, #f7f8fa, #eef1f5);
   --mx-material-panel: rgb(255 255 255 / 90%);
   --mx-material-panel-soft: rgb(248 249 251 / 86%);
+  --mx-chrome-fill: rgb(242 244 247 / 100%);
+  --mx-chrome-line: rgb(148 163 184 / 26%);
+  --mx-chrome-glow: rgb(255 255 255 / 0%);
+  --mx-chrome-blur: 0px;
+  --mx-sidebar-surface: var(--mx-chrome-fill);
+  --mx-sidebar-border: color-mix(in srgb, var(--mx-line) 50%, transparent);
+  --mx-sidebar-hover: rgb(15 23 42 / 4.5%);
+  --mx-sidebar-active: color-mix(in srgb, var(--mx-primary) 10%, rgb(255 255 255 / 24%));
+  --mx-sidebar-sheen-top: rgb(255 255 255 / 12%);
+  --mx-sidebar-sheen-edge: rgb(255 255 255 / 8%);
+  --mx-sidebar-shadow: none;
   --mx-glass-border: rgb(214 218 224 / 70%);
   --mx-glass-bg:
     linear-gradient(145deg, rgb(255 255 255 / 36%), rgb(246 248 250 / 30%)),
@@ -43,7 +54,7 @@
   --font-mono: "Cascadia Mono", Consolas, "Microsoft YaHei UI", monospace;
   color-scheme: light;
   color: var(--mx-text);
-  background: var(--mx-bg);
+  background: transparent;
   font-family: var(--font-ui);
 }
 
@@ -57,6 +68,17 @@
   --mx-material-bg:
     radial-gradient(circle at 22% 0%, color-mix(in srgb, var(--mx-primary) 10%, transparent), transparent 30%),
     linear-gradient(180deg, var(--mx-bg), color-mix(in srgb, var(--mx-bg) 84%, var(--mx-panel) 16%));
+  --mx-chrome-fill: rgb(242 244 247 / 100%);
+  --mx-chrome-line: rgb(148 163 184 / 26%);
+  --mx-chrome-glow: rgb(255 255 255 / 0%);
+  --mx-chrome-blur: 0px;
+  --mx-sidebar-surface: rgb(242 244 247 / 100%);
+  --mx-sidebar-border: rgb(148 163 184 / 24%);
+  --mx-sidebar-hover: rgb(15 23 42 / 4.5%);
+  --mx-sidebar-active: color-mix(in srgb, var(--mx-primary) 10%, rgb(255 255 255 / 24%));
+  --mx-sidebar-sheen-top: rgb(255 255 255 / 0%);
+  --mx-sidebar-sheen-edge: rgb(255 255 255 / 0%);
+  --mx-sidebar-shadow: none;
 }
 
 .app-shell[data-window-material="mica"] {
@@ -66,6 +88,17 @@
     var(--mx-bg);
   --mx-material-panel: rgb(255 255 255 / 84%);
   --mx-material-panel-soft: rgb(248 250 252 / 76%);
+  --mx-chrome-fill: rgb(236 240 246 / 0%);
+  --mx-chrome-line: rgb(86 98 118 / 10%);
+  --mx-chrome-glow: rgb(255 255 255 / 12%);
+  --mx-chrome-blur: 60px;
+  --mx-sidebar-surface: transparent;
+  --mx-sidebar-border: color-mix(in srgb, var(--mx-line) 38%, transparent);
+  --mx-sidebar-hover: color-mix(in srgb, var(--mx-text) 6%, transparent);
+  --mx-sidebar-active: rgb(156 163 175 / 8%);
+  --mx-sidebar-sheen-top: rgb(255 255 255 / 0%);
+  --mx-sidebar-sheen-edge: rgb(255 255 255 / 0%);
+  --mx-sidebar-shadow: none;
 }
 
 .app-shell[data-window-material="acrylic"] {
@@ -75,6 +108,17 @@
     var(--mx-bg);
   --mx-material-panel: rgb(255 255 255 / 76%);
   --mx-material-panel-soft: rgb(248 250 252 / 66%);
+  --mx-chrome-fill: rgb(238 242 248 / 62%);
+  --mx-chrome-line: rgb(86 98 118 / 14%);
+  --mx-chrome-glow: rgb(255 255 255 / 18%);
+  --mx-chrome-blur: 72px;
+  --mx-sidebar-surface: transparent;
+  --mx-sidebar-border: color-mix(in srgb, var(--mx-line) 42%, transparent);
+  --mx-sidebar-hover: color-mix(in srgb, var(--mx-text) 6%, transparent);
+  --mx-sidebar-active: rgb(156 163 175 / 8%);
+  --mx-sidebar-sheen-top: rgb(255 255 255 / 0%);
+  --mx-sidebar-sheen-edge: rgb(255 255 255 / 0%);
+  --mx-sidebar-shadow: none;
 }
 
 .app-shell[data-window-material="micaAlt"] {
@@ -84,6 +128,17 @@
     var(--mx-bg);
   --mx-material-panel: rgb(255 255 255 / 82%);
   --mx-material-panel-soft: rgb(245 248 252 / 72%);
+  --mx-chrome-fill: rgb(232 238 246 / 18%);
+  --mx-chrome-line: rgb(86 98 118 / 12%);
+  --mx-chrome-glow: rgb(255 255 255 / 10%);
+  --mx-chrome-blur: 64px;
+  --mx-sidebar-surface: transparent;
+  --mx-sidebar-border: color-mix(in srgb, var(--mx-line) 40%, transparent);
+  --mx-sidebar-hover: color-mix(in srgb, var(--mx-text) 6%, transparent);
+  --mx-sidebar-active: rgb(156 163 175 / 8%);
+  --mx-sidebar-sheen-top: rgb(255 255 255 / 0%);
+  --mx-sidebar-sheen-edge: rgb(255 255 255 / 0%);
+  --mx-sidebar-shadow: none;
 }
 
 .app-shell[data-theme-mode="dark"] {
@@ -108,6 +163,17 @@
     linear-gradient(180deg, #101318, #0c0f14);
   --mx-material-panel: rgb(23 27 33 / 86%);
   --mx-material-panel-soft: rgb(29 34 42 / 78%);
+  --mx-chrome-fill: rgb(32 32 34 / 100%);
+  --mx-chrome-line: rgb(255 255 255 / 10%);
+  --mx-chrome-glow: rgb(255 255 255 / 0%);
+  --mx-chrome-blur: 0px;
+  --mx-sidebar-surface: rgb(32 32 34 / 100%);
+  --mx-sidebar-border: rgb(255 255 255 / 10%);
+  --mx-sidebar-hover: rgb(255 255 255 / 9%);
+  --mx-sidebar-active: color-mix(in srgb, var(--mx-primary) 15%, rgb(255 255 255 / 8%));
+  --mx-sidebar-sheen-top: rgb(255 255 255 / 5%);
+  --mx-sidebar-sheen-edge: rgb(255 255 255 / 3%);
+  --mx-sidebar-shadow: none;
   --mx-glass-border: rgb(82 94 112 / 56%);
   --mx-glass-bg:
     linear-gradient(145deg, rgb(42 49 60 / 52%), rgb(20 24 30 / 44%)),
@@ -127,6 +193,48 @@
     linear-gradient(180deg, rgb(255 255 255 / 9%), rgb(255 255 255 / 4%)),
     rgb(148 163 184 / 12%);
   color-scheme: dark;
+}
+
+.app-shell[data-theme-mode="dark"][data-window-material="mica"] {
+  --mx-chrome-fill: rgb(28 28 28 / 0%);
+  --mx-chrome-line: rgb(255 255 255 / 7%);
+  --mx-chrome-glow: rgb(255 255 255 / 5%);
+  --mx-chrome-blur: 60px;
+  --mx-sidebar-surface: transparent;
+  --mx-sidebar-border: color-mix(in srgb, var(--mx-line) 40%, transparent);
+  --mx-sidebar-hover: color-mix(in srgb, var(--mx-text) 7%, transparent);
+  --mx-sidebar-active: rgb(255 255 255 / 7%);
+  --mx-sidebar-sheen-top: rgb(255 255 255 / 0%);
+  --mx-sidebar-sheen-edge: rgb(255 255 255 / 0%);
+  --mx-sidebar-shadow: none;
+}
+
+.app-shell[data-theme-mode="dark"][data-window-material="acrylic"] {
+  --mx-chrome-fill: rgb(30 31 34 / 64%);
+  --mx-chrome-line: rgb(255 255 255 / 8%);
+  --mx-chrome-glow: rgb(255 255 255 / 6%);
+  --mx-chrome-blur: 72px;
+  --mx-sidebar-surface: transparent;
+  --mx-sidebar-border: color-mix(in srgb, var(--mx-line) 42%, transparent);
+  --mx-sidebar-hover: color-mix(in srgb, var(--mx-text) 7%, transparent);
+  --mx-sidebar-active: rgb(255 255 255 / 7%);
+  --mx-sidebar-sheen-top: rgb(255 255 255 / 0%);
+  --mx-sidebar-sheen-edge: rgb(255 255 255 / 0%);
+  --mx-sidebar-shadow: none;
+}
+
+.app-shell[data-theme-mode="dark"][data-window-material="micaAlt"] {
+  --mx-chrome-fill: rgb(28 29 32 / 20%);
+  --mx-chrome-line: rgb(255 255 255 / 7%);
+  --mx-chrome-glow: rgb(255 255 255 / 4%);
+  --mx-chrome-blur: 64px;
+  --mx-sidebar-surface: transparent;
+  --mx-sidebar-border: color-mix(in srgb, var(--mx-line) 40%, transparent);
+  --mx-sidebar-hover: color-mix(in srgb, var(--mx-text) 7%, transparent);
+  --mx-sidebar-active: rgb(255 255 255 / 7%);
+  --mx-sidebar-sheen-top: rgb(255 255 255 / 0%);
+  --mx-sidebar-sheen-edge: rgb(255 255 255 / 0%);
+  --mx-sidebar-shadow: none;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -152,6 +260,17 @@
       linear-gradient(180deg, #101318, #0c0f14);
     --mx-material-panel: rgb(23 27 33 / 86%);
     --mx-material-panel-soft: rgb(29 34 42 / 78%);
+    --mx-chrome-fill: rgb(32 32 34 / 100%);
+    --mx-chrome-line: rgb(255 255 255 / 10%);
+    --mx-chrome-glow: rgb(255 255 255 / 0%);
+    --mx-chrome-blur: 0px;
+    --mx-sidebar-surface: rgb(32 32 34 / 100%);
+    --mx-sidebar-border: rgb(255 255 255 / 10%);
+    --mx-sidebar-hover: rgb(255 255 255 / 9%);
+    --mx-sidebar-active: color-mix(in srgb, var(--mx-primary) 15%, rgb(255 255 255 / 8%));
+    --mx-sidebar-sheen-top: rgb(255 255 255 / 5%);
+    --mx-sidebar-sheen-edge: rgb(255 255 255 / 3%);
+    --mx-sidebar-shadow: none;
     --mx-glass-border: rgb(82 94 112 / 56%);
     --mx-glass-bg:
       linear-gradient(145deg, rgb(42 49 60 / 52%), rgb(20 24 30 / 44%)),
@@ -171,5 +290,47 @@
       linear-gradient(180deg, rgb(255 255 255 / 9%), rgb(255 255 255 / 4%)),
       rgb(148 163 184 / 12%);
     color-scheme: dark;
+  }
+
+  .app-shell[data-theme-mode="system"][data-window-material="mica"] {
+    --mx-chrome-fill: rgb(28 28 28 / 0%);
+    --mx-chrome-line: rgb(255 255 255 / 7%);
+    --mx-chrome-glow: rgb(255 255 255 / 5%);
+    --mx-chrome-blur: 60px;
+    --mx-sidebar-surface: transparent;
+    --mx-sidebar-border: color-mix(in srgb, var(--mx-line) 40%, transparent);
+    --mx-sidebar-hover: color-mix(in srgb, var(--mx-text) 7%, transparent);
+    --mx-sidebar-active: rgb(255 255 255 / 7%);
+    --mx-sidebar-sheen-top: rgb(255 255 255 / 0%);
+    --mx-sidebar-sheen-edge: rgb(255 255 255 / 0%);
+    --mx-sidebar-shadow: none;
+  }
+
+  .app-shell[data-theme-mode="system"][data-window-material="acrylic"] {
+    --mx-chrome-fill: rgb(30 31 34 / 64%);
+    --mx-chrome-line: rgb(255 255 255 / 8%);
+    --mx-chrome-glow: rgb(255 255 255 / 6%);
+    --mx-chrome-blur: 72px;
+    --mx-sidebar-surface: transparent;
+    --mx-sidebar-border: color-mix(in srgb, var(--mx-line) 42%, transparent);
+    --mx-sidebar-hover: color-mix(in srgb, var(--mx-text) 7%, transparent);
+    --mx-sidebar-active: rgb(255 255 255 / 7%);
+    --mx-sidebar-sheen-top: rgb(255 255 255 / 0%);
+    --mx-sidebar-sheen-edge: rgb(255 255 255 / 0%);
+    --mx-sidebar-shadow: none;
+  }
+
+  .app-shell[data-theme-mode="system"][data-window-material="micaAlt"] {
+    --mx-chrome-fill: rgb(28 29 32 / 20%);
+    --mx-chrome-line: rgb(255 255 255 / 7%);
+    --mx-chrome-glow: rgb(255 255 255 / 4%);
+    --mx-chrome-blur: 64px;
+    --mx-sidebar-surface: transparent;
+    --mx-sidebar-border: color-mix(in srgb, var(--mx-line) 40%, transparent);
+    --mx-sidebar-hover: color-mix(in srgb, var(--mx-text) 7%, transparent);
+    --mx-sidebar-active: rgb(255 255 255 / 7%);
+    --mx-sidebar-sheen-top: rgb(255 255 255 / 0%);
+    --mx-sidebar-sheen-edge: rgb(255 255 255 / 0%);
+    --mx-sidebar-shadow: none;
   }
 }

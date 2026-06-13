@@ -66,6 +66,18 @@ Ant Design, Mantine, or similar libraries just to fix one modal or button.
   right-click menus, upload menus, and tooltips. The mXterm version should stay
   tighter and calmer than codem's large popovers: light blur, fine borders,
   modest shadow, and 7-10px radii.
+- Window material styling is chrome-focused. Keep the material source on the
+  root `.app-shell` layer and let `.custom-titlebar` plus every left navigation
+  sidebar inherit from shared `--mx-chrome-*` and `--mx-sidebar-*` tokens. Main
+  workspace and settings content should use clear `--mx-panel` surfaces so text,
+  terminal output, tables, and forms remain readable. When a settings navigation
+  rail needs the same behavior as the workspace connection rail, add the shared
+  `app-sidebar` class instead of creating a separate settings-only skin.
+- For the codem-style Windows material effect, prefer transparent chrome
+  surfaces over tinted sidebar panels: Mica should let `.custom-titlebar` and
+  `.app-sidebar` reveal the native/root material layer, while the adjacent
+  workspace/settings content uses an opaque panel with a subtle left boundary
+  and rounded top-left corner. This contrast is what makes the material visible.
 - Keep typography calm: default text should use regular or medium weight
   (`400`-`520`); reserve heavier weights (`600`+) for modal titles, critical
   counters, or rare primary emphasis.
@@ -150,3 +162,6 @@ Ant Design, Mantine, or similar libraries just to fix one modal or button.
 - Do not fix visual issues by scattering small CSS patches across unrelated
   selectors. First decide whether the issue belongs in a shared component,
   shared style block, or feature-specific rule.
+- Do not spread window material backgrounds across every card, table, dialog, or
+  settings panel. The material mode should be visible in the app chrome, while
+  dense work surfaces stay opaque enough to read.

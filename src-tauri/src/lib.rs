@@ -15,6 +15,15 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .manage(remote_files::RemoteFileManager::default())
         .manage(terminal::manager::TerminalManager::default())
+        .setup(|app| {
+            #[cfg(windows)]
+            {
+                let app_handle = app.handle().clone();
+                let _ = commands::set_window_material(app_handle, 2);
+            }
+            let _ = app;
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             commands::connection_list,
             commands::connection_upsert,

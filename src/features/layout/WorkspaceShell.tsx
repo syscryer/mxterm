@@ -322,8 +322,9 @@ export function WorkspaceShell() {
   const [pendingConnectionGroupId, setPendingConnectionGroupId] = useState<string | null>(null);
   const [connectionGroupCatalog, setConnectionGroupCatalog] =
     useState<ConnectionGroupCatalog>({ assignments: {}, groups: [] });
+  const desktopPlatform = useMemo(() => resolveDesktopPlatform(), []);
   const [supportedWindowMaterials, setSupportedWindowMaterials] = useState<WindowMaterialMode[]>(
-    () => getPlatformWindowMaterials(resolveDesktopPlatform()),
+    () => getPlatformWindowMaterials(desktopPlatform),
   );
   const workspaceShellRef = useRef<HTMLElement | null>(null);
 
@@ -2480,6 +2481,7 @@ export function WorkspaceShell() {
       data-density={settings.appearance.density}
       data-left-collapsed={leftPaneCollapsed}
       data-pane-resizing={resizingPane || undefined}
+      data-platform={desktopPlatform}
       data-right-collapsed={rightPaneCollapsed}
       data-theme-mode={settings.appearance.themeMode}
       data-window-material={effectiveWindowMaterial}

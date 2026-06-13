@@ -1599,12 +1599,10 @@ mod window_material {
     use super::{window_material_info, WindowMaterial};
     use std::{ffi::c_void, mem::size_of};
     use tauri::Manager;
-    use windows::{
-        Win32::{
-            Foundation::HWND,
-            Graphics::Dwm::{DwmSetWindowAttribute, DWMWA_SYSTEMBACKDROP_TYPE},
-            UI::WindowsAndMessaging::GetParent,
-        },
+    use windows::Win32::{
+        Foundation::HWND,
+        Graphics::Dwm::{DwmSetWindowAttribute, DWMWA_SYSTEMBACKDROP_TYPE},
+        UI::WindowsAndMessaging::GetParent,
     };
 
     pub fn supported_window_materials() -> Vec<WindowMaterial> {
@@ -1683,7 +1681,9 @@ mod window_material {
         if material == 0 {
             Ok(window_material_info(0))
         } else {
-            Err(format!("unsupported window material on this platform: {material}"))
+            Err(format!(
+                "unsupported window material on this platform: {material}"
+            ))
         }
     }
 }
