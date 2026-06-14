@@ -293,3 +293,148 @@ Adjusted the settings appearance screen after user screenshot feedback: removed 
 ### Next Steps
 
 - None - task complete
+
+
+## Session 10: Pull latest master
+
+**Date**: 2026-06-14
+**Task**: Pull latest master
+**Branch**: `master`
+
+### Summary
+
+Pulled latest origin/master with fast-forward from 1d896f9 to 30a3743. Latest commit is feat: same-connection terminal tab and neutral active surface. No tracked local code changes remained after pull; the existing untracked pnpm-workspace backup file was left untouched.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+(No commits - planning session)
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
+
+
+## Session 11: Neutralize codem active surfaces
+
+**Date**: 2026-06-14
+**Task**: Neutralize codem active surfaces
+**Branch**: `master`
+
+### Summary
+
+Adjusted mXterm chrome/sidebar active surface colors to match codem neutral gray values instead of accent-blue mixes. Added --mx-chrome-active for light/dark/system themes, made sidebar active surfaces neutral, routed tab/subtab/tool/filter/segmented active states through the neutral chrome token, preserved accent-specific picker styling, and verified with git diff --check, npm run check -- --pretty false, npm run build, and npm test.
+
+### Main Changes
+
+- Added `--mx-chrome-active` with codem-matched light/dark values.
+- Replaced accent-blue sidebar active mixes with neutral translucent sidebar surfaces.
+- Routed top connection tabs, terminal subtabs, right tool tabs, filter tabs, terminal scheme cards, and settings segmented active states through the neutral chrome token.
+- Kept accent picker/custom active styling out of the generic chrome active override so accent selection remains meaningful.
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `30a3743` | (see git log) |
+
+### Testing
+
+- [OK] `git diff --check`
+- [OK] `npm run check -- --pretty false`
+- [OK] `npm run build`
+- [OK] `npm test`
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
+
+
+## Session 12: Tune neutral gray active surfaces
+
+**Date**: 2026-06-14
+**Task**: Tune neutral gray active surfaces
+**Branch**: `master`
+
+### Summary
+
+Adjusted the light active surface palette after user visual feedback: --mx-chrome-active now uses a more neutral #e9ecef, and light sidebar active surfaces use 5% black instead of the previous slate-blue transparent value. Added frontend component guideline guidance that chrome/sidebar active states must use neutral active tokens instead of mixing --mx-primary into selection backgrounds. Verified git diff --check, npm run check -- --pretty false, npm test, and npm run build.
+
+### Main Changes
+
+- Tuned `--mx-chrome-active` from codem's cooler `#e7ebf0` to the more neutral `#e9ecef`.
+- Changed light `--mx-sidebar-active` values from slate-blue `rgb(156 163 175 / 8%)` to neutral `rgb(0 0 0 / 5%)`.
+- Added a frontend guideline requiring chrome/sidebar active surfaces to use neutral active tokens instead of `--mx-primary` mixes.
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `30a3743` | (see git log) |
+
+### Testing
+
+- [OK] `git diff --check`
+- [OK] `npm run check -- --pretty false`
+- [OK] `npm test`
+- [OK] `npm run build`
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
+
+
+## Session 13: Commit and push material chrome changes
+
+**Date**: 2026-06-14
+**Task**: Commit and push material chrome changes
+**Branch**: `master`
+
+### Summary
+
+User requested committing and pushing the codem material chrome follow-up. Created work commit e1c2662 (fix: tune neutral material active surfaces) containing neutral chrome/sidebar active token changes and frontend guideline updates. Prepared a separate Trellis journal bookkeeping commit before push. Untracked pnpm-workspace.yaml.local-before-pull-20260608011116 remains untouched.
+
+### Main Changes
+
+- Committed the staged material chrome styling and frontend guideline update as `fix: tune neutral material active surfaces`.
+- Left the local pull-backup file untracked and excluded from all commits.
+- Kept Trellis workspace journal/index changes separate from the work commit.
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `e1c2662` | (see git log) |
+
+### Testing
+
+- [OK] `git status --short --branch`
+- [OK] `git diff --cached --stat`
+- [OK] `git diff --cached --check`
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
