@@ -268,8 +268,8 @@ button {
 
 .settings-nav-item.active {
   color: var(--mx-text);
-  background: color-mix(in srgb, var(--mx-primary) 10%, transparent);
-  box-shadow: inset 2px 0 0 var(--mx-primary);
+  background: var(--mx-sidebar-active);
+  box-shadow: none;
 }
 
 .settings-nav-item span {
@@ -1063,10 +1063,10 @@ button {
 
 .settings-segmented button.active {
   color: var(--mx-text);
-  background: var(--mx-panel);
+  background: var(--mx-chrome-active);
   box-shadow:
     0 1px 2px rgb(15 23 42 / 8%),
-    inset 0 0 0 1px color-mix(in srgb, var(--mx-primary) 22%, transparent);
+    inset 0 0 0 1px color-mix(in srgb, var(--mx-line-strong) 72%, transparent);
 }
 
 .settings-stepper button {
@@ -5726,8 +5726,6 @@ button {
 
 .app-shell :is(
   .settings-segmented button.active,
-  .settings-accent-picker button.active,
-  .settings-accent-custom.active,
   .terminal-scheme-card.active,
   .filter-tab.active,
   .file-tab.active,
@@ -5737,7 +5735,7 @@ button {
   .subtab-shell.active
 ) {
   color: var(--mx-text);
-  background: color-mix(in srgb, var(--mx-primary) 10%, var(--mx-panel));
+  background: var(--mx-chrome-active);
 }
 
 .app-shell :is(

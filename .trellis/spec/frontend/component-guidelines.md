@@ -78,6 +78,12 @@ Ant Design, Mantine, or similar libraries just to fix one modal or button.
   `.app-sidebar` reveal the native/root material layer, while the adjacent
   workspace/settings content uses an opaque panel with a subtle left boundary
   and rounded top-left corner. This contrast is what makes the material visible.
+- Chrome selection surfaces must stay neutral. Titlebar session tabs, terminal
+  subtabs, right-pane tool tabs, settings segmented controls, and shared
+  sidebar/settings navigation active rows should use `--mx-chrome-active` or
+  `--mx-sidebar-active`; do not mix `--mx-primary` into these backgrounds.
+  Reserve accent color for semantic controls such as toggles, accent swatches,
+  focus rings, status badges, and destructive/primary actions.
 - Keep typography calm: default text should use regular or medium weight
   (`400`-`520`); reserve heavier weights (`600`+) for modal titles, critical
   counters, or rare primary emphasis.

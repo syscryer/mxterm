@@ -13,6 +13,7 @@
   --mx-subtle: #8a93a0;
   --mx-active: rgba(148, 148, 148, 0.13);
   --mx-active-strong: rgba(105, 105, 105, 0.16);
+  --mx-chrome-active: #e9ecef;
   --mx-primary: var(--mx-primary-light);
   --mx-success: #15803d;
   --mx-danger: #dc2626;
@@ -28,7 +29,7 @@
   --mx-sidebar-surface: var(--mx-chrome-fill);
   --mx-sidebar-border: color-mix(in srgb, var(--mx-line) 50%, transparent);
   --mx-sidebar-hover: rgb(15 23 42 / 4.5%);
-  --mx-sidebar-active: color-mix(in srgb, var(--mx-primary) 10%, rgb(255 255 255 / 24%));
+  --mx-sidebar-active: rgb(0 0 0 / 5%);
   --mx-sidebar-sheen-top: rgb(255 255 255 / 12%);
   --mx-sidebar-sheen-edge: rgb(255 255 255 / 8%);
   --mx-sidebar-shadow: none;
@@ -75,7 +76,7 @@
   --mx-sidebar-surface: rgb(242 244 247 / 100%);
   --mx-sidebar-border: rgb(148 163 184 / 24%);
   --mx-sidebar-hover: rgb(15 23 42 / 4.5%);
-  --mx-sidebar-active: color-mix(in srgb, var(--mx-primary) 10%, rgb(255 255 255 / 24%));
+  --mx-sidebar-active: rgb(0 0 0 / 5%);
   --mx-sidebar-sheen-top: rgb(255 255 255 / 0%);
   --mx-sidebar-sheen-edge: rgb(255 255 255 / 0%);
   --mx-sidebar-shadow: none;
@@ -95,7 +96,7 @@
   --mx-sidebar-surface: transparent;
   --mx-sidebar-border: color-mix(in srgb, var(--mx-line) 38%, transparent);
   --mx-sidebar-hover: color-mix(in srgb, var(--mx-text) 6%, transparent);
-  --mx-sidebar-active: rgb(156 163 175 / 8%);
+  --mx-sidebar-active: rgb(0 0 0 / 5%);
   --mx-sidebar-sheen-top: rgb(255 255 255 / 0%);
   --mx-sidebar-sheen-edge: rgb(255 255 255 / 0%);
   --mx-sidebar-shadow: none;
@@ -115,7 +116,7 @@
   --mx-sidebar-surface: transparent;
   --mx-sidebar-border: color-mix(in srgb, var(--mx-line) 42%, transparent);
   --mx-sidebar-hover: color-mix(in srgb, var(--mx-text) 6%, transparent);
-  --mx-sidebar-active: rgb(156 163 175 / 8%);
+  --mx-sidebar-active: rgb(0 0 0 / 5%);
   --mx-sidebar-sheen-top: rgb(255 255 255 / 0%);
   --mx-sidebar-sheen-edge: rgb(255 255 255 / 0%);
   --mx-sidebar-shadow: none;
@@ -135,7 +136,7 @@
   --mx-sidebar-surface: transparent;
   --mx-sidebar-border: color-mix(in srgb, var(--mx-line) 40%, transparent);
   --mx-sidebar-hover: color-mix(in srgb, var(--mx-text) 6%, transparent);
-  --mx-sidebar-active: rgb(156 163 175 / 8%);
+  --mx-sidebar-active: rgb(0 0 0 / 5%);
   --mx-sidebar-sheen-top: rgb(255 255 255 / 0%);
   --mx-sidebar-sheen-edge: rgb(255 255 255 / 0%);
   --mx-sidebar-shadow: none;
@@ -154,6 +155,7 @@
   --mx-subtle: #737d8b;
   --mx-active: rgb(255 255 255 / 10%);
   --mx-active-strong: rgb(255 255 255 / 16%);
+  --mx-chrome-active: #343434;
   --mx-primary: var(--mx-primary-dark, #73b7ff);
   --mx-success: #57d8ae;
   --mx-danger: #ff8f9b;
@@ -170,7 +172,7 @@
   --mx-sidebar-surface: rgb(32 32 34 / 100%);
   --mx-sidebar-border: rgb(255 255 255 / 10%);
   --mx-sidebar-hover: rgb(255 255 255 / 9%);
-  --mx-sidebar-active: color-mix(in srgb, var(--mx-primary) 15%, rgb(255 255 255 / 8%));
+  --mx-sidebar-active: rgb(255 255 255 / 7%);
   --mx-sidebar-sheen-top: rgb(255 255 255 / 5%);
   --mx-sidebar-sheen-edge: rgb(255 255 255 / 3%);
   --mx-sidebar-shadow: none;
@@ -251,6 +253,7 @@
     --mx-subtle: #737d8b;
     --mx-active: rgb(255 255 255 / 10%);
     --mx-active-strong: rgb(255 255 255 / 16%);
+    --mx-chrome-active: #343434;
     --mx-primary: var(--mx-primary-dark, #73b7ff);
     --mx-success: #57d8ae;
     --mx-danger: #ff8f9b;
@@ -267,7 +270,7 @@
     --mx-sidebar-surface: rgb(32 32 34 / 100%);
     --mx-sidebar-border: rgb(255 255 255 / 10%);
     --mx-sidebar-hover: rgb(255 255 255 / 9%);
-    --mx-sidebar-active: color-mix(in srgb, var(--mx-primary) 15%, rgb(255 255 255 / 8%));
+    --mx-sidebar-active: rgb(255 255 255 / 7%);
     --mx-sidebar-sheen-top: rgb(255 255 255 / 5%);
     --mx-sidebar-sheen-edge: rgb(255 255 255 / 3%);
     --mx-sidebar-shadow: none;
