@@ -14,14 +14,15 @@ import { openPath, revealItemInDir } from "@tauri-apps/plugin-opener";
 import { getCurrentWebview, type DragDropEvent } from "@tauri-apps/api/webview";
 import {
   AlertTriangle,
+  ChevronLeft,
   Clock3,
   Clipboard,
   CheckCircle2,
+  CircleAlert,
   KeyRound,
   List,
   Loader2,
   LockKeyhole,
-  PanelRightOpen,
   Pencil,
   Play,
   Plus,
@@ -125,6 +126,7 @@ import { AppTitlebar } from "./AppTitlebar";
 
 interface TerminalTab {
   connectionStep?: ConnectionStepState | null;
+  error?: string | null;
   id: string;
   connectionId: string;
   index: number;
@@ -365,7 +367,9 @@ export function WorkspaceShell() {
     ? terminalTabs.find((tab) => tab.id === activeTabId) || null
     : null;
   const activeConnectedTerminalTab =
-    activeTerminalTab?.type === "terminal" ? activeTerminalTab : null;
+    activeTerminalTab?.type === "terminal" && activeTerminalTab.sessionId
+      ? activeTerminalTab
+      : null;
   const activeRemoteFileTabs = activeConnectionId && activeConnectedTerminalTab
     ? remoteFileTabs.filter((tab) => tab.connectionId === activeConnectionId)
     : [];
@@ -1808,11 +1812,7 @@ export function WorkspaceShell() {
     connection: ConnectionProfile,
     step: ConnectionStepState,
   ): TerminalTab {
-    const nextIndex =
-      Math.max(
-        -1,
-        ...tabs.filter((tab) => tab.connectionId === connection.id).map((tab) => tab.index),
-      ) + 1;
+    const nextIndex = nextTerminalIndexForConnection(tabs, connection.id);
 
     return {
       connectionId: connection.id,
@@ -1822,6 +1822,23 @@ export function WorkspaceShell() {
       status: connectionStepStatusTitle(step),
       title: step.mode === "terminal" ? "连接准备" : "连接测试",
       type: "connecting",
+      warmupOutput: [],
+    };
+  }
+
+  function buildDirectTerminalTab(tabs: TerminalTab[], connection: ConnectionProfile): TerminalTab {
+    const now = Date.now();
+    const nextIndex = nextTerminalIndexForConnection(tabs, connection.id);
+
+    return {
+      connectionId: connection.id,
+      connectionStep: null,
+      id: `terminal-${connection.id}-${now.toString()}`,
+      index: nextIndex,
+      requestId: `terminal-${connection.id}-${now.toString()}`,
+      status: "正在连接",
+      title: terminalTabTitle(nextIndex),
+      type: "terminal",
       warmupOutput: [],
     };
   }
@@ -1863,10 +1880,11 @@ export function WorkspaceShell() {
           ? {
               ...tab,
               connectionStep: null,
+              error: null,
               requestId,
               sessionId,
               status: "已连接",
-              title: tab.index === 0 ? "终端" : `终端 ${tab.index.toString()}`,
+              title: terminalTabTitle(tab.index),
               type: "terminal" as const,
               warmupOutput,
             }
@@ -1905,6 +1923,10 @@ export function WorkspaceShell() {
 
   function connectingTabExists(tabId: string) {
     return terminalTabsRef.current.some((tab) => tab.id === tabId && tab.type === "connecting");
+  }
+
+  function terminalTabExists(tabId: string) {
+    return terminalTabsRef.current.some((tab) => tab.id === tabId);
   }
 
   function rememberActiveTab(tab: TerminalTab) {
@@ -2042,7 +2064,110 @@ export function WorkspaceShell() {
 
   function openTerminalInActiveConnection() {
     if (activeConnection) {
-      openTerminal(activeConnection);
+      const tab = buildDirectTerminalTab(terminalTabsRef.current, activeConnection);
+      setTerminalTabs((tabs) => {
+        const nextTabs = [...tabs, tab];
+        terminalTabsRef.current = nextTabs;
+        return nextTabs;
+      });
+      activateTerminalTab(tab);
+      void runDirectTerminalTab(tab, activeConnection);
+    }
+  }
+
+  async function runDirectTerminalTab(tab: TerminalTab, connection: ConnectionProfile) {
+    if (!tab.requestId) {
+      return;
+    }
+
+    if (!hasTauriRuntime()) {
+      await wait(120);
+      if (!terminalTabExists(tab.id)) {
+        return;
+      }
+      setTerminalTabs((tabs) => {
+        const nextTabs = tabs.map((item) =>
+          item.id === tab.id
+            ? {
+                ...item,
+                error: null,
+                requestId: tab.requestId,
+                sessionId: `preview-${Date.now().toString()}`,
+                status: "预览",
+                warmupOutput: [],
+              }
+            : item,
+        );
+        terminalTabsRef.current = nextTabs;
+        return nextTabs;
+      });
+      return;
+    }
+
+    const warmupOutput: number[] = [];
+    let stopWarmupCapture: (() => void) | null = null;
+
+    try {
+      stopWarmupCapture = await listenTerminalOutput((event: TerminalOutputEvent) => {
+        if (event.request_id !== tab.requestId) {
+          return;
+        }
+        warmupOutput.push(...event.data);
+      });
+
+      const sessionId = await terminalConnect({
+        cols: 80,
+        connection_id: connection.id,
+        host: connection.host,
+        port: connection.port,
+        request_id: tab.requestId,
+        rows: 24,
+        username: connection.username,
+      });
+      stopWarmupCapture?.();
+      stopWarmupCapture = null;
+
+      if (!terminalTabExists(tab.id)) {
+        await terminalClose(sessionId).catch(() => {});
+        return;
+      }
+
+      setTerminalTabs((tabs) => {
+        const nextTabs = tabs.map((item) =>
+          item.id === tab.id
+            ? {
+                ...item,
+                error: null,
+                requestId: tab.requestId,
+                sessionId,
+                status: "已连接",
+                warmupOutput,
+              }
+            : item,
+        );
+        terminalTabsRef.current = nextTabs;
+        return nextTabs;
+      });
+    } catch (error) {
+      stopWarmupCapture?.();
+      if (!terminalTabExists(tab.id)) {
+        return;
+      }
+      setTerminalTabs((tabs) => {
+        const nextTabs = tabs.map((item) =>
+          item.id === tab.id
+            ? {
+                ...item,
+                error: formatError(error),
+                sessionId: undefined,
+                status: "连接失败",
+                warmupOutput,
+              }
+            : item,
+        );
+        terminalTabsRef.current = nextTabs;
+        return nextTabs;
+      });
     }
   }
 
@@ -2653,7 +2778,7 @@ export function WorkspaceShell() {
                       </button>
                     </div>
                   ))}
-                  {activeConnection ? (
+                  {activeConnectedTerminalTab ? (
                     <Tooltip label="新建同连接终端">
                       <button
                         className="add-subtab"
@@ -2722,6 +2847,14 @@ export function WorkspaceShell() {
                         theme={terminalColorScheme.theme}
                         title={tab.title}
                       />
+                    ) : tab.type === "terminal" ? (
+                      <DirectTerminalStatusPanel
+                        active={!showingHome && tab.id === activeTabId}
+                        connection={connectionById.get(tab.connectionId) || null}
+                        error={tab.error || null}
+                        status={tab.status}
+                        title={tab.title}
+                      />
                     ) : null;
                   })}
                 </section>
@@ -2739,7 +2872,7 @@ export function WorkspaceShell() {
               aria-expanded={false}
               onClick={() => setRightPaneCollapsed((collapsed) => !collapsed)}
             >
-              <PanelRightOpen className="ui-icon" aria-hidden="true" />
+              <ChevronLeft className="ui-icon" aria-hidden="true" />
             </button>
           </Tooltip>
         ) : null}
@@ -3200,6 +3333,47 @@ function RemoteFileTransferPanel({
   );
 }
 
+function DirectTerminalStatusPanel({
+  active,
+  connection,
+  error,
+  status,
+  title,
+}: {
+  active: boolean;
+  connection: ConnectionProfile | null;
+  error: string | null;
+  status: string;
+  title: string;
+}) {
+  const failed = status === "连接失败";
+
+  return (
+    <section
+      className={`terminal-direct-status ${failed ? "is-error" : "is-loading"} ${
+        active ? "" : "is-hidden"
+      }`}
+      aria-label={`${title} 状态`}
+      aria-hidden={!active}
+    >
+      <div>
+        {failed ? (
+          <CircleAlert className="ui-icon" aria-hidden="true" />
+        ) : (
+          <Loader2 className="ui-icon spin" aria-hidden="true" />
+        )}
+        <strong>{failed ? "连接失败" : "正在添加终端"}</strong>
+        <span>
+          {connection
+            ? `${connection.username}@${connection.host}:${connection.port.toString()}`
+            : "当前连接"}
+        </span>
+        {error ? <small>{error}</small> : null}
+      </div>
+    </section>
+  );
+}
+
 function ConnectionStepPanel({
   active,
   step,
@@ -3228,230 +3402,265 @@ function ConnectionStepPanel({
   const hostKeyChanged = step.hostKeyDecision === "changed";
   const activeStepIndex = currentConnectionStepIndex(step);
   const closeLabel = step.status === "running" ? "取消" : "关闭";
+  const progressPercent = Math.max(8, Math.min(100, ((activeStepIndex + 1) / 5) * 100));
+  const showStepDetail = step.status !== "idle" && step.status !== "running";
   const stepItems = [
-    "读取配置",
-    "网络连接",
-    "主机密钥",
-    "用户认证",
-    step.mode === "terminal" ? "打开终端" : "完成测试",
+    {
+      description: "加载连接参数和认证材料",
+      label: "读取配置",
+    },
+    {
+      description: `TCP 握手 ${step.connection.host}:${step.connection.port.toString()}`,
+      label: "网络连接",
+    },
+    {
+      description: "校验服务器指纹和 known_hosts",
+      label: "主机密钥验证",
+    },
+    {
+      description: connectionStepAuthDescription(step),
+      label: "用户认证",
+    },
+    {
+      description:
+        step.mode === "terminal" ? "启动交互式 Shell 会话" : "完成连接测试流程",
+      label: step.mode === "terminal" ? "打开终端" : "完成测试",
+    },
   ];
 
   return (
     <section
       className={`connection-step-page ${active ? "" : "is-hidden"}`}
+      data-step-status={step.status}
       aria-label="连接步骤"
       aria-hidden={!active}
     >
-      <header className="connection-step-head">
-        <span>
-          <strong>{step.mode === "terminal" ? "连接准备" : "连接测试"}</strong>
-          <small>
-            {step.connection.name} · {formatConnectionAddress(step.connection)}
-          </small>
-        </span>
-        <div className="connection-step-actions">
-          <button type="button" onClick={() => onEdit(step.connection)}>
-            <Pencil className="ui-icon" aria-hidden="true" />
-            <span>编辑连接</span>
-          </button>
-          <button type="button" onClick={onCancel}>
-            <X className="ui-icon" aria-hidden="true" />
-            <span>{closeLabel}</span>
-          </button>
-        </div>
-      </header>
-
       <div className="connection-step-body">
         <section className="connection-step-shell">
-          <aside className="connection-step-rail" aria-label="连接阶段">
-            <div className={`connection-step-status ${step.status}`}>
-              {step.status === "running" ? (
-                <Loader2 className="ui-icon spin" aria-hidden="true" />
-              ) : step.status === "error" ? (
-                <AlertTriangle className="ui-icon" aria-hidden="true" />
-              ) : step.status === "waiting_host_key" ? (
-                <LockKeyhole className="ui-icon" aria-hidden="true" />
-              ) : step.status === "prompt" ? (
-                <KeyRound className="ui-icon" aria-hidden="true" />
+          <div className="connection-step-actions">
+            <button
+              type="button"
+              aria-label="编辑连接"
+              onClick={() => onEdit(step.connection)}
+            >
+              <Pencil className="ui-icon" aria-hidden="true" />
+              <span>编辑</span>
+            </button>
+            <button type="button" aria-label={closeLabel} onClick={onCancel}>
+              <X className="ui-icon" aria-hidden="true" />
+              <span>{closeLabel}</span>
+            </button>
+          </div>
+
+          <header className="connection-step-hero">
+            <div className={`connection-step-orb ${step.status}`} aria-hidden="true">
+              {step.status === "error" ? (
+                <AlertTriangle className="ui-icon" />
+              ) : step.status === "success" ? (
+                <CheckCircle2 className="ui-icon" />
               ) : (
-                <CheckCircle2 className="ui-icon" aria-hidden="true" />
+                <List className="ui-icon" />
               )}
-              <span>
-                <strong>{connectionStepStatusTitle(step)}</strong>
-                <small>{connectionStepStatusDescription(step)}</small>
-              </span>
             </div>
+            <h2>{step.connection.name}</h2>
+            <p>{formatConnectionAddress(step.connection)}</p>
+            <span className={`connection-step-state ${step.status}`}>
+              {connectionStepStatusTitle(step)}
+            </span>
+          </header>
 
-            <ol className="connection-step-list">
-              {stepItems.map((label, index) => {
-                const state = connectionStepItemState(step, index, activeStepIndex);
-                return (
-                  <li className={state} key={label}>
-                    <span>
-                      {state === "active" && step.status === "running" ? (
-                        <Loader2 className="ui-icon spin" aria-hidden="true" />
-                      ) : state === "done" ? (
-                        <CheckCircle2 className="ui-icon" aria-hidden="true" />
-                      ) : state === "error" ? (
-                        <AlertTriangle className="ui-icon" aria-hidden="true" />
-                      ) : (
-                        <i className="connection-step-dot" aria-hidden="true" />
-                      )}
-                    </span>
-                    <strong>{label}</strong>
-                  </li>
-                );
-              })}
-            </ol>
-          </aside>
-
-          <section className="connection-step-card">
-            <div className="connection-step-card-head">
-              <span>
-                <strong>{connectionStepPanelTitle(step)}</strong>
-                <small>{connectionStepPanelDescription(step)}</small>
-              </span>
-            </div>
-
-            {step.status === "prompt" ? (
-              <form className="connection-prompt-form" onSubmit={onSubmitPrompt}>
-                <header>
-                  <KeyRound className="ui-icon" aria-hidden="true" />
-                  <span>
-                    <strong>输入本次凭据</strong>
-                    <small>这部分不会保存到连接配置。</small>
+          <ol className="connection-step-list" aria-label="连接阶段">
+            {stepItems.map((item, index) => {
+              const state = connectionStepItemState(step, index, activeStepIndex);
+              return (
+                <li className={state} key={item.label}>
+                  <span className="connection-step-marker">
+                    {state === "active" && step.status === "running" ? (
+                      <Loader2 className="ui-icon spin" aria-hidden="true" />
+                    ) : state === "done" ? (
+                      <CheckCircle2 className="ui-icon" aria-hidden="true" />
+                    ) : state === "error" ? (
+                      <AlertTriangle className="ui-icon" aria-hidden="true" />
+                    ) : (
+                      <i aria-hidden="true">{(index + 1).toString()}</i>
+                    )}
                   </span>
-                </header>
-                <label>
-                  <span>认证方式</span>
-                  <select
-                    value={step.authKind}
-                    onChange={(event) =>
-                      onPromptAuthKindChange(event.currentTarget.value as ConnectionAuthKind)
-                    }
-                  >
-                    <option value="password">密码</option>
-                    <option value="private_key">私钥</option>
-                  </select>
-                </label>
-                {step.authKind === "password" ? (
+                  <span>
+                    <strong>{item.label}</strong>
+                    <small>{item.description}</small>
+                  </span>
+                  <em>{connectionStepItemLabel(state, step.status)}</em>
+                </li>
+              );
+            })}
+          </ol>
+
+          <div
+            className="connection-step-progress"
+            role="progressbar"
+            aria-valuemin={0}
+            aria-valuemax={100}
+            aria-valuenow={Math.round(progressPercent)}
+            style={
+              {
+                "--connection-step-progress": `${progressPercent.toString()}%`,
+              } as CSSProperties
+            }
+          >
+            <span />
+          </div>
+
+          {showStepDetail ? (
+            <section
+              className={`connection-step-detail ${step.status === "error" ? "is-error" : ""}`}
+            >
+              {step.status !== "error" ? (
+                <div className="connection-step-detail-head">
+                  <span>
+                    <strong>{connectionStepPanelTitle(step)}</strong>
+                    <small>{connectionStepPanelDescription(step)}</small>
+                  </span>
+                </div>
+              ) : null}
+
+              {step.status === "prompt" ? (
+                <form className="connection-prompt-form" onSubmit={onSubmitPrompt}>
+                  <header>
+                    <KeyRound className="ui-icon" aria-hidden="true" />
+                    <span>
+                      <strong>输入本次凭据</strong>
+                      <small>这部分不会保存到连接配置。</small>
+                    </span>
+                  </header>
                   <label>
-                    <span>密码</span>
-                    <input
-                      type="password"
-                      value={step.password}
-                      onChange={(event) => onPromptPasswordChange(event.currentTarget.value)}
-                    />
+                    <span>认证方式</span>
+                    <select
+                      value={step.authKind}
+                      onChange={(event) =>
+                        onPromptAuthKindChange(event.currentTarget.value as ConnectionAuthKind)
+                      }
+                    >
+                      <option value="password">密码</option>
+                      <option value="private_key">私钥</option>
+                    </select>
                   </label>
-                ) : (
-                  <>
+                  {step.authKind === "password" ? (
                     <label>
-                      <span>私钥路径</span>
-                      <input
-                        value={step.privateKeyPath}
-                        placeholder="~/.ssh/id_ed25519"
-                        onChange={(event) =>
-                          onPromptPrivateKeyPathChange(event.currentTarget.value)
-                        }
-                      />
-                    </label>
-                    <label>
-                      <span>私钥口令</span>
+                      <span>密码</span>
                       <input
                         type="password"
-                        value={step.privateKeyPassphrase}
-                        onChange={(event) =>
-                          onPromptPrivateKeyPassphraseChange(event.currentTarget.value)
-                        }
+                        value={step.password}
+                        onChange={(event) => onPromptPasswordChange(event.currentTarget.value)}
                       />
                     </label>
-                  </>
-                )}
-                <button className="primary-button" type="submit">
-                  继续连接
-                </button>
-              </form>
-            ) : null}
+                  ) : (
+                    <>
+                      <label>
+                        <span>私钥路径</span>
+                        <input
+                          value={step.privateKeyPath}
+                          placeholder="~/.ssh/id_ed25519"
+                          onChange={(event) =>
+                            onPromptPrivateKeyPathChange(event.currentTarget.value)
+                          }
+                        />
+                      </label>
+                      <label>
+                        <span>私钥口令</span>
+                        <input
+                          type="password"
+                          value={step.privateKeyPassphrase}
+                          onChange={(event) =>
+                            onPromptPrivateKeyPassphraseChange(event.currentTarget.value)
+                          }
+                        />
+                      </label>
+                    </>
+                  )}
+                  <button className="primary-button" type="submit">
+                    继续连接
+                  </button>
+                </form>
+              ) : null}
 
-            {step.status === "waiting_host_key" && step.hostKey ? (
-              <div className="host-key-confirm">
-                <header>
-                  <LockKeyhole className="ui-icon" aria-hidden="true" />
-                  <span>
-                    <strong>确认主机密钥</strong>
-                    <small>
-                      {hostKeyChanged ? "主机密钥已变化" : step.hostKey.key_algorithm}
-                    </small>
-                  </span>
-                </header>
-                {hostKeyChanged && step.oldHostKeyFingerprint ? (
-                  <code>旧指纹：{step.oldHostKeyFingerprint}</code>
-                ) : null}
-                <code>{step.hostKey.fingerprint_sha256}</code>
-                {step.error ? <p className="form-error">{step.error}</p> : null}
-                <button className="primary-button" type="button" onClick={onTrustHostKey}>
-                  {hostKeyChanged ? "更新信任并继续" : "信任并继续"}
-                </button>
-              </div>
-            ) : null}
+              {step.status === "waiting_host_key" && step.hostKey ? (
+                <div className="host-key-confirm">
+                  <header>
+                    <LockKeyhole className="ui-icon" aria-hidden="true" />
+                    <span>
+                      <strong>确认主机密钥</strong>
+                      <small>
+                        {hostKeyChanged ? "主机密钥已变化" : step.hostKey.key_algorithm}
+                      </small>
+                    </span>
+                  </header>
+                  {hostKeyChanged && step.oldHostKeyFingerprint ? (
+                    <code>旧指纹：{step.oldHostKeyFingerprint}</code>
+                  ) : null}
+                  <code>{step.hostKey.fingerprint_sha256}</code>
+                  {step.error ? <p className="form-error">{step.error}</p> : null}
+                  <button className="primary-button" type="button" onClick={onTrustHostKey}>
+                    {hostKeyChanged ? "更新信任并继续" : "信任并继续"}
+                  </button>
+                </div>
+              ) : null}
 
-            {step.status === "running" ? (
-              <div className="connection-step-running">
-                <Loader2 className="ui-icon spin" aria-hidden="true" />
-                <span>连接中...</span>
-              </div>
-            ) : null}
+              {step.status === "success" && step.mode === "test" ? (
+                <div className="connection-step-success">
+                  <CheckCircle2 className="ui-icon" aria-hidden="true" />
+                  <span>连接测试通过。</span>
+                </div>
+              ) : null}
 
-            {step.status === "success" && step.mode === "test" ? (
-              <div className="connection-step-success">
-                <CheckCircle2 className="ui-icon" aria-hidden="true" />
-                <span>连接测试通过。</span>
-              </div>
-            ) : null}
+              {step.status === "error" ? (
+                <div className="connection-step-error">
+                  <header>
+                    <AlertTriangle className="ui-icon" aria-hidden="true" />
+                    <span>
+                      <strong>{step.errorDetail?.message || step.error || "连接失败"}</strong>
+                      <small>{step.errorDetail?.stage || "连接过程未完成"}</small>
+                    </span>
+                  </header>
+                  {step.errorDetail?.rawMessage ? (
+                    <dl>
+                      <div>
+                        <dt>底层原因</dt>
+                        <dd>{step.errorDetail.rawMessage}</dd>
+                      </div>
+                      <div>
+                        <dt>建议处理</dt>
+                        <dd>{step.errorDetail.suggestion}</dd>
+                      </div>
+                      <div>
+                        <dt>错误码</dt>
+                        <dd>{step.errorDetail.code}</dd>
+                      </div>
+                    </dl>
+                  ) : null}
+                  <button type="button" onClick={onRetry}>
+                    重试
+                  </button>
+                </div>
+              ) : null}
+            </section>
+          ) : null}
 
-            {step.status === "error" ? (
-              <div className="connection-step-error">
-                <header>
-                  <AlertTriangle className="ui-icon" aria-hidden="true" />
-                  <span>
-                    <strong>{step.errorDetail?.message || step.error || "连接失败"}</strong>
-                    <small>{step.errorDetail?.stage || "连接过程未完成"}</small>
-                  </span>
-                </header>
-                {step.errorDetail?.rawMessage ? (
-                  <dl>
-                    <div>
-                      <dt>底层原因</dt>
-                      <dd>{step.errorDetail.rawMessage}</dd>
-                    </div>
-                    <div>
-                      <dt>建议处理</dt>
-                      <dd>{step.errorDetail.suggestion}</dd>
-                    </div>
-                    <div>
-                      <dt>错误码</dt>
-                      <dd>{step.errorDetail.code}</dd>
-                    </div>
-                  </dl>
-                ) : null}
-                <button type="button" onClick={onRetry}>
-                  重试
-                </button>
-              </div>
-            ) : null}
-
-            <div className="connection-step-log" aria-label="连接日志">
-              <header>
-                <strong>连接日志</strong>
-                <small>{step.logs.length.toString()} 条</small>
-              </header>
+          <details className="connection-step-log">
+            <summary>
+              <span>
+                <ChevronLeft className="ui-icon" aria-hidden="true" />
+                连接日志
+              </span>
+              <small>{step.logs.length.toString()} 条</small>
+            </summary>
+            <div aria-label="连接日志">
               <div>
                 {step.logs.map((line, index) => (
                   <code key={`${line}-${index.toString()}`}>{line}</code>
                 ))}
               </div>
             </div>
-          </section>
+          </details>
         </section>
       </div>
     </section>
@@ -3507,11 +3716,13 @@ function connectionStepErrorIndex(code: string) {
   return 1;
 }
 
+type ConnectionStepItemState = "active" | "done" | "error" | "pending";
+
 function connectionStepItemState(
   step: ConnectionStepState,
   index: number,
   activeStepIndex: number,
-) {
+): ConnectionStepItemState {
   if (step.status === "success" || index < activeStepIndex) {
     return "done";
   }
@@ -3522,6 +3733,44 @@ function connectionStepItemState(
     return "active";
   }
   return "pending";
+}
+
+function connectionStepAuthDescription(step: ConnectionStepState) {
+  const authKind =
+    step.connection.credential_mode === "prompt"
+      ? step.authKind
+      : step.connection.inline_auth_kind || step.connection.auth_kind || step.authKind;
+
+  if (step.connection.credential_mode === "prompt") {
+    return authKind === "private_key" ? "使用本次输入的 SSH 密钥" : "使用本次输入的 SSH 密码";
+  }
+
+  return authKind === "private_key" ? "使用 SSH 密钥认证" : "使用密码认证";
+}
+
+function connectionStepItemLabel(
+  state: ConnectionStepItemState,
+  status: ConnectionStepStatus,
+) {
+  if (state === "done") {
+    return "完成";
+  }
+  if (state === "error") {
+    return "失败";
+  }
+  if (state === "active") {
+    if (status === "prompt") {
+      return "等待输入";
+    }
+    if (status === "waiting_host_key") {
+      return "待确认";
+    }
+    if (status === "idle") {
+      return "准备中";
+    }
+    return "进行中";
+  }
+  return "待处理";
 }
 
 function connectionStepStatusTitle(step: ConnectionStepState) {
@@ -3538,22 +3787,6 @@ function connectionStepStatusTitle(step: ConnectionStepState) {
     return "需要凭据";
   }
   return "正在检查";
-}
-
-function connectionStepStatusDescription(step: ConnectionStepState) {
-  if (step.status === "success") {
-    return "目标主机和认证均可用。";
-  }
-  if (step.status === "error") {
-    return "请查看日志后重试或编辑连接。";
-  }
-  if (step.status === "waiting_host_key") {
-    return "确认主机指纹后继续连接。";
-  }
-  if (step.status === "prompt") {
-    return "请输入本次连接使用的认证材料。";
-  }
-  return "按步骤校验网络、密钥和认证。";
 }
 
 function connectionStepPanelTitle(step: ConnectionStepState) {
@@ -4259,6 +4492,19 @@ function removeDirectoryState<T>(
     delete next[tabId];
   });
   return next;
+}
+
+function nextTerminalIndexForConnection(tabs: TerminalTab[], connectionId: string) {
+  return (
+    Math.max(
+      -1,
+      ...tabs.filter((tab) => tab.connectionId === connectionId).map((tab) => tab.index),
+    ) + 1
+  );
+}
+
+function terminalTabTitle(index: number) {
+  return index === 0 ? "终端" : `终端 ${index.toString()}`;
 }
 
 function formatError(error: unknown) {

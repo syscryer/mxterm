@@ -1,0 +1,1298 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>mXterm Connection Prep Clean Prototype</title>
+  <style>
+    :root {
+      --mx-bg: #f5f6f8;
+      --mx-panel: #ffffff;
+      --mx-panel-soft: #f8f9fb;
+      --mx-panel-muted: #f1f4f8;
+      --mx-line: #dde1e7;
+      --mx-line-soft: #edf0f4;
+      --mx-line-strong: #c9ced6;
+      --mx-text: #20242a;
+      --mx-muted: #69727d;
+      --mx-subtle: #8a8f96;
+      --mx-active: rgba(0, 0, 0, 0.045);
+      --mx-active-strong: rgba(100, 116, 139, 0.16);
+      --mx-primary: #2563eb;
+      --mx-primary-soft: color-mix(in srgb, var(--mx-primary) 10%, transparent);
+      --mx-primary-wash: color-mix(in srgb, var(--mx-primary) 8%, #ffffff);
+      --mx-primary-wash-strong: color-mix(in srgb, var(--mx-primary) 14%, #ffffff);
+      --mx-primary-border: color-mix(in srgb, var(--mx-primary) 22%, transparent);
+      --mx-primary-glow: color-mix(in srgb, var(--mx-primary) 18%, transparent);
+      --mx-primary-faint: color-mix(in srgb, var(--mx-primary) 6%, transparent);
+      --mx-success: #15803d;
+      --mx-success-soft: rgba(21, 128, 61, 0.1);
+      --mx-warning: #b7791f;
+      --mx-warning-soft: rgba(183, 121, 31, 0.12);
+      --mx-danger: #dc2626;
+      --mx-terminal: #0f172a;
+      --font-ui: "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI", system-ui, sans-serif;
+      --font-mono: "Cascadia Mono", Consolas, "Microsoft YaHei UI", monospace;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html,
+    body {
+      width: 100%;
+      height: 100%;
+    }
+
+    body {
+      margin: 0;
+      min-width: 1100px;
+      min-height: 720px;
+      overflow: hidden;
+      color: var(--mx-text);
+      background: var(--mx-bg);
+      font-family: var(--font-ui);
+      letter-spacing: 0;
+    }
+
+    button,
+    input {
+      font: inherit;
+    }
+
+    button {
+      cursor: pointer;
+    }
+
+    button:focus-visible,
+    input:focus-visible,
+    summary:focus-visible {
+      outline: 2px solid var(--mx-primary);
+      outline-offset: 2px;
+    }
+
+    .ui-icon {
+      width: 16px;
+      height: 16px;
+      stroke: currentColor;
+      stroke-width: 1.55;
+      fill: none;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+      flex: 0 0 auto;
+    }
+
+    .app-shell {
+      --left-pane-width: 308px;
+      width: 100vw;
+      height: 100vh;
+      display: grid;
+      grid-template-rows: 36px minmax(0, 1fr);
+      overflow: hidden;
+      background: var(--mx-panel);
+    }
+
+    .custom-titlebar {
+      min-width: 0;
+      display: grid;
+      grid-template-columns: var(--left-pane-width) minmax(0, 1fr) auto;
+      align-items: stretch;
+      border-bottom: 1px solid var(--mx-line);
+      background: rgba(255, 255, 255, 0.94);
+      user-select: none;
+    }
+
+    .title-leading {
+      min-width: 0;
+      display: grid;
+      grid-template-columns: 44px minmax(0, 1fr);
+      border-right: 1px solid rgba(221, 225, 231, 0.72);
+      background: rgba(248, 249, 251, 0.72);
+    }
+
+    .title-pane-toggle,
+    .icon-button,
+    .mini-action,
+    .window-control,
+    .right-collapse-button {
+      border: 0;
+      display: grid;
+      place-items: center;
+      padding: 0;
+      color: var(--mx-subtle);
+      background: transparent;
+    }
+
+    .title-pane-toggle,
+    .icon-button,
+    .mini-action,
+    .right-collapse-button {
+      width: 28px;
+      height: 28px;
+      border-radius: 8px;
+    }
+
+    .title-pane-toggle {
+      align-self: center;
+      justify-self: center;
+    }
+
+    .title-pane-toggle:hover,
+    .icon-button:hover,
+    .mini-action:hover,
+    .right-collapse-button:hover,
+    .connection-row:hover,
+    .tree-folder-row:hover {
+      color: #595f66;
+      background: var(--mx-active);
+    }
+
+    .title-session-tabs {
+      min-width: 0;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 0 10px;
+      overflow: hidden;
+    }
+
+    .title-session-placeholder {
+      height: 26px;
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      padding: 0 9px;
+      border-radius: 8px;
+      color: var(--mx-muted);
+      font-size: 12px;
+      font-weight: 650;
+    }
+
+    .title-center {
+      min-width: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      color: var(--mx-subtle);
+      font-size: 12px;
+      font-weight: 650;
+    }
+
+    .window-controls {
+      display: flex;
+      align-items: stretch;
+      margin-left: 2px;
+    }
+
+    .window-control {
+      width: 46px;
+      height: 100%;
+      border-radius: 0;
+      color: #5f6873;
+    }
+
+    .window-control:hover {
+      background: rgba(15, 23, 42, 0.06);
+    }
+
+    .window-control.close:hover {
+      color: #ffffff;
+      background: #d83b3b;
+    }
+
+    .workspace-shell {
+      --right-pane-width: 320px;
+      min-height: 0;
+      display: grid;
+      grid-template-columns: var(--left-pane-width) minmax(0, 1fr) var(--right-pane-width);
+      overflow: hidden;
+      background: var(--mx-panel);
+    }
+
+    .connection-pane {
+      min-width: 0;
+      min-height: 0;
+      display: grid;
+      grid-template-rows: minmax(0, 1fr) 44px;
+      border-right: 1px solid var(--mx-line);
+      background: var(--mx-panel-soft);
+    }
+
+    .pane-scroll {
+      min-height: 0;
+      overflow: auto;
+      padding: 10px 8px 16px;
+    }
+
+    .tree-section-head {
+      height: 28px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      margin-top: 8px;
+      color: var(--mx-subtle);
+      font-size: 12px;
+      font-weight: 680;
+    }
+
+    .connection-list {
+      display: grid;
+      gap: 4px;
+    }
+
+    .connection-row {
+      width: 100%;
+      min-height: 44px;
+      border: 0;
+      border-radius: 8px;
+      display: grid;
+      grid-template-columns: 28px minmax(0, 1fr) auto;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 7px;
+      color: var(--mx-text);
+      background: transparent;
+      text-align: left;
+      transition: background-color 150ms ease, color 150ms ease;
+    }
+
+    .connection-row.active {
+      background: rgba(156, 163, 175, 0.13);
+    }
+
+    .server-badge {
+      width: 28px;
+      height: 28px;
+      border: 1px solid var(--mx-line);
+      border-radius: 7px;
+      display: grid;
+      place-items: center;
+      color: #4b5563;
+      background: rgba(255, 255, 255, 0.74);
+      font-family: var(--font-mono);
+      font-size: 10px;
+      font-weight: 720;
+    }
+
+    .connection-main,
+    .connection-sub {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .connection-main {
+      color: var(--mx-text);
+      font-size: 13px;
+      font-weight: 650;
+    }
+
+    .connection-sub {
+      margin-top: 2px;
+      color: var(--mx-subtle);
+      font-family: var(--font-mono);
+      font-size: 11px;
+    }
+
+    .status-dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 999px;
+      background: var(--mx-success);
+    }
+
+    .status-dot.pending {
+      background: var(--mx-warning);
+    }
+
+    .settings-foot {
+      display: flex;
+      align-items: center;
+      justify-content: flex-start;
+      padding: 0 8px;
+      border-top: 1px solid var(--mx-line);
+      background: var(--mx-panel-soft);
+    }
+
+    .main-workbench {
+      min-width: 0;
+      min-height: 0;
+      display: grid;
+      grid-template-rows: 34px minmax(0, 1fr);
+      background: var(--mx-panel);
+    }
+
+    .session-tabs,
+    .file-panel-tabs {
+      min-width: 0;
+      height: 34px;
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      border-bottom: 1px solid var(--mx-line);
+      background: #fbfcfe;
+    }
+
+    .session-tabs {
+      padding: 0 12px 0 18px;
+    }
+
+    .session-tab,
+    .file-panel-tab {
+      height: 28px;
+      border: 0;
+      border-radius: 7px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      padding: 0 10px;
+      color: var(--mx-muted);
+      background: transparent;
+      font-size: 13px;
+    }
+
+    .session-tab.active,
+    .file-panel-tab.active {
+      color: var(--mx-text);
+      background: rgba(156, 163, 175, 0.12);
+      font-weight: 650;
+    }
+
+    .session-tab {
+      max-width: 236px;
+      min-width: 0;
+      padding-right: 7px;
+    }
+
+    .session-tab span {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .session-tab[data-view="terminal"] .tab-status {
+      background: var(--mx-success);
+      box-shadow: 0 0 0 3px var(--mx-success-soft);
+    }
+
+    .session-tab[data-view="prep"] .tab-status {
+      background: var(--mx-danger);
+      box-shadow: 0 0 0 3px rgba(220, 38, 38, 0.1);
+    }
+
+    .tab-status {
+      width: 6px;
+      height: 6px;
+      border-radius: 999px;
+      background: var(--mx-warning);
+      box-shadow: 0 0 0 3px var(--mx-warning-soft);
+    }
+
+    .workbench-stage {
+      min-width: 0;
+      min-height: 0;
+      display: grid;
+      overflow: hidden;
+      background: var(--mx-panel);
+    }
+
+    .workbench-view {
+      grid-area: 1 / 1;
+      min-width: 0;
+      min-height: 0;
+    }
+
+    .workbench-view.is-hidden {
+      display: none;
+      pointer-events: none;
+    }
+
+    .terminal-preview {
+      overflow: hidden;
+      display: grid;
+      grid-template-rows: minmax(0, 1fr);
+      padding: 10px 12px;
+      color: #d1d5db;
+      background: var(--mx-terminal);
+      font-family: var(--font-mono);
+      font-size: 14px;
+      line-height: 1.5;
+    }
+
+    .terminal-preview pre {
+      margin: 0;
+      white-space: pre-wrap;
+    }
+
+    .prep-page {
+      position: relative;
+      min-width: 0;
+      min-height: 0;
+      overflow: hidden;
+      display: grid;
+      place-items: center;
+      padding: 14px 24px 16px;
+      background:
+        radial-gradient(circle at 50% 8%, rgba(220, 38, 38, 0.07), transparent 240px),
+        linear-gradient(180deg, #ffffff 0%, #fbfcfe 58%, #f7f9fc 100%);
+    }
+
+    .prep-shell {
+      width: min(740px, 100%);
+      max-height: 100%;
+      display: grid;
+      align-content: center;
+      gap: 10px;
+    }
+
+    .prep-header {
+      display: grid;
+      justify-items: center;
+      gap: 5px;
+      text-align: center;
+    }
+
+    .connection-orb {
+      width: 50px;
+      height: 50px;
+      border: 1px solid var(--mx-primary-border);
+      border-radius: 999px;
+      display: grid;
+      place-items: center;
+      color: var(--mx-primary);
+      background: var(--mx-primary-wash);
+      box-shadow: 0 18px 42px var(--mx-primary-glow);
+    }
+
+    .connection-orb.error {
+      border-color: rgba(220, 38, 38, 0.18);
+      color: #b42318;
+      background: rgba(254, 242, 242, 0.86);
+      box-shadow: 0 10px 30px rgba(220, 38, 38, 0.12);
+    }
+
+    .connection-orb .ui-icon {
+      width: 24px;
+      height: 24px;
+      stroke-width: 1.85;
+    }
+
+    .prep-title {
+      margin: 2px 0 0;
+      color: var(--mx-text);
+      font-size: 21px;
+      line-height: 1.2;
+      font-weight: 720;
+      letter-spacing: 0;
+    }
+
+    .prep-subtitle {
+      margin: 0;
+      color: #64748b;
+      font-family: var(--font-mono);
+      font-size: 13px;
+      line-height: 1.4;
+    }
+
+    .status-pill {
+      min-height: 22px;
+      border: 1px solid rgba(220, 38, 38, 0.14);
+      border-radius: 999px;
+      display: inline-flex;
+      align-items: center;
+      padding: 0 9px;
+      color: #b42318;
+      background: rgba(254, 242, 242, 0.82);
+      font-size: 12px;
+      font-weight: 650;
+    }
+
+    .prep-actions {
+      position: absolute;
+      top: 12px;
+      right: 16px;
+      display: flex;
+      align-items: center;
+      gap: 4px;
+    }
+
+    .secondary-button,
+    .quiet-button {
+      width: 28px;
+      height: 28px;
+      border-radius: 8px;
+      display: grid;
+      place-items: center;
+      padding: 0;
+    }
+
+    .secondary-button,
+    .quiet-button {
+      border: 1px solid transparent;
+      color: var(--mx-muted);
+      background: transparent;
+      box-shadow: none;
+    }
+
+    .secondary-button:hover,
+    .quiet-button:hover {
+      color: var(--mx-text);
+      border-color: var(--mx-line);
+      background: rgba(255, 255, 255, 0.82);
+    }
+
+    .secondary-button span,
+    .quiet-button span {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      overflow: hidden;
+      clip: rect(0, 0, 0, 0);
+      white-space: nowrap;
+    }
+
+    .stepper {
+      display: grid;
+      background: transparent;
+    }
+
+    .step {
+      min-width: 0;
+      min-height: 52px;
+      display: grid;
+      grid-template-columns: 42px minmax(0, 1fr) 64px;
+      align-items: center;
+      gap: 10px;
+      border-bottom: 1px solid rgba(203, 213, 225, 0.72);
+    }
+
+    .step:last-child {
+      border-bottom: 0;
+    }
+
+    .step-marker {
+      width: 30px;
+      height: 30px;
+      border: 0;
+      border-radius: 999px;
+      display: grid;
+      place-items: center;
+      justify-self: start;
+      color: #64748b;
+      background: #eef2f7;
+      font-family: var(--font-mono);
+      font-size: 12px;
+      font-weight: 720;
+    }
+
+    .step-marker .ui-icon {
+      width: 15px;
+      height: 15px;
+      stroke-width: 2.1;
+    }
+
+    .step.done .step-marker {
+      color: #16a34a;
+      background: rgba(22, 163, 74, 0.12);
+    }
+
+    .step.current .step-marker {
+      position: relative;
+      color: var(--mx-primary);
+      background: var(--mx-primary-wash-strong);
+    }
+
+    .step.error .step-marker {
+      color: #b42318;
+      background: rgba(254, 242, 242, 0.94);
+      box-shadow: inset 0 0 0 1px rgba(220, 38, 38, 0.16);
+    }
+
+    .step.error .step-title,
+    .step.error .step-time {
+      color: #b42318;
+    }
+
+    .step.pending .step-marker {
+      color: #94a3b8;
+      background: #ffffff;
+      box-shadow: inset 0 0 0 1px rgba(203, 213, 225, 0.8);
+    }
+
+    .step.current .step-marker::after {
+      content: "";
+      width: 15px;
+      height: 15px;
+      border: 2px solid var(--mx-primary-border);
+      border-top-color: var(--mx-primary);
+      border-radius: 999px;
+      animation: prep-spin 900ms linear infinite;
+    }
+
+    .step-title,
+    .step-caption,
+    .step-time {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .step-title {
+      color: var(--mx-text);
+      font-size: 15px;
+      line-height: 1.25;
+      font-weight: 650;
+    }
+
+    .step-caption {
+      margin-top: 3px;
+      color: #64748b;
+      font-size: 12px;
+      line-height: 1.35;
+    }
+
+    .step-time {
+      justify-self: end;
+      color: #64748b;
+      font-family: var(--font-mono);
+      font-size: 12px;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .progress-track {
+      position: relative;
+      height: 4px;
+      overflow: hidden;
+      border-radius: 999px;
+      background: rgba(203, 213, 225, 0.68);
+    }
+
+    .progress-bar {
+      width: 40%;
+      height: 100%;
+      border-radius: inherit;
+      background: var(--mx-primary);
+      box-shadow: 0 0 0 1px var(--mx-primary-border);
+    }
+
+    .error-summary {
+      min-width: 0;
+      border: 1px solid rgba(220, 38, 38, 0.14);
+      border-radius: 8px;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr);
+      gap: 6px;
+      padding: 8px 10px;
+      color: #7f1d1d;
+      background: rgba(254, 242, 242, 0.64);
+    }
+
+    .error-summary header {
+      min-width: 0;
+      display: grid;
+      grid-template-columns: 22px minmax(0, 1fr);
+      align-items: start;
+      gap: 8px;
+    }
+
+    .error-summary header .ui-icon {
+      width: 22px;
+      height: 22px;
+      border: 1px solid rgba(220, 38, 38, 0.14);
+      border-radius: 7px;
+      padding: 4px;
+      color: #b42318;
+      background: #fff;
+    }
+
+    .error-summary strong,
+    .error-summary small {
+      display: block;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .error-summary strong {
+      font-size: 13px;
+      line-height: 1.35;
+      font-weight: 700;
+    }
+
+    .error-summary small {
+      margin-top: 1px;
+      color: #b42318;
+      font-size: 12px;
+      line-height: 1.35;
+    }
+
+    .error-grid {
+      border: 1px solid rgba(220, 38, 38, 0.11);
+      border-radius: 7px;
+      overflow: hidden;
+      background: rgba(255, 255, 255, 0.72);
+    }
+
+    .error-row {
+      display: grid;
+      grid-template-columns: 64px minmax(0, 1fr);
+      gap: 8px;
+      padding: 4px 8px;
+      border-bottom: 1px solid rgba(220, 38, 38, 0.08);
+      font-size: 12px;
+      line-height: 1.35;
+    }
+
+    .error-row:last-child {
+      border-bottom: 0;
+    }
+
+    .error-row b {
+      color: #b42318;
+    }
+
+    .error-row span:last-child {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      color: #475569;
+    }
+
+    .prep-log {
+      background: transparent;
+    }
+
+    .prep-log summary {
+      height: 22px;
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 0 2px;
+      color: #64748b;
+      cursor: pointer;
+      font-size: 12px;
+      font-weight: 520;
+      list-style: none;
+    }
+
+    .prep-log summary::-webkit-details-marker {
+      display: none;
+    }
+
+    .summary-left {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      min-width: 0;
+    }
+
+    .summary-left span {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .log-count {
+      display: none;
+    }
+
+    .log-body {
+      max-height: 86px;
+      margin-top: 6px;
+      border: 1px solid rgba(203, 213, 225, 0.72);
+      border-radius: 8px;
+      overflow: auto;
+      padding: 7px 9px;
+      color: #475569;
+      background: rgba(255, 255, 255, 0.72);
+      font-family: var(--font-mono);
+      font-size: 11px;
+      line-height: 1.55;
+    }
+
+    .log-row {
+      display: grid;
+      grid-template-columns: 66px minmax(0, 1fr);
+      gap: 8px;
+    }
+
+    .log-time {
+      color: #94a3b8;
+    }
+
+    @keyframes prep-spin {
+      to {
+        transform: rotate(360deg);
+      }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      .step.current .step-marker::after {
+        animation: none;
+      }
+    }
+
+    .right-file-pane {
+      min-width: 0;
+      min-height: 0;
+      display: grid;
+      grid-template-rows: 34px 42px 38px minmax(0, 1fr);
+      border-left: 1px solid var(--mx-line);
+      background: var(--mx-panel-soft);
+    }
+
+    .file-panel-tabs {
+      position: relative;
+      padding: 0 8px;
+    }
+
+    .right-collapse-button {
+      z-index: 2;
+      margin-left: auto;
+      color: #717986;
+      background: transparent;
+      box-shadow: none;
+    }
+
+    .file-panel-tab .ui-icon,
+    .session-tab .ui-icon,
+    .right-collapse-button .ui-icon,
+    .mini-action .ui-icon {
+      width: 14px;
+      height: 14px;
+      stroke-width: 1.55;
+    }
+
+    .file-path-row {
+      min-width: 0;
+      display: flex;
+      align-items: center;
+      padding: 5px 10px;
+      border-bottom: 1px solid var(--mx-line-soft);
+      background: var(--mx-panel);
+    }
+
+    .file-path-input {
+      width: 100%;
+      height: 30px;
+      border: 1px solid var(--mx-line);
+      border-radius: 7px;
+      padding: 0 9px;
+      color: var(--mx-subtle);
+      background: #ffffff;
+      font-family: var(--font-mono);
+      font-size: 13px;
+    }
+
+    .file-panel-actions {
+      min-width: 0;
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      padding: 0 8px;
+      border-bottom: 1px solid var(--mx-line);
+      background: var(--mx-panel-soft);
+    }
+
+    .mini-action[disabled],
+    .file-path-input[disabled] {
+      cursor: default;
+      opacity: 0.48;
+    }
+
+    .file-tree {
+      min-width: 0;
+      min-height: 0;
+      overflow: auto;
+      padding: 6px;
+      background: var(--mx-panel-soft);
+    }
+
+    .empty-file-state {
+      height: 100%;
+      min-height: 0;
+      display: grid;
+      place-items: center;
+      padding: 18px;
+      text-align: center;
+    }
+
+    .empty-file-inner {
+      width: min(232px, 100%);
+      display: grid;
+      justify-items: center;
+      gap: 9px;
+      color: var(--mx-muted);
+    }
+
+    .empty-file-icon {
+      width: 42px;
+      height: 42px;
+      border: 1px solid var(--mx-line);
+      border-radius: 8px;
+      display: grid;
+      place-items: center;
+      color: var(--mx-subtle);
+      background: rgba(255, 255, 255, 0.68);
+    }
+
+    .empty-file-inner strong {
+      color: var(--mx-text);
+      font-size: 13px;
+      font-weight: 650;
+    }
+
+    .empty-file-inner span {
+      color: var(--mx-subtle);
+      font-size: 12px;
+      line-height: 1.5;
+    }
+
+    @media (max-width: 1260px) {
+      .app-shell {
+        --left-pane-width: 286px;
+      }
+
+      .workspace-shell {
+        --right-pane-width: 300px;
+      }
+
+      .prep-page {
+        padding-inline: 20px;
+      }
+
+      .step {
+        grid-template-columns: 50px minmax(0, 1fr) 72px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="app-shell">
+    <header class="custom-titlebar">
+      <div class="title-leading">
+        <button class="title-pane-toggle" type="button" aria-label="切换连接仓库">
+          <svg class="ui-icon" viewBox="0 0 16 16" aria-hidden="true">
+            <path d="M3.5 3.5h9v9h-9z"/>
+            <path d="M6.2 4.6v6.8"/>
+          </svg>
+        </button>
+        <nav class="title-session-tabs" aria-label="工作区标签">
+          <div class="title-session-placeholder">
+            <svg class="ui-icon" viewBox="0 0 16 16" aria-hidden="true">
+              <path d="M3.5 4.2h9v7.6h-9z"/>
+              <path d="m5.4 6.4 1.7 1.6-1.7 1.6"/>
+              <path d="M8.4 9.6h3.1"/>
+            </svg>
+            <span>连接准备</span>
+          </div>
+        </nav>
+      </div>
+
+      <div class="title-center">mXterm</div>
+
+      <div class="window-controls" aria-label="窗口操作">
+        <button class="window-control" type="button" aria-label="最小化">
+          <svg class="ui-icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M4 8h8"/></svg>
+        </button>
+        <button class="window-control" type="button" aria-label="最大化">
+          <svg class="ui-icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M5 5h6v6H5z"/></svg>
+        </button>
+        <button class="window-control close" type="button" aria-label="关闭">
+          <svg class="ui-icon" viewBox="0 0 16 16" aria-hidden="true"><path d="m5 5 6 6M11 5l-6 6"/></svg>
+        </button>
+      </div>
+    </header>
+
+    <main class="workspace-shell">
+      <aside class="connection-pane" aria-label="连接仓库">
+        <div class="pane-scroll">
+          <div class="tree-section-head">
+            <span>固定</span>
+          </div>
+          <div class="connection-list">
+            <button class="connection-row active" type="button">
+              <span class="server-badge">SSH</span>
+              <span>
+                <span class="connection-main">8.211.134.178</span>
+                <span class="connection-sub">root@8.211.134.178:22</span>
+              </span>
+              <span class="status-dot pending" aria-label="连接中"></span>
+            </button>
+            <button class="connection-row" type="button">
+              <span class="server-badge">DEV</span>
+              <span>
+                <span class="connection-main">K8s-node2</span>
+                <span class="connection-sub">root@203.0.113.16:22</span>
+              </span>
+              <span class="status-dot" aria-label="可用"></span>
+            </button>
+            <button class="connection-row" type="button">
+              <span class="server-badge">JMP</span>
+              <span>
+                <span class="connection-main">M4-TS 跳板</span>
+                <span class="connection-sub">admin@100.93.140.33:22</span>
+              </span>
+              <span class="status-dot" aria-label="可用"></span>
+            </button>
+          </div>
+
+          <div class="tree-section-head">
+            <span>分组</span>
+          </div>
+          <div class="connection-list">
+            <button class="connection-row" type="button">
+              <span class="server-badge">PRD</span>
+              <span>
+                <span class="connection-main">生产环境</span>
+                <span class="connection-sub">4 个连接</span>
+              </span>
+              <span></span>
+            </button>
+            <button class="connection-row" type="button">
+              <span class="server-badge">LAB</span>
+              <span>
+                <span class="connection-main">本地测试</span>
+                <span class="connection-sub">6 个连接</span>
+              </span>
+              <span></span>
+            </button>
+          </div>
+        </div>
+
+        <footer class="settings-foot">
+          <button class="icon-button" type="button" aria-label="设置">
+            <svg class="ui-icon" viewBox="0 0 16 16" aria-hidden="true">
+              <path d="M8 5.2a2.8 2.8 0 1 0 0 5.6 2.8 2.8 0 0 0 0-5.6z"/>
+              <path d="M8 2.5v1.3M8 12.2v1.3M3.1 5l1.1.7M11.8 10.3l1.1.7M3.1 11l1.1-.7M11.8 5.7l1.1-.7"/>
+            </svg>
+          </button>
+        </footer>
+      </aside>
+
+      <section class="main-workbench" aria-label="连接准备">
+        <nav class="session-tabs" aria-label="当前连接的终端会话">
+          <button class="session-tab active" type="button" data-view="prep">
+            <span class="tab-status" aria-hidden="true"></span>
+            <svg class="ui-icon" viewBox="0 0 16 16" aria-hidden="true">
+              <path d="M3.5 4.2h9v7.6h-9z"/>
+              <path d="m5.4 6.4 1.7 1.6-1.7 1.6"/>
+              <path d="M8.4 9.6h3.1"/>
+            </svg>
+            <span>连接失败</span>
+          </button>
+          <button class="session-tab" type="button" data-view="terminal">
+            <span class="tab-status" aria-hidden="true"></span>
+            <svg class="ui-icon" viewBox="0 0 16 16" aria-hidden="true">
+              <path d="M3.5 4.2h9v7.6h-9z"/>
+              <path d="m5.4 6.4 1.7 1.6-1.7 1.6"/>
+              <path d="M8.4 9.6h3.1"/>
+            </svg>
+            <span>192.168.31.190</span>
+          </button>
+        </nav>
+
+        <section class="workbench-stage">
+          <section class="prep-page workbench-view" data-view-panel="prep">
+            <div class="prep-shell">
+              <header class="prep-header">
+                <div class="connection-orb error" aria-hidden="true">
+                  <svg class="ui-icon" viewBox="0 0 16 16">
+                    <path d="M8 3.2 13 12H3z"/>
+                    <path d="M8 6.2v2.6"/>
+                    <path d="M8 10.8h.01"/>
+                  </svg>
+                </div>
+                <h1 class="prep-title">8.211.134.178</h1>
+                <p class="prep-subtitle">root@8.211.134.178:22</p>
+                <span class="status-pill">连接失败</span>
+
+                <div class="prep-actions">
+                  <button class="quiet-button" type="button" aria-label="编辑连接">
+                    <svg class="ui-icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M4.2 11.8h2.1l7-7-2.1-2.1-7 7z"/><path d="M9.8 3.9l2.1 2.1"/></svg>
+                    <span>编辑</span>
+                  </button>
+                  <button class="secondary-button" type="button" aria-label="关闭连接页">
+                    <svg class="ui-icon" viewBox="0 0 16 16" aria-hidden="true"><path d="m5 5 6 6M11 5l-6 6"/></svg>
+                    <span>关闭</span>
+                  </button>
+                </div>
+              </header>
+
+              <section class="stepper" aria-label="连接步骤">
+                <div class="step done">
+                  <span class="step-marker">
+                    <svg class="ui-icon" viewBox="0 0 16 16" aria-hidden="true"><path d="m4 8.2 2.4 2.4L12 4.9"/></svg>
+                  </span>
+                  <span>
+                    <span class="step-title">读取配置</span>
+                    <span class="step-caption">加载连接参数和认证材料</span>
+                  </span>
+                  <span class="step-time">完成</span>
+                </div>
+                <div class="step error">
+                  <span class="step-marker">
+                    <svg class="ui-icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 3.2 13 12H3z"/><path d="M8 6.3v2.3"/><path d="M8 10.5h.01"/></svg>
+                  </span>
+                  <span>
+                    <span class="step-title">网络连接</span>
+                    <span class="step-caption">TCP 握手 8.211.134.178:22</span>
+                  </span>
+                  <span class="step-time">失败</span>
+                </div>
+                <div class="step pending">
+                  <span class="step-marker">3</span>
+                  <span>
+                    <span class="step-title">主机密钥验证</span>
+                    <span class="step-caption">校验服务器指纹和 known_hosts</span>
+                  </span>
+                  <span class="step-time">待处理</span>
+                </div>
+                <div class="step pending">
+                  <span class="step-marker">4</span>
+                  <span>
+                    <span class="step-title">用户认证</span>
+                    <span class="step-caption">使用密码认证</span>
+                  </span>
+                  <span class="step-time">待处理</span>
+                </div>
+                <div class="step pending">
+                  <span class="step-marker">5</span>
+                  <span>
+                    <span class="step-title">打开终端</span>
+                    <span class="step-caption">启动交互式 Shell 会话</span>
+                  </span>
+                  <span class="step-time">待处理</span>
+                </div>
+              </section>
+
+              <div class="progress-track" aria-label="连接进度">
+                <div class="progress-bar"></div>
+              </div>
+
+              <section class="error-summary" aria-label="连接失败详情">
+                <header>
+                  <svg class="ui-icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 3.2 13 12H3z"/><path d="M8 6.3v2.3"/><path d="M8 10.5h.01"/></svg>
+                  <span>
+                    <strong>SSH 连接失败。</strong>
+                    <small>网络连接阶段超时或目标主机无响应。</small>
+                  </span>
+                </header>
+                <div class="error-grid">
+                  <div class="error-row"><b>底层原因</b><span>连接方在一段时间后没有正确答复或连接的主机没有反应。</span></div>
+                  <div class="error-row"><b>建议处理</b><span>检查主机、端口、代理或认证信息后重试。</span></div>
+                  <div class="error-row"><b>错误码</b><span>terminal_connect_failed</span></div>
+                </div>
+              </section>
+
+              <details class="prep-log">
+                <summary>
+                  <span class="summary-left">
+                    <svg class="ui-icon" viewBox="0 0 16 16" aria-hidden="true">
+                      <path d="M3.5 3.5h9v9h-9z"/>
+                      <path d="M5.4 6h7.2M5.4 8h7.2M5.4 10h4.5"/>
+                    </svg>
+                    <span>连接日志</span>
+                  </span>
+                  <span class="log-count">3 条</span>
+                </summary>
+                <div class="log-body" aria-label="连接日志内容">
+                  <div class="log-row"><span class="log-time">00:00.03</span><span>Loaded profile root@8.211.134.178:22</span></div>
+                  <div class="log-row"><span class="log-time">00:00.21</span><span>TCP connect started</span></div>
+                  <div class="log-row"><span class="log-time">00:30.00</span><span>Connection attempt failed: os error 10060</span></div>
+                </div>
+              </details>
+            </div>
+          </section>
+
+          <section class="terminal-preview workbench-view is-hidden" data-view-panel="terminal" aria-label="终端预览" aria-hidden="true">
+            <pre>root@orangepi4pro:~# uptime
+ 23:10:46 up 18 days,  4:32,  1 user,  load average: 0.05, 0.04, 0.01
+root@orangepi4pro:~# </pre>
+          </section>
+        </section>
+      </section>
+
+      <aside class="right-file-pane" aria-label="远程文件">
+        <header class="file-panel-tabs">
+          <button class="file-panel-tab active" type="button">
+            <svg class="ui-icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M2.8 4.5h4l1.1 1.4h5.3v7H2.8z"/></svg>
+            <span>文件</span>
+          </button>
+          <button class="file-panel-tab" type="button">
+            <svg class="ui-icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M3.2 5.3h9.6M3.2 8h9.6M3.2 10.7h6.4"/></svg>
+            <span>传输</span>
+          </button>
+          <button class="right-collapse-button" type="button" aria-label="收起右侧文件面板">
+            <svg class="ui-icon" viewBox="0 0 16 16" aria-hidden="true">
+              <path d="M3.2 3.4h9.6v9.2H3.2z"/>
+              <path d="M9.7 3.7v8.6"/>
+              <path d="m6.6 8 1.8-1.8M6.6 8l1.8 1.8"/>
+            </svg>
+          </button>
+        </header>
+
+        <div class="file-path-row">
+          <input class="file-path-input" aria-label="远程路径" value="/" disabled>
+        </div>
+
+        <div class="file-panel-actions" aria-label="文件操作">
+          <button class="mini-action" type="button" aria-label="定位到终端目录" disabled>
+            <svg class="ui-icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 2.8v2"/><path d="M8 11.2v2"/><path d="M2.8 8h2"/><path d="M11.2 8h2"/><circle cx="8" cy="8" r="3.2"/></svg>
+          </button>
+          <button class="mini-action" type="button" aria-label="显示隐藏文件" disabled>
+            <svg class="ui-icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 8s2-3.5 5.5-3.5S13.5 8 13.5 8s-2 3.5-5.5 3.5S2.5 8 2.5 8z"/><circle cx="8" cy="8" r="1.6"/></svg>
+          </button>
+          <button class="mini-action" type="button" aria-label="收起目录" disabled>
+            <svg class="ui-icon" viewBox="0 0 16 16" aria-hidden="true"><path d="m5 9 3-3 3 3"/></svg>
+          </button>
+          <span style="flex: 1"></span>
+          <button class="mini-action" type="button" aria-label="刷新文件列表" disabled>
+            <svg class="ui-icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M13 8a5 5 0 1 1-1.45-3.55"/><path d="M13 3.7v3.2H9.8"/></svg>
+          </button>
+        </div>
+
+        <section class="file-tree" aria-label="远程文件树">
+          <div class="empty-file-state">
+            <div class="empty-file-inner">
+              <div class="empty-file-icon">
+                <svg class="ui-icon" viewBox="0 0 16 16" aria-hidden="true">
+                  <path d="M2.8 4.5h4l1.1 1.4h5.3v7H2.8z"/>
+                </svg>
+              </div>
+              <strong>等待 SSH 会话</strong>
+              <span>连接成功后显示远程文件和传输状态。</span>
+            </div>
+          </div>
+        </section>
+      </aside>
+    </main>
+  </div>
+  <script>
+    const tabs = document.querySelectorAll(".session-tab[data-view]");
+    const panels = document.querySelectorAll(".workbench-view[data-view-panel]");
+
+    tabs.forEach((tab) => {
+      tab.addEventListener("click", () => {
+        const view = tab.getAttribute("data-view");
+
+        tabs.forEach((item) => {
+          item.classList.toggle("active", item === tab);
+        });
+
+        panels.forEach((panel) => {
+          const isHidden = panel.getAttribute("data-view-panel") !== view;
+          panel.classList.toggle("is-hidden", isHidden);
+          panel.setAttribute("aria-hidden", String(isHidden));
+        });
+      });
+    });
+  </script>
+</body>
+</html>

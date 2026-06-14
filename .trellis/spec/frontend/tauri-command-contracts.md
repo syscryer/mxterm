@@ -112,6 +112,7 @@ type HostKeyInfo = {
 - Host-key confirmation UI must call `knownHostTrust(hostKey)` with the `HostKeyInfo` returned by a recoverable host-key error; do not synthesize fingerprints on the frontend.
 - Connection latency probing must go through `connectionProbeLatency(connection.id)`. The UI sends only a saved connection id; Rust reloads the saved host/port and never needs credential fields for this probe.
 - The connection preparation page owns startup, host-key confirmation, prompt credentials, retry, edit, and failure UI. A terminal tab is created only after `terminalConnect` returns a session id.
+- The same-connection "new terminal" action must only be visible after the active terminal has a connected `sessionId`. When used inside an already active session, it must create a terminal tab directly and call `terminalConnect` with the saved `connection_id`; it must not call `startConnectionStep(...)` or show the connection-preparation page. If this direct connect fails, keep the lightweight terminal tab in a failed state instead of routing the user back into the preparation flow.
 - `TerminalPanel` receives an already-created `initialSessionId`; it must not start a second SSH connection for that tab.
 - During terminal handoff, match terminal output/state events by `request_id` as well as by `session_id`; shell prompts can arrive before the frontend receives the returned session id.
 - Keep the terminal handoff warmup listener alive briefly after replacing the connecting tab, and make `TerminalPanel` consume appended `initialOutput` bytes. Otherwise the remote prompt can land between `terminalConnect` resolving and the xterm listener mounting, leaving a connected but visually blank terminal while remote file browsing works.
@@ -137,6 +138,7 @@ type HostKeyInfo = {
 | Auth kind changes to `password` | Clear private-key fields in form state. |
 | Auth kind changes to `private_key` | Clear password in form state. |
 | `terminalConnect` fails before session id exists | Keep the connection-preparation tab open and show structured failure, retry, edit, and close actions. |
+| Same-connection new terminal direct connect fails | Keep the direct terminal tab visible with a compact failed state; do not replace it with the connection-preparation page. |
 | Shell output arrives before or immediately after `terminalConnect` resolves | Capture warmup output by `request_id`, pass it into `TerminalPanel` as initial output, and append any late handoff bytes until the xterm listener is ready. |
 
 ### 5. Good / Base / Bad Cases
@@ -151,6 +153,7 @@ type HostKeyInfo = {
 
 - Run `npm run check -- --pretty false` after changing command wrappers, connection types, credential types, terminal request types, or component props that carry command payloads.
 - Run `node scripts/check-remote-file-editor-source.mjs` after changing `ConnectionDialog`, `WorkspaceShell` dialog test handlers, or connection command wrappers so the no-save dialog-test guard is checked.
+- Run `node scripts/check-remote-file-editor-source.mjs` after changing workspace terminal tab creation, so the same-connection new terminal path stays separate from the connection-preparation page.
 - Add focused tests once the frontend test runner exists for credential-mode field clearing, credential delete handling, host-key recoverable states, fallback behavior, and error display.
 - Cross-check changed TypeScript payload fields against `src-tauri/src/commands.rs` and `src-tauri/src/connections/mod.rs` in the same task.
 
