@@ -234,6 +234,14 @@ if (!/function toggleDirectory\(entry: RemoteFileEntry\)[\s\S]*setActiveDirector
   throw new Error("RemoteFilePanel should update the active directory when expanding a directory row");
 }
 
+if (remoteFilePanel.includes("onDownloadCurrentDirectory")) {
+  throw new Error("RemoteFilePanel toolbar should not expose a download-current-directory button");
+}
+
+if (/hasExpandedDirectories\s*\?\s*"active"/.test(remoteFilePanel)) {
+  throw new Error("Collapse-expanded-directories should stay visually neutral and not use the active mini-action style");
+}
+
 for (const activeDirectoryNeedle of [
   "onRefresh={() => void loadDirectory(activeDirectoryPath, true)}",
   "onCopyCurrentPath={connection ? () => onCopyPath?.(activeDirectoryPath)",
@@ -331,6 +339,28 @@ for (const forbiddenNameDialogNeedle of [
 
 if (workspaceShell.includes("activeWorkspaceTabId")) {
   throw new Error("WorkspaceShell should keep remote file active state separate from terminal active state");
+}
+
+const activeSubterminalMatch = workspaceShell.match(
+  /function openTerminalInActiveConnection\(\)\s*\{([\s\S]*?)\n  \}/,
+);
+if (!activeSubterminalMatch) {
+  throw new Error("WorkspaceShell should define openTerminalInActiveConnection");
+}
+if (/openTerminal\(|startConnectionStep\(/.test(activeSubterminalMatch[1])) {
+  throw new Error("Adding a same-connection terminal should not open the connection-preparation page");
+}
+for (const directTerminalNeedle of [
+  "buildDirectTerminalTab",
+  "runDirectTerminalTab",
+  "terminal-direct-status",
+]) {
+  if (!workspaceShell.includes(directTerminalNeedle) && !styles.includes(directTerminalNeedle)) {
+    throw new Error(`Same-connection terminal flow should include ${directTerminalNeedle}`);
+  }
+}
+if (!/activeConnectedTerminalTab\s*\?\s*\(\s*<Tooltip label="新建同连接终端"/.test(workspaceShell)) {
+  throw new Error("Same-connection terminal add button should only render after a terminal session is connected");
 }
 
 if (

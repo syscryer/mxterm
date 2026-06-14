@@ -1,7 +1,7 @@
 import {
   ChevronDown,
+  ChevronUp,
   ChevronRight,
-  ChevronsUp,
   Clipboard,
   Crosshair,
   Download,
@@ -12,7 +12,6 @@ import {
   Folder,
   FolderPlus,
   Info,
-  PanelRightClose,
   Pencil,
   RefreshCw,
   Trash2,
@@ -244,7 +243,6 @@ export function RemoteFilePanel({
           onToggleUploadMenu={() => setUploadMenuOpen((open) => !open)}
           onCreateDirectory={connection ? onCreateDirectory : undefined}
           onCreateFile={connection ? onCreateFile : undefined}
-          onDownloadCurrentDirectory={connection ? () => onDownloadEntry?.(currentDirectoryEntry()) : undefined}
           onCopyCurrentPath={connection ? () => onCopyPath?.(activeDirectoryPath) : undefined}
           onUploadDirectory={connection ? onUploadDirectory : undefined}
           onUploadFile={connection ? onUploadFile : undefined}
@@ -743,7 +741,7 @@ function FilePanelTabs({
             aria-expanded
             onClick={onToggleRightPane}
           >
-            <PanelRightClose className="ui-icon" aria-hidden="true" />
+            <ChevronRight className="ui-icon" aria-hidden="true" />
           </button>
         </Tooltip>
       ) : null}
@@ -769,7 +767,6 @@ function FilePanelShell({
   onCreateDirectory,
   onCreateFile,
   onCopyCurrentPath,
-  onDownloadCurrentDirectory,
   onToggleHidden,
   onToggleUploadMenu,
   onUploadDirectory,
@@ -782,7 +779,6 @@ function FilePanelShell({
   onCreateDirectory?: (parentPath: string) => void;
   onCreateFile?: (parentPath: string) => void;
   onCopyCurrentPath?: () => void;
-  onDownloadCurrentDirectory?: () => void;
   path: string;
   showHidden: boolean;
   terminalPath: string | null;
@@ -859,13 +855,13 @@ function FilePanelShell({
             </Tooltip>
             <Tooltip label={hasExpandedDirectories ? "收起已展开目录" : "没有可收起的目录"}>
               <button
-                className={`mini-action ${hasExpandedDirectories ? "active" : ""}`}
+                className="mini-action"
                 type="button"
                 aria-label="收起已展开目录"
                 disabled={disabled || !hasExpandedDirectories}
                 onClick={onCollapseExpandedDirectories}
               >
-                <ChevronsUp className="ui-icon" aria-hidden="true" />
+                <ChevronUp className="ui-icon" aria-hidden="true" />
               </button>
             </Tooltip>
           </div>
@@ -873,11 +869,6 @@ function FilePanelShell({
             <Tooltip label="复制当前路径">
               <button className="mini-action" type="button" aria-label="复制当前路径" disabled={disabled} onClick={onCopyCurrentPath}>
                 <Clipboard className="ui-icon" aria-hidden="true" />
-              </button>
-            </Tooltip>
-            <Tooltip label="下载当前目录">
-              <button className="mini-action" type="button" aria-label="下载当前目录" disabled={disabled} onClick={onDownloadCurrentDirectory}>
-                <Download className="ui-icon" aria-hidden="true" />
               </button>
             </Tooltip>
             <Tooltip label="新建文件">

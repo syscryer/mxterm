@@ -11,8 +11,8 @@
   --mx-text: #20242a;
   --mx-muted: #626b78;
   --mx-subtle: #8a93a0;
-  --mx-active: rgba(156, 163, 175, 0.13);
-  --mx-active-strong: rgba(100, 116, 139, 0.16);
+  --mx-active: rgba(148, 148, 148, 0.13);
+  --mx-active-strong: rgba(105, 105, 105, 0.16);
   --mx-primary: var(--mx-primary-light);
   --mx-success: #15803d;
   --mx-danger: #dc2626;
@@ -152,8 +152,8 @@
   --mx-text: #e6e9ee;
   --mx-muted: #a4adb9;
   --mx-subtle: #737d8b;
-  --mx-active: rgb(148 163 184 / 12%);
-  --mx-active-strong: rgb(148 163 184 / 20%);
+  --mx-active: rgb(255 255 255 / 10%);
+  --mx-active-strong: rgb(255 255 255 / 16%);
   --mx-primary: var(--mx-primary-dark, #73b7ff);
   --mx-success: #57d8ae;
   --mx-danger: #ff8f9b;
@@ -249,8 +249,8 @@
     --mx-text: #e6e9ee;
     --mx-muted: #a4adb9;
     --mx-subtle: #737d8b;
-    --mx-active: rgb(148 163 184 / 12%);
-    --mx-active-strong: rgb(148 163 184 / 20%);
+    --mx-active: rgb(255 255 255 / 10%);
+    --mx-active-strong: rgb(255 255 255 / 16%);
     --mx-primary: var(--mx-primary-dark, #73b7ff);
     --mx-success: #57d8ae;
     --mx-danger: #ff8f9b;
