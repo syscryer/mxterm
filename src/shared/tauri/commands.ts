@@ -88,6 +88,10 @@ export function connectionTestProfile(request: ConnectionProfileInput) {
   return invoke<ConnectionStepResult>("connection_test_profile", { request });
 }
 
+export function connectionProbeSystem(request: ConnectionRuntimeCredentialRequest) {
+  return invoke<ConnectionProfile>("connection_probe_system", { request });
+}
+
 export function knownHostTrust(hostKey: HostKeyInfo) {
   return invoke<void>("known_host_trust", {
     request: {

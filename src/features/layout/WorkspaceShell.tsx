@@ -36,10 +36,12 @@ import {
 
 import { ConnectionDialog } from "../connections/ConnectionDialog";
 import { ConnectionPane } from "../connections/ConnectionPane";
+import { ConnectionSystemLogo } from "../connections/ConnectionSystemLogo";
 import type {
   ConnectionAuthKind,
   ConnectionProfile,
   ConnectionProfileInput,
+  ConnectionRuntimeCredentialRequest,
   CredentialProfile,
   CredentialProfileInput,
   HostKeyInfo,
@@ -267,7 +269,17 @@ const remoteFileDropTargetAttribute = "data-remote-file-drop-target";
 type NativeFileDropPosition = Extract<DragDropEvent, { type: "enter" | "over" | "drop" }>["position"];
 
 export function WorkspaceShell() {
-  const { connections, error, loading, markConnected, reload, remove, setFavorite, upsert } = useConnections();
+  const {
+    connections,
+    error,
+    loading,
+    markConnected,
+    probeSystem,
+    reload,
+    remove,
+    setFavorite,
+    upsert,
+  } = useConnections();
   const {
     credentials,
     error: credentialError,
@@ -1810,6 +1822,16 @@ export function WorkspaceShell() {
     }
   }
 
+  async function refreshConnectedProfile(
+    connectionId: string,
+    request: ConnectionRuntimeCredentialRequest,
+  ) {
+    if (hasTauriRuntime()) {
+      await probeSystem(request).catch(() => null);
+    }
+    await markConnected(connectionId).catch(() => null);
+  }
+
   function buildConnectingTab(
     tabs: TerminalTab[],
     connection: ConnectionProfile,
@@ -2120,6 +2142,7 @@ export function WorkspaceShell() {
         terminalTabsRef.current = nextTabs;
         return nextTabs;
       });
+      void markConnected(connection.id);
       return;
     }
 
@@ -2176,6 +2199,7 @@ export function WorkspaceShell() {
         terminalTabsRef.current = nextTabs;
         return nextTabs;
       });
+      void refreshConnectedProfile(connection.id, { connection_id: connection.id });
       window.setTimeout(() => {
         stopTerminalWarmupCapture(tab.id);
       }, 3000);
@@ -2332,6 +2356,7 @@ export function WorkspaceShell() {
         if (!connectingTabExists(tabId)) {
           return;
         }
+        void probeSystem(runtimeCredentialRequest(step)).catch(() => null);
         updateConnectingTabStep(tabId, {
           ...runningStep,
           logs: [...runningStep.logs, "认证通过", "连接测试通过"],
@@ -2358,7 +2383,7 @@ export function WorkspaceShell() {
         await terminalClose(sessionId).catch(() => {});
         return;
       }
-      void markConnected(step.connection.id);
+      void refreshConnectedProfile(step.connection.id, runtimeCredentialRequest(step));
       handoffComplete = true;
       replaceConnectingTabWithTerminal(tabId, sessionId, [...warmupOutput], prepareRequestId);
       window.setTimeout(() => {
@@ -4128,7 +4153,7 @@ function ConnectionHome({
             return (
               <div className="connection-row" role="row" key={connection.id}>
                 <span className="system-cell">
-                  <SystemLogo kind={inferSystemKind(connection)} />
+                  <ConnectionSystemLogo connection={connection} />
                 </span>
                 <span className="last-cell">
                   <strong>{hasLastConnectedAt ? formatRelativeTime(lastConnectedAt) : "未连接"}</strong>
@@ -4348,79 +4373,6 @@ async function measureConnectionLatency(connection: ConnectionProfile): Promise<
   }
 
   return { status: "failed" };
-}
-
-type SystemKind = "ubuntu" | "debian" | "macos" | "centos" | "alinux" | "linux";
-
-function SystemLogo({ kind }: { kind: SystemKind }) {
-  return (
-    <span className={`os-logo ${kind}`} aria-label={systemLabel(kind)} title={systemLabel(kind)}>
-      {kind === "ubuntu" ? (
-        <svg viewBox="0 0 24 24" aria-hidden="true">
-          <path fill="currentColor" d="M17.61.46a3.41 3.41 0 1 0 0 6.82 3.41 3.41 0 0 0 0-6.82ZM12.92.8C8.92.78 5.14 2.94 3.15 6.45h.26c.94 0 1.83.27 2.58.73A8.32 8.32 0 0 1 12.69 3.6 4.94 4.94 0 0 1 13.72.83 11 11 0 0 0 12.92.8Zm9.23 4.99a4.92 4.92 0 0 1-1.92 2.25 8.36 8.36 0 0 1-.27 8.3 4.9 4.9 0 0 1 1.63 2.54 11.16 11.16 0 0 0 .56-13.09ZM3.41 7.93a3.41 3.41 0 1 0 0 6.82 3.41 3.41 0 0 0 0-6.82Zm2.03 7.87a4.9 4.9 0 0 1-2.92.36 11.1 11.1 0 0 0 10.42 6.95 4.88 4.88 0 0 1-1-2.85 8.3 8.3 0 0 1-6.5-4.46Zm11.4.93a3.41 3.41 0 1 0 0 6.82 3.41 3.41 0 0 0 0-6.82Z" />
-        </svg>
-      ) : null}
-      {kind === "debian" ? (
-        <svg viewBox="0 0 24 24" aria-hidden="true">
-          <path fill="currentColor" d="M13.88 12.69c-.4 0 .08.2.6.28.14-.1.27-.22.39-.33a3 3 0 0 1-.99.05Zm2.14-.53c.23-.33.4-.69.47-1.06-.06.27-.2.5-.33.73-.75.47-.07-.27 0-.56-.8 1.01-.11.6-.14.89ZM12.38.31c.2.04.45.07.42.12.23-.05.28-.1-.43-.12h.01Zm7.06 10.06c.02.64-.2.95-.38 1.5l-.35.18c-.28.54.03.35-.17.78-.44.39-1.34 1.22-1.62 1.3-.2 0 .14-.25.19-.34-.59.4-.48.6-1.37.85l-.03-.06c-2.22 1.04-5.3-1.02-5.25-3.84a3.55 3.55 0 0 1 2-3.5 3.36 3.36 0 0 1 3.73.48 3.34 3.34 0 0 0-2.72-1.3c-1.18.01-2.28.76-2.65 1.57-.6.38-.67 1.47-.93 1.66-.36 2.6.66 3.72 2.38 5.04.27.19.08.21.12.35a4.7 4.7 0 0 1-1.53-1.16c.23.33.47.66.8.91-.55-.18-1.27-1.3-1.48-1.35.93 1.66 3.78 2.92 5.26 2.3a6.2 6.2 0 0 1-2.33-.28c-.33-.16-.77-.51-.7-.57a5.8 5.8 0 0 0 5.9-.84c.44-.35.93-.94 1.07-.95-.2.32.04.16-.12.44.44-.72-.2-.3.46-1.24l.24.33c-.09-.6.74-1.32.66-2.26.19-.3.2.3 0 .97.29-.74.08-.85.15-1.46.08.2.18.42.23.63-.18-.7.2-1.2.28-1.6-.09-.05-.28.3-.32-.53 0-.37.1-.2.14-.28-.08-.05-.26-.32-.38-.86.08-.13.22.33.34.34-.08-.42-.2-.75-.2-1.08-.34-.68-.12.1-.4-.3-.34-1.09.3-.25.34-.74.54.77.84 1.96.98 2.46-.1-.6-.28-1.2-.49-1.76.16.07-.26-1.24.21-.37A7.82 7.82 0 0 0 17.7 1.6c.18.17.42.39.33.42-.75-.45-.62-.48-.73-.67-.61-.25-.65.02-1.06 0C15.08.73 14.86.8 13.8.4l.05.23c-.77-.25-.9.1-1.73 0-.05-.04.27-.14.53-.18-.74.1-.7-.14-1.43.03.17-.13.36-.21.55-.32-.6.04-1.44.35-1.18.07C9.6.68 7.85 1.3 6.87 2.22L6.84 2c-.45.54-1.96 1.61-2.08 2.31l-.13.03c-.23.4-.38.85-.57 1.26-.3.52-.45.2-.4.28-.6 1.22-.9 2.25-1.16 3.1.18.27 0 1.65.07 2.76-.3 5.46 3.84 10.78 8.36 12.01.67.23 1.65.23 2.49.25-.99-.28-1.12-.15-2.08-.49-.7-.32-.85-.7-1.34-1.13l.2.35c-.97-.34-.57-.42-1.36-.67l.21-.27c-.31-.03-.83-.53-.97-.81l-.34.01c-.41-.5-.63-.87-.61-1.16l-.11.2c-.13-.21-1.52-1.9-.8-1.51-.13-.12-.31-.2-.5-.55l.14-.17c-.35-.44-.64-1.02-.62-1.2.2.24.32.3.45.33-.88-2.17-.93-.12-1.6-2.2l.15-.02c-.1-.16-.18-.34-.26-.51l.06-.6c-.63-.74-.18-3.1-.09-4.4.07-.54.53-1.1.88-1.98l-.21-.04c.4-.71 2.34-2.87 3.24-2.76.43-.55-.09 0-.18-.14.96-.99 1.26-.7 1.9-.88.7-.4-.6.16-.27-.15 1.2-.3.85-.7 2.42-.85.16.1-.39.14-.52.26 1-.49 3.15-.37 4.56.27 1.63.77 3.46 3.01 3.53 5.13l.08.02c-.04.85.13 1.82-.17 2.71l.2-.42Z" />
-        </svg>
-      ) : null}
-      {kind === "macos" ? (
-        <svg viewBox="0 0 24 24" aria-hidden="true">
-          <path fill="currentColor" d="M12.15 6.9c-.95 0-2.42-1.08-3.96-1.04-2.04.03-3.91 1.18-4.96 3.01-2.12 3.68-.55 9.1 1.52 12.09 1.01 1.45 2.21 3.09 3.79 3.04 1.52-.07 2.09-.99 3.94-.99 1.83 0 2.35.99 3.96.95 1.64-.03 2.68-1.48 3.68-2.95 1.16-1.69 1.64-3.33 1.66-3.42-.04-.01-3.18-1.22-3.22-4.86-.03-3.04 2.48-4.49 2.6-4.56-1.43-2.09-3.62-2.32-4.39-2.38-2-.16-3.68 1.09-4.61 1.09ZM15.53 3.83c.84-1.01 1.4-2.43 1.25-3.83-1.21.05-2.66.81-3.53 1.82-.78.9-1.45 2.34-1.27 3.71 1.34.1 2.72-.69 3.56-1.7Z" />
-        </svg>
-      ) : null}
-      {kind === "centos" ? (
-        <svg viewBox="0 0 24 24" aria-hidden="true">
-          <path fill="currentColor" d="M12.08.07 8.88 3.28H3.35v5.43L0 12.01l3.35 3.3v5.39h5.37l3.29 3.24 3.28-3.24h5.43v-5.37L24 12.03l-3.23-3.25V3.32h-5.46L12.08.07Zm0 .75 2.49 2.5h-1.69v6.44l-.8.81-.81-.82V3.28H9.63L12.08.82Zm-8.2 2.99h4.48L6.49 5.69l4.25 4.28v.65h-.8L5.67 6.42l-1.8 1.77V3.81Zm5.23 0h1.63v5.41L7.23 5.69l1.88-1.88Zm4.3.04h1.68l1.83 1.84-3.51 3.54V3.85Zm2.43 0h4.4v4.39L18.41 6.4l-4.24 4.27h-.76v-.69l4.26-4.29-1.83-1.84Zm2.57 3.3 1.83 1.84v1.68h-5.33l3.5-3.52Zm-12.74.01 3.52 3.46H3.88v-1.69l1.79-1.77Zm-2.33 2.29v1.7h6.38l.87.86-.78.77H3.35v1.79L.75 12.01l2.59-2.56Zm17.42.07 2.49 2.5-2.53 2.55v-1.8h-6.41l-.75-.75.83-.83h6.37Zm-9.5.98.81.82.8-.81v.69h.77l-.82.83.75.75h-.72v.81l-.84-.83-.74.73v-.71h-.7l.78-.77-.87-.86h.78Zm-7.39 2.81h5.4l-3.6 3.55-1.8-1.77v-1.78Zm6.15 0h.71v.7l-4.4 4.33 1.85 1.83h-4.31v-4.34l1.8 1.77 4.35-4.29Zm3.35 0h.72l4.32 4.34 1.78-1.8v4.32h-4.36l1.85-1.83-4.31-4.24v-.79Zm1.46 0h5.36v1.8l-1.78 1.79-3.58-3.59Zm-2.83.19.84.83v6.37h1.69l-2.53 2.5-2.53-2.5h1.79v-6.47l.74-.73Zm-1.27 1.25v5.42H8.94l-1.85-1.82 3.64-3.6Zm2.64.1 3.55 3.5-1.85 1.82h-1.7v-5.32Z" />
-        </svg>
-      ) : null}
-      {kind === "alinux" ? (
-        <svg viewBox="0 0 24 24" aria-hidden="true">
-          <path fill="currentColor" d="M4 4.52h5.29L8.01 6.32 4.15 7.51a1.67 1.67 0 0 0-1.16 1.6v5.78c0 .72.46 1.37 1.16 1.6l3.86 1.19 1.28 1.8H4A4 4 0 0 1 0 15.49V8.51a4 4 0 0 1 4-4Zm16.01 0h-5.3l1.28 1.8 3.86 1.19c.71.23 1.17.89 1.16 1.6v5.78c0 .72-.46 1.37-1.16 1.6l-3.86 1.19-1.28 1.8h5.3A4 4 0 0 0 24 15.49V8.51a4 4 0 0 0-3.99-4Zm-4.01 8.34H8v-1.8h8v1.8Z" />
-        </svg>
-      ) : null}
-      {kind === "linux" ? (
-        <svg viewBox="0 0 24 24" aria-hidden="true">
-          <path fill="currentColor" d="M5.5 4.5h13a2 2 0 0 1 2 2v11a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2v-11a2 2 0 0 1 2-2Zm.8 3.2v8.6h11.4V7.7H6.3Zm2.1 2.4 2.1 1.9-2.1 1.9-.9-1 1.1-.9-1.1-1 .9-.9Zm3.1 3h4.1v1.3h-4.1v-1.3Z" />
-        </svg>
-      ) : null}
-    </span>
-  );
-}
-
-function inferSystemKind(connection: ConnectionProfile): SystemKind {
-  const text = `${connection.name} ${connection.notes || ""} ${connection.username} ${connection.host}`.toLowerCase();
-
-  if (text.includes("ubuntu")) return "ubuntu";
-  if (
-    ["debian", "armbian", "orangepi", "orange pi", "香橙"].some((keyword) =>
-      text.includes(keyword),
-    )
-  ) {
-    return "debian";
-  }
-  if (text.includes("mac") || text.includes("darwin") || text.includes("m4-")) return "macos";
-  if (text.includes("centos") || text.includes("rocky") || text.includes("rhel")) return "centos";
-  if (text.includes("aliyun") || text.includes("alibaba") || text.includes("alinux")) return "alinux";
-  if (connection.id === "demo-dev-core" || connection.id === "demo-cloud-ubuntu") return "ubuntu";
-  if (connection.id === "demo-test-web" || connection.id === "demo-dev-k8s") return "debian";
-  if (connection.id === "demo-bastion") return "macos";
-  if (connection.id === "demo-stage") return "centos";
-  return "linux";
-}
-
-function systemLabel(kind: SystemKind) {
-  const labels: Record<SystemKind, string> = {
-    alinux: "Alibaba Cloud Linux",
-    centos: "CentOS",
-    debian: "Debian",
-    linux: "Linux",
-    macos: "macOS",
-    ubuntu: "Ubuntu",
-  };
-
-  return labels[kind];
 }
 
 function sortConnectionsByRecent(left: ConnectionProfile, right: ConnectionProfile) {
@@ -4746,11 +4698,14 @@ function connectionToInput(connection: ConnectionProfile): ConnectionProfileInpu
     port: connection.port,
     prompt_auth_kind: connection.prompt_auth_kind || undefined,
     proxy: connection.proxy,
+    remote_os_id: connection.remote_os_id || undefined,
+    remote_os_name: connection.remote_os_name || undefined,
+    remote_os_version: connection.remote_os_version || undefined,
     username: connection.username,
   };
 }
 
-function runtimeCredentialRequest(step: ConnectionStepState) {
+function runtimeCredentialRequest(step: ConnectionStepState): ConnectionRuntimeCredentialRequest {
   return {
     auth_kind: step.connection.credential_mode === "prompt" ? step.authKind : undefined,
     connection_id: step.connection.id,

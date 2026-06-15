@@ -4,6 +4,7 @@ import {
   connectionDelete,
   connectionList,
   connectionMarkConnected,
+  connectionProbeSystem,
   connectionSetFavorite,
   connectionUpsert,
 } from "../../shared/tauri/commands";
@@ -13,6 +14,7 @@ import {
   defaultProxyConfig,
   type ConnectionProfile,
   type ConnectionProfileInput,
+  type ConnectionRuntimeCredentialRequest,
 } from "./connectionTypes";
 
 const demoConnections: ConnectionProfile[] = [
@@ -259,6 +261,21 @@ export function useConnections() {
     [isTauri],
   );
 
+  const probeSystem = useCallback(
+    async (request: ConnectionRuntimeCredentialRequest) => {
+      if (!isTauri) {
+        return null;
+      }
+
+      const profile = await connectionProbeSystem(request);
+      setConnections((items) =>
+        items.map((item) => (item.id === profile.id ? profile : item)),
+      );
+      return profile;
+    },
+    [isTauri],
+  );
+
   const remove = useCallback(
     async (id: string) => {
       if (isTauri) {
@@ -276,12 +293,23 @@ export function useConnections() {
       error,
       loading,
       markConnected,
+      probeSystem,
       reload,
       remove,
       setFavorite,
       upsert,
     }),
-    [connections, error, loading, markConnected, reload, remove, setFavorite, upsert],
+    [
+      connections,
+      error,
+      loading,
+      markConnected,
+      probeSystem,
+      reload,
+      remove,
+      setFavorite,
+      upsert,
+    ],
   );
 }
 
@@ -338,6 +366,9 @@ export function normalizeConnectionInput(input: ConnectionProfileInput): Connect
     notes: trim(input.notes),
     is_favorite: input.is_favorite,
     last_connected_at: trim(input.last_connected_at),
+    remote_os_id: trim(input.remote_os_id),
+    remote_os_name: trim(input.remote_os_name),
+    remote_os_version: trim(input.remote_os_version),
   };
 }
 

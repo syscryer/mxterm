@@ -766,6 +766,9 @@ function formFromConnection(connection: ConnectionProfile): ConnectionProfileInp
     notes: connection.notes || "",
     is_favorite: connection.is_favorite,
     last_connected_at: connection.last_connected_at || "",
+    remote_os_id: connection.remote_os_id || "",
+    remote_os_name: connection.remote_os_name || "",
+    remote_os_version: connection.remote_os_version || "",
   };
 }
 

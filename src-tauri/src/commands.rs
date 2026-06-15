@@ -9,7 +9,8 @@ use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::app_error::AppError;
 use crate::connections::{
-    ConnectionAuthKind, ConnectionProfile, ConnectionProfileInput, ConnectionStore,
+    parse_remote_system_probe, ConnectionAuthKind, ConnectionProfile, ConnectionProfileInput,
+    ConnectionStore, REMOTE_SYSTEM_PROBE_COMMAND,
 };
 use crate::credentials::{CredentialProfile, CredentialProfileInput, CredentialStore};
 use crate::events::RemoteFileTransferProgressEvent;
@@ -1083,6 +1084,45 @@ pub async fn connection_test_profile(
         ok: true,
         message: "连接测试通过。".to_string(),
     })
+}
+
+#[tauri::command]
+pub async fn connection_probe_system(
+    app: AppHandle,
+    request: ConnectionRuntimeCredentialRequest,
+) -> Result<ConnectionProfile, AppError> {
+    let connection_id = request.connection_id.trim().to_string();
+    let config = resolve_saved_connection(
+        &app,
+        &connection_id,
+        Some(RuntimeCredentialInput {
+            auth_kind: request.auth_kind,
+            password: request.password,
+            private_key_path: request.private_key_path,
+            private_key_passphrase: request.private_key_passphrase,
+        }),
+    )?;
+
+    let session =
+        crate::terminal::session::ReusableExecSession::connect_resolved(&app, &config).await?;
+    let output = session.exec(REMOTE_SYSTEM_PROBE_COMMAND).await;
+    session.close().await;
+    let output = output?;
+    let system = parse_remote_system_probe(&output.stdout);
+    let mut store = ConnectionStore::load(connection_store_path(&app)?)?;
+
+    if system.is_empty() {
+        return store.get(&config.connection_id).ok_or_else(|| {
+            AppError::new(
+                "connection_missing",
+                "连接不存在。",
+                format!("connection_id={}", config.connection_id),
+                false,
+            )
+        });
+    }
+
+    store.update_remote_system(&config.connection_id, system, &now_timestamp()?)
 }
 
 #[tauri::command]

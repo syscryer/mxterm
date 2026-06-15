@@ -1606,6 +1606,10 @@ button {
   user-select: none;
 }
 
+.app-shell[data-window-material="auto"] .custom-titlebar {
+  backdrop-filter: none;
+}
+
 .title-leading {
   min-width: 0;
   display: grid;
@@ -2140,10 +2144,6 @@ button {
 .tree-connection-main small {
   color: var(--mx-subtle);
   font-size: 10px;
-}
-
-.connection-server-icon {
-  color: var(--mx-subtle);
 }
 
 .tree-connection-favorite {
@@ -3411,12 +3411,12 @@ button {
 .os-logo {
   width: 30px;
   height: 30px;
-  border: 1px solid rgb(203 213 225 / 48%);
+  border: 1px solid color-mix(in srgb, var(--os-logo-color, var(--mx-muted)) 16%, transparent);
   border-radius: 7px;
   display: grid;
   place-items: center;
-  color: color-mix(in srgb, var(--mx-muted) 84%, var(--mx-text) 16%);
-  background: rgb(255 255 255 / 58%);
+  color: color-mix(in srgb, var(--os-logo-color, var(--mx-muted)) 74%, var(--mx-muted) 26%);
+  background: color-mix(in srgb, var(--os-logo-color, var(--mx-muted)) 5%, var(--mx-panel));
   overflow: hidden;
 }
 
@@ -3424,44 +3424,22 @@ button {
   width: 19px;
   height: 19px;
   display: block;
-  opacity: 0.64;
-  filter: saturate(0.48) contrast(0.94);
+  opacity: 0.88;
 }
 
-.os-logo .ui-icon {
-  width: 17px;
-  height: 17px;
-  stroke-width: 1.45;
+.os-logo.compact {
+  width: 18px;
+  height: 18px;
+  border: 0;
+  border-radius: 5px;
+  color: color-mix(in srgb, var(--os-logo-color, var(--mx-muted)) 82%, var(--mx-muted) 18%);
+  background: transparent;
 }
 
-.os-logo.ubuntu {
-  border-color: rgb(233 84 32 / 9%);
-  color: color-mix(in srgb, #e95420 58%, var(--mx-muted) 42%);
-  background: rgb(233 84 32 / 2.2%);
-}
-
-.os-logo.debian {
-  border-color: rgb(168 29 51 / 9%);
-  color: color-mix(in srgb, #a81d33 58%, var(--mx-muted) 42%);
-  background: rgb(168 29 51 / 2.2%);
-}
-
-.os-logo.macos {
-  border-color: rgb(15 23 42 / 8%);
-  color: color-mix(in srgb, #111827 58%, var(--mx-muted) 42%);
-  background: rgb(15 23 42 / 1.8%);
-}
-
-.os-logo.centos {
-  border-color: rgb(38 37 119 / 9%);
-  color: color-mix(in srgb, #262577 58%, var(--mx-muted) 42%);
-  background: rgb(38 37 119 / 2.2%);
-}
-
-.os-logo.alinux {
-  border-color: rgb(255 106 0 / 9%);
-  color: color-mix(in srgb, #ff6a00 58%, var(--mx-muted) 42%);
-  background: rgb(255 106 0 / 2.2%);
+.os-logo.compact svg {
+  width: 16px;
+  height: 16px;
+  opacity: 0.9;
 }
 
 .latency-cell {
@@ -6070,10 +6048,7 @@ body {
 .app-shell::before {
   content: "";
   position: absolute;
-  top: 36px;
-  right: 0;
-  bottom: 0;
-  left: 0;
+  inset: 0;
   z-index: 0;
   background:
     linear-gradient(180deg, var(--mx-chrome-glow), transparent 58%),
@@ -6098,6 +6073,10 @@ body {
 .custom-titlebar > * {
   position: relative;
   z-index: 1;
+}
+
+.app-shell[data-window-material="auto"] .custom-titlebar {
+  background: var(--mx-chrome-fill);
 }
 
 .title-leading {

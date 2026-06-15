@@ -106,6 +106,12 @@ pub struct ConnectionProfileInput {
     #[serde(default)]
     pub last_connected_at: Option<String>,
     #[serde(default)]
+    pub remote_os_id: Option<String>,
+    #[serde(default)]
+    pub remote_os_name: Option<String>,
+    #[serde(default)]
+    pub remote_os_version: Option<String>,
+    #[serde(default)]
     pub auth_kind: Option<ConnectionAuthKind>,
     #[serde(default)]
     pub password: Option<String>,
@@ -168,6 +174,12 @@ pub struct ConnectionProfile {
     pub is_favorite: bool,
     #[serde(default)]
     pub last_connected_at: Option<String>,
+    #[serde(default)]
+    pub remote_os_id: Option<String>,
+    #[serde(default)]
+    pub remote_os_name: Option<String>,
+    #[serde(default)]
+    pub remote_os_version: Option<String>,
     pub created_at: String,
     pub updated_at: String,
     #[serde(default)]
@@ -178,6 +190,19 @@ pub struct ConnectionProfile {
     pub private_key_path: Option<String>,
     #[serde(default)]
     pub private_key_passphrase: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ConnectionRemoteSystemInfo {
+    pub os_id: Option<String>,
+    pub os_name: Option<String>,
+    pub os_version: Option<String>,
+}
+
+impl ConnectionRemoteSystemInfo {
+    pub fn is_empty(&self) -> bool {
+        self.os_id.is_none() && self.os_name.is_none() && self.os_version.is_none()
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -266,6 +291,26 @@ impl ConnectionStore {
         });
         let last_connected_at = trim_optional(input.last_connected_at.as_ref())
             .or_else(|| existing_profile.and_then(|profile| profile.last_connected_at.clone()));
+        let target_unchanged = existing_profile.is_some_and(|profile| {
+            profile.host == validated.host
+                && profile.port == validated.port
+                && profile.username == validated.username
+        });
+        let remote_os_id = trim_optional(input.remote_os_id.as_ref()).or_else(|| {
+            target_unchanged
+                .then(|| existing_profile.and_then(|profile| profile.remote_os_id.clone()))
+                .flatten()
+        });
+        let remote_os_name = trim_optional(input.remote_os_name.as_ref()).or_else(|| {
+            target_unchanged
+                .then(|| existing_profile.and_then(|profile| profile.remote_os_name.clone()))
+                .flatten()
+        });
+        let remote_os_version = trim_optional(input.remote_os_version.as_ref()).or_else(|| {
+            target_unchanged
+                .then(|| existing_profile.and_then(|profile| profile.remote_os_version.clone()))
+                .flatten()
+        });
 
         let profile = ConnectionProfile {
             id,
@@ -286,6 +331,9 @@ impl ConnectionStore {
             notes: validated.notes,
             is_favorite,
             last_connected_at,
+            remote_os_id,
+            remote_os_name,
+            remote_os_version,
             created_at,
             updated_at: now.to_string(),
             auth_kind: None,
@@ -362,6 +410,35 @@ impl ConnectionStore {
             })?;
 
         self.document.profiles[index].last_connected_at = Some(now.to_string());
+        let profile = self.document.profiles[index].clone();
+        self.save()?;
+        Ok(profile)
+    }
+
+    pub fn update_remote_system(
+        &mut self,
+        id: &str,
+        system: ConnectionRemoteSystemInfo,
+        now: &str,
+    ) -> Result<ConnectionProfile, AppError> {
+        let index = self
+            .document
+            .profiles
+            .iter()
+            .position(|profile| profile.id == id)
+            .ok_or_else(|| {
+                AppError::new(
+                    "connection_missing",
+                    "连接不存在。",
+                    format!("connection_id={id}"),
+                    false,
+                )
+            })?;
+
+        self.document.profiles[index].remote_os_id = system.os_id;
+        self.document.profiles[index].remote_os_name = system.os_name;
+        self.document.profiles[index].remote_os_version = system.os_version;
+        self.document.profiles[index].updated_at = now.to_string();
         let profile = self.document.profiles[index].clone();
         self.save()?;
         Ok(profile)
@@ -668,15 +745,95 @@ fn default_credential_mode() -> ConnectionCredentialMode {
     ConnectionCredentialMode::Inline
 }
 
+pub const REMOTE_SYSTEM_PROBE_COMMAND: &str =
+    "cat /etc/os-release 2>/dev/null || uname -s 2>/dev/null || true";
+
+pub fn parse_remote_system_probe(output: &[u8]) -> ConnectionRemoteSystemInfo {
+    let text = String::from_utf8_lossy(output);
+    let mut info = ConnectionRemoteSystemInfo::default();
+    let mut saw_os_release_key = false;
+
+    for line in text.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        saw_os_release_key = true;
+        let value = normalize_os_release_value(value);
+        match key {
+            "ID" => info.os_id = normalize_remote_os_id(&value),
+            "NAME" => info.os_name = trim_string(&value),
+            "VERSION_ID" => info.os_version = trim_string(&value),
+            _ => {}
+        }
+    }
+
+    if info.os_id.is_none() && !saw_os_release_key {
+        info.os_id = text
+            .lines()
+            .map(str::trim)
+            .find(|line| !line.is_empty())
+            .and_then(normalize_remote_os_id);
+    }
+
+    info
+}
+
+fn normalize_os_release_value(value: &str) -> String {
+    let trimmed = value.trim();
+    if trimmed.len() >= 2 {
+        let first = trimmed.as_bytes()[0];
+        let last = trimmed.as_bytes()[trimmed.len() - 1];
+        if (first == b'"' && last == b'"') || (first == b'\'' && last == b'\'') {
+            return trimmed[1..trimmed.len() - 1]
+                .replace("\\\"", "\"")
+                .replace("\\'", "'")
+                .replace("\\\\", "\\");
+        }
+    }
+    trimmed.to_string()
+}
+
+fn normalize_remote_os_id(value: &str) -> Option<String> {
+    let normalized = value.trim().to_ascii_lowercase().replace([' ', '_'], "-");
+    let normalized = normalized.trim_matches('-');
+    if normalized.is_empty() {
+        return None;
+    }
+
+    Some(
+        match normalized {
+            "centos-linux" => "centos",
+            "red-hat-enterprise-linux" => "rhel",
+            "darwin" => "macos",
+            other => other,
+        }
+        .to_string(),
+    )
+}
+
+fn trim_string(value: &str) -> Option<String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::fs;
     use std::path::PathBuf;
 
     use super::{
-        validate_profile_input, ConnectionAdvancedConfig, ConnectionAuthKind,
-        ConnectionCredentialMode, ConnectionProfileInput, ConnectionProxyConfig,
-        ConnectionProxyKind, ConnectionStore,
+        parse_remote_system_probe, validate_profile_input, ConnectionAdvancedConfig,
+        ConnectionAuthKind, ConnectionCredentialMode, ConnectionProfileInput,
+        ConnectionProxyConfig, ConnectionProxyKind, ConnectionRemoteSystemInfo, ConnectionStore,
     };
 
     fn password_input() -> ConnectionProfileInput {
@@ -699,6 +856,9 @@ mod tests {
             notes: None,
             is_favorite: None,
             last_connected_at: None,
+            remote_os_id: None,
+            remote_os_name: None,
+            remote_os_version: None,
             auth_kind: None,
             password: None,
             private_key_path: None,
@@ -915,6 +1075,141 @@ mod tests {
             profile.last_connected_at,
             Some("2026-06-05T09:40:00+08:00".to_string())
         );
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn parse_remote_system_probe_reads_ubuntu_os_release() {
+        let info = parse_remote_system_probe(
+            br#"NAME="Ubuntu"
+ID=ubuntu
+VERSION_ID="22.04"
+"#,
+        );
+
+        assert_eq!(info.os_id, Some("ubuntu".to_string()));
+        assert_eq!(info.os_name, Some("Ubuntu".to_string()));
+        assert_eq!(info.os_version, Some("22.04".to_string()));
+    }
+
+    #[test]
+    fn parse_remote_system_probe_reads_centos7_os_release() {
+        let info = parse_remote_system_probe(
+            br#"NAME="CentOS Linux"
+VERSION_ID="7"
+ID="centos"
+"#,
+        );
+
+        assert_eq!(info.os_id, Some("centos".to_string()));
+        assert_eq!(info.os_name, Some("CentOS Linux".to_string()));
+        assert_eq!(info.os_version, Some("7".to_string()));
+    }
+
+    #[test]
+    fn store_updates_remote_system_and_persists() {
+        let path = temp_store_path("remote-system");
+        let _ = fs::remove_file(&path);
+        let mut store = ConnectionStore::load(path.clone()).unwrap();
+        let saved = store
+            .upsert(password_input(), "2026-06-05T09:30:00+08:00")
+            .unwrap();
+
+        let updated = store
+            .update_remote_system(
+                &saved.id,
+                ConnectionRemoteSystemInfo {
+                    os_id: Some("ubuntu".to_string()),
+                    os_name: Some("Ubuntu".to_string()),
+                    os_version: Some("22.04".to_string()),
+                },
+                "2026-06-05T09:45:00+08:00",
+            )
+            .unwrap();
+
+        assert_eq!(updated.remote_os_id, Some("ubuntu".to_string()));
+        assert_eq!(updated.remote_os_name, Some("Ubuntu".to_string()));
+        assert_eq!(updated.remote_os_version, Some("22.04".to_string()));
+
+        let reloaded = ConnectionStore::load(path.clone()).unwrap();
+        let profile = reloaded.get(&saved.id).unwrap();
+        assert_eq!(profile.remote_os_id, Some("ubuntu".to_string()));
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn store_upsert_preserves_remote_system_for_same_target() {
+        let path = temp_store_path("remote-system-preserve");
+        let _ = fs::remove_file(&path);
+        let mut store = ConnectionStore::load(path.clone()).unwrap();
+        let saved = store
+            .upsert(password_input(), "2026-06-05T09:30:00+08:00")
+            .unwrap();
+        store
+            .update_remote_system(
+                &saved.id,
+                ConnectionRemoteSystemInfo {
+                    os_id: Some("centos".to_string()),
+                    os_name: Some("CentOS Linux".to_string()),
+                    os_version: Some("7".to_string()),
+                },
+                "2026-06-05T09:35:00+08:00",
+            )
+            .unwrap();
+
+        let updated = store
+            .upsert(
+                ConnectionProfileInput {
+                    id: Some(saved.id.clone()),
+                    name: Some("renamed".to_string()),
+                    ..password_input()
+                },
+                "2026-06-05T09:40:00+08:00",
+            )
+            .unwrap();
+
+        assert_eq!(updated.remote_os_id, Some("centos".to_string()));
+        assert_eq!(updated.remote_os_version, Some("7".to_string()));
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn store_upsert_clears_remote_system_when_target_changes() {
+        let path = temp_store_path("remote-system-clear");
+        let _ = fs::remove_file(&path);
+        let mut store = ConnectionStore::load(path.clone()).unwrap();
+        let saved = store
+            .upsert(password_input(), "2026-06-05T09:30:00+08:00")
+            .unwrap();
+        store
+            .update_remote_system(
+                &saved.id,
+                ConnectionRemoteSystemInfo {
+                    os_id: Some("ubuntu".to_string()),
+                    os_name: Some("Ubuntu".to_string()),
+                    os_version: Some("22.04".to_string()),
+                },
+                "2026-06-05T09:35:00+08:00",
+            )
+            .unwrap();
+
+        let updated = store
+            .upsert(
+                ConnectionProfileInput {
+                    id: Some(saved.id.clone()),
+                    host: "other.example.com".to_string(),
+                    ..password_input()
+                },
+                "2026-06-05T09:40:00+08:00",
+            )
+            .unwrap();
+
+        assert_eq!(updated.remote_os_id, None);
+        assert_eq!(updated.remote_os_name, None);
+        assert_eq!(updated.remote_os_version, None);
 
         let _ = fs::remove_file(path);
     }

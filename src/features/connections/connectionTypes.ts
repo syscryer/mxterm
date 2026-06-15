@@ -35,6 +35,9 @@ export interface ConnectionProfile {
   notes?: string | null;
   is_favorite: boolean;
   last_connected_at?: string | null;
+  remote_os_id?: string | null;
+  remote_os_name?: string | null;
+  remote_os_version?: string | null;
   created_at: string;
   updated_at: string;
   auth_kind?: ConnectionAuthKind | null;
@@ -62,6 +65,9 @@ export interface ConnectionProfileInput {
   notes?: string;
   is_favorite?: boolean;
   last_connected_at?: string;
+  remote_os_id?: string;
+  remote_os_name?: string;
+  remote_os_version?: string;
   auth_kind?: ConnectionAuthKind;
   password?: string;
   private_key_path?: string;

@@ -21,6 +21,7 @@
 - `known_host_trust(app: AppHandle, request: KnownHostTrustRequest) -> Result<(), AppError>`
 - `connection_test(app: AppHandle, request: ConnectionRuntimeCredentialRequest) -> Result<ConnectionStepResult, AppError>`
 - `connection_test_profile(app: AppHandle, request: ConnectionProfileInput) -> Result<ConnectionStepResult, AppError>`
+- `connection_probe_system(app: AppHandle, request: ConnectionRuntimeCredentialRequest) -> Result<ConnectionProfile, AppError>`
 - `connection_probe_latency(app: AppHandle, request: ConnectionLatencyProbeRequest) -> Result<ConnectionLatencyProbeResult, AppError>`
 - `terminal_connect(app: AppHandle, manager: State<TerminalManager>, request: TerminalConnectRequest) -> Result<String, AppError>`
 - `terminal_write(manager: State<TerminalManager>, request: TerminalWriteRequest) -> Result<(), AppError>`
@@ -48,6 +49,9 @@ advanced: ConnectionAdvancedConfig
 notes: Option<String>
 is_favorite: Option<bool>
 last_connected_at: Option<String>
+remote_os_id: Option<String>
+remote_os_name: Option<String>
+remote_os_version: Option<String>
 // Legacy migration only:
 auth_kind: Option<ConnectionAuthKind>
 password: Option<String>
@@ -55,7 +59,7 @@ private_key_path: Option<String>
 private_key_passphrase: Option<String>
 ```
 
-`ConnectionProfile` adds `id`, normalized `name`, `is_favorite`, `last_connected_at`, `created_at`, and `updated_at`.
+`ConnectionProfile` adds `id`, normalized `name`, `is_favorite`, `last_connected_at`, `remote_os_id`, `remote_os_name`, `remote_os_version`, `created_at`, and `updated_at`.
 
 `ConnectionFavoriteRequest` fields:
 
@@ -135,6 +139,7 @@ reachable: bool
 - Empty optional strings are normalized to `None`; non-empty target, credential, proxy, and note fields are trimmed.
 - Blank `name` defaults to `{username}@{host}`.
 - `is_favorite` is the explicit favorite flag. `last_connected_at` stores the last successful terminal connection timestamp. Upserting an existing connection must preserve both values unless the input explicitly supplies them.
+- `remote_os_id`, `remote_os_name`, and `remote_os_version` store detected remote system metadata from `connection_probe_system`. Upserting an existing connection must preserve these fields when `host`, `port`, and `username` are unchanged; changing that target identity clears the old detected system fields unless the input explicitly supplies new values.
 - `connection_set_favorite` updates only `is_favorite` plus `updated_at`; it must not change `last_connected_at`.
 - `connection_mark_connected` updates only `last_connected_at`; recent views must not be derived from `updated_at`.
 - `credential_mode=saved` requires `credential_id` and clears inline secrets.
@@ -149,6 +154,7 @@ reachable: bool
 - Host-key verification is stateful. Unknown host keys return `host_key_unknown` with serialized `HostKeyInfo` in `raw_message`; changed host keys return `host_key_changed` with the new key and old fingerprint. Only `known_host_trust` may write or update trusted host keys.
 - `connection_test`, `terminal_connect`, and remote-file commands must use the same saved-connection resolution path in `ssh_config.rs`; do not re-resolve credentials independently in UI-facing command handlers.
 - `connection_test_profile` is only for testing the current `ConnectionDialog` form before it is saved. It must validate and resolve a transient profile through `resolve_transient_connection(...)`, may read `credentials.json` when `credential_mode=saved`, and must not call `ConnectionStore::upsert`, persist `connections.json`, mark recent activity, or synthesize a permanent connection id.
+- `connection_probe_system` resolves the saved connection with the same runtime prompt credential shape as `connection_test`, opens a short-lived exec session, runs only the read-only `cat /etc/os-release 2>/dev/null || uname -s 2>/dev/null || true` probe, parses `ID`, `NAME`, and `VERSION_ID`, and writes only the `remote_os_*` fields back to `connections.json`. It must not log passwords, passphrases, or full command payloads, and probe failure must be handled by the frontend as non-fatal after a successful connection.
 - `connection_probe_latency` must load the saved profile by `connection_id` and probe only the saved `host`/`port` with a short TCP timeout. It must not require or log passwords, private keys, or passphrases.
 - Terminal output and state events include both `session_id` and the optional frontend `request_id`. Keep `request_id` on early connection events so React can display shell output that arrives before the `terminal_connect` promise resolves.
 - The interactive terminal reader must not stop on `ChannelMsg::Eof`; continue reading until `ChannelMsg::Close` or channel end so a shell prompt or late startup output cannot be lost during frontend handoff.
@@ -206,6 +212,7 @@ reachable: bool
 - Unit-test known-host store behavior for unknown, trusted, and changed fingerprints.
 - Unit-test saved connection resolution for saved, inline, prompt, missing credential, proxy, and advanced timeout behavior.
 - Unit-test terminal connection validation for missing runtime prompt credentials and invalid direct SSH request fields.
+- Unit-test remote system parsing for Ubuntu/CentOS-style `/etc/os-release` payloads and connection-store round trip/preservation of `remote_os_*` fields.
 - Source-check that `connection_test_profile`, `resolve_transient_connection`, and the frontend `connectionTestProfile` wrapper are registered together, and that dialog testing does not call `saveConnection` / `connectionUpsert`.
 - Run `cargo test --manifest-path src-tauri/Cargo.toml` and `cargo check --manifest-path src-tauri/Cargo.toml` after changing command payloads or storage behavior.
 

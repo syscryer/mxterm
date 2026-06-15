@@ -142,10 +142,25 @@ Ant Design, Mantine, or similar libraries just to fix one modal or button.
 - Connection failure detail cards should keep their own inner spacing. Error
   headings, cause/suggestion/code rows, and retry actions must not sit flush
   against the card edge, even when the surrounding step shell is compact.
+- Connection repository system icons must go through the shared connection
+  system icon component, which renders distribution logos from `simple-icons`.
+  Do not hard-code generic server icons separately in the tree, table, or drag
+  preview. `ConnectionProfile.remote_os_id`, `remote_os_name`, and
+  `remote_os_version` are the authoritative detected distro fields and should
+  be preferred before local name/notes/group inference. Connection-test and
+  terminal-success flows may trigger `connectionProbeSystem` in the background;
+  probe failures should not block the already successful SSH flow.
 - xterm internal layers such as `.xterm-viewport` and `.xterm-screen` must use
   the same background as the terminal host. Their upstream CSS defaults to pure
   black, which creates visible right/bottom bands when FitAddon rounds the
   terminal to whole character cells.
+- Terminal semantic highlighting should use xterm's parsed-write and decoration
+  APIs (`onWriteParsed`, `registerDecoration`) against the normal buffer after
+  output is written. Do not inject ANSI color sequences into `terminal.write`
+  for client-only highlights: that would pollute scrollback/copy behavior and
+  can break OSC parsing. Keep WebLinksAddon and OSC7/current-directory handling
+  independent, and skip cells that already have ANSI foreground, inverse, or
+  invisible attributes so remote output colors remain authoritative.
 - Scrollable app panes should use the shared light scrollbar treatment in
   `src/styles/app.css`: transparent tracks/corners, no WebKit scrollbar
   buttons/arrows, muted rounded thumbs that become visible on hover, and a
