@@ -21,6 +21,7 @@ credentialUpsert(request: CredentialProfileInput): Promise<CredentialProfile>
 credentialDelete(id: string): Promise<void>
 connectionTest(request: ConnectionRuntimeCredentialRequest): Promise<ConnectionStepResult>
 connectionTestProfile(request: ConnectionProfileInput): Promise<ConnectionStepResult>
+connectionProbeSystem(request: ConnectionRuntimeCredentialRequest): Promise<ConnectionProfile>
 knownHostTrust(hostKey: HostKeyInfo): Promise<void>
 connectionProbeLatency(connectionId: string): Promise<{ latency_ms: number | null; reachable: boolean }>
 terminalConnect(request: TerminalConnectRequest): Promise<string>
@@ -58,6 +59,9 @@ advanced: {
 notes?: string
 is_favorite?: boolean
 last_connected_at?: string
+remote_os_id?: string
+remote_os_name?: string
+remote_os_version?: string
 // Legacy migration only:
 auth_kind?: "password" | "private_key"
 password?: string
@@ -105,12 +109,14 @@ type HostKeyInfo = {
 - UI state may use empty strings while editing, but `useConnections` and `useCredentials` must trim optional fields and convert blanks to `undefined` before calling `connectionUpsert` or `credentialUpsert`.
 - Connection profiles own target and behavior fields: group, host, port, username, credential mode, proxy, advanced settings, and notes.
 - Connection profiles also own repository UI metadata: `is_favorite` is the explicit favorite flag and `last_connected_at` is the last successful terminal connection timestamp. Do not infer favorites from notes or recent activity from `updated_at`.
+- Connection profiles also persist detected remote system metadata: `remote_os_id`, `remote_os_name`, and `remote_os_version`. UI system icons must prefer these fields before falling back to local name/notes/group text inference.
 - Credential profiles own only authentication material: password or private key path/passphrase plus local notes. They must not store host, port, or username.
 - When opening a saved connection, the connection-preparation flow should pass `connection_id` plus prompt credentials only when `credential_mode === "prompt"`; Rust treats the saved profile as authoritative.
-- After a terminal connection succeeds, call `connectionMarkConnected(connection.id)` so the repository's recent views sort by real connection activity. Favorite toggles must call `connectionSetFavorite(...)` and preserve both fields when editing or moving a connection.
+- After a terminal connection succeeds, trigger `connectionProbeSystem(...)` in the background with the same runtime prompt credential payload when needed, then call `connectionMarkConnected(connection.id)` so the repository's recent views sort by real connection activity. Probe failures must not close or fail an already connected terminal. Favorite toggles must call `connectionSetFavorite(...)` and preserve repository metadata when editing or moving a connection.
 - `ConnectionDialog` must test the current form with `connectionTestProfile(input)`. It must not call `connectionUpsert`, `saveConnection`, or `connectionTest({ connection_id })` for unsaved dialog tests, because testing must not persist a profile or create a connection id. It must show validation and connection errors as dialog feedback instead of writing them into a terminal.
 - Host-key confirmation UI must call `knownHostTrust(hostKey)` with the `HostKeyInfo` returned by a recoverable host-key error; do not synthesize fingerprints on the frontend.
 - Connection latency probing must go through `connectionProbeLatency(connection.id)`. The UI sends only a saved connection id; Rust reloads the saved host/port and never needs credential fields for this probe.
+- Remote system probing must go through `connectionProbeSystem(request)`. The UI sends a saved connection id and only the same prompt credentials already supplied by the user for the current connection attempt; Rust reloads all saved target and credential fields, probes `/etc/os-release`, and returns the updated `ConnectionProfile`.
 - The connection preparation page owns startup, host-key confirmation, prompt credentials, retry, edit, and failure UI. A terminal tab is created only after `terminalConnect` returns a session id.
 - The same-connection "new terminal" action must only be visible after the active terminal has a connected `sessionId`. When used inside an already active session, it must create a terminal tab directly and call `terminalConnect` with the saved `connection_id`; it must not call `startConnectionStep(...)` or show the connection-preparation page. If this direct connect fails, keep the lightweight terminal tab in a failed state instead of routing the user back into the preparation flow.
 - `TerminalPanel` receives an already-created `initialSessionId`; it must not start a second SSH connection for that tab.
@@ -157,6 +163,7 @@ type HostKeyInfo = {
 - Run `node scripts/check-remote-file-editor-source.mjs` after changing workspace terminal tab creation, so the same-connection new terminal path stays separate from the connection-preparation page.
 - Add focused tests once the frontend test runner exists for credential-mode field clearing, credential delete handling, host-key recoverable states, fallback behavior, and error display.
 - Cross-check changed TypeScript payload fields against `src-tauri/src/commands.rs` and `src-tauri/src/connections/mod.rs` in the same task.
+- Run `node scripts/check-connection-system-icon.mjs` after changing connection system icon inference, remote OS profile fields, or the system probe wrapper.
 
 ### 7. Wrong vs Correct
 
@@ -695,6 +702,7 @@ micaAlt = 4
 - The desktop window must allow the WebView to reveal native material. Keep the main window `transparent: true` in `src-tauri/tauri.conf.json` and provide an initial `windowEffects.effects` entry such as `mica`; runtime material changes still flow through `setWindowMaterial(...)`.
 - Tauri startup may apply the initial Windows backdrop in `src-tauri/src/lib.rs` setup (for example Mica id `2`) so the native material is visible before React settings finish loading. `WorkspaceShell` remains the owner of persisted runtime material changes after the frontend mounts.
 - CSS fallback material should be chrome-focused: root `.app-shell` material layer, `.custom-titlebar`, and shared `.app-sidebar` rails use the material tokens, while main workspace/settings content remains on clear panel surfaces.
+- `auto` is the non-material fallback mode, not a transparent material reveal mode. CSS must keep the chrome backed by an opaque fallback layer such as root `.app-shell::before` using `--mx-chrome-fill` across the titlebar and sidebars; reserve native transparent reveal for `mica`, `acrylic`, and `micaAlt`.
 
 ### 4. Validation & Error Matrix
 

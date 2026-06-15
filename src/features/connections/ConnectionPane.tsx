@@ -19,7 +19,6 @@ import {
   Play,
   Plus,
   RefreshCw,
-  Server,
   Settings,
   Star,
   Trash2,
@@ -29,6 +28,7 @@ import {
 
 import { ConfirmDialog } from "../../shared/ui/ConfirmDialog";
 import { Tooltip } from "../../shared/ui/Tooltip";
+import { ConnectionSystemLogo } from "./ConnectionSystemLogo";
 import type { ConnectionProfile } from "./connectionTypes";
 
 interface ConnectionPaneProps {
@@ -341,7 +341,7 @@ export function ConnectionPane({
               width: `${mouseDrag.previewWidth}px`,
             }}
           >
-            <Server className="ui-icon connection-server-icon" aria-hidden="true" />
+            <ConnectionSystemLogo connection={draggedConnection} compact decorative />
             <span>
               <strong>{draggedConnection.name}</strong>
               <small>{formatAddress(draggedConnection)}</small>
@@ -926,7 +926,7 @@ function ConnectionTreeLeaf({
             onDragStart={(event) => onDragStart(event, connection)}
             onMouseDown={(event) => onMouseDragStart(event, connection)}
           >
-            <Server className="ui-icon connection-server-icon" aria-hidden="true" />
+            <ConnectionSystemLogo connection={connection} compact decorative />
             <span>
               <strong>{connection.name}</strong>
               <small>{formatAddress(connection)}</small>

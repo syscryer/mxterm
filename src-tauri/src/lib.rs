@@ -31,6 +31,7 @@ pub fn run() {
             commands::connection_mark_connected,
             commands::connection_delete,
             commands::connection_probe_latency,
+            commands::connection_probe_system,
             commands::connection_test,
             commands::connection_test_profile,
             commands::credential_list,

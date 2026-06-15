@@ -193,7 +193,7 @@ export const defaultSettings: MxtermSettings = {
     uiFontMode: "preset",
     uiFontPreset: "segoe-ui",
     uiFontSize: 14,
-    windowMaterial: "mica",
+    windowMaterial: "auto",
   },
   terminalTheme: {
     scheme: defaultTerminalColorSchemeId,

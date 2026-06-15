@@ -23,6 +23,11 @@ import {
   createTerminalInputDirectoryState,
   inferRemoteHomeDirectory,
 } from "./terminalInputDirectory";
+import {
+  createTerminalSemanticHighlighter,
+  getTerminalSemanticHighlightPalette,
+  type TerminalSemanticHighlighter,
+} from "./terminalSemanticHighlight";
 
 const TERMINAL_SCROLLBAR_WIDTH = 6;
 const STARTUP_OUTPUT_BUFFER_MS = 250;
@@ -61,6 +66,7 @@ export function TerminalPanel({
   const hostRef = useRef<HTMLDivElement | null>(null);
   const terminalRef = useRef<Terminal | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
+  const semanticHighlighterRef = useRef<TerminalSemanticHighlighter | null>(null);
   const sessionIdRef = useRef<string | null>(null);
   const osc7BufferRef = useRef("");
   const inputDirectoryStateRef = useRef(createTerminalInputDirectoryState());
@@ -101,6 +107,7 @@ export function TerminalPanel({
     }
 
     const terminal = new Terminal({
+      allowProposedApi: true,
       cursorBlink: true,
       convertEol: true,
       fontFamily,
@@ -117,6 +124,10 @@ export function TerminalPanel({
     terminal.loadAddon(fitAddon);
     terminal.loadAddon(new WebLinksAddon());
     terminal.open(hostRef.current);
+    const semanticHighlighter = createTerminalSemanticHighlighter(terminal, {
+      palette: getTerminalSemanticHighlightPalette(theme),
+    });
+    semanticHighlighterRef.current = semanticHighlighter;
     fitAddon.fit();
     startedRef.current = false;
     initialOutputWrittenLengthRef.current = 0;
@@ -279,9 +290,11 @@ export function TerminalPanel({
       resizeObserver.disconnect();
       resizeDisposable.dispose();
       dataDisposable.dispose();
+      semanticHighlighter.dispose();
       terminal.dispose();
       terminalRef.current = null;
       fitAddonRef.current = null;
+      semanticHighlighterRef.current = null;
     };
   }, [initialRequestId, initialSessionId, tabId]);
 
@@ -314,6 +327,7 @@ export function TerminalPanel({
     }
 
     terminal.options.theme = withTerminalChromeTheme(theme);
+    semanticHighlighterRef.current?.setPalette(getTerminalSemanticHighlightPalette(theme));
   }, [theme]);
 
   useEffect(() => {

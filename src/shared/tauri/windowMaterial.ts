@@ -23,7 +23,7 @@ const windowMaterialById: Record<number, WindowMaterialMode | undefined> = {
 };
 
 const windowMaterialLabels: Record<WindowMaterialMode, string> = {
-  auto: "自动",
+  auto: "默认",
   mica: "Mica",
   acrylic: "Acrylic",
   micaAlt: "Mica Alt",
