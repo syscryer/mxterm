@@ -143,6 +143,7 @@ type ConnectionStepStatus = "idle" | "running" | "waiting_host_key" | "prompt" |
 type HostKeyDecision = "unknown" | "changed";
 
 interface ConnectionStepState {
+  activeStepIndex?: number | null;
   authKind: ConnectionAuthKind;
   connection: ConnectionProfile;
   errorDetail?: ConnectionStepErrorDetail | null;
@@ -293,6 +294,7 @@ export function WorkspaceShell() {
   const [selectedConnectionId, setSelectedConnectionId] = useState<string | null>(null);
   const [terminalTabs, setTerminalTabs] = useState<TerminalTab[]>([]);
   const terminalTabsRef = useRef<TerminalTab[]>([]);
+  const terminalWarmupCaptureStopsRef = useRef(new Map<string, () => void>());
   const [terminalDirectories, setTerminalDirectories] = useState<Record<string, string>>({});
   const [remoteFileTabs, setRemoteFileTabs] = useState<RemoteFileEditorTab[]>([]);
   const [activeRemoteFileTabId, setActiveRemoteFileTabId] = useState<string | null>(null);
@@ -1785,6 +1787,7 @@ export function WorkspaceShell() {
   async function deleteConnection(connection: ConnectionProfile) {
     await remove(connection.id);
     const closingTabIds = terminalTabs.filter((tab) => tab.connectionId === connection.id).map((tab) => tab.id);
+    closingTabIds.forEach(stopTerminalWarmupCapture);
     setTerminalDirectories((directories) => removeDirectoryState(directories, closingTabIds));
     forgetActiveConnectionTabs([connection.id]);
     setTerminalTabs((tabs) => {
@@ -1921,6 +1924,20 @@ export function WorkspaceShell() {
     });
   }
 
+  function setTerminalWarmupCaptureStop(tabId: string, stop: () => void) {
+    stopTerminalWarmupCapture(tabId);
+    terminalWarmupCaptureStopsRef.current.set(tabId, stop);
+  }
+
+  function stopTerminalWarmupCapture(tabId: string) {
+    const stop = terminalWarmupCaptureStopsRef.current.get(tabId);
+    if (!stop) {
+      return;
+    }
+    terminalWarmupCaptureStopsRef.current.delete(tabId);
+    stop();
+  }
+
   function connectingTabExists(tabId: string) {
     return terminalTabsRef.current.some((tab) => tab.id === tabId && tab.type === "connecting");
   }
@@ -1986,6 +2003,7 @@ export function WorkspaceShell() {
   }
 
   function closeTerminal(tabId: string) {
+    stopTerminalWarmupCapture(tabId);
     setTerminalDirectories((directories) => removeDirectoryState(directories, [tabId]));
     setTerminalTabs((tabs) => {
       const closingTab = tabs.find((tab) => tab.id === tabId);
@@ -2036,6 +2054,7 @@ export function WorkspaceShell() {
 
   function closeConnectionSession(connectionId: string) {
     const closingTabIds = terminalTabs.filter((tab) => tab.connectionId === connectionId).map((tab) => tab.id);
+    closingTabIds.forEach(stopTerminalWarmupCapture);
     setTerminalDirectories((directories) => removeDirectoryState(directories, closingTabIds));
     forgetActiveConnectionTabs([connectionId]);
     setTerminalTabs((tabs) => {
@@ -2106,13 +2125,22 @@ export function WorkspaceShell() {
 
     const warmupOutput: number[] = [];
     let stopWarmupCapture: (() => void) | null = null;
+    let handoffComplete = false;
 
     try {
       stopWarmupCapture = await listenTerminalOutput((event: TerminalOutputEvent) => {
         if (event.request_id !== tab.requestId) {
           return;
         }
+        if (handoffComplete) {
+          appendTerminalWarmupOutput(tab.id, event.data);
+          return;
+        }
         warmupOutput.push(...event.data);
+      });
+      setTerminalWarmupCaptureStop(tab.id, () => {
+        stopWarmupCapture?.();
+        stopWarmupCapture = null;
       });
 
       const sessionId = await terminalConnect({
@@ -2124,14 +2152,14 @@ export function WorkspaceShell() {
         rows: 24,
         username: connection.username,
       });
-      stopWarmupCapture?.();
-      stopWarmupCapture = null;
 
       if (!terminalTabExists(tab.id)) {
+        stopTerminalWarmupCapture(tab.id);
         await terminalClose(sessionId).catch(() => {});
         return;
       }
 
+      handoffComplete = true;
       setTerminalTabs((tabs) => {
         const nextTabs = tabs.map((item) =>
           item.id === tab.id
@@ -2148,8 +2176,11 @@ export function WorkspaceShell() {
         terminalTabsRef.current = nextTabs;
         return nextTabs;
       });
+      window.setTimeout(() => {
+        stopTerminalWarmupCapture(tab.id);
+      }, 3000);
     } catch (error) {
-      stopWarmupCapture?.();
+      stopTerminalWarmupCapture(tab.id);
       if (!terminalTabExists(tab.id)) {
         return;
       }
@@ -2242,12 +2273,14 @@ export function WorkspaceShell() {
   async function runConnectionStep(tabId: string, step: ConnectionStepState) {
     const runningStep: ConnectionStepState = {
       ...step,
+      activeStepIndex: 1,
       errorDetail: null,
       error: null,
       hostKey: null,
       hostKeyDecision: null,
       logs: [...step.logs, "读取连接配置", "建立网络连接"],
       oldHostKeyFingerprint: null,
+      sessionId: null,
       status: "running",
     };
     updateConnectingTabStep(tabId, runningStep);
@@ -2288,6 +2321,10 @@ export function WorkspaceShell() {
           }
           warmupOutput.push(...event.data);
         });
+        setTerminalWarmupCaptureStop(tabId, () => {
+          stopWarmupCapture?.();
+          stopWarmupCapture = null;
+        });
       }
 
       if (step.mode === "test") {
@@ -2317,21 +2354,18 @@ export function WorkspaceShell() {
         username: step.connection.username,
       });
       if (!connectingTabExists(tabId)) {
-        stopWarmupCapture?.();
-        stopWarmupCapture = null;
+        stopTerminalWarmupCapture(tabId);
         await terminalClose(sessionId).catch(() => {});
         return;
       }
       void markConnected(step.connection.id);
       handoffComplete = true;
       replaceConnectingTabWithTerminal(tabId, sessionId, [...warmupOutput], prepareRequestId);
-      const cleanupWarmupCapture = stopWarmupCapture;
-      stopWarmupCapture = null;
       window.setTimeout(() => {
-        cleanupWarmupCapture?.();
+        stopTerminalWarmupCapture(tabId);
       }, 3000);
     } catch (nextError) {
-      stopWarmupCapture?.();
+      stopTerminalWarmupCapture(tabId);
       if (!connectingTabExists(tabId)) {
         return;
       }
@@ -2362,6 +2396,10 @@ export function WorkspaceShell() {
         status: "error",
       });
     }
+  }
+
+  function retryConnectionStep(tabId: string, step: ConnectionStepState) {
+    void runConnectionStep(tabId, resetConnectionStepForRetry(step));
   }
 
   async function trustHostKeyAndRetry(tabId: string, step: ConnectionStepState) {
@@ -2825,7 +2863,7 @@ export function WorkspaceShell() {
                             privateKeyPassphrase,
                           })
                         }
-                        onRetry={() => void runConnectionStep(tab.id, tabStep)}
+                        onRetry={() => retryConnectionStep(tab.id, tabStep)}
                         onSubmitPrompt={(event) =>
                           submitPromptCredential(tab.id, tabStep, event)
                         }
@@ -2843,6 +2881,7 @@ export function WorkspaceShell() {
                         key={tab.id}
                         onCurrentDirectoryChange={updateTerminalDirectory}
                         onStatusChange={updateTabStatus}
+                        onWarmupCaptureReady={stopTerminalWarmupCapture}
                         tabId={tab.id}
                         theme={terminalColorScheme.theme}
                         title={tab.title}
@@ -3637,8 +3676,13 @@ function ConnectionStepPanel({
                       </div>
                     </dl>
                   ) : null}
-                  <button type="button" onClick={onRetry}>
-                    重试
+                  <button
+                    className="connection-step-retry-button"
+                    type="button"
+                    onClick={onRetry}
+                  >
+                    <RefreshCw className="ui-icon" aria-hidden="true" />
+                    <span>重试</span>
                   </button>
                 </div>
               ) : null}
@@ -3680,7 +3724,29 @@ function currentConnectionStepIndex(step: ConnectionStepState) {
   if (step.status === "error") {
     return connectionStepErrorIndex(step.errorDetail?.code || "");
   }
+  if (step.status === "running" && typeof step.activeStepIndex === "number") {
+    return clampConnectionStepIndex(step.activeStepIndex);
+  }
   return Math.min(Math.max(step.logs.length - 1, 1), 4);
+}
+
+function clampConnectionStepIndex(index: number) {
+  return Math.min(Math.max(Math.round(index), 0), 4);
+}
+
+function resetConnectionStepForRetry(step: ConnectionStepState): ConnectionStepState {
+  return {
+    ...step,
+    activeStepIndex: 1,
+    error: null,
+    errorDetail: null,
+    hostKey: null,
+    hostKeyDecision: null,
+    logs: step.logs[0] ? [step.logs[0]] : [],
+    oldHostKeyFingerprint: null,
+    sessionId: null,
+    status: "idle",
+  };
 }
 
 function connectionStepErrorIndex(code: string) {

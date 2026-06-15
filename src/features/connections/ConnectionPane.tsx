@@ -328,6 +328,7 @@ export function ConnectionPane({
               onClick={onOpenSettings}
             >
               <Settings className="ui-icon" aria-hidden="true" />
+              <span>设置</span>
             </button>
           </Tooltip>
         </footer>

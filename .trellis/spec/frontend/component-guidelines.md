@@ -74,16 +74,21 @@ Ant Design, Mantine, or similar libraries just to fix one modal or button.
   rail needs the same behavior as the workspace connection rail, add the shared
   `app-sidebar` class instead of creating a separate settings-only skin.
 - For the codem-style Windows material effect, prefer transparent chrome
-  surfaces over tinted sidebar panels: Mica should let `.custom-titlebar` and
-  `.app-sidebar` reveal the native/root material layer, while the adjacent
-  workspace/settings content uses an opaque panel with a subtle left boundary
-  and rounded top-left corner. This contrast is what makes the material visible.
+  surfaces over tinted sidebar panels: Mica, Acrylic, and Mica Alt should let
+  `.custom-titlebar` and `.app-sidebar` reveal the native/root material layer,
+  while the adjacent workspace/settings content uses an opaque panel with a
+  rounded top-left corner. Do not draw internal divider lines between the
+  titlebar's left chrome and the left sidebar chrome; they should read as one
+  continuous material surface. This contrast is what makes the material visible.
 - Chrome selection surfaces must stay neutral. Titlebar session tabs, terminal
   subtabs, right-pane tool tabs, settings segmented controls, and shared
   sidebar/settings navigation active rows should use `--mx-chrome-active` or
   `--mx-sidebar-active`; do not mix `--mx-primary` into these backgrounds.
   Reserve accent color for semantic controls such as toggles, accent swatches,
   focus rings, status badges, and destructive/primary actions.
+  In Mica/Acrylic/Mica Alt material modes, `--mx-chrome-active` should stay in
+  the same low-alpha neutral family as `--mx-sidebar-active` so titlebar tabs
+  read as overlays on the material layer instead of opaque pills.
 - Keep typography calm: default text should use regular or medium weight
   (`400`-`520`); reserve heavier weights (`600`+) for modal titles, critical
   counters, or rare primary emphasis.
@@ -111,6 +116,32 @@ Ant Design, Mantine, or similar libraries just to fix one modal or button.
   spacing is ever needed, it must be accounted for by FitAddon; parent-only
   padding can make FitAddon over-count rows and clip the bottom terminal line at
   some window heights.
+- When a backend terminal session is created before `TerminalPanel` mounts,
+  keep the warmup output listener alive through the handoff and append late
+  request-matched output into the tab's `warmupOutput` buffer for a short
+  grace period. Stopping the listener immediately after `terminalConnect`
+  resolves can drop the remote shell banner or prompt before the mounted xterm
+  listener is ready, leaving newly added terminals blank. Stop the warmup
+  capture as soon as the mounted `TerminalPanel` reports that its output
+  listener is ready; otherwise the same late bytes can be written once through
+  the live listener and again through `warmupOutput`.
+- `TerminalPanel` should briefly buffer startup handoff output before first
+  paint so `initialOutput` and early live events are written to xterm in one
+  ordered batch. If the batch contains a duplicated leading shell prompt before
+  a login banner / motd and the same prompt appears again at the end, strip only
+  that leading duplicate prompt line.
+- Terminal tab chrome spacing should live outside the xterm host, for example
+  as a grid row gap between `.terminal-subtabs` and `.terminal-stack`. Do not
+  add decorative padding directly to `.terminal-host` or `.terminal-panel`
+  unless the FitAddon measurement is explicitly adjusted for it.
+- Connection flow step indicators should be driven by explicit connection
+  phase state, not by the length of diagnostic logs. Retry actions must clear
+  transient error details, host-key prompts, stale session IDs, and old
+  progress logs before re-entering the running state so a network retry cannot
+  visually jump to later steps such as opening the terminal.
+- Connection failure detail cards should keep their own inner spacing. Error
+  headings, cause/suggestion/code rows, and retry actions must not sit flush
+  against the card edge, even when the surrounding step shell is compact.
 - xterm internal layers such as `.xterm-viewport` and `.xterm-screen` must use
   the same background as the terminal host. Their upstream CSS defaults to pure
   black, which creates visible right/bottom bands when FitAddon rounds the
