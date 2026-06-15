@@ -1,0 +1,723 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>mXterm 错误信息精简对比原型</title>
+  <style>
+    :root {
+      --mx-bg: #f5f6f8;
+      --mx-panel: #ffffff;
+      --mx-panel-soft: #f8f9fb;
+      --mx-line: #dde1e7;
+      --mx-line-soft: #edf0f4;
+      --mx-line-strong: #c9ced6;
+      --mx-text: #20242a;
+      --mx-muted: #69727d;
+      --mx-subtle: #8a8f96;
+      --mx-active: rgba(0, 0, 0, 0.045);
+      --mx-primary: #2563eb;
+      --mx-primary-wash: color-mix(in srgb, var(--mx-primary) 8%, #ffffff);
+      --mx-danger: #dc2626;
+      --font-ui: "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI", system-ui, sans-serif;
+      --font-mono: "Cascadia Mono", Consolas, "Microsoft YaHei UI", monospace;
+    }
+
+    * { box-sizing: border-box; }
+
+    html, body { width: 100%; height: 100%; }
+
+    body {
+      margin: 0;
+      min-width: 1180px;
+      min-height: 760px;
+      overflow: hidden;
+      color: var(--mx-text);
+      background: var(--mx-bg);
+      font-family: var(--font-ui);
+    }
+
+    button, input { font: inherit; }
+    button { cursor: pointer; }
+
+    button:focus-visible, summary:focus-visible {
+      outline: 2px solid var(--mx-primary);
+      outline-offset: 2px;
+    }
+
+    .ui-icon {
+      width: 16px;
+      height: 16px;
+      stroke: currentColor;
+      stroke-width: 1.55;
+      fill: none;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+      flex: 0 0 auto;
+    }
+
+    /* ===== 对比框架 ===== */
+    .compare-shell {
+      width: 100vw;
+      height: 100vh;
+      display: grid;
+      grid-template-rows: auto minmax(0, 1fr);
+      overflow: hidden;
+    }
+
+    .compare-bar {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      padding: 10px 18px;
+      border-bottom: 1px solid var(--mx-line);
+      background: rgba(255, 255, 255, 0.96);
+    }
+
+    .compare-title {
+      font-size: 13px;
+      font-weight: 700;
+      color: var(--mx-text);
+    }
+
+    .compare-hint {
+      font-size: 12px;
+      color: var(--mx-subtle);
+    }
+
+    .compare-seg {
+      margin-left: auto;
+      display: inline-flex;
+      gap: 2px;
+      padding: 3px;
+      border: 1px solid var(--mx-line);
+      border-radius: 9px;
+      background: var(--mx-panel-soft);
+    }
+
+    .compare-seg button {
+      border: 0;
+      border-radius: 7px;
+      padding: 6px 14px;
+      color: var(--mx-muted);
+      background: transparent;
+      font-size: 12px;
+      font-weight: 650;
+    }
+
+    .compare-seg button.active {
+      color: var(--mx-text);
+      background: var(--mx-panel);
+      box-shadow: 0 1px 2px rgba(15, 23, 42, 0.08);
+    }
+
+    .compare-stage {
+      min-height: 0;
+      display: grid;
+      overflow: hidden;
+      background:
+        radial-gradient(circle at 50% 0%, rgba(220, 38, 38, 0.05), transparent 360px),
+        linear-gradient(180deg, #ffffff, #fbfcfe 60%, #f5f7fa);
+    }
+
+    .compare-stage[data-mode="split"] {
+      grid-template-columns: 1fr 1fr;
+      gap: 1px;
+      background: var(--mx-line);
+    }
+
+    .compare-col {
+      min-width: 0;
+      min-height: 0;
+      overflow: auto;
+      padding: 22px 28px 28px;
+      background:
+        radial-gradient(circle at 50% 6%, rgba(220, 38, 38, 0.06), transparent 240px),
+        linear-gradient(180deg, #ffffff 0%, #fbfcfe 58%, #f7f9fc 100%);
+    }
+
+    .compare-col[data-mode="single"] {
+      display: none;
+    }
+
+    .compare-stage[data-mode="split"] .compare-col[data-mode="single"] {
+      display: block;
+    }
+
+    .col-tag {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      margin-bottom: 14px;
+      padding: 3px 10px;
+      border-radius: 999px;
+      font-size: 11px;
+      font-weight: 700;
+    }
+
+    .col-tag.now {
+      color: #92400e;
+      background: rgba(245, 158, 11, 0.14);
+    }
+
+    .col-tag.new {
+      color: #166534;
+      background: rgba(22, 163, 74, 0.12);
+    }
+
+    .col-tag .ui-icon { width: 13px; height: 13px; }
+
+    /* ===== prep shell（复用母版结构） ===== */
+    .prep-shell {
+      width: min(620px, 100%);
+      margin: 0 auto;
+      display: grid;
+      align-content: start;
+      gap: 12px;
+    }
+
+    .prep-header {
+      display: grid;
+      justify-items: center;
+      gap: 6px;
+      text-align: center;
+      padding: 4px 0 2px;
+    }
+
+    .connection-orb {
+      width: 50px;
+      height: 50px;
+      border: 1px solid rgba(220, 38, 38, 0.18);
+      border-radius: 999px;
+      display: grid;
+      place-items: center;
+      color: #b42318;
+      background: linear-gradient(180deg, #fff5f5, #ffffff);
+      box-shadow:
+        0 0 0 7px rgba(220, 38, 38, 0.05),
+        0 12px 32px rgba(220, 38, 38, 0.12);
+    }
+
+    .connection-orb .ui-icon { width: 24px; height: 24px; stroke-width: 1.85; }
+
+    .prep-title {
+      margin: 2px 0 0;
+      font-size: 20px;
+      font-weight: 720;
+      letter-spacing: 0;
+    }
+
+    .prep-subtitle {
+      margin: 0;
+      color: #64748b;
+      font-family: var(--font-mono);
+      font-size: 13px;
+    }
+
+    .status-pill {
+      min-height: 22px;
+      border: 1px solid rgba(220, 38, 38, 0.16);
+      border-radius: 999px;
+      display: inline-flex;
+      align-items: center;
+      padding: 0 10px;
+      color: #b42318;
+      background: rgba(254, 242, 242, 0.82);
+      font-size: 12px;
+      font-weight: 650;
+    }
+
+    /* stepper 弱化版（失败态，已完成步骤收缩） */
+    .stepper {
+      display: grid;
+      border-top: 1px solid var(--mx-line-soft);
+      border-bottom: 1px solid var(--mx-line-soft);
+    }
+
+    .step {
+      min-height: 44px;
+      display: grid;
+      grid-template-columns: 42px minmax(0, 1fr) 60px;
+      align-items: center;
+      gap: 10px;
+      padding: 4px 0;
+      border-bottom: 1px solid var(--mx-line-soft);
+    }
+
+    .step:last-child { border-bottom: 0; }
+
+    .step.done {
+      min-height: 30px;
+      color: var(--mx-subtle);
+    }
+
+    .step.done .step-title {
+      font-size: 13px;
+      font-weight: 500;
+      color: var(--mx-subtle);
+    }
+
+    .step.done .step-caption,
+    .step.done .step-time { display: none; }
+
+    .step.error .step-title { color: #b42318; }
+
+    .step-marker {
+      width: 28px;
+      height: 28px;
+      border: 0;
+      border-radius: 999px;
+      display: grid;
+      place-items: center;
+      justify-self: start;
+      color: #64748b;
+      background: #eef2f7;
+      font-family: var(--font-mono);
+      font-size: 12px;
+      font-weight: 720;
+    }
+
+    .step.done .step-marker {
+      width: 22px;
+      height: 22px;
+      color: #16a34a;
+      background: rgba(22, 163, 74, 0.12);
+    }
+
+    .step.error .step-marker {
+      color: #b42318;
+      background: rgba(254, 242, 242, 0.94);
+      box-shadow: inset 0 0 0 1px rgba(220, 38, 38, 0.16);
+    }
+
+    .step-marker .ui-icon { width: 14px; height: 14px; stroke-width: 2.1; }
+    .step.done .step-marker .ui-icon { width: 12px; height: 12px; }
+
+    .step-title {
+      font-size: 14px;
+      font-weight: 650;
+    }
+
+    .step-caption {
+      display: block;
+      margin-top: 2px;
+      color: #64748b;
+      font-size: 12px;
+    }
+
+    .step-time {
+      justify-self: end;
+      color: #64748b;
+      font-size: 12px;
+    }
+
+    .step.error .step-time { color: #b42318; }
+
+    /* ===== 现状：三行等权网格 ===== */
+    .err-now {
+      border: 1px solid rgba(220, 38, 38, 0.14);
+      border-radius: 9px;
+      display: grid;
+      gap: 10px;
+      padding: 14px 16px 12px;
+      background: rgba(255, 247, 247, 0.72);
+    }
+
+    .err-now > header {
+      display: grid;
+      grid-template-columns: 22px minmax(0, 1fr);
+      align-items: start;
+      gap: 8px;
+    }
+
+    .err-now header > .ui-icon {
+      width: 22px;
+      height: 22px;
+      border: 1px solid rgba(159, 29, 29, 0.16);
+      border-radius: 8px;
+      padding: 4px;
+      color: #9f1d1d;
+      background: #ffffff;
+    }
+
+    .err-now header span {
+      min-width: 0;
+      display: grid;
+      gap: 2px;
+    }
+
+    .err-now header strong {
+      color: #7f1d1d;
+      font-size: 14px;
+      font-weight: 600;
+    }
+
+    .err-now header small {
+      color: #9f1d1d;
+      font-size: 12px;
+    }
+
+    .err-now dl {
+      margin: 0;
+      border: 1px solid rgba(159, 29, 29, 0.12);
+      border-radius: 7px;
+      overflow: hidden;
+      background: rgba(255, 255, 255, 0.72);
+    }
+
+    .err-now dl div {
+      display: grid;
+      grid-template-columns: 76px minmax(0, 1fr);
+      gap: 10px;
+      padding: 7px 12px;
+      border-bottom: 1px solid rgba(159, 29, 29, 0.09);
+      font-size: 12px;
+      line-height: 1.35;
+    }
+
+    .err-now dl div:last-child { border-bottom: 0; }
+
+    .err-now dt {
+      margin: 0;
+      color: #9f1d1d;
+      font-weight: 560;
+    }
+
+    .err-now dd {
+      margin: 0;
+      min-width: 0;
+      color: var(--mx-text);
+      overflow-wrap: anywhere;
+    }
+
+    .err-now dl div:last-child dd {
+      font-family: var(--font-mono);
+      white-space: nowrap;
+      overflow: auto;
+    }
+
+    .retry-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-top: 2px;
+    }
+
+    .retry-btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      height: 30px;
+      border: 1px solid rgba(159, 29, 29, 0.18);
+      border-radius: 7px;
+      padding: 0 13px;
+      color: #9f1d1d;
+      background: rgba(255, 255, 255, 0.74);
+      font-size: 13px;
+      font-weight: 500;
+    }
+
+    .retry-btn .ui-icon { width: 14px; height: 14px; stroke-width: 2; }
+
+    .retry-btn:hover {
+      border-color: rgba(159, 29, 29, 0.3);
+      color: #7f1d1d;
+      background: #ffffff;
+    }
+
+    /* ===== 精简版：建议优先 + 技术详情折叠 ===== */
+    .err-new {
+      border: 1px solid rgba(220, 38, 38, 0.14);
+      border-radius: 9px;
+      display: grid;
+      gap: 12px;
+      padding: 16px 18px 14px;
+      background: rgba(255, 247, 247, 0.72);
+    }
+
+    .err-new-head {
+      display: grid;
+      grid-template-columns: 22px minmax(0, 1fr);
+      align-items: start;
+      gap: 9px;
+    }
+
+    .err-new-head > .ui-icon {
+      width: 22px;
+      height: 22px;
+      border: 1px solid rgba(159, 29, 29, 0.16);
+      border-radius: 8px;
+      padding: 4px;
+      color: #9f1d1d;
+      background: #ffffff;
+    }
+
+    .err-new-head strong {
+      display: block;
+      color: #7f1d1d;
+      font-size: 15px;
+      font-weight: 650;
+      line-height: 1.3;
+    }
+
+    .err-new-tip {
+      color: #475569;
+      font-size: 13px;
+      line-height: 1.55;
+    }
+
+    .err-new-actions {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .err-detail {
+      border-top: 1px solid rgba(159, 29, 29, 0.1);
+      padding-top: 10px;
+      display: grid;
+      gap: 6px;
+    }
+
+    .err-detail-label {
+      color: var(--mx-subtle);
+      font-size: 12px;
+      font-weight: 560;
+    }
+
+    .err-detail code {
+      min-width: 0;
+      display: block;
+      border: 1px solid var(--mx-line-soft);
+      border-radius: 7px;
+      padding: 8px 10px;
+      color: #475569;
+      background: rgba(255, 255, 255, 0.72);
+      font-family: var(--font-mono);
+      font-size: 12px;
+      line-height: 1.55;
+      overflow-wrap: anywhere;
+      word-break: break-word;
+    }
+
+    /* 对比说明卡 */
+    .delta-card {
+      margin: 2px auto 0;
+      width: min(620px, 100%);
+      border: 1px dashed var(--mx-line-strong);
+      border-radius: 9px;
+      padding: 12px 14px;
+      background: rgba(255, 255, 255, 0.6);
+      font-size: 12px;
+      line-height: 1.6;
+      color: var(--mx-muted);
+    }
+
+    .delta-card b { color: var(--mx-text); }
+
+    .delta-card li { margin: 2px 0; }
+    .delta-card ul { margin: 6px 0 0; padding-left: 18px; }
+  </style>
+</head>
+<body>
+  <div class="compare-shell">
+    <div class="compare-bar">
+      <span class="compare-title">连接失败 · 错误信息精简对比</span>
+      <span class="compare-hint">同一失败场景，左为现状，右为精简方案。右侧卡可点击展开“技术详情”。</span>
+      <div class="compare-seg" role="tablist" aria-label="查看模式">
+        <button type="button" data-mode="split" class="active">并排对比</button>
+        <button type="button" data-mode="now">仅现状</button>
+        <button type="button" data-mode="new">仅精简版</button>
+      </div>
+    </div>
+
+    <div class="compare-stage" data-mode="split">
+      <!-- ============ 现状 ============ -->
+      <div class="compare-col" data-mode="now">
+        <span class="col-tag now">
+          <svg class="ui-icon" viewBox="0 0 16 16"><path d="M8 3.2 13 12H3z"/><path d="M8 6.3v2.3"/><path d="M8 10.5h.01"/></svg>
+          现状（信息过多）
+        </span>
+
+        <div class="prep-shell">
+          <header class="prep-header">
+            <div class="connection-orb" aria-hidden="true">
+              <svg class="ui-icon" viewBox="0 0 16 16"><path d="M8 3.2 13 12H3z"/><path d="M8 6.2v2.6"/><path d="M8 10.8h.01"/></svg>
+            </div>
+            <h1 class="prep-title">8.211.134.178</h1>
+            <p class="prep-subtitle">root@8.211.134.178:22</p>
+            <span class="status-pill">连接失败</span>
+          </header>
+
+          <section class="stepper" aria-label="连接步骤">
+            <div class="step done">
+              <span class="step-marker"><svg class="ui-icon" viewBox="0 0 16 16"><path d="m4 8.2 2.4 2.4L12 4.9"/></svg></span>
+              <span><span class="step-title">读取配置</span></span>
+            </div>
+            <div class="step error">
+              <span class="step-marker"><svg class="ui-icon" viewBox="0 0 16 16"><path d="M8 3.2 13 12H3z"/><path d="M8 6.3v2.3"/><path d="M8 10.5h.01"/></svg></span>
+              <span>
+                <span class="step-title">网络连接</span>
+                <span class="step-caption">TCP 握手 8.211.134.178:22</span>
+              </span>
+              <span class="step-time">失败</span>
+            </div>
+            <div class="step">
+              <span class="step-marker">3</span>
+              <span><span class="step-title">主机密钥验证</span></span>
+            </div>
+            <div class="step">
+              <span class="step-marker">4</span>
+              <span><span class="step-title">用户认证</span></span>
+            </div>
+            <div class="step">
+              <span class="step-marker">5</span>
+              <span><span class="step-title">打开终端</span></span>
+            </div>
+          </section>
+
+          <!-- 现状错误块：标题概括 + 副标题stage + 三行等权网格 -->
+          <section class="err-now" aria-label="连接失败详情">
+            <header>
+              <svg class="ui-icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 3.2 13 12H3z"/><path d="M8 6.3v2.3"/><path d="M8 10.5h.01"/></svg>
+              <span>
+                <strong>SSH 连接失败。</strong>
+                <small>网络连接阶段</small>
+              </span>
+            </header>
+            <dl>
+              <div><dt>底层原因</dt><dd>连接方在一段时间后没有正确答复，或连接的主机没有反应导致连接尝试失败。</dd></div>
+              <div><dt>建议处理</dt><dd>检查主机 IP、端口、防火墙和网络连通性；确认目标 SSH 服务可以从本机访问。</dd></div>
+              <div><dt>错误码</dt><dd>terminal_connect_failed</dd></div>
+            </dl>
+            <div class="retry-row">
+              <button class="retry-btn" type="button">
+                <svg class="ui-icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M13 8a5 5 0 1 1-1.45-3.55"/><path d="M13 3.7v3.2H9.8"/></svg>
+                <span>重试</span>
+              </button>
+            </div>
+          </section>
+        </div>
+
+        <div class="delta-card">
+          <b>现状问题</b>
+          <ul>
+            <li>概括标题（SSH 连接失败）+ 副标题（网络连接阶段）已被左侧 stepper 标红复述</li>
+            <li>“底层原因”原文 与 概括标题 表达同一件事，只是中英重复</li>
+            <li>“错误码”对普通用户无意义，却与建议处理等权并列</li>
+            <li>三行等高网格，视觉上无主次，眼睛平均分配</li>
+          </ul>
+        </div>
+      </div>
+
+      <!-- ============ 精简版 ============ -->
+      <div class="compare-col" data-mode="new">
+        <span class="col-tag new">
+          <svg class="ui-icon" viewBox="0 0 16 16"><path d="m4 8.2 2.4 2.4L12 4.9"/></svg>
+          精简方案（建议优先）
+        </span>
+
+        <div class="prep-shell">
+          <header class="prep-header">
+            <div class="connection-orb" aria-hidden="true">
+              <svg class="ui-icon" viewBox="0 0 16 16"><path d="M8 3.2 13 12H3z"/><path d="M8 6.2v2.6"/><path d="M8 10.8h.01"/></svg>
+            </div>
+            <h1 class="prep-title">8.211.134.178</h1>
+            <p class="prep-subtitle">root@8.211.134.178:22</p>
+            <span class="status-pill">连接失败</span>
+          </header>
+
+          <section class="stepper" aria-label="连接步骤">
+            <div class="step done">
+              <span class="step-marker"><svg class="ui-icon" viewBox="0 0 16 16"><path d="m4 8.2 2.4 2.4L12 4.9"/></svg></span>
+              <span><span class="step-title">读取配置</span></span>
+            </div>
+            <div class="step error">
+              <span class="step-marker"><svg class="ui-icon" viewBox="0 0 16 16"><path d="M8 3.2 13 12H3z"/><path d="M8 6.3v2.3"/><path d="M8 10.5h.01"/></svg></span>
+              <span>
+                <span class="step-title">网络连接</span>
+                <span class="step-caption">TCP 握手 8.211.134.178:22</span>
+              </span>
+              <span class="step-time">失败</span>
+            </div>
+            <div class="step">
+              <span class="step-marker">3</span>
+              <span><span class="step-title">主机密钥验证</span></span>
+            </div>
+            <div class="step">
+              <span class="step-marker">4</span>
+              <span><span class="step-title">用户认证</span></span>
+            </div>
+            <div class="step">
+              <span class="step-marker">5</span>
+              <span><span class="step-title">打开终端</span></span>
+            </div>
+          </section>
+
+          <!-- 精简错误块：结论 + 建议正文 + 重试；技术详情折叠 -->
+          <section class="err-new" aria-label="连接失败详情">
+            <div class="err-new-head">
+              <svg class="ui-icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 3.2 13 12H3z"/><path d="M8 6.3v2.3"/><path d="M8 10.5h.01"/></svg>
+              <strong>无法连接到目标主机</strong>
+            </div>
+            <p class="err-new-tip">目标主机在超时时间内没有响应。请确认 SSH 服务已启动、端口和防火墙配置正确，然后重试。</p>
+            <div class="err-new-actions">
+              <button class="retry-btn" type="button">
+                <svg class="ui-icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M13 8a5 5 0 1 1-1.45-3.55"/><path d="M13 3.7v3.2H9.8"/></svg>
+                <span>重试</span>
+              </button>
+              <button class="retry-btn" type="button" style="border-color: var(--mx-line); color: var(--mx-muted);">
+                <svg class="ui-icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M4.2 11.8h2.1l7-7-2.1-2.1-7 7z"/><path d="M9.8 3.9l2.1 2.1"/></svg>
+                <span>编辑连接</span>
+              </button>
+            </div>
+
+            <div class="err-detail">
+              <span class="err-detail-label">详情</span>
+              <code>连接方在一段时间后没有正确答复，或连接的主机没有反应导致连接尝试失败。</code>
+            </div>
+          </section>
+        </div>
+
+        <div class="delta-card">
+          <b>精简要点</b>
+          <ul>
+            <li>主体只剩：结论（无法连接）+ 一句建议 + 重试/编辑。一眼可读</li>
+            <li>去掉与 stepper 重复的 stage 副标题（哪步失败看左侧标红即可）</li>
+            <li>“建议处理”升为正文，不再是和原文/错误码并列的一行</li>
+            <li>原始信息平铺在“详情”下，不再折叠、不再叫“技术详情”</li>
+            <li>错误码不再展示（需要时从“连接日志”或复制错误信息获取）</li>
+            <li>“编辑连接”与“重试”并列，失败时给两条出路</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const stage = document.querySelector(".compare-stage");
+    const segButtons = document.querySelectorAll(".compare-seg button");
+    const cols = document.querySelectorAll(".compare-col");
+
+    segButtons.forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const mode = btn.getAttribute("data-mode");
+        segButtons.forEach((item) => item.classList.toggle("active", item === btn));
+
+        if (mode === "split") {
+          stage.setAttribute("data-mode", "split");
+          stage.style.gridTemplateColumns = "1fr 1fr";
+          cols.forEach((col) => { col.style.display = ""; });
+        } else {
+          stage.setAttribute("data-mode", mode);
+          stage.style.gridTemplateColumns = "1fr";
+          cols.forEach((col) => {
+            const colMode = col.getAttribute("data-mode");
+            col.style.display = colMode === mode ? "" : "none";
+          });
+        }
+      });
+    });
+  </script>
+</body>
+</html>

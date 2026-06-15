@@ -1292,13 +1292,13 @@ button {
   min-width: 0;
   display: flex;
   align-items: center;
-  flex-wrap: wrap;
   gap: 8px;
 }
 
 .terminal-scheme-search {
-  min-width: 220px;
-  width: min(360px, 100%);
+  min-width: 0;
+  flex: 1;
+  max-width: 360px;
   height: 32px;
   border: 1px solid var(--mx-line);
   border-radius: 8px;
@@ -1349,6 +1349,11 @@ button {
 .terminal-scheme-list {
   display: grid;
   gap: 8px;
+}
+
+.terminal-scheme-sentinel {
+  grid-column: 1 / -1;
+  height: 1px;
 }
 
 .terminal-scheme-card {
@@ -2498,14 +2503,10 @@ button {
   min-width: 0;
   min-height: 0;
   display: grid;
-  align-items: center;
+  align-items: start;
   justify-items: center;
-  overflow: auto;
+  overflow-y: auto;
   padding: 14px 24px 16px;
-}
-
-.connection-step-page[data-step-status="error"] .connection-step-body {
-  overflow: hidden;
 }
 
 .connection-step-shell {
@@ -2523,7 +2524,7 @@ button {
   display: grid;
   justify-items: center;
   gap: 5px;
-  padding: 0 84px;
+  padding: 0 48px;
   text-align: center;
 }
 
@@ -2729,6 +2730,25 @@ button {
   background: rgb(240 253 244 / 78%);
 }
 
+.connection-step-page[data-step-status="running"] .connection-step-list li.done,
+.connection-step-page[data-step-status="error"] .connection-step-list li.done {
+  min-height: 32px;
+  color: var(--mx-subtle);
+}
+
+.connection-step-page[data-step-status="running"] .connection-step-list li.done small,
+.connection-step-page[data-step-status="running"] .connection-step-list li.done em,
+.connection-step-page[data-step-status="error"] .connection-step-list li.done small,
+.connection-step-page[data-step-status="error"] .connection-step-list li.done em {
+  display: none;
+}
+
+.connection-step-page[data-step-status="running"] .connection-step-list li.done strong,
+.connection-step-page[data-step-status="error"] .connection-step-list li.done strong {
+  font-size: 13px;
+  font-weight: 500;
+}
+
 .connection-step-list li.active {
   color: var(--mx-text);
 }
@@ -2925,8 +2945,8 @@ button {
 .connection-step-error header {
   display: grid;
   grid-template-columns: 22px minmax(0, 1fr);
-  align-items: start;
-  gap: 8px;
+  align-items: center;
+  gap: 9px;
 }
 
 .connection-step-error header > .ui-icon {
@@ -2939,80 +2959,64 @@ button {
   background: #ffffff;
 }
 
-.connection-step-error header span {
-  min-width: 0;
-  display: grid;
-  gap: 2px;
-}
-
 .connection-step-error header strong {
-  color: #7f1d1d;
-  font-size: 14px;
-  font-weight: 600;
-}
-
-.connection-step-error header small {
-  color: #9f1d1d;
-  font-size: 12px;
-}
-
-.connection-step-error dl {
-  margin: 0;
-  border: 1px solid rgb(159 29 29 / 12%);
-  border-radius: 7px;
-  overflow: hidden;
-  background: rgb(255 255 255 / 72%);
-}
-
-.connection-step-error dl div {
-  display: grid;
-  grid-template-columns: 76px minmax(0, 1fr);
-  gap: 10px;
-  padding: 7px 12px;
-  border-bottom: 1px solid rgb(159 29 29 / 9%);
-}
-
-.connection-step-error dl div:last-child {
-  border-bottom: 0;
-}
-
-.connection-step-error dt,
-.connection-step-error dd {
-  margin: 0;
-  font-family: var(--font-ui);
-  font-size: 12px;
-  line-height: 1.35;
-  letter-spacing: 0;
-}
-
-.connection-step-error dt {
-  color: #9f1d1d;
-  font-weight: 560;
-}
-
-.connection-step-error dd {
   min-width: 0;
-  color: var(--mx-text);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  color: #7f1d1d;
+  font-size: 15px;
+  font-weight: 650;
+  line-height: 1.3;
 }
 
-.connection-step-error dl div:last-child dd {
-  font-family: var(--font-mono);
+.connection-step-error-tip {
+  margin: 0;
+  color: #475569;
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.connection-step-error-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
 }
 
 .connection-step-error .connection-step-retry-button {
-  justify-self: start;
-  margin-top: 2px;
-  height: 28px;
-  min-height: 28px;
+  height: 30px;
+  min-height: 30px;
   border-color: rgb(159 29 29 / 18%);
   color: #9f1d1d;
   background: rgb(255 255 255 / 74%);
   box-shadow:
     0 1px 2px rgb(15 23 42 / 5%),
     inset 0 0 0 1px rgb(255 255 255 / 54%);
+}
+
+.connection-step-error .connection-step-secondary-button {
+  height: 30px;
+  min-height: 30px;
+  border: 1px solid var(--mx-line);
+  border-radius: 7px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 11px;
+  color: var(--mx-muted);
+  background: var(--mx-panel);
+  box-shadow: 0 1px 2px rgb(15 23 42 / 5%);
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.connection-step-error .connection-step-secondary-button:hover {
+  border-color: var(--mx-line-strong);
+  color: var(--mx-text);
+  background: #f7f9fc;
+}
+
+.connection-step-error .connection-step-secondary-button .ui-icon {
+  width: 14px;
+  height: 14px;
+  stroke-width: 2;
 }
 
 .connection-step-error .connection-step-retry-button .ui-icon {
@@ -4420,6 +4424,7 @@ button {
 }
 
 .terminal-host {
+  --mx-terminal-content-inset-x: 3px;
   min-height: 0;
   overflow: hidden;
   background: var(--mx-terminal);
@@ -4433,6 +4438,11 @@ button {
 .terminal-host .xterm-viewport,
 .terminal-host .xterm-screen {
   background-color: var(--mx-terminal) !important;
+}
+
+.terminal-host .xterm-screen {
+  box-sizing: border-box;
+  padding-left: var(--mx-terminal-content-inset-x);
 }
 
 .terminal-host .xterm-viewport {
@@ -5812,7 +5822,6 @@ button {
   .remote-file-dialog-error,
   .file-panel-error,
   .transfer-error,
-  .connection-step-error,
   .connection-dialog-test-result.error
 ) {
   color: color-mix(in srgb, var(--mx-danger) 86%, var(--mx-text));
@@ -6113,10 +6122,15 @@ body {
   grid-template-columns: minmax(260px, var(--left-pane-custom-width, 336px)) minmax(0, 1fr);
 }
 
-.main-workbench,
-.settings-content {
+.main-workbench {
   border-top-left-radius: 12px;
   overflow: hidden;
+}
+
+.settings-content {
+  border-top-left-radius: 12px;
+  overflow-x: hidden;
+  overflow-y: auto;
 }
 
 .connection-home,
@@ -6195,7 +6209,7 @@ body {
   opacity: 0.72;
 }
 
-.app-sidebar > * {
+.app-sidebar > :not(.connection-drag-preview) {
   position: relative;
   z-index: 1;
 }

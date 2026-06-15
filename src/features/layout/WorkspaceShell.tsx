@@ -2103,8 +2103,7 @@ export function WorkspaceShell() {
     });
   }
 
-  function openTerminalInActiveConnection() {
-    if (activeConnection) {
+  function openTerminalInActiveConnection() {    if (activeConnection) {
       const tab = buildDirectTerminalTab(terminalTabsRef.current, activeConnection);
       setTerminalTabs((tabs) => {
         const nextTabs = [...tabs, tab];
@@ -2865,7 +2864,6 @@ export function WorkspaceShell() {
                         active={!showingHome && tab.id === activeTabId}
                         onCancel={() => closeTerminal(tab.id)}
                         onEdit={(connection) => {
-                          closeTerminal(tab.id);
                           editConnection(connection);
                         }}
                         onPromptAuthKindChange={(authKind) =>
@@ -3502,14 +3500,16 @@ function ConnectionStepPanel({
       <div className="connection-step-body">
         <section className="connection-step-shell">
           <div className="connection-step-actions">
-            <button
-              type="button"
-              aria-label="编辑连接"
-              onClick={() => onEdit(step.connection)}
-            >
-              <Pencil className="ui-icon" aria-hidden="true" />
-              <span>编辑</span>
-            </button>
+            {step.status === "success" ? (
+              <button
+                type="button"
+                aria-label="编辑连接"
+                onClick={() => onEdit(step.connection)}
+              >
+                <Pencil className="ui-icon" aria-hidden="true" />
+                <span>编辑</span>
+              </button>
+            ) : null}
             <button type="button" aria-label={closeLabel} onClick={onCancel}>
               <X className="ui-icon" aria-hidden="true" />
               <span>{closeLabel}</span>
@@ -3528,7 +3528,7 @@ function ConnectionStepPanel({
             </div>
             <h2>{step.connection.name}</h2>
             <p>{formatConnectionAddress(step.connection)}</p>
-            <span className={`connection-step-state ${step.status}`}>
+            <span className={`connection-step-state ${step.status}`} aria-live="polite">
               {connectionStepStatusTitle(step)}
             </span>
           </header>
@@ -3677,38 +3677,34 @@ function ConnectionStepPanel({
               ) : null}
 
               {step.status === "error" ? (
-                <div className="connection-step-error">
+                <div className="connection-step-error" role="alert">
                   <header>
                     <AlertTriangle className="ui-icon" aria-hidden="true" />
-                    <span>
-                      <strong>{step.errorDetail?.message || step.error || "连接失败"}</strong>
-                      <small>{step.errorDetail?.stage || "连接过程未完成"}</small>
-                    </span>
+                    <strong>
+                      {step.errorDetail?.rawMessage || step.errorDetail?.message || step.error || "连接失败"}
+                    </strong>
                   </header>
-                  {step.errorDetail?.rawMessage ? (
-                    <dl>
-                      <div>
-                        <dt>底层原因</dt>
-                        <dd>{step.errorDetail.rawMessage}</dd>
-                      </div>
-                      <div>
-                        <dt>建议处理</dt>
-                        <dd>{step.errorDetail.suggestion}</dd>
-                      </div>
-                      <div>
-                        <dt>错误码</dt>
-                        <dd>{step.errorDetail.code}</dd>
-                      </div>
-                    </dl>
+                  {step.errorDetail?.suggestion ? (
+                    <p className="connection-step-error-tip">{step.errorDetail.suggestion}</p>
                   ) : null}
-                  <button
-                    className="connection-step-retry-button"
-                    type="button"
-                    onClick={onRetry}
-                  >
-                    <RefreshCw className="ui-icon" aria-hidden="true" />
-                    <span>重试</span>
-                  </button>
+                  <div className="connection-step-error-actions">
+                    <button
+                      className="connection-step-retry-button"
+                      type="button"
+                      onClick={onRetry}
+                    >
+                      <RefreshCw className="ui-icon" aria-hidden="true" />
+                      <span>重试</span>
+                    </button>
+                    <button
+                      className="connection-step-secondary-button"
+                      type="button"
+                      onClick={() => onEdit(step.connection)}
+                    >
+                      <Pencil className="ui-icon" aria-hidden="true" />
+                      <span>编辑连接</span>
+                    </button>
+                  </div>
                 </div>
               ) : null}
             </section>
