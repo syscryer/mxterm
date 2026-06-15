@@ -1253,7 +1253,7 @@ function TerminalThemeSettingsSection({
         </span>
       </div>
 
-      <div className="terminal-scheme-list" aria-label="终端配色方案">
+      <div ref={schemeListRef} className="terminal-scheme-list" aria-label="终端配色方案">
         {filteredTerminalColorSchemes.length > 0 ? (
           <>
             {filteredTerminalColorSchemes.slice(0, visibleSchemeCount).map((scheme) => (
