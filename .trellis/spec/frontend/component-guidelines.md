@@ -217,3 +217,8 @@ Ant Design, Mantine, or similar libraries just to fix one modal or button.
 - Do not spread window material backgrounds across every card, table, dialog, or
   settings panel. The material mode should be visible in the app chrome, while
   dense work surfaces stay opaque enough to read.
+- Do not let broad chrome/sidebar child selectors override overlay mechanics.
+  Rules such as `.app-sidebar > * { position: relative; z-index: 1; }` must
+  exclude fixed drag previews, floating overlays, or portal-like layers; otherwise
+  previews can become normal in-flow children and get clipped by sidebar
+  `overflow: hidden`.

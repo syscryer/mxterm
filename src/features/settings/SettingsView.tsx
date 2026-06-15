@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type CSSProperties, type FormEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type FormEvent } from "react";
 import {
   ArrowLeft,
   Check,
@@ -1185,6 +1185,32 @@ function TerminalThemeSettingsSection({
     });
   }, [terminalSchemeQuery, terminalSchemeTone]);
 
+  const SCHEME_PAGE_SIZE = 60;
+  const [visibleSchemeCount, setVisibleSchemeCount] = useState(SCHEME_PAGE_SIZE);
+  const schemeListRef = useRef<HTMLDivElement | null>(null);
+  const schemeSentinelRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    setVisibleSchemeCount(SCHEME_PAGE_SIZE);
+  }, [terminalSchemeQuery, terminalSchemeTone]);
+
+  useEffect(() => {
+    const total = filteredTerminalColorSchemes.length;
+    if (visibleSchemeCount >= total) return;
+    const node = schemeSentinelRef.current;
+    if (!node) return;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries[0]?.isIntersecting) {
+          setVisibleSchemeCount((prev) => Math.min(prev + SCHEME_PAGE_SIZE, total));
+        }
+      },
+      { root: schemeListRef.current?.closest(".settings-content") ?? null, rootMargin: "400px" },
+    );
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, [visibleSchemeCount, filteredTerminalColorSchemes.length]);
+
   return (
     <section className="settings-page-section terminal-theme-section">
       <header className="settings-section-head settings-section-head-row">
@@ -1229,7 +1255,8 @@ function TerminalThemeSettingsSection({
 
       <div className="terminal-scheme-list" aria-label="终端配色方案">
         {filteredTerminalColorSchemes.length > 0 ? (
-          filteredTerminalColorSchemes.map((scheme) => (
+          <>
+            {filteredTerminalColorSchemes.slice(0, visibleSchemeCount).map((scheme) => (
             <button
               className={`terminal-scheme-card ${
                 settings.scheme === scheme.id ? "active" : ""
@@ -1265,7 +1292,11 @@ function TerminalThemeSettingsSection({
                 </span>
               ) : null}
             </button>
-          ))
+          ))}
+          {visibleSchemeCount < filteredTerminalColorSchemes.length ? (
+            <div ref={schemeSentinelRef} className="terminal-scheme-sentinel" aria-hidden="true" />
+          ) : null}
+          </>
         ) : (
           <div className="terminal-scheme-empty" role="status">
             未找到匹配的配色方案。
