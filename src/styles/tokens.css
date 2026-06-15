@@ -91,6 +91,7 @@
   --mx-material-panel-soft: rgb(248 250 252 / 76%);
   --mx-chrome-fill: rgb(236 240 246 / 0%);
   --mx-chrome-line: rgb(86 98 118 / 10%);
+  --mx-chrome-active: rgb(0 0 0 / 5%);
   --mx-chrome-glow: rgb(255 255 255 / 12%);
   --mx-chrome-blur: 60px;
   --mx-sidebar-surface: transparent;
@@ -109,8 +110,9 @@
     var(--mx-bg);
   --mx-material-panel: rgb(255 255 255 / 76%);
   --mx-material-panel-soft: rgb(248 250 252 / 66%);
-  --mx-chrome-fill: rgb(238 242 248 / 62%);
+  --mx-chrome-fill: rgb(238 242 248 / 0%);
   --mx-chrome-line: rgb(86 98 118 / 14%);
+  --mx-chrome-active: rgb(0 0 0 / 5%);
   --mx-chrome-glow: rgb(255 255 255 / 18%);
   --mx-chrome-blur: 72px;
   --mx-sidebar-surface: transparent;
@@ -129,8 +131,9 @@
     var(--mx-bg);
   --mx-material-panel: rgb(255 255 255 / 82%);
   --mx-material-panel-soft: rgb(245 248 252 / 72%);
-  --mx-chrome-fill: rgb(232 238 246 / 18%);
+  --mx-chrome-fill: rgb(232 238 246 / 0%);
   --mx-chrome-line: rgb(86 98 118 / 12%);
+  --mx-chrome-active: rgb(0 0 0 / 5%);
   --mx-chrome-glow: rgb(255 255 255 / 10%);
   --mx-chrome-blur: 64px;
   --mx-sidebar-surface: transparent;
@@ -200,6 +203,7 @@
 .app-shell[data-theme-mode="dark"][data-window-material="mica"] {
   --mx-chrome-fill: rgb(28 28 28 / 0%);
   --mx-chrome-line: rgb(255 255 255 / 7%);
+  --mx-chrome-active: rgb(255 255 255 / 7%);
   --mx-chrome-glow: rgb(255 255 255 / 5%);
   --mx-chrome-blur: 60px;
   --mx-sidebar-surface: transparent;
@@ -212,8 +216,9 @@
 }
 
 .app-shell[data-theme-mode="dark"][data-window-material="acrylic"] {
-  --mx-chrome-fill: rgb(30 31 34 / 64%);
+  --mx-chrome-fill: rgb(30 31 34 / 0%);
   --mx-chrome-line: rgb(255 255 255 / 8%);
+  --mx-chrome-active: rgb(255 255 255 / 7%);
   --mx-chrome-glow: rgb(255 255 255 / 6%);
   --mx-chrome-blur: 72px;
   --mx-sidebar-surface: transparent;
@@ -226,8 +231,9 @@
 }
 
 .app-shell[data-theme-mode="dark"][data-window-material="micaAlt"] {
-  --mx-chrome-fill: rgb(28 29 32 / 20%);
+  --mx-chrome-fill: rgb(28 29 32 / 0%);
   --mx-chrome-line: rgb(255 255 255 / 7%);
+  --mx-chrome-active: rgb(255 255 255 / 7%);
   --mx-chrome-glow: rgb(255 255 255 / 4%);
   --mx-chrome-blur: 64px;
   --mx-sidebar-surface: transparent;
@@ -298,6 +304,7 @@
   .app-shell[data-theme-mode="system"][data-window-material="mica"] {
     --mx-chrome-fill: rgb(28 28 28 / 0%);
     --mx-chrome-line: rgb(255 255 255 / 7%);
+    --mx-chrome-active: rgb(255 255 255 / 7%);
     --mx-chrome-glow: rgb(255 255 255 / 5%);
     --mx-chrome-blur: 60px;
     --mx-sidebar-surface: transparent;
@@ -310,8 +317,9 @@
   }
 
   .app-shell[data-theme-mode="system"][data-window-material="acrylic"] {
-    --mx-chrome-fill: rgb(30 31 34 / 64%);
+    --mx-chrome-fill: rgb(30 31 34 / 0%);
     --mx-chrome-line: rgb(255 255 255 / 8%);
+    --mx-chrome-active: rgb(255 255 255 / 7%);
     --mx-chrome-glow: rgb(255 255 255 / 6%);
     --mx-chrome-blur: 72px;
     --mx-sidebar-surface: transparent;
@@ -324,8 +332,9 @@
   }
 
   .app-shell[data-theme-mode="system"][data-window-material="micaAlt"] {
-    --mx-chrome-fill: rgb(28 29 32 / 20%);
+    --mx-chrome-fill: rgb(28 29 32 / 0%);
     --mx-chrome-line: rgb(255 255 255 / 7%);
+    --mx-chrome-active: rgb(255 255 255 / 7%);
     --mx-chrome-glow: rgb(255 255 255 / 4%);
     --mx-chrome-blur: 64px;
     --mx-sidebar-surface: transparent;

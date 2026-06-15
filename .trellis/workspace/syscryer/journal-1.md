@@ -438,3 +438,328 @@ User requested committing and pushing the codem material chrome follow-up. Creat
 ### Next Steps
 
 - None - task complete
+
+
+## Session 14: Fix blank same-connection terminal handoff
+
+**Date**: 2026-06-14
+**Task**: Fix blank same-connection terminal handoff
+**Branch**: `master`
+
+### Summary
+
+Investigated user report that clicking add terminal creates a blank same-connection terminal. Root cause: runDirectTerminalTab stopped its warmup terminal output listener immediately after terminalConnect resolved, before TerminalPanel mounted and registered its output listener, so the remote shell banner/prompt could be emitted into that handoff gap. Mirrored the first-connection handoff behavior: keep the request-matched warmup listener alive for a short grace period after session handoff and append late output into warmupOutput. Added frontend guideline documenting this terminal handoff requirement. Verified git diff --check, npm run check -- --pretty false, npm test, and npm run build; dev app still running at localhost:5420.
+
+### Main Changes
+
+- Updated `runDirectTerminalTab` so the warmup output listener stays active during session handoff.
+- Late output after `terminalConnect` now flows through `appendTerminalWarmupOutput` for the same grace period used by the first terminal connection path.
+- Documented the terminal handoff rule in the frontend component guidelines.
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `8da5037` | (see git log) |
+
+### Testing
+
+- [OK] `git diff --check`
+- [OK] `npm run check -- --pretty false`
+- [OK] `npm test`
+- [OK] `npm run build`
+- [OK] dev app still responds at `http://localhost:5420`
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
+
+
+## Session 15: Fix connection retry step UI
+
+**Date**: 2026-06-14
+**Task**: Fix connection retry step UI
+**Branch**: `master`
+
+### Summary
+
+Connection failure retry now resets transient error/progress state and uses an explicit active step index instead of log-count inference; the error retry button now uses the app action style with RefreshCw, and connection-step status/error text explicitly uses the UI font. Verified git diff --check, npm run check -- --pretty false, npm test, and npm run build.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+(No commits - planning session)
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
+
+
+## Session 16: Fix same-connection tab terminal display
+
+**Date**: 2026-06-14
+**Task**: Fix same-connection tab terminal display
+**Branch**: `master`
+
+### Summary
+
+Fixed the new same-connection terminal tab display by adding a TerminalPanel warmup-ready callback so the parent stops the temporary warmup output capture once the mounted xterm listener is ready, reducing duplicate late output. Added a 6px terminal workbench grid row gap between subtabs and xterm content so the first terminal line no longer sits flush against the tab chrome without adding padding to the xterm host. Updated frontend component guidelines with the handoff and spacing convention. Verified git diff --check, npm run check -- --pretty false, npm test, and npm run build.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+(No commits - planning session)
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
+
+
+## Session 17: Normalize terminal startup handoff output
+
+**Date**: 2026-06-14
+**Task**: Normalize terminal startup handoff output
+**Branch**: `master`
+
+### Summary
+
+User still saw a leading prompt before the login banner on same-connection tabs. Added a short TerminalPanel startup output buffer so initialOutput and early live events are flushed to xterm as one ordered batch, and strip only a duplicated leading shell prompt when the combined startup batch also contains a login banner/motd and the same prompt at the end. Updated frontend handoff specs. Verified npm run check -- --pretty false, node scripts/check-remote-file-editor-source.mjs, npm test, npm run build, and git diff --check.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+(No commits - planning session)
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
+
+
+## Session 18: Tune material titlebar session tabs
+
+**Date**: 2026-06-14
+**Task**: Tune material titlebar session tabs
+**Branch**: `master`
+
+### Summary
+
+Adjusted Mica/Acrylic titlebar session tab active surfaces to use the same low-alpha neutral chrome treatment as sidebar active rows, removed primary tint from titlebar tab hover, updated frontend chrome selection guidance, and verified diff whitespace, type-check, build, and localhost response.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+(No commits - planning session)
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
+
+
+## Session 19: Make Acrylic and Mica Alt sidebars transparent
+
+**Date**: 2026-06-14
+**Task**: Make Acrylic and Mica Alt sidebars transparent
+**Branch**: `master`
+
+### Summary
+
+Changed Acrylic and Mica Alt chrome fill tokens to fully transparent so left sidebar chrome matches the transparent titlebar, kept active/hover overlays neutral, updated frontend material guidance, and verified diff whitespace, type-check, build, and localhost response.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+(No commits - planning session)
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
+
+
+## Session 20: Round material workbench corner
+
+**Date**: 2026-06-14
+**Task**: Round material workbench corner
+**Branch**: `master`
+
+### Summary
+
+Removed internal titlebar/sidebar chrome divider colors, made the main workspace and settings content use a 12px top-left radius, removed the content left divider line, updated material chrome guidance, and verified diff whitespace, type-check, build, and localhost response.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+(No commits - planning session)
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
+
+
+## Session 21: Label sidebar settings entry
+
+**Date**: 2026-06-14
+**Task**: Label sidebar settings entry
+**Branch**: `master`
+
+### Summary
+
+Added the visible 设置 label next to the bottom-left settings icon, adjusted the settings entry button to an icon-plus-text compact sidebar control, kept material sidebar hover states neutral, and verified diff whitespace, type-check, build, and localhost response.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+(No commits - planning session)
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
+
+
+## Session 22: Pad connection failure detail card
+
+**Date**: 2026-06-15
+**Task**: Pad connection failure detail card
+**Branch**: `master`
+
+### Summary
+
+Adjusted the connection failure detail card spacing so the title, cause/suggestion/code rows, and retry button no longer sit flush against the card edge. Added frontend guidance for error detail card padding and verified diff whitespace, type-check, build, and localhost response.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+(No commits - planning session)
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
+
+
+## Session 23: Analyze connection failure edit/cancel behavior
+
+**Date**: 2026-06-15
+**Task**: Analyze connection failure edit/cancel behavior
+**Branch**: `master`
+
+### Summary
+
+Located why failure-card spacing still looks unchanged and why Edit then Cancel appears to close the connection tab; no source edits.
+
+### Main Changes
+
+Latest user asked to analyze only, no source edits. Findings:
+- Desktop dev screenshot does contain the newer retry button/icon, so the app likely loaded recent changes.
+- Failure card still looks visually unchanged because later global CSS selector `.app-shell :is(..., .connection-step-error, ...)` reapplies a pink error background to `.connection-step-error` while `.connection-step-error` has `padding: 0`; the outer `.connection-step-detail.is-error` padding exists but is visually masked by the inner pink block.
+- Proposed style fix when approved: either remove `.connection-step-error` from the global error-background selector and keep the pink card/background on `.connection-step-detail.is-error`, or move the visible pink background/padding onto `.connection-step-error` itself with consistent `padding: 12px 14px` and no flush header/table/button.
+- Edit/cancel tab-close root cause is in `WorkspaceShell.tsx`: the `ConnectionStepPanel` `onEdit` handler currently calls `closeTerminal(tab.id)` before `editConnection(connection)`. Therefore the connecting/failure tab is closed as soon as Edit is clicked; Cancel only reveals that it is already gone.
+- Proposed behavior fix when approved: do not close the connecting tab in `onEdit`; open the dialog independently. On successful save, update any open connecting tab's `connectionStep.connection` for that connection id so Retry uses the saved host/port/auth changes. Dialog Cancel should only dismiss the dialog and leave the failed tab visible.
+- No code changed in this checkpoint.
+
+
+### Git Commits
+
+(No commits - planning session)
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete

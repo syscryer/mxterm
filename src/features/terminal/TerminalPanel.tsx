@@ -25,6 +25,7 @@ import {
 } from "./terminalInputDirectory";
 
 const TERMINAL_SCROLLBAR_WIDTH = 6;
+const STARTUP_OUTPUT_BUFFER_MS = 250;
 
 interface TerminalPanelProps {
   active: boolean;
@@ -34,6 +35,7 @@ interface TerminalPanelProps {
   initialOutput?: number[];
   initialRequestId?: string;
   initialSessionId: string;
+  onWarmupCaptureReady?: (tabId: string) => void;
   tabId: string;
   theme: ITheme;
   title: string;
@@ -51,6 +53,7 @@ export function TerminalPanel({
   initialSessionId,
   onCurrentDirectoryChange,
   onStatusChange,
+  onWarmupCaptureReady,
   tabId,
   theme,
   title,
@@ -64,9 +67,18 @@ export function TerminalPanel({
   const initialOutputWrittenLengthRef = useRef(0);
   const startedRef = useRef(false);
   const decoderRef = useRef(new TextDecoder());
+  const onWarmupCaptureReadyRef = useRef(onWarmupCaptureReady);
+  const startupOutputBufferRef = useRef("");
+  const startupOutputBufferingRef = useRef(false);
+  const startupOutputFlushTimerRef = useRef<number | null>(null);
+  const terminalOutputWriterRef = useRef<((decoded: string) => void) | null>(null);
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [listenersReady, setListenersReady] = useState(!hasTauriRuntime());
   const [status, setStatus] = useState(connection ? "待连接" : "空闲");
+
+  useEffect(() => {
+    onWarmupCaptureReadyRef.current = onWarmupCaptureReady;
+  }, [onWarmupCaptureReady]);
 
   useEffect(() => {
     sessionIdRef.current = sessionId;
@@ -108,12 +120,54 @@ export function TerminalPanel({
     fitAddon.fit();
     startedRef.current = false;
     initialOutputWrittenLengthRef.current = 0;
+    startupOutputBufferRef.current = "";
+    startupOutputBufferingRef.current = Boolean(initialRequestId);
+
+    const flushStartupOutput = () => {
+      if (startupOutputFlushTimerRef.current !== null) {
+        window.clearTimeout(startupOutputFlushTimerRef.current);
+        startupOutputFlushTimerRef.current = null;
+      }
+      const bufferedOutput = startupOutputBufferRef.current;
+      startupOutputBufferRef.current = "";
+      startupOutputBufferingRef.current = false;
+      if (bufferedOutput) {
+        const trimmedLeading = bufferedOutput.replace(/^[\r\n]+/, "");
+        terminal.write(stripLeadingDuplicateStartupPrompt(trimmedLeading));
+      }
+    };
+
+    const writeDecodedOutput = (decoded: string) => {
+      const currentDirectory = extractOsc7Directories(`${osc7BufferRef.current}${decoded}`);
+      osc7BufferRef.current = currentDirectory.buffer;
+      currentDirectory.paths.forEach((path) => {
+        inputDirectoryStateRef.current = {
+          ...inputDirectoryStateRef.current,
+          directory: path,
+        };
+        onCurrentDirectoryChange?.(tabId, path);
+      });
+      if (startupOutputBufferingRef.current) {
+        startupOutputBufferRef.current += decoded;
+        return;
+      }
+      terminal.write(decoded);
+    };
+
+    terminalOutputWriterRef.current = writeDecodedOutput;
+    if (startupOutputBufferingRef.current) {
+      startupOutputFlushTimerRef.current = window.setTimeout(
+        flushStartupOutput,
+        STARTUP_OUTPUT_BUFFER_MS,
+      );
+    }
+
     if (initialSessionId) {
       sessionIdRef.current = initialSessionId;
       setSessionId(initialSessionId);
       setStatus(hasTauriRuntime() ? "已连接" : "预览");
       if (initialOutput.length > 0) {
-        terminal.write(decoderRef.current.decode(Uint8Array.from(initialOutput), { stream: true }));
+        writeDecodedOutput(decoderRef.current.decode(Uint8Array.from(initialOutput), { stream: true }));
         initialOutputWrittenLengthRef.current = initialOutput.length;
       }
     }
@@ -162,16 +216,7 @@ export function TerminalPanel({
           return;
         }
         const decoded = decoderRef.current.decode(Uint8Array.from(event.data), { stream: true });
-        const currentDirectory = extractOsc7Directories(`${osc7BufferRef.current}${decoded}`);
-        osc7BufferRef.current = currentDirectory.buffer;
-        currentDirectory.paths.forEach((path) => {
-          inputDirectoryStateRef.current = {
-            ...inputDirectoryStateRef.current,
-            directory: path,
-          };
-          onCurrentDirectoryChange?.(tabId, path);
-        });
-        terminal.write(decoded);
+        writeDecodedOutput(decoded);
       });
 
       const stateListener = listenTerminalStateChanged((event) => {
@@ -203,6 +248,7 @@ export function TerminalPanel({
           stopOutputListener = unlistenOutput;
           stopStateListener = unlistenState;
           stopProgressListener = unlistenProgress;
+          onWarmupCaptureReadyRef.current?.(tabId);
           setListenersReady(true);
         },
       ).catch((error: unknown) => {
@@ -223,6 +269,13 @@ export function TerminalPanel({
       stopOutputListener?.();
       stopStateListener?.();
       stopProgressListener?.();
+      if (startupOutputFlushTimerRef.current !== null) {
+        window.clearTimeout(startupOutputFlushTimerRef.current);
+        startupOutputFlushTimerRef.current = null;
+      }
+      startupOutputBufferRef.current = "";
+      startupOutputBufferingRef.current = false;
+      terminalOutputWriterRef.current = null;
       resizeObserver.disconnect();
       resizeDisposable.dispose();
       dataDisposable.dispose();
@@ -244,7 +297,13 @@ export function TerminalPanel({
     }
 
     const nextBytes = initialOutput.slice(writtenLength);
-    terminal.write(decoderRef.current.decode(Uint8Array.from(nextBytes), { stream: true }));
+    const decoded = decoderRef.current.decode(Uint8Array.from(nextBytes), { stream: true });
+    const writeOutput = terminalOutputWriterRef.current;
+    if (writeOutput) {
+      writeOutput(decoded);
+    } else {
+      terminal.write(decoded);
+    }
     initialOutputWrittenLengthRef.current = initialOutput.length;
   }, [initialOutput, initialSessionId]);
 
@@ -353,6 +412,42 @@ function withTerminalChromeTheme(theme: ITheme): ITheme {
     scrollbarSliderBackground: "transparent",
     scrollbarSliderHoverBackground: "rgba(148, 163, 184, 0.28)",
   };
+}
+
+function stripLeadingDuplicateStartupPrompt(output: string) {
+  const firstLineMatch = output.match(/^([^\r\n]{1,180})(\r?\n)([\s\S]+)$/);
+  if (!firstLineMatch) {
+    return output;
+  }
+
+  const firstLine = stripAnsi(firstLineMatch[1]).trim();
+  const rest = firstLineMatch[3];
+  const plainRest = stripAnsi(rest);
+  if (!looksLikeShellPrompt(firstLine) || !looksLikeLoginBanner(plainRest)) {
+    return output;
+  }
+
+  const restLines = plainRest.split(/\r?\n/).map((line) => line.trim());
+  if (!restLines.some((line) => line === firstLine)) {
+    return output;
+  }
+
+  return rest;
+}
+
+function looksLikeShellPrompt(line: string) {
+  return /^[^\s@]+@[^\s:]+:.{0,120}[#$>]$/.test(line);
+}
+
+function looksLikeLoginBanner(output: string) {
+  return /Welcome to|Last login|System load|security updates|updates total|Linux/i.test(output);
+}
+
+function stripAnsi(value: string) {
+  return value.replace(
+    /\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1B\\))/g,
+    "",
+  );
 }
 
 function formatError(error: unknown) {

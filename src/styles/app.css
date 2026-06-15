@@ -1499,15 +1499,32 @@ button {
 }
 
 .settings-entry-button {
-  display: grid;
-  place-items: center;
-  color: color-mix(in srgb, var(--mx-muted) 86%, var(--mx-primary) 14%);
+  width: auto;
+  min-width: 0;
+  height: 32px;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 0 9px;
+  color: var(--mx-muted);
+  font-size: 13px;
+  font-weight: 520;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.settings-entry-button .ui-icon {
+  flex: 0 0 auto;
+}
+
+.settings-entry-button span {
+  min-width: 0;
 }
 
 .settings-entry-button:hover,
 .settings-entry-button:focus-visible {
-  color: color-mix(in srgb, var(--mx-primary) 62%, var(--mx-text) 38%);
-  background: color-mix(in srgb, var(--mx-primary) 10%, transparent);
+  color: var(--mx-text);
+  background: var(--mx-active);
 }
 
 .app-shell[data-density="compact"] .settings-content {
@@ -1549,7 +1566,6 @@ button {
 .app-shell[data-pane-resizing="left"] .left-pane-resizer::after,
 .app-shell[data-pane-resizing="right"] .right-pane-resizer::after {
   background: rgb(100 116 139 / 32%);
-  box-shadow: 0 0 0 1px rgb(15 23 42 / 8%);
 }
 
 .pane-resizer:focus-visible {
@@ -1769,7 +1785,6 @@ button {
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  border-right: 1px solid var(--mx-line);
 }
 
 .settings-foot {
@@ -2297,6 +2312,7 @@ button {
 }
 
 .main-workbench {
+  position: relative;
   grid-column: 2;
   min-width: 0;
   min-height: 0;
@@ -2397,6 +2413,7 @@ button {
       var(--mx-panel) 44%,
       var(--mx-panel-soft)
     );
+  font-family: var(--font-ui);
 }
 
 .connection-step-actions {
@@ -2677,6 +2694,8 @@ button {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  font-family: var(--font-ui);
+  letter-spacing: 0;
 }
 
 .connection-step-list li strong {
@@ -2695,7 +2714,6 @@ button {
 .connection-step-list li em {
   justify-self: end;
   color: var(--mx-subtle);
-  font-family: var(--font-mono);
   font-size: 12px;
   font-style: normal;
   font-variant-numeric: tabular-nums;
@@ -2769,8 +2787,8 @@ button {
 
 .connection-step-detail.is-error {
   border-color: rgb(159 29 29 / 14%);
-  gap: 6px;
-  padding: 8px 10px;
+  gap: 10px;
+  padding: 14px 16px 12px;
   background: rgb(255 247 247 / 72%);
 }
 
@@ -2899,7 +2917,7 @@ button {
   border: 0;
   border-radius: 0;
   display: grid;
-  gap: 6px;
+  gap: 10px;
   padding: 0;
   background: transparent;
 }
@@ -2948,9 +2966,9 @@ button {
 
 .connection-step-error dl div {
   display: grid;
-  grid-template-columns: 64px minmax(0, 1fr);
-  gap: 8px;
-  padding: 4px 8px;
+  grid-template-columns: 76px minmax(0, 1fr);
+  gap: 10px;
+  padding: 7px 12px;
   border-bottom: 1px solid rgb(159 29 29 / 9%);
 }
 
@@ -2961,8 +2979,10 @@ button {
 .connection-step-error dt,
 .connection-step-error dd {
   margin: 0;
+  font-family: var(--font-ui);
   font-size: 12px;
   line-height: 1.35;
+  letter-spacing: 0;
 }
 
 .connection-step-error dt {
@@ -2978,9 +2998,33 @@ button {
   white-space: nowrap;
 }
 
-.connection-step-error button {
+.connection-step-error dl div:last-child dd {
+  font-family: var(--font-mono);
+}
+
+.connection-step-error .connection-step-retry-button {
   justify-self: start;
+  margin-top: 2px;
+  height: 28px;
   min-height: 28px;
+  border-color: rgb(159 29 29 / 18%);
+  color: #9f1d1d;
+  background: rgb(255 255 255 / 74%);
+  box-shadow:
+    0 1px 2px rgb(15 23 42 / 5%),
+    inset 0 0 0 1px rgb(255 255 255 / 54%);
+}
+
+.connection-step-error .connection-step-retry-button .ui-icon {
+  width: 14px;
+  height: 14px;
+  stroke-width: 2;
+}
+
+.connection-step-error .connection-step-retry-button:hover {
+  border-color: rgb(159 29 29 / 30%);
+  color: #7f1d1d;
+  background: #ffffff;
 }
 
 .connection-step-log {
@@ -3128,9 +3172,12 @@ button {
     font-size: 11px;
   }
 
-  .connection-step-detail,
-  .connection-step-error {
+  .connection-step-detail {
     padding: 12px;
+  }
+
+  .connection-step-detail.is-error {
+    padding: 14px;
   }
 }
 
@@ -3805,6 +3852,7 @@ button {
 
 .terminal-workbench-pane {
   background: var(--mx-terminal);
+  row-gap: 6px;
 }
 
 .remote-editor-tabs,
@@ -3924,9 +3972,13 @@ button {
     color 120ms ease;
 }
 
-.tab-shell:hover,
+.tab-shell:hover {
+  background: var(--mx-sidebar-hover);
+  color: var(--mx-text);
+}
+
 .tab-shell.active {
-  background: var(--mx-active);
+  background: var(--mx-chrome-active);
   color: var(--mx-text);
 }
 
@@ -5724,6 +5776,18 @@ button {
   border-color: var(--mx-line-strong);
 }
 
+.app-shell .connection-step-error .connection-step-retry-button {
+  border-color: rgb(159 29 29 / 18%);
+  color: #9f1d1d;
+  background: rgb(255 255 255 / 74%);
+}
+
+.app-shell .connection-step-error .connection-step-retry-button:hover {
+  border-color: rgb(159 29 29 / 30%);
+  color: #7f1d1d;
+  background: #ffffff;
+}
+
 .app-shell :is(
   .settings-segmented button.active,
   .terminal-scheme-card.active,
@@ -6006,7 +6070,10 @@ body {
 .app-shell::before {
   content: "";
   position: absolute;
-  inset: 0;
+  top: 36px;
+  right: 0;
+  bottom: 0;
+  left: 0;
   z-index: 0;
   background:
     linear-gradient(180deg, var(--mx-chrome-glow), transparent 58%),
@@ -6021,11 +6088,11 @@ body {
 
 .custom-titlebar {
   overflow: hidden;
-  border-bottom-color: var(--mx-chrome-line);
+  border-bottom-color: transparent;
   background: transparent;
   box-shadow: none;
-  backdrop-filter: blur(12px) saturate(1.18);
-  -webkit-backdrop-filter: blur(12px) saturate(1.18);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
 }
 
 .custom-titlebar > * {
@@ -6034,7 +6101,7 @@ body {
 }
 
 .title-leading {
-  border-right-color: var(--mx-chrome-line);
+  border-right-color: transparent;
 }
 
 .title-sidebar-tools {
@@ -6067,12 +6134,17 @@ body {
   grid-template-columns: minmax(260px, var(--left-pane-custom-width, 336px)) minmax(0, 1fr);
 }
 
+.main-workbench,
+.settings-content {
+  border-top-left-radius: 12px;
+  overflow: hidden;
+}
+
 .connection-home,
 .session-workbench,
-.connection-step-page,
-.main-workbench {
+.connection-step-page {
   position: relative;
-  border-left: 1px solid var(--mx-chrome-line);
+  border-left: 0;
   background: var(--mx-panel);
 }
 
@@ -6104,7 +6176,7 @@ body {
   position: relative;
   color: var(--mx-text);
   background: transparent;
-  border-right-color: var(--mx-sidebar-border);
+  border-right-color: transparent;
   box-shadow: var(--mx-sidebar-shadow);
   backdrop-filter: none;
   -webkit-backdrop-filter: none;
@@ -6165,7 +6237,9 @@ body {
   .tree-folder-row:hover,
   .tree-connection-row:hover,
   .collapse-button:hover,
-  .mini-action:hover
+  .mini-action:hover,
+  .settings-entry-button:hover,
+  .settings-entry-button:focus-visible
 ) {
   color: var(--mx-text);
   background: var(--mx-sidebar-hover);
