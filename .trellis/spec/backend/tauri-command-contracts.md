@@ -889,7 +889,7 @@ micaAlt = 4
 ### 6. Tests Required
 
 - Run `cargo check --manifest-path src-tauri/Cargo.toml` after changing command registration, material ids, Windows dependencies, or platform modules.
-- Run `npm run check -- --pretty false` after changing frontend wrappers or `WindowMaterialMode`.
+- Run `pnpm check` after changing frontend wrappers or `WindowMaterialMode`.
 - Run `npm run build` after changing CSS material tokens or settings UI.
 - Cross-check backend ids against `windowMaterialIds` in `src/shared/tauri/windowMaterial.ts` in the same task.
 - Add unit or integration tests if material support logic gains more platforms or more complex OS-version branching.

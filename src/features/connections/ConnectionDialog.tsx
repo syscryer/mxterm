@@ -1,5 +1,5 @@
 import * as Dialog from "@radix-ui/react-dialog";
-import { AlertTriangle, CheckCircle2, Eye, EyeOff, Loader2, X } from "lucide-react";
+import { AlertTriangle, CheckCircle2, Eye, EyeOff, Loader2, RefreshCw, X } from "lucide-react";
 import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 
 import { ConfirmDialog } from "../../shared/ui/ConfirmDialog";
@@ -10,11 +10,16 @@ import type {
   ConnectionProfileInput,
   ConnectionProxyKind,
   CredentialProfile,
+  HostKeyInfo,
 } from "./connectionTypes";
 import {
   defaultAdvancedConfig,
   defaultProxyConfig,
 } from "./connectionTypes";
+import {
+  parseHostKeyError,
+  type ParsedHostKeyError,
+} from "./hostKeyErrors";
 
 interface ConnectionDialogProps {
   connection: ConnectionProfile | null;
@@ -27,6 +32,7 @@ interface ConnectionDialogProps {
   onManageCredentials: () => void;
   onSave: (input: ConnectionProfileInput) => Promise<void>;
   onTest: (input: ConnectionProfileInput) => Promise<void>;
+  onTrustHostKey: (hostKey: HostKeyInfo) => Promise<void>;
 }
 
 interface ConnectionDialogGroup {
@@ -41,11 +47,15 @@ interface GroupOption {
 }
 
 type ConnectionDialogTab = "basic" | "proxy" | "advanced";
-type ConnectionTestState = "idle" | "running" | "success" | "error";
+type ConnectionTestState = "idle" | "running" | "success" | "error" | "host-key";
 
 interface DialogFeedback {
   detail: string;
+  hostKey?: HostKeyInfo | null;
+  hostKeyDecision?: ParsedHostKeyError["decision"] | null;
+  oldHostKeyFingerprint?: string | null;
   title: string;
+  rawMessage?: string | null;
 }
 
 const emptyForm: ConnectionProfileInput = {
@@ -77,6 +87,7 @@ export function ConnectionDialog({
   onManageCredentials,
   onSave,
   onTest,
+  onTrustHostKey,
 }: ConnectionDialogProps) {
   const [form, setForm] = useState<ConnectionProfileInput>(emptyForm);
   const [activeTab, setActiveTab] = useState<ConnectionDialogTab>("basic");
@@ -117,7 +128,7 @@ export function ConnectionDialog({
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     await runAction(async () => {
-      await onSave(normalizeForSubmit(form));
+      await onSave(normalizeForSubmit(form, credentials));
       onClose();
     });
   }
@@ -127,16 +138,52 @@ export function ConnectionDialog({
       return;
     }
 
+    await runConnectionTest(normalizeForSubmit(form, credentials));
+  }
+
+  async function trustHostKeyAndContinueTest() {
+    if (busyRef.current || !feedback?.hostKey) {
+      return;
+    }
+
+    const input = normalizeForSubmit(form, credentials);
     busyRef.current = true;
     setBusy(true);
     setFeedback({
-      detail: "测试会复用当前表单配置，不会打开终端。",
-      title: `${formatAddress(form)} 正在检查`,
+      detail:
+        feedback.hostKeyDecision === "changed"
+          ? "正在更新本机保存的主机密钥信任，然后继续测试。"
+          : "正在保存本机主机密钥信任，然后继续测试。",
+      title: "正在确认主机密钥",
     });
     setTestState("running");
 
     try {
-      await onTest(normalizeForSubmit(form));
+      await onTrustHostKey(feedback.hostKey);
+    } catch (nextError) {
+      setTestState("error");
+      setFeedback(describeDialogError(nextError));
+      busyRef.current = false;
+      setBusy(false);
+      return;
+    }
+
+    busyRef.current = false;
+    setBusy(false);
+    await runConnectionTest(input);
+  }
+
+  async function runConnectionTest(input: ConnectionProfileInput) {
+    busyRef.current = true;
+    setBusy(true);
+    setFeedback({
+      detail: "测试会复用当前表单配置，不会打开终端。",
+      title: `${formatAddress(input)} 正在检查`,
+    });
+    setTestState("running");
+
+    try {
+      await onTest(input);
       setTestState("success");
       setFeedback({
         detail: "当前配置可以继续保存。",
@@ -144,8 +191,14 @@ export function ConnectionDialog({
       });
     } catch (nextError) {
       setActiveTab(tabForError(nextError));
-      setTestState("error");
-      setFeedback(describeDialogError(nextError));
+      const hostKeyError = parseHostKeyError(nextError);
+      if (hostKeyError) {
+        setTestState("host-key");
+        setFeedback(describeHostKeyFeedback(hostKeyError));
+      } else {
+        setTestState("error");
+        setFeedback(describeDialogError(nextError));
+      }
     } finally {
       busyRef.current = false;
       setBusy(false);
@@ -218,6 +271,14 @@ export function ConnectionDialog({
                 </Dialog.Close>
               </header>
 
+              <div className="protocol-switch" aria-label="连接协议">
+                <button className="protocol-chip active" type="button" aria-current="true">SSH</button>
+                <button className="protocol-chip" type="button" disabled title="即将支持">RDP <span className="chip-tag">即将</span></button>
+                <button className="protocol-chip" type="button" disabled title="即将支持">Telnet <span className="chip-tag">即将</span></button>
+                <button className="protocol-chip" type="button" disabled title="即将支持">VNC <span className="chip-tag">即将</span></button>
+                <button className="protocol-chip" type="button" disabled title="即将支持">隧道 <span className="chip-tag">即将</span></button>
+              </div>
+
               <nav className="connection-dialog-tabs" aria-label="连接配置页签">
                 {[
                   ["basic", "基本"],
@@ -243,18 +304,85 @@ export function ConnectionDialog({
               </div>
 
               {feedback ? (
-                <div className={`connection-dialog-test-result ${testState}`}>
-                  {testState === "running" ? (
-                    <Loader2 className="ui-icon spin" aria-hidden="true" />
-                  ) : testState === "success" ? (
-                    <CheckCircle2 className="ui-icon" aria-hidden="true" />
-                  ) : (
-                    <AlertTriangle className="ui-icon" aria-hidden="true" />
-                  )}
-                  <span>
-                    <strong>{feedback.title}</strong>
-                    <small>{feedback.detail}</small>
+                <div
+                  className={`conn-feedback ${testState}`}
+                  role={testState === "error" || testState === "host-key" ? "alert" : "status"}
+                >
+                  <span className="fb-icon" aria-hidden="true">
+                    {testState === "running" ? (
+                      <Loader2 className="ui-icon spin" />
+                    ) : testState === "success" ? (
+                      <CheckCircle2 className="ui-icon" />
+                    ) : (
+                      <AlertTriangle className="ui-icon" />
+                    )}
                   </span>
+                  <div className="fb-body">
+                    <strong className="fb-title">{feedback.title}</strong>
+                    <span className="fb-detail">
+                      {feedback.detail}
+                      {feedback.rawMessage && testState !== "host-key" ? (
+                        <>
+                          {" "}
+                          原因：<code>{feedback.rawMessage}</code>
+                        </>
+                      ) : null}
+                    </span>
+                    {feedback.hostKey ? (
+                      <dl className="fb-host-key">
+                        <div>
+                          <dt>主机</dt>
+                          <dd>{feedback.hostKey.host}:{feedback.hostKey.port.toString()}</dd>
+                        </div>
+                        <div>
+                          <dt>算法</dt>
+                          <dd>{feedback.hostKey.key_algorithm}</dd>
+                        </div>
+                        {feedback.oldHostKeyFingerprint ? (
+                          <div>
+                            <dt>已保存指纹</dt>
+                            <dd>{feedback.oldHostKeyFingerprint}</dd>
+                          </div>
+                        ) : null}
+                        <div>
+                          <dt>
+                            {feedback.oldHostKeyFingerprint ? "当前指纹" : "SHA256 指纹"}
+                          </dt>
+                          <dd>{feedback.hostKey.fingerprint_sha256}</dd>
+                        </div>
+                      </dl>
+                    ) : null}
+                    {testState === "error" ? (
+                      <div className="fb-actions">
+                        <button
+                          className="fb-primary"
+                          type="button"
+                          disabled={busy}
+                          onClick={testConnection}
+                        >
+                          <RefreshCw className="ui-icon" aria-hidden="true" />
+                          <span>重试</span>
+                        </button>
+                      </div>
+                    ) : null}
+                    {testState === "host-key" ? (
+                      <div className="fb-actions">
+                        <button
+                          className="fb-primary"
+                          type="button"
+                          disabled={busy}
+                          onClick={trustHostKeyAndContinueTest}
+                        >
+                          <RefreshCw className="ui-icon" aria-hidden="true" />
+                          <span>
+                            {feedback.hostKeyDecision === "changed"
+                              ? "更新信任并继续测试"
+                              : "信任并继续测试"}
+                          </span>
+                        </button>
+                      </div>
+                    ) : null}
+                  </div>
                 </div>
               ) : null}
 
@@ -311,123 +439,82 @@ export function ConnectionDialog({
   function renderBasicTab() {
     const credentialMode = form.credential_mode || "inline";
     const inlineAuthKind = form.inline_auth_kind || "password";
-    const promptAuthKind = form.prompt_auth_kind || "password";
     const showGroupField = groupOptions.length > 0 || Boolean(form.group?.trim());
 
     return (
-      <>
-        <section className="dialog-section">
-          <div className="dialog-section-title">目标</div>
-
-          <div className={`form-grid ${showGroupField ? "form-grid-wide" : "form-grid-single"}`}>
-            <label>
-              <span>名称</span>
-              <input
-                value={form.name || ""}
-                onChange={(event) => setForm({ ...form, name: event.target.value })}
-                placeholder="例如：生产跳板"
-              />
-            </label>
-            {showGroupField ? (
-              <label>
-                <span>分组</span>
-                <select
-                  value={form.group || ""}
-                  onChange={(event) => setForm({ ...form, group: event.target.value })}
-                >
-                  <option value="">不分组</option>
-                  {groupOptions.map((group) => (
-                    <option key={group.id} value={group.id}>
-                      {group.label}
-                    </option>
-                  ))}
-                </select>
-              </label>
-            ) : null}
-          </div>
-
-          <div className="form-grid">
-            <label>
-              <span>主机</span>
-              <input
-                required
-                value={form.host}
-                onChange={(event) => setForm({ ...form, host: event.target.value })}
-                placeholder="203.0.113.70"
-              />
-            </label>
-            <label>
-              <span>端口</span>
-              <input
-                inputMode="numeric"
-                required
-                value={form.port.toString()}
-                onChange={(event) =>
-                  setForm({ ...form, port: Number(event.target.value) || 22 })
-                }
-              />
-            </label>
-          </div>
-
+      <div className="connection-dialog-fields">
+        {/* 目标：名称/分组、主机/端口 平铺，无分组标题 */}
+        <div className={`form-grid ${showGroupField ? "form-grid-wide" : "form-grid-single"}`}>
           <label>
-            <span>用户名</span>
+            <span>名称</span>
             <input
-              required
-              value={form.username}
-              onChange={(event) => setForm({ ...form, username: event.target.value })}
-              placeholder="root"
+              value={form.name || ""}
+              onChange={(event) => setForm({ ...form, name: event.target.value })}
+              placeholder="例如：生产跳板"
             />
           </label>
-        </section>
+          {showGroupField ? (
+            <label>
+              <span>分组</span>
+              <select
+                value={form.group || ""}
+                onChange={(event) => setForm({ ...form, group: event.target.value })}
+              >
+                <option value="">不分组</option>
+                {groupOptions.map((group) => (
+                  <option key={group.id} value={group.id}>
+                    {group.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+          ) : null}
+        </div>
 
-        <section className="dialog-section">
-          <div className="dialog-section-title">凭据</div>
-
+        <div className="form-grid">
           <label>
-            <span>凭据来源</span>
-            <select
-              value={credentialMode}
-              onChange={(event) =>
-                setForm({
-                  ...form,
-                  credential_mode: event.target.value as ConnectionCredentialMode,
-                })
-              }
-            >
-              <option value="saved">使用保存的凭据</option>
-              <option value="inline">在此连接中保存</option>
-              <option value="prompt">每次询问</option>
-            </select>
+            <span>主机</span>
+            <input
+              required
+              value={form.host}
+              onChange={(event) => setForm({ ...form, host: event.target.value })}
+              placeholder="203.0.113.70"
+            />
           </label>
+          <label>
+            <span>端口</span>
+            <input
+              inputMode="numeric"
+              required
+              value={form.port.toString()}
+              onChange={(event) =>
+                setForm({ ...form, port: Number(event.target.value) || 22 })
+              }
+            />
+          </label>
+        </div>
 
-          {credentialMode === "saved" ? (
-            <div className="credential-select-row">
+        {/* 登录账号 */}
+        {credentialMode === "inline" ? (
+          <>
+            {/* 账号来源 + 认证方式 并排 */}
+            <div className="form-grid form-grid-wide">
               <label>
-                <span>保存的凭据</span>
+                <span>账号来源</span>
                 <select
-                  value={form.credential_id || ""}
-                  onChange={(event) => setForm({ ...form, credential_id: event.target.value })}
+                  value={credentialMode}
+                  onChange={(event) =>
+                    setForm({
+                      ...form,
+                      credential_mode: event.target.value as ConnectionCredentialMode,
+                    })
+                  }
                 >
-                  <option value="">选择凭据</option>
-                  {credentials.map((credential) => (
-                    <option key={credential.id} value={credential.id}>
-                      {credential.name}（{credential.kind === "password" ? "密码" : "私钥"}）
-                    </option>
-                  ))}
+                  <option value="saved">使用保存的账号</option>
+                  <option value="inline">在此连接中保存</option>
+                  <option value="prompt">每次询问</option>
                 </select>
               </label>
-              <button
-                className="settings-action-button credential-manage-button"
-                type="button"
-                onClick={onManageCredentials}
-              >
-                管理
-              </button>
-            </div>
-          ) : null}
-
-          {credentialMode === "inline" ? (
-            <>
               <label>
                 <span>认证方式</span>
                 <select
@@ -438,8 +525,20 @@ export function ConnectionDialog({
                   <option value="private_key">私钥</option>
                 </select>
               </label>
+            </div>
 
-              {inlineAuthKind === "password" ? (
+            {/* 用户名 + 密码 并排（密码模式）；用户名单行（私钥模式） */}
+            {inlineAuthKind === "password" ? (
+              <div className="form-grid form-grid-wide">
+                <label>
+                  <span>用户名</span>
+                  <input
+                    required
+                    value={form.username}
+                    onChange={(event) => setForm({ ...form, username: event.target.value })}
+                    placeholder="root"
+                  />
+                </label>
                 <label>
                   <span>密码</span>
                   <div className="input-with-toggle">
@@ -465,84 +564,146 @@ export function ConnectionDialog({
                     </button>
                   </div>
                 </label>
-              ) : (
-                <>
-                  <label>
-                    <span>私钥路径</span>
+              </div>
+            ) : (
+              <label>
+                <span>用户名</span>
+                <input
+                  required
+                  value={form.username}
+                  onChange={(event) => setForm({ ...form, username: event.target.value })}
+                  placeholder="root"
+                />
+              </label>
+            )}
+
+            {/* 私钥字段（仅私钥模式） */}
+            {inlineAuthKind === "private_key" ? (
+              <>
+                <label>
+                  <span>私钥路径</span>
+                  <input
+                    value={form.inline_private_key_path || ""}
+                    onChange={(event) =>
+                      setForm({ ...form, inline_private_key_path: event.target.value })
+                    }
+                    placeholder="~/.ssh/id_ed25519"
+                  />
+                </label>
+                <label>
+                  <span>私钥口令</span>
+                  <div className="input-with-toggle">
                     <input
-                      value={form.inline_private_key_path || ""}
+                      type={showPassphrase ? "text" : "password"}
+                      value={form.inline_private_key_passphrase || ""}
                       onChange={(event) =>
-                        setForm({ ...form, inline_private_key_path: event.target.value })
+                        setForm({
+                          ...form,
+                          inline_private_key_passphrase: event.target.value,
+                        })
                       }
-                      placeholder="~/.ssh/id_ed25519"
+                      placeholder="输入私钥口令"
                     />
-                  </label>
+                    <button
+                      className="field-toggle"
+                      type="button"
+                      aria-label={showPassphrase ? "隐藏私钥口令" : "显示私钥口令"}
+                      onClick={() => setShowPassphrase((value) => !value)}
+                    >
+                      {showPassphrase ? (
+                        <EyeOff className="ui-icon" aria-hidden="true" />
+                      ) : (
+                        <Eye className="ui-icon" aria-hidden="true" />
+                      )}
+                    </button>
+                  </div>
+                </label>
+              </>
+            ) : null}
+          </>
+        ) : null}
 
-                  <label>
-                    <span>私钥口令</span>
-                    <div className="input-with-toggle">
-                      <input
-                        type={showPassphrase ? "text" : "password"}
-                        value={form.inline_private_key_passphrase || ""}
-                        onChange={(event) =>
-                          setForm({
-                            ...form,
-                            inline_private_key_passphrase: event.target.value,
-                          })
-                        }
-                        placeholder="输入私钥口令"
-                      />
-                      <button
-                        className="field-toggle"
-                        type="button"
-                        aria-label={showPassphrase ? "隐藏私钥口令" : "显示私钥口令"}
-                        onClick={() => setShowPassphrase((value) => !value)}
-                      >
-                        {showPassphrase ? (
-                          <EyeOff className="ui-icon" aria-hidden="true" />
-                        ) : (
-                          <Eye className="ui-icon" aria-hidden="true" />
-                        )}
-                      </button>
-                    </div>
-                  </label>
-                </>
-              )}
-            </>
-          ) : null}
-
-          {credentialMode === "prompt" ? (
+        {credentialMode === "saved" ? (
+          <>
             <label>
-              <span>本次询问类型</span>
+              <span>账号来源</span>
               <select
-                value={promptAuthKind}
+                value={credentialMode}
                 onChange={(event) =>
                   setForm({
                     ...form,
-                    prompt_auth_kind: event.target.value as ConnectionAuthKind,
+                    credential_mode: event.target.value as ConnectionCredentialMode,
                   })
                 }
               >
-                <option value="password">密码</option>
-                <option value="private_key">私钥</option>
+                <option value="saved">使用保存的账号</option>
+                <option value="inline">在此连接中保存</option>
+                <option value="prompt">每次询问</option>
               </select>
             </label>
-          ) : null}
-        </section>
+            <div className="credential-select-row">
+              <label>
+                <span>选择账号</span>
+                <select
+                  value={form.credential_id || ""}
+                  onChange={(event) => setForm({ ...form, credential_id: event.target.value })}
+                >
+                  <option value="">选择账号</option>
+                  {credentials.map((credential) => (
+                    <option key={credential.id} value={credential.id}>
+                      {credential.name}
+                      {credential.username ? `（${credential.username}）` : ""}
+                      · {credential.kind === "password" ? "密码" : "私钥"}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <button
+                className="settings-action-button credential-manage-button"
+                type="button"
+                onClick={onManageCredentials}
+              >
+                管理
+              </button>
+            </div>
+          </>
+        ) : null}
 
-        <section className="dialog-section dialog-section-last">
-          <div className="dialog-section-title">备注</div>
-          <label>
-            <span>说明</span>
-            <textarea
-              rows={3}
-              value={form.notes || ""}
-              onChange={(event) => setForm({ ...form, notes: event.target.value })}
-              placeholder="可记录用途、环境、连接注意事项。"
-            />
-          </label>
-        </section>
-      </>
+        {credentialMode === "prompt" ? (
+          <>
+            <label>
+              <span>账号来源</span>
+              <select
+                value={credentialMode}
+                onChange={(event) =>
+                  setForm({
+                    ...form,
+                    credential_mode: event.target.value as ConnectionCredentialMode,
+                  })
+                }
+              >
+                <option value="saved">使用保存的账号</option>
+                <option value="inline">在此连接中保存</option>
+                <option value="prompt">每次询问</option>
+              </select>
+            </label>
+            <p className="connection-dialog-note">
+              连接时弹出密码或私钥输入，不在本机保存认证材料。
+            </p>
+          </>
+        ) : null}
+
+        {/* 备注 */}
+        <label>
+          <span>说明</span>
+          <textarea
+            rows={3}
+            value={form.notes || ""}
+            onChange={(event) => setForm({ ...form, notes: event.target.value })}
+            placeholder="可记录用途、环境、连接注意事项。"
+          />
+        </label>
+      </div>
     );
   }
 
@@ -772,9 +933,19 @@ function formFromConnection(connection: ConnectionProfile): ConnectionProfileInp
   };
 }
 
-function normalizeForSubmit(form: ConnectionProfileInput): ConnectionProfileInput {
+function normalizeForSubmit(
+  form: ConnectionProfileInput,
+  credentials: CredentialProfile[],
+): ConnectionProfileInput {
+  const savedUsername =
+    form.credential_mode === "saved" && form.credential_id
+      ? credentials.find((credential) => credential.id === form.credential_id)?.username || ""
+      : "";
+
   return {
     ...form,
+    // saved 模式：用户名从所选账号回填，保证连接快照完整且后端校验通过
+    username: form.credential_mode === "saved" ? savedUsername : form.username,
     port: Number(form.port) || 22,
     proxy:
       form.proxy.kind === "none"
@@ -856,6 +1027,26 @@ function tabForError(error: unknown): ConnectionDialogTab {
   return "basic";
 }
 
+function describeHostKeyFeedback(error: ParsedHostKeyError): DialogFeedback {
+  if (error.decision === "changed") {
+    return {
+      detail: "检测到主机 SSH 指纹已变化。若非预期的重装或换密钥，请谨慎处理。",
+      hostKey: error.hostKey,
+      hostKeyDecision: error.decision,
+      oldHostKeyFingerprint: error.oldFingerprint,
+      title: "主机密钥已变化，连接已阻断",
+    };
+  }
+
+  return {
+    detail: "首次连接该主机，需要确认主机密钥。核对指纹无误后再信任并继续测试。",
+    hostKey: error.hostKey,
+    hostKeyDecision: error.decision,
+    oldHostKeyFingerprint: null,
+    title: "首次连接该主机，需要确认主机密钥",
+  };
+}
+
 function describeDialogError(error: unknown): DialogFeedback {
   const code = errorCode(error);
   const rawMessage = errorRawMessage(error);
@@ -865,6 +1056,7 @@ function describeDialogError(error: unknown): DialogFeedback {
     return {
       title: "连接超时",
       detail: "在限定时间内无法连接到目标主机，请检查 IP、端口、防火墙、代理或网络连通性。",
+      rawMessage,
     };
   }
 
@@ -872,6 +1064,7 @@ function describeDialogError(error: unknown): DialogFeedback {
     return {
       title: "端口无法连接",
       detail: "目标主机拒绝了连接，请确认 SSH 服务已启动、端口正确，或安全组允许访问。",
+      rawMessage,
     };
   }
 
@@ -879,13 +1072,15 @@ function describeDialogError(error: unknown): DialogFeedback {
     return {
       title: "主机不可达",
       detail: "本机到目标主机没有可用路由，请检查 VPN、网段、网关或代理配置。",
+      rawMessage,
     };
   }
 
   if (code.includes("auth") || raw.includes("auth")) {
     return {
       title: "认证失败",
-      detail: "请检查用户名、密码、私钥路径或私钥口令是否匹配服务器配置。",
+      detail: "请检查账号的用户名、密码或私钥是否匹配服务器配置。",
+      rawMessage,
     };
   }
 
@@ -893,12 +1088,14 @@ function describeDialogError(error: unknown): DialogFeedback {
     return {
       title: "代理连接失败",
       detail: "请检查代理类型、代理地址端口以及代理用户名密码。",
+      rawMessage,
     };
   }
 
   return {
     title: formatError(error),
     detail: rawMessage || "请根据提示调整配置后重试。",
+    rawMessage,
   };
 }
 
