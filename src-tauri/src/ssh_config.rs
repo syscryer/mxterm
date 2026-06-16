@@ -29,13 +29,14 @@ pub struct ResolvedSshConfig {
     pub private_key_path: Option<String>,
     pub private_key_passphrase: Option<String>,
     pub proxy: crate::connections::ConnectionProxyConfig,
+    pub jump: crate::connections::ConnectionJumpConfig,
     pub advanced: crate::connections::ConnectionAdvancedConfig,
 }
 
 impl ResolvedSshConfig {
     pub fn signature(&self) -> String {
         format!(
-            "{}|{}|{}|{:?}|{:?}|{:?}|{:?}|{:?}",
+            "{}|{}|{}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}",
             self.host,
             self.port,
             self.username,
@@ -44,6 +45,8 @@ impl ResolvedSshConfig {
             self.private_key_path,
             self.private_key_passphrase,
             self.proxy,
+            self.jump,
+            self.advanced,
         )
     }
 }
@@ -77,6 +80,7 @@ pub fn resolve_transient_connection(
         inline_private_key_passphrase: validated.inline_private_key_passphrase,
         prompt_auth_kind: validated.prompt_auth_kind,
         proxy: validated.proxy,
+        jump: validated.jump,
         advanced: validated.advanced,
         notes: validated.notes,
         is_favorite: false,
@@ -255,6 +259,7 @@ fn resolve_profile(
         private_key_path,
         private_key_passphrase,
         proxy: profile.proxy,
+        jump: profile.jump,
         advanced: profile.advanced,
     })
 }

@@ -8,7 +8,7 @@ use tokio::sync::Mutex;
 use crate::app_error::AppError;
 use crate::commands::{TerminalConnectRequest, TerminalResizeRequest, TerminalWriteRequest};
 use crate::events::{TerminalConnectProgressEvent, TerminalOutputEvent, TerminalStateChangedEvent};
-use crate::terminal::session::{OpenProgress, TerminalSession};
+use crate::terminal::session::{OpenProgress, TerminalOutputDecoder, TerminalSession};
 
 type SessionStore = Arc<Mutex<HashMap<String, Arc<TerminalSession>>>>;
 
@@ -45,6 +45,7 @@ impl TerminalManager {
         });
         let (session, reader) = TerminalSession::open(app.clone(), request, progress).await?;
         let session_id = session.id.clone();
+        let terminal_encoding = session.terminal_encoding().to_string();
         self.sessions
             .lock()
             .await
@@ -55,6 +56,7 @@ impl TerminalManager {
             request_id,
             reader,
             self.sessions.clone(),
+            terminal_encoding,
         );
 
         Ok(session_id)
@@ -179,21 +181,41 @@ fn spawn_reader(
     request_id: Option<String>,
     mut reader: ChannelReadHalf,
     sessions: SessionStore,
+    terminal_encoding: String,
 ) {
     tauri::async_runtime::spawn(async move {
         let mut exit_status = None;
+        let mut decoder = match TerminalOutputDecoder::new(&terminal_encoding) {
+            Ok(decoder) => decoder,
+            Err(error) => {
+                emit_terminal_error(&app, &session_id, &request_id, &error);
+                sessions.lock().await.remove(&session_id);
+                let _ = app.emit(
+                    crate::events::TERMINAL_STATE_CHANGED,
+                    TerminalStateChangedEvent {
+                        session_id,
+                        request_id,
+                        state: "closed".to_string(),
+                        exit_status: None,
+                    },
+                );
+                return;
+            }
+        };
+        let mut decode_error = None;
 
         while let Some(message) = reader.wait().await {
             match message {
                 ChannelMsg::Data { data } | ChannelMsg::ExtendedData { data, .. } => {
-                    let _ = app.emit(
-                        crate::events::TERMINAL_OUTPUT,
-                        TerminalOutputEvent {
-                            session_id: session_id.clone(),
-                            request_id: request_id.clone(),
-                            data: data.to_vec(),
-                        },
-                    );
+                    match decoder.decode(&data, false) {
+                        Ok(decoded) => {
+                            emit_terminal_output(&app, &session_id, &request_id, decoded);
+                        }
+                        Err(error) => {
+                            decode_error = Some(error);
+                            break;
+                        }
+                    }
                 }
                 ChannelMsg::ExitStatus { exit_status: code } => {
                     exit_status = Some(code);
@@ -202,6 +224,17 @@ fn spawn_reader(
                 ChannelMsg::Close => break,
                 _ => {}
             }
+        }
+
+        match decode_error {
+            Some(error) => emit_terminal_error(&app, &session_id, &request_id, &error),
+            None => match decoder.decode(&[], true) {
+                Ok(tail) if !tail.is_empty() => {
+                    emit_terminal_output(&app, &session_id, &request_id, tail);
+                }
+                Ok(_) => {}
+                Err(error) => emit_terminal_error(&app, &session_id, &request_id, &error),
+            },
         }
 
         sessions.lock().await.remove(&session_id);
@@ -215,6 +248,36 @@ fn spawn_reader(
             },
         );
     });
+}
+
+fn emit_terminal_output(
+    app: &AppHandle,
+    session_id: &str,
+    request_id: &Option<String>,
+    data: Vec<u8>,
+) {
+    let _ = app.emit(
+        crate::events::TERMINAL_OUTPUT,
+        TerminalOutputEvent {
+            session_id: session_id.to_string(),
+            request_id: request_id.clone(),
+            data,
+        },
+    );
+}
+
+fn emit_terminal_error(
+    app: &AppHandle,
+    session_id: &str,
+    request_id: &Option<String>,
+    error: &AppError,
+) {
+    emit_terminal_output(
+        app,
+        session_id,
+        request_id,
+        format!("\r\n{}\r\n", error.message).into_bytes(),
+    );
 }
 
 #[cfg(test)]

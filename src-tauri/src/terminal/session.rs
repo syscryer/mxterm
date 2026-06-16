@@ -3,6 +3,7 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
+use encoding_rs::{CoderResult, Decoder, Encoding};
 use russh::client;
 use russh::keys::{load_secret_key, PrivateKeyWithHashAlg};
 use russh::{ChannelMsg, ChannelReadHalf, ChannelWriteHalf, Disconnect};
@@ -15,7 +16,10 @@ use uuid::Uuid;
 
 use crate::app_error::AppError;
 use crate::commands::TerminalConnectRequest;
-use crate::connections::{ConnectionAdvancedConfig, ConnectionProxyConfig, ConnectionProxyKind};
+use crate::connections::{
+    normalize_terminal_encoding, ConnectionAdvancedConfig, ConnectionProxyConfig,
+    ConnectionProxyKind,
+};
 use crate::known_hosts::{host_key_info, KnownHostCheck, KnownHostStore};
 use crate::ssh_config::{
     app_error_for_host_key_changed, app_error_for_host_key_unknown, known_host_store_path,
@@ -86,6 +90,7 @@ pub struct TerminalSession {
     pub host: String,
     pub port: u16,
     pub username: String,
+    terminal_encoding: String,
     client: SshHandle,
     writer: Mutex<ChannelWriter>,
 }
@@ -107,6 +112,11 @@ pub struct ReusableExecSession {
     client: SshHandle,
 }
 
+pub(crate) struct TerminalOutputDecoder {
+    decoder: Decoder,
+    terminal_encoding: String,
+}
+
 impl TerminalSession {
     pub async fn open(
         app: AppHandle,
@@ -117,7 +127,9 @@ impl TerminalSession {
         let host = config.host.clone();
         let port = config.port;
         let username = config.username.clone();
+        let terminal_encoding = normalize_terminal_encoding(&config.advanced.terminal_encoding)?;
         let auth_method = auth_method(&config)?;
+        terminal_encoding_for_label(&terminal_encoding)?;
 
         let ssh_config = Arc::new(client::Config {
             keepalive_interval: Some(duration_from_ms(config.advanced.keepalive_interval_ms)),
@@ -219,6 +231,7 @@ impl TerminalSession {
                 host,
                 port,
                 username,
+                terminal_encoding,
                 client,
                 writer: Mutex::new(writer),
             },
@@ -226,9 +239,14 @@ impl TerminalSession {
         ))
     }
 
+    pub(crate) fn terminal_encoding(&self) -> &str {
+        &self.terminal_encoding
+    }
+
     pub async fn write(&self, data: String) -> Result<(), AppError> {
+        let bytes = encode_terminal_input(&self.terminal_encoding, &data)?;
         let writer = self.writer.lock().await;
-        writer.data_bytes(data.into_bytes()).await.map_err(|error| {
+        writer.data_bytes(bytes).await.map_err(|error| {
             AppError::new("terminal_write_failed", "终端输入发送失败。", error, true)
         })
     }
@@ -252,6 +270,22 @@ impl TerminalSession {
             .map_err(|error| {
                 AppError::new("terminal_close_failed", "终端连接关闭失败。", error, true)
             })
+    }
+}
+
+impl TerminalOutputDecoder {
+    pub(crate) fn new(terminal_encoding: &str) -> Result<Self, AppError> {
+        let terminal_encoding = normalize_terminal_encoding(terminal_encoding)?;
+        let encoding = terminal_encoding_for_label(&terminal_encoding)?;
+
+        Ok(Self {
+            decoder: encoding.new_decoder_without_bom_handling(),
+            terminal_encoding,
+        })
+    }
+
+    pub(crate) fn decode(&mut self, data: &[u8], last: bool) -> Result<Vec<u8>, AppError> {
+        decode_terminal_output_with_decoder(&mut self.decoder, &self.terminal_encoding, data, last)
     }
 }
 
@@ -550,6 +584,7 @@ fn resolved_config_from_request(request: &TerminalConnectRequest) -> ResolvedSsh
             private_key_path: request.private_key_path.clone(),
             private_key_passphrase: request.private_key_passphrase.clone(),
             proxy: ConnectionProxyConfig::default(),
+            jump: crate::connections::ConnectionJumpConfig::default(),
             advanced: ConnectionAdvancedConfig::default(),
         })
 }
@@ -823,6 +858,87 @@ fn duration_from_ms(ms: u64) -> Duration {
     Duration::from_millis(ms.max(1))
 }
 
+fn terminal_encoding_for_label(label: &str) -> Result<&'static Encoding, AppError> {
+    let normalized = normalize_terminal_encoding(label)?;
+    Encoding::for_label_no_replacement(normalized.as_bytes()).ok_or_else(|| {
+        AppError::new(
+            "connection_terminal_encoding_invalid",
+            "终端显示编码无效。",
+            format!("terminal_encoding={normalized}"),
+            true,
+        )
+    })
+}
+
+#[cfg(test)]
+fn decode_terminal_output(
+    terminal_encoding: &str,
+    data: &[u8],
+    last: bool,
+) -> Result<Vec<u8>, AppError> {
+    let mut decoder = TerminalOutputDecoder::new(terminal_encoding)?;
+    decoder.decode(data, last)
+}
+
+fn decode_terminal_output_with_decoder(
+    decoder: &mut Decoder,
+    terminal_encoding: &str,
+    data: &[u8],
+    last: bool,
+) -> Result<Vec<u8>, AppError> {
+    let capacity = decoder
+        .max_utf8_buffer_length(data.len())
+        .ok_or_else(|| terminal_encoding_buffer_error(terminal_encoding))?;
+    let mut output = String::with_capacity(capacity);
+    let (result, read, had_errors) = decoder.decode_to_string(data, &mut output, last);
+
+    if result == CoderResult::OutputFull || read != data.len() {
+        return Err(terminal_encoding_buffer_error(terminal_encoding));
+    }
+
+    if had_errors {
+        return Err(AppError::new(
+            "terminal_encoding_decode_failed",
+            "终端输出解码失败。",
+            format!(
+                "terminal_encoding={terminal_encoding}; data_len={}",
+                data.len()
+            ),
+            true,
+        ));
+    }
+
+    Ok(output.into_bytes())
+}
+
+fn encode_terminal_input(terminal_encoding: &str, data: &str) -> Result<Vec<u8>, AppError> {
+    let encoding = terminal_encoding_for_label(terminal_encoding)?;
+    let (encoded, _, had_errors) = encoding.encode(data);
+    if had_errors {
+        return Err(AppError::new(
+            "terminal_encoding_encode_failed",
+            "终端输入编码失败。",
+            format!(
+                "terminal_encoding={}; input_len={}",
+                normalize_terminal_encoding(terminal_encoding)?,
+                data.len()
+            ),
+            true,
+        ));
+    }
+
+    Ok(encoded.into_owned())
+}
+
+fn terminal_encoding_buffer_error(terminal_encoding: &str) -> AppError {
+    AppError::new(
+        "terminal_encoding_buffer_failed",
+        "终端编码缓冲区计算失败。",
+        format!("terminal_encoding={terminal_encoding}"),
+        true,
+    )
+}
+
 fn to_russh_error(error: AppError) -> russh::Error {
     russh::Error::IO(std::io::Error::new(
         std::io::ErrorKind::Other,
@@ -969,5 +1085,19 @@ mod tests {
         assert_eq!(mapped.message, original.message);
         assert_eq!(mapped.raw_message, original.raw_message);
         assert!(mapped.recoverable);
+    }
+
+    #[test]
+    fn terminal_output_decodes_gbk_to_utf8_bytes() {
+        let decoded = decode_terminal_output("gbk", &[0xc4, 0xe3, 0xba, 0xc3], false).unwrap();
+
+        assert_eq!(decoded, "你好".as_bytes());
+    }
+
+    #[test]
+    fn terminal_input_encodes_unicode_to_gbk_bytes() {
+        let encoded = encode_terminal_input("gbk", "你好").unwrap();
+
+        assert_eq!(encoded, vec![0xc4, 0xe3, 0xba, 0xc3]);
     }
 }

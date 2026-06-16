@@ -45,6 +45,7 @@ inline_private_key_path: Option<String>
 inline_private_key_passphrase: Option<String>
 prompt_auth_kind: Option<ConnectionAuthKind>
 proxy: ConnectionProxyConfig
+jump: ConnectionJumpConfig
 advanced: ConnectionAdvancedConfig
 notes: Option<String>
 is_favorite: Option<bool>
@@ -60,6 +61,22 @@ private_key_passphrase: Option<String>
 ```
 
 `ConnectionProfile` adds `id`, normalized `name`, `is_favorite`, `last_connected_at`, `remote_os_id`, `remote_os_name`, `remote_os_version`, `created_at`, and `updated_at`.
+
+`ConnectionJumpConfig` fields:
+
+```rust
+kind: ConnectionJumpKind // "none" | "ssh_jump"
+jump_connection_id: Option<String>
+```
+
+`ConnectionAdvancedConfig` fields:
+
+```rust
+connect_timeout_ms: u64
+auth_timeout_ms: u64
+keepalive_interval_ms: u64
+terminal_encoding: String // utf-8 | gbk | gb18030 | big5 | euc-jp | iso-2022-jp | shift-jis | euc-kr
+```
 
 `ConnectionFavoriteRequest` fields:
 
@@ -125,7 +142,7 @@ latency_ms: Option<u64>
 reachable: bool
 ```
 
-`TerminalConnectRequest` accepts a direct SSH request plus optional `connection_id`. When `connection_id` is present and non-empty, Rust resolves the saved connection as authoritative, then combines connection target fields, credential mode, saved or inline credential material, proxy config, advanced timeouts, and any prompt credential supplied by the request.
+`TerminalConnectRequest` accepts a direct SSH request plus optional `connection_id`. When `connection_id` is present and non-empty, Rust resolves the saved connection as authoritative, then combines connection target fields, credential mode, saved or inline credential material, proxy config, SSH jump config, advanced timeouts, and any prompt credential supplied by the request.
 
 ### 3. Contracts
 
@@ -136,6 +153,7 @@ reachable: bool
 - `ConnectionAuthKind` uses `#[serde(rename_all = "snake_case")]`; frontend values must be `password` or `private_key`.
 - `ConnectionCredentialMode` uses `saved`, `inline`, or `prompt`.
 - `ConnectionProxyKind` uses `none`, `http_connect`, or `socks5`.
+- `ConnectionJumpKind` uses `none` or `ssh_jump`.
 - Empty optional strings are normalized to `None`; non-empty target, credential, proxy, and note fields are trimmed.
 - Blank `name` defaults to `{username}@{host}`.
 - `is_favorite` is the explicit favorite flag. `last_connected_at` stores the last successful terminal connection timestamp. Upserting an existing connection must preserve both values unless the input explicitly supplies them.
@@ -147,7 +165,12 @@ reachable: bool
 - `credential_mode=prompt` stores no password or private key passphrase; runtime prompt credentials must be supplied by `TerminalConnectRequest` or `ConnectionRuntimeCredentialRequest`.
 - Password auth clears private-key fields; private-key auth clears password fields.
 - HTTP CONNECT and SOCKS5 proxy modes require proxy host and port. `none` clears proxy auth and proxy target fields.
+- SSH jump config is stored as `jump: ConnectionJumpConfig`. `jump.kind = "ssh_jump"` requires a non-empty `jump_connection_id`; `jump.kind = "none"` clears `jump_connection_id`.
+- SSH jump is currently persisted and carried through `ResolvedSshConfig` only. This contract does not mean the active terminal, test, or remote-file path already opens a bastion `direct-tcpip` channel; that transport behavior must be implemented as a later explicit change.
 - Advanced timeouts are milliseconds. Keep validation ranges in Rust; React may edit numbers as strings but Rust is authoritative.
+- Advanced terminal encoding is stored in `advanced.terminal_encoding`. Rust must normalize and validate the encoding, then carry it through `ResolvedSshConfig` into interactive terminal sessions.
+- Interactive terminal output is decoded in Rust from the configured terminal encoding into UTF-8 bytes before emitting `terminal:output`. Interactive terminal input is encoded in Rust from the frontend Unicode string into the configured terminal encoding before writing to the SSH channel.
+- Remote-file exec/read/write paths do not use `advanced.terminal_encoding`; they keep their own UTF-8 or raw-byte file semantics.
 - The first version intentionally stores passwords and private-key passphrases in clear text. Do not add masking/encryption unless the task explicitly introduces the lock-screen or secret-store feature.
 - All command failures return `AppError { code, message, raw_message, recoverable }`.
 - `credential_delete` must check saved connection references and return `credential_in_use` instead of deleting a credential currently referenced by `credential_mode=saved`.
@@ -173,9 +196,13 @@ reachable: bool
 | `credential_mode == inline`, private-key auth, and private key path is blank | `connection_private_key_missing` | true |
 | Proxy mode requires proxy target but host is blank | `connection_proxy_host_missing` | true |
 | Proxy mode requires proxy target but port is blank / invalid | `connection_proxy_port_invalid` | true |
+| SSH jump mode has no saved jump connection id | `connection_jump_missing` | true |
 | Advanced connect timeout outside allowed range | `connection_connect_timeout_invalid` | true |
 | Advanced auth timeout outside allowed range | `connection_auth_timeout_invalid` | true |
 | Advanced keepalive interval outside allowed range | `connection_keepalive_invalid` | true |
+| Advanced terminal encoding is not supported | `connection_terminal_encoding_invalid` | true |
+| Terminal output cannot decode with configured encoding | `terminal_encoding_decode_failed` | true |
+| Terminal input cannot encode with configured encoding | `terminal_encoding_encode_failed` | true |
 | Delete/open unknown connection id | `connection_missing` | false |
 | Transient dialog test has invalid profile input | same validation code as `connection_upsert` | true |
 | Credential name is blank | `credential_name_missing` | true |
@@ -201,19 +228,21 @@ reachable: bool
 
 - Good: `connection_upsert` receives inline password auth, trims `host` and `username`, defaults `name`, clears private-key fields, persists the JSON store, and returns the saved profile.
 - Good: `connection_test_profile` receives the unsaved dialog form, validates it, resolves inline or saved credential material, opens and closes a test SSH session, and leaves `connections.json` unchanged.
-- Good: `terminal_connect` receives `connection_id` for a saved-credential connection plus stale frontend host fields; Rust loads the saved profile, resolves the credential, verifies the host key, applies proxy/timeout settings, and uses the saved values.
+- Good: `terminal_connect` receives `connection_id` for a saved-credential connection plus stale frontend host fields; Rust loads the saved profile, resolves the credential, verifies the host key, carries the proxy/jump/timeout settings, and uses the saved values.
 - Base: `connection_test` receives prompt credentials, resolves the saved connection with those runtime credentials, opens a reusable exec session, closes it, and returns `{ ok: true }`.
 - Bad: `credential_delete` deletes a credential referenced by an existing connection, a dialog test calls `ConnectionStore::upsert` before connecting, or a command handler accepts frontend-supplied raw credentials for remote-file commands.
 
 ### 6. Tests Required
 
-- Unit-test connection validation for blank host, blank username, zero port, credential modes, proxy validation, advanced validation, and legacy migration.
+- Unit-test connection validation for blank host, blank username, zero port, credential modes, proxy validation, SSH jump validation, advanced validation, and legacy migration.
+- Unit-test terminal encoding validation plus SSH terminal output decode and input encode helpers.
 - Unit-test credential validation for blank name, missing password, missing private key, auth-field clearing, and JSON store round-trip/delete.
 - Unit-test known-host store behavior for unknown, trusted, and changed fingerprints.
-- Unit-test saved connection resolution for saved, inline, prompt, missing credential, proxy, and advanced timeout behavior.
+- Unit-test saved connection resolution for saved, inline, prompt, missing credential, proxy, SSH jump round-trip, and advanced timeout behavior.
 - Unit-test terminal connection validation for missing runtime prompt credentials and invalid direct SSH request fields.
 - Unit-test remote system parsing for Ubuntu/CentOS-style `/etc/os-release` payloads and connection-store round trip/preservation of `remote_os_*` fields.
 - Source-check that `connection_test_profile`, `resolve_transient_connection`, and the frontend `connectionTestProfile` wrapper are registered together, and that dialog testing does not call `saveConnection` / `connectionUpsert`.
+- Source-check that terminal encoding is present in frontend types, advanced-tab UI, connection normalization, Rust profile validation, `ResolvedSshConfig`, and terminal session read/write paths.
 - Run `cargo test --manifest-path src-tauri/Cargo.toml` and `cargo check --manifest-path src-tauri/Cargo.toml` after changing command payloads or storage behavior.
 
 ### 7. Wrong vs Correct

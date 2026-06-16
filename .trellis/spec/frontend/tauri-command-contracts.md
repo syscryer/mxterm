@@ -51,10 +51,15 @@ proxy: {
   username?: string | null
   password?: string | null
 }
+jump: {
+  kind: "none" | "ssh_jump"
+  jump_connection_id?: string | null
+}
 advanced: {
   connect_timeout_ms: number
   auth_timeout_ms: number
   keepalive_interval_ms: number
+  terminal_encoding: "utf-8" | "gbk" | "gb18030" | "big5" | "euc-jp" | "iso-2022-jp" | "shift-jis" | "euc-kr"
 }
 notes?: string
 is_favorite?: boolean
@@ -107,13 +112,17 @@ type HostKeyInfo = {
 - Keep Tauri event names centralized in `src/shared/tauri/events.ts`. Event names must use allowed characters only; use `terminal:output`, `terminal:state_changed`, and `terminal:connect_progress`, not dot-separated names.
 - Wrapper argument objects must match Rust command parameter names exactly, for example `{ request }`, `{ id }`, and `{ sessionId }`.
 - UI state may use empty strings while editing, but `useConnections` and `useCredentials` must trim optional fields and convert blanks to `undefined` before calling `connectionUpsert` or `credentialUpsert`.
-- Connection profiles own target and behavior fields: group, host, port, username, credential mode, proxy, advanced settings, and notes.
+- Connection profiles own target and behavior fields: group, host, port, username, credential mode, proxy, SSH jump reference, advanced settings, and notes.
 - Connection profiles also own repository UI metadata: `is_favorite` is the explicit favorite flag and `last_connected_at` is the last successful terminal connection timestamp. Do not infer favorites from notes or recent activity from `updated_at`.
 - Connection profiles also persist detected remote system metadata: `remote_os_id`, `remote_os_name`, and `remote_os_version`. UI system icons must prefer these fields before falling back to local name/notes/group text inference.
 - Credential profiles own only authentication material: password or private key path/passphrase plus local notes. They must not store host, port, or username.
 - When opening a saved connection, the connection-preparation flow should pass `connection_id` plus prompt credentials only when `credential_mode === "prompt"`; Rust treats the saved profile as authoritative.
 - After a terminal connection succeeds, trigger `connectionProbeSystem(...)` in the background with the same runtime prompt credential payload when needed, then call `connectionMarkConnected(connection.id)` so the repository's recent views sort by real connection activity. Probe failures must not close or fail an already connected terminal. Favorite toggles must call `connectionSetFavorite(...)` and preserve repository metadata when editing or moving a connection.
 - `ConnectionDialog` must test the current form with `connectionTestProfile(input)`. It must not call `connectionUpsert`, `saveConnection`, or `connectionTest({ connection_id })` for unsaved dialog tests, because testing must not persist a profile or create a connection id. It must show validation and connection errors as dialog feedback instead of writing them into a terminal.
+- `ConnectionDialog` exposes network path settings under the `网络路径` tab. The connection method selector maps to exactly one persisted path: direct saves `proxy.kind = "none"` and `jump.kind = "none"`; network proxy saves HTTP CONNECT or SOCKS5 under `proxy` and clears `jump`; SSH jump saves `jump.kind = "ssh_jump"` plus `jump_connection_id` and clears `proxy`.
+- SSH jump is currently a stored profile reference only. The frontend may show the entry and persist the `jump` payload, but it must not imply that the terminal or remote-file SSH transport already opens a bastion `direct-tcpip` channel.
+- When `jump.kind === "ssh_jump"`, `ConnectionDialog` must require a saved connection id before save or test. Missing selection is shown as dialog feedback on the `网络路径` tab instead of silently downgrading the connection to direct.
+- `ConnectionDialog` exposes terminal display encoding under the `高级` tab only because Rust terminal sessions perform both SSH output decoding and terminal input encoding. The frontend sends `advanced.terminal_encoding`; it must not attempt to recode terminal bytes in `TerminalPanel`.
 - `ConnectionDialog` must treat `host_key_unknown` and `host_key_changed` from `connectionTestProfile(input)` as recoverable confirmation states, not ordinary errors. Parse the backend `raw_message` through the shared host-key parser, render host, port, algorithm, and SHA256 fingerprints in the compact feedback card, and never show the raw JSON payload to users.
 - Host-key confirmation UI must call `knownHostTrust(hostKey)` with the `HostKeyInfo` returned by a recoverable host-key error; do not synthesize fingerprints on the frontend.
 - Connection latency probing must go through `connectionProbeLatency(connection.id)`. The UI sends only a saved connection id; Rust reloads the saved host/port and never needs credential fields for this probe.
@@ -147,6 +156,8 @@ type HostKeyInfo = {
 | Credential mode changes to `prompt` | Clear saved/inline secrets and collect runtime credentials only on the connection step. |
 | Auth kind changes to `password` | Clear private-key fields in form state. |
 | Auth kind changes to `private_key` | Clear password in form state. |
+| Network path changes to SSH jump but no jump connection is selected | Keep the dialog open, switch to the `网络路径` tab, show inline dialog feedback, and do not save, test, or normalize the payload to direct. |
+| `connection_terminal_encoding_invalid` | Keep the dialog open, switch to the `高级` tab, and show the Rust validation message. |
 | `terminalConnect` fails before session id exists | Keep the connection-preparation tab open and show structured failure, retry, edit, and close actions. |
 | Same-connection new terminal direct connect fails | Keep the direct terminal tab visible with a compact failed state; do not replace it with the connection-preparation page. |
 | Shell output arrives before or immediately after `terminalConnect` resolves | Capture warmup output by `request_id`, pass it into `TerminalPanel` as initial output, and append any late handoff bytes until the xterm listener is ready. |
@@ -162,6 +173,8 @@ type HostKeyInfo = {
 ### 6. Tests Required
 
 - Run `pnpm check` after changing command wrappers, connection types, credential types, terminal request types, or component props that carry command payloads.
+- Run `node scripts/check-connection-jump-source.mjs` after changing SSH jump profile fields, network path UI, connection normalization, or backend jump persistence.
+- Run `node scripts/check-connection-terminal-encoding-source.mjs` after changing terminal encoding profile fields, advanced-tab UI, connection normalization, or backend terminal encoding behavior.
 - Run `node scripts/check-connection-dialog-host-key-feedback.mjs` after changing `ConnectionDialog`, host-key error parsing, or connection-test feedback styles.
 - Run `node scripts/check-remote-file-editor-source.mjs` after changing `ConnectionDialog`, `WorkspaceShell` dialog test handlers, or connection command wrappers so the no-save dialog-test guard is checked.
 - Run `node scripts/check-remote-file-editor-source.mjs` after changing workspace terminal tab creation, so the same-connection new terminal path stays separate from the connection-preparation page.

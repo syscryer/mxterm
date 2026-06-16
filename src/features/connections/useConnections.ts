@@ -11,7 +11,9 @@ import {
 import { hasTauriRuntime } from "../../shared/tauri/runtime";
 import {
   defaultAdvancedConfig,
+  defaultJumpConfig,
   defaultProxyConfig,
+  normalizeTerminalEncoding,
   type ConnectionProfile,
   type ConnectionProfileInput,
   type ConnectionRuntimeCredentialRequest,
@@ -29,6 +31,7 @@ const demoConnections: ConnectionProfile[] = [
     inline_auth_kind: "password",
     inline_password: "",
     proxy: defaultProxyConfig,
+    jump: defaultJumpConfig,
     advanced: defaultAdvancedConfig,
     notes: "开发 收藏 k8s",
     is_favorite: true,
@@ -47,6 +50,7 @@ const demoConnections: ConnectionProfile[] = [
     inline_auth_kind: "password",
     inline_password: "",
     proxy: defaultProxyConfig,
+    jump: defaultJumpConfig,
     advanced: defaultAdvancedConfig,
     notes: "测试 qa",
     is_favorite: false,
@@ -66,6 +70,7 @@ const demoConnections: ConnectionProfile[] = [
     inline_private_key_path: "~/.ssh/id_ed25519",
     inline_private_key_passphrase: "",
     proxy: defaultProxyConfig,
+    jump: defaultJumpConfig,
     advanced: defaultAdvancedConfig,
     notes: "跳板 tailscale bastion",
     is_favorite: false,
@@ -85,6 +90,10 @@ const demoConnections: ConnectionProfile[] = [
     inline_private_key_path: "~/.ssh/cloud.pem",
     inline_private_key_passphrase: "",
     proxy: defaultProxyConfig,
+    jump: {
+      kind: "ssh_jump",
+      jump_connection_id: "demo-bastion",
+    },
     advanced: defaultAdvancedConfig,
     notes: "云 aws",
     is_favorite: false,
@@ -102,6 +111,7 @@ const demoConnections: ConnectionProfile[] = [
     credential_mode: "prompt",
     prompt_auth_kind: "password",
     proxy: defaultProxyConfig,
+    jump: defaultJumpConfig,
     advanced: defaultAdvancedConfig,
     notes: "开发 k8s preview",
     is_favorite: false,
@@ -120,6 +130,7 @@ const demoConnections: ConnectionProfile[] = [
     inline_auth_kind: "password",
     inline_password: "",
     proxy: defaultProxyConfig,
+    jump: defaultJumpConfig,
     advanced: defaultAdvancedConfig,
     notes: "stage 测试",
     is_favorite: false,
@@ -354,6 +365,7 @@ export function normalizeConnectionInput(input: ConnectionProfileInput): Connect
             username: trim(input.proxy?.username),
             password: trim(input.proxy?.password),
           },
+    jump: normalizeJumpConfig(input.jump),
     advanced: {
       auth_timeout_ms:
         Number(input.advanced?.auth_timeout_ms) || defaultAdvancedConfig.auth_timeout_ms,
@@ -362,6 +374,7 @@ export function normalizeConnectionInput(input: ConnectionProfileInput): Connect
       keepalive_interval_ms:
         Number(input.advanced?.keepalive_interval_ms) ||
         defaultAdvancedConfig.keepalive_interval_ms,
+      terminal_encoding: normalizeTerminalEncoding(input.advanced?.terminal_encoding),
     },
     notes: trim(input.notes),
     is_favorite: input.is_favorite,
@@ -369,6 +382,17 @@ export function normalizeConnectionInput(input: ConnectionProfileInput): Connect
     remote_os_id: trim(input.remote_os_id),
     remote_os_name: trim(input.remote_os_name),
     remote_os_version: trim(input.remote_os_version),
+  };
+}
+
+function normalizeJumpConfig(input: ConnectionProfileInput["jump"]) {
+  if (input?.kind !== "ssh_jump") {
+    return { kind: "none" as const };
+  }
+
+  return {
+    kind: "ssh_jump" as const,
+    jump_connection_id: input.jump_connection_id?.trim() || "",
   };
 }
 

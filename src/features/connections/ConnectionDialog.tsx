@@ -1,5 +1,18 @@
 import * as Dialog from "@radix-ui/react-dialog";
-import { AlertTriangle, CheckCircle2, Eye, EyeOff, Loader2, RefreshCw, X } from "lucide-react";
+import {
+  AlertTriangle,
+  CheckCircle2,
+  Eye,
+  EyeOff,
+  Loader2,
+  Monitor,
+  MonitorPlay,
+  Network,
+  RefreshCw,
+  Terminal,
+  TerminalSquare,
+  X,
+} from "lucide-react";
 import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 
 import { ConfirmDialog } from "../../shared/ui/ConfirmDialog";
@@ -9,12 +22,16 @@ import type {
   ConnectionProfile,
   ConnectionProfileInput,
   ConnectionProxyKind,
+  ConnectionTerminalEncoding,
   CredentialProfile,
   HostKeyInfo,
 } from "./connectionTypes";
 import {
   defaultAdvancedConfig,
+  defaultJumpConfig,
   defaultProxyConfig,
+  normalizeTerminalEncoding,
+  terminalEncodingOptions,
 } from "./connectionTypes";
 import {
   parseHostKeyError,
@@ -23,6 +40,7 @@ import {
 
 interface ConnectionDialogProps {
   connection: ConnectionProfile | null;
+  connections: ConnectionProfile[];
   credentials: CredentialProfile[];
   defaultGroup?: string | null;
   groups: ConnectionDialogGroup[];
@@ -48,6 +66,7 @@ interface GroupOption {
 
 type ConnectionDialogTab = "basic" | "proxy" | "advanced";
 type ConnectionTestState = "idle" | "running" | "success" | "error" | "host-key";
+type ConnectionNetworkPathMode = "direct" | "proxy" | "ssh_jump";
 
 interface DialogFeedback {
   detail: string;
@@ -71,6 +90,7 @@ const emptyForm: ConnectionProfileInput = {
   inline_private_key_path: "",
   inline_private_key_passphrase: "",
   prompt_auth_kind: "password",
+  jump: defaultJumpConfig,
   proxy: defaultProxyConfig,
   advanced: defaultAdvancedConfig,
   notes: "",
@@ -78,6 +98,7 @@ const emptyForm: ConnectionProfileInput = {
 
 export function ConnectionDialog({
   connection,
+  connections,
   credentials,
   defaultGroup,
   groups,
@@ -127,6 +148,14 @@ export function ConnectionDialog({
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    const validation = validateNetworkPath(form);
+    if (validation) {
+      setActiveTab("proxy");
+      setTestState("error");
+      setFeedback(validation);
+      return;
+    }
+
     await runAction(async () => {
       await onSave(normalizeForSubmit(form, credentials));
       onClose();
@@ -135,6 +164,14 @@ export function ConnectionDialog({
 
   async function testConnection() {
     if (busyRef.current) {
+      return;
+    }
+
+    const validation = validateNetworkPath(form);
+    if (validation) {
+      setActiveTab("proxy");
+      setTestState("error");
+      setFeedback(validation);
       return;
     }
 
@@ -272,17 +309,17 @@ export function ConnectionDialog({
               </header>
 
               <div className="protocol-switch" aria-label="连接协议">
-                <button className="protocol-chip active" type="button" aria-current="true">SSH</button>
-                <button className="protocol-chip" type="button" disabled title="即将支持">RDP <span className="chip-tag">即将</span></button>
-                <button className="protocol-chip" type="button" disabled title="即将支持">Telnet <span className="chip-tag">即将</span></button>
-                <button className="protocol-chip" type="button" disabled title="即将支持">VNC <span className="chip-tag">即将</span></button>
-                <button className="protocol-chip" type="button" disabled title="即将支持">隧道 <span className="chip-tag">即将</span></button>
+                <button className="protocol-chip active" type="button" aria-current="true"><Terminal className="ui-icon" aria-hidden="true" />SSH</button>
+                <button className="protocol-chip" type="button" disabled title="即将支持"><Monitor className="ui-icon" aria-hidden="true" />RDP <span className="chip-tag">即将</span></button>
+                <button className="protocol-chip" type="button" disabled title="即将支持"><TerminalSquare className="ui-icon" aria-hidden="true" />Telnet <span className="chip-tag">即将</span></button>
+                <button className="protocol-chip" type="button" disabled title="即将支持"><MonitorPlay className="ui-icon" aria-hidden="true" />VNC <span className="chip-tag">即将</span></button>
+                <button className="protocol-chip" type="button" disabled title="即将支持"><Network className="ui-icon" aria-hidden="true" />隧道 <span className="chip-tag">即将</span></button>
               </div>
 
               <nav className="connection-dialog-tabs" aria-label="连接配置页签">
                 {[
                   ["basic", "基本"],
-                  ["proxy", "代理"],
+                  ["proxy", "网络路径"],
                   ["advanced", "高级"],
                 ].map(([id, label]) => (
                   <button
@@ -709,32 +746,68 @@ export function ConnectionDialog({
 
   function renderProxyTab() {
     const proxy = form.proxy || defaultProxyConfig;
+    const jump = form.jump || defaultJumpConfig;
+    const networkPathMode: ConnectionNetworkPathMode =
+      jump.kind === "ssh_jump" ? "ssh_jump" : proxy.kind === "none" ? "direct" : "proxy";
+    const jumpCandidates = connections.filter((item) => item.id !== connection?.id);
+
     return (
       <section className="dialog-section dialog-section-last">
-        <div className="dialog-section-title">代理</div>
+        <div className="dialog-section-title">网络路径</div>
 
         <label>
-          <span>代理类型</span>
+          <span>连接方式</span>
           <select
-            value={proxy.kind}
-            onChange={(event) =>
+            value={networkPathMode}
+            onChange={(event) => {
+              const mode = event.target.value as ConnectionNetworkPathMode;
               setForm({
                 ...form,
-                proxy: {
-                  ...defaultProxyConfig,
-                  kind: event.target.value as ConnectionProxyKind,
-                },
-              })
-            }
+                proxy:
+                  mode === "proxy"
+                    ? {
+                        ...defaultProxyConfig,
+                        kind: "http_connect",
+                      }
+                    : defaultProxyConfig,
+                jump:
+                  mode === "ssh_jump"
+                    ? {
+                        kind: "ssh_jump",
+                        jump_connection_id: jumpCandidates[0]?.id || "",
+                      }
+                    : defaultJumpConfig,
+              });
+            }}
           >
-            <option value="none">不使用代理</option>
-            <option value="http_connect">HTTP CONNECT</option>
-            <option value="socks5">SOCKS5</option>
+            <option value="direct">直连</option>
+            <option value="proxy">网络代理</option>
+            <option value="ssh_jump">SSH 跳板机</option>
           </select>
         </label>
 
-        {proxy.kind !== "none" ? (
+        {networkPathMode === "proxy" ? (
           <>
+            <label>
+              <span>代理类型</span>
+              <select
+                value={proxy.kind === "none" ? "http_connect" : proxy.kind}
+                onChange={(event) =>
+                  setForm({
+                    ...form,
+                    proxy: {
+                      ...defaultProxyConfig,
+                      kind: event.target.value as ConnectionProxyKind,
+                    },
+                    jump: defaultJumpConfig,
+                  })
+                }
+              >
+                <option value="http_connect">HTTP CONNECT</option>
+                <option value="socks5">SOCKS5</option>
+              </select>
+            </label>
+
             <div className="form-grid">
               <label>
                 <span>代理主机</span>
@@ -744,6 +817,7 @@ export function ConnectionDialog({
                     setForm({
                       ...form,
                       proxy: { ...proxy, host: event.target.value },
+                      jump: defaultJumpConfig,
                     })
                   }
                   placeholder="proxy.local"
@@ -758,6 +832,7 @@ export function ConnectionDialog({
                     setForm({
                       ...form,
                       proxy: { ...proxy, port: Number(event.target.value) || undefined },
+                      jump: defaultJumpConfig,
                     })
                   }
                   placeholder="1080"
@@ -774,6 +849,7 @@ export function ConnectionDialog({
                     setForm({
                       ...form,
                       proxy: { ...proxy, username: event.target.value },
+                      jump: defaultJumpConfig,
                     })
                   }
                 />
@@ -788,6 +864,7 @@ export function ConnectionDialog({
                       setForm({
                         ...form,
                         proxy: { ...proxy, password: event.target.value },
+                        jump: defaultJumpConfig,
                       })
                     }
                   />
@@ -807,9 +884,43 @@ export function ConnectionDialog({
               </label>
             </div>
           </>
-        ) : (
+        ) : null}
+
+        {networkPathMode === "ssh_jump" ? (
+          <>
+            <label>
+              <span>跳板机连接</span>
+              <select
+                value={jump.jump_connection_id || ""}
+                disabled={jumpCandidates.length === 0}
+                onChange={(event) =>
+                  setForm({
+                    ...form,
+                    proxy: defaultProxyConfig,
+                    jump: {
+                      kind: "ssh_jump",
+                      jump_connection_id: event.target.value,
+                    },
+                  })
+                }
+              >
+                <option value="">选择跳板机</option>
+                {jumpCandidates.map((item) => (
+                  <option key={item.id} value={item.id}>
+                    {item.name} · {item.username}@{item.host}:{item.port.toString()}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <p className="connection-dialog-note">
+              当前仅保存跳板机连接引用。
+            </p>
+          </>
+        ) : null}
+
+        {networkPathMode === "direct" ? (
           <p className="connection-dialog-note">当前连接将直接访问 SSH 主机。</p>
-        )}
+        ) : null}
       </section>
     );
   }
@@ -853,22 +964,45 @@ export function ConnectionDialog({
             />
           </label>
         </div>
-        <label>
-          <span>心跳间隔（毫秒）</span>
-          <input
-            inputMode="numeric"
-            value={advanced.keepalive_interval_ms.toString()}
-            onChange={(event) =>
-              setForm({
-                ...form,
-                advanced: {
-                  ...advanced,
-                  keepalive_interval_ms: Number(event.target.value) || 20_000,
-                },
-              })
-            }
-          />
-        </label>
+        <div className="form-grid form-grid-wide">
+          <label>
+            <span>心跳间隔（毫秒）</span>
+            <input
+              inputMode="numeric"
+              value={advanced.keepalive_interval_ms.toString()}
+              onChange={(event) =>
+                setForm({
+                  ...form,
+                  advanced: {
+                    ...advanced,
+                    keepalive_interval_ms: Number(event.target.value) || 20_000,
+                  },
+                })
+              }
+            />
+          </label>
+          <label>
+            <span>终端显示编码</span>
+            <select
+              value={normalizeTerminalEncoding(advanced.terminal_encoding)}
+              onChange={(event) =>
+                setForm({
+                  ...form,
+                  advanced: {
+                    ...advanced,
+                    terminal_encoding: event.target.value as ConnectionTerminalEncoding,
+                  },
+                })
+              }
+            >
+              {terminalEncodingOptions.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+          </label>
+        </div>
       </section>
     );
   }
@@ -916,6 +1050,7 @@ function formFromConnection(connection: ConnectionProfile): ConnectionProfileInp
       connection.private_key_passphrase ||
       "",
     prompt_auth_kind: connection.prompt_auth_kind || inlineAuthKind || "password",
+    jump: connection.jump || defaultJumpConfig,
     proxy: {
       ...defaultProxyConfig,
       ...connection.proxy,
@@ -937,6 +1072,8 @@ function normalizeForSubmit(
   form: ConnectionProfileInput,
   credentials: CredentialProfile[],
 ): ConnectionProfileInput {
+  const jump = form.jump || defaultJumpConfig;
+  const proxy = form.proxy || defaultProxyConfig;
   const savedUsername =
     form.credential_mode === "saved" && form.credential_id
       ? credentials.find((credential) => credential.id === form.credential_id)?.username || ""
@@ -948,12 +1085,19 @@ function normalizeForSubmit(
     username: form.credential_mode === "saved" ? savedUsername : form.username,
     port: Number(form.port) || 22,
     proxy:
-      form.proxy.kind === "none"
+      jump.kind === "ssh_jump" || proxy.kind === "none"
         ? { kind: "none" }
         : {
-            ...form.proxy,
-            port: Number(form.proxy.port) || undefined,
+            ...proxy,
+            port: Number(proxy.port) || undefined,
           },
+    jump:
+      jump.kind === "ssh_jump"
+        ? {
+            kind: "ssh_jump",
+            jump_connection_id: jump.jump_connection_id?.trim() || "",
+          }
+        : { kind: "none" },
     advanced: {
       auth_timeout_ms:
         Number(form.advanced.auth_timeout_ms) || defaultAdvancedConfig.auth_timeout_ms,
@@ -963,7 +1107,19 @@ function normalizeForSubmit(
       keepalive_interval_ms:
         Number(form.advanced.keepalive_interval_ms) ||
         defaultAdvancedConfig.keepalive_interval_ms,
+      terminal_encoding: normalizeTerminalEncoding(form.advanced.terminal_encoding),
     },
+  };
+}
+
+function validateNetworkPath(form: ConnectionProfileInput): DialogFeedback | null {
+  if (form.jump?.kind !== "ssh_jump" || form.jump.jump_connection_id?.trim()) {
+    return null;
+  }
+
+  return {
+    detail: "SSH 跳板机模式需要选择一条已保存连接。",
+    title: "请选择跳板机连接",
   };
 }
 
@@ -1020,7 +1176,8 @@ function tabForError(error: unknown): ConnectionDialogTab {
   if (
     code === "connection_connect_timeout_invalid" ||
     code === "connection_auth_timeout_invalid" ||
-    code === "connection_keepalive_invalid"
+    code === "connection_keepalive_invalid" ||
+    code === "connection_terminal_encoding_invalid"
   ) {
     return "advanced";
   }
