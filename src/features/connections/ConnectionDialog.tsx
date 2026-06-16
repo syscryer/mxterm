@@ -15,6 +15,7 @@ import {
 } from "lucide-react";
 import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 
+import { AppSelect } from "../../shared/ui/AppSelect";
 import { ConfirmDialog } from "../../shared/ui/ConfirmDialog";
 import type {
   ConnectionAuthKind,
@@ -95,6 +96,40 @@ const emptyForm: ConnectionProfileInput = {
   advanced: defaultAdvancedConfig,
   notes: "",
 };
+
+const credentialModeOptions: Array<{
+  label: string;
+  value: ConnectionCredentialMode;
+}> = [
+  { label: "使用保存的账号", value: "saved" },
+  { label: "在此连接中保存", value: "inline" },
+  { label: "每次询问", value: "prompt" },
+];
+
+const authKindOptions: Array<{
+  label: string;
+  value: ConnectionAuthKind;
+}> = [
+  { label: "密码", value: "password" },
+  { label: "私钥", value: "private_key" },
+];
+
+const networkPathOptions: Array<{
+  label: string;
+  value: ConnectionNetworkPathMode;
+}> = [
+  { label: "直连", value: "direct" },
+  { label: "网络代理", value: "proxy" },
+  { label: "SSH 跳板机", value: "ssh_jump" },
+];
+
+const proxyKindOptions: Array<{
+  label: string;
+  value: Exclude<ConnectionProxyKind, "none">;
+}> = [
+  { label: "HTTP CONNECT", value: "http_connect" },
+  { label: "SOCKS5", value: "socks5" },
+];
 
 export function ConnectionDialog({
   connection,
@@ -493,17 +528,18 @@ export function ConnectionDialog({
           {showGroupField ? (
             <label>
               <span>分组</span>
-              <select
+              <AppSelect
+                ariaLabel="分组"
                 value={form.group || ""}
-                onChange={(event) => setForm({ ...form, group: event.target.value })}
-              >
-                <option value="">不分组</option>
-                {groupOptions.map((group) => (
-                  <option key={group.id} value={group.id}>
-                    {group.label}
-                  </option>
-                ))}
-              </select>
+                options={[
+                  { label: "不分组", value: "" },
+                  ...groupOptions.map((group) => ({
+                    label: group.label,
+                    value: group.id,
+                  })),
+                ]}
+                onChange={(group) => setForm({ ...form, group })}
+              />
             </label>
           ) : null}
         </div>
@@ -538,29 +574,26 @@ export function ConnectionDialog({
             <div className="form-grid form-grid-wide">
               <label>
                 <span>账号来源</span>
-                <select
+                <AppSelect
+                  ariaLabel="账号来源"
                   value={credentialMode}
-                  onChange={(event) =>
+                  options={credentialModeOptions}
+                  onChange={(credentialMode) =>
                     setForm({
                       ...form,
-                      credential_mode: event.target.value as ConnectionCredentialMode,
+                      credential_mode: credentialMode,
                     })
                   }
-                >
-                  <option value="saved">使用保存的账号</option>
-                  <option value="inline">在此连接中保存</option>
-                  <option value="prompt">每次询问</option>
-                </select>
+                />
               </label>
               <label>
                 <span>认证方式</span>
-                <select
+                <AppSelect
+                  ariaLabel="认证方式"
                   value={inlineAuthKind}
-                  onChange={(event) => changeInlineAuthKind(event.target.value as ConnectionAuthKind)}
-                >
-                  <option value="password">密码</option>
-                  <option value="private_key">私钥</option>
-                </select>
+                  options={authKindOptions}
+                  onChange={changeInlineAuthKind}
+                />
               </label>
             </div>
 
@@ -664,36 +697,35 @@ export function ConnectionDialog({
           <>
             <label>
               <span>账号来源</span>
-              <select
+              <AppSelect
+                ariaLabel="账号来源"
                 value={credentialMode}
-                onChange={(event) =>
+                options={credentialModeOptions}
+                onChange={(credentialMode) =>
                   setForm({
                     ...form,
-                    credential_mode: event.target.value as ConnectionCredentialMode,
+                    credential_mode: credentialMode,
                   })
                 }
-              >
-                <option value="saved">使用保存的账号</option>
-                <option value="inline">在此连接中保存</option>
-                <option value="prompt">每次询问</option>
-              </select>
+              />
             </label>
             <div className="credential-select-row">
               <label>
                 <span>选择账号</span>
-                <select
+                <AppSelect
+                  ariaLabel="选择账号"
                   value={form.credential_id || ""}
-                  onChange={(event) => setForm({ ...form, credential_id: event.target.value })}
-                >
-                  <option value="">选择账号</option>
-                  {credentials.map((credential) => (
-                    <option key={credential.id} value={credential.id}>
-                      {credential.name}
-                      {credential.username ? `（${credential.username}）` : ""}
-                      · {credential.kind === "password" ? "密码" : "私钥"}
-                    </option>
-                  ))}
-                </select>
+                  options={[
+                    { label: "选择账号", value: "" },
+                    ...credentials.map((credential) => ({
+                      label: `${credential.name}${credential.username ? `（${credential.username}）` : ""} · ${
+                        credential.kind === "password" ? "密码" : "私钥"
+                      }`,
+                      value: credential.id,
+                    })),
+                  ]}
+                  onChange={(credentialId) => setForm({ ...form, credential_id: credentialId })}
+                />
               </label>
               <button
                 className="settings-action-button credential-manage-button"
@@ -710,19 +742,17 @@ export function ConnectionDialog({
           <>
             <label>
               <span>账号来源</span>
-              <select
+              <AppSelect
+                ariaLabel="账号来源"
                 value={credentialMode}
-                onChange={(event) =>
+                options={credentialModeOptions}
+                onChange={(credentialMode) =>
                   setForm({
                     ...form,
-                    credential_mode: event.target.value as ConnectionCredentialMode,
+                    credential_mode: credentialMode,
                   })
                 }
-              >
-                <option value="saved">使用保存的账号</option>
-                <option value="inline">在此连接中保存</option>
-                <option value="prompt">每次询问</option>
-              </select>
+              />
             </label>
             <p className="connection-dialog-note">
               连接时弹出密码或私钥输入，不在本机保存认证材料。
@@ -757,10 +787,11 @@ export function ConnectionDialog({
 
         <label>
           <span>连接方式</span>
-          <select
+          <AppSelect
+            ariaLabel="连接方式"
             value={networkPathMode}
-            onChange={(event) => {
-              const mode = event.target.value as ConnectionNetworkPathMode;
+            options={networkPathOptions}
+            onChange={(mode) => {
               setForm({
                 ...form,
                 proxy:
@@ -775,37 +806,32 @@ export function ConnectionDialog({
                     ? {
                         kind: "ssh_jump",
                         jump_connection_id: jumpCandidates[0]?.id || "",
-                      }
+                  }
                     : defaultJumpConfig,
               });
             }}
-          >
-            <option value="direct">直连</option>
-            <option value="proxy">网络代理</option>
-            <option value="ssh_jump">SSH 跳板机</option>
-          </select>
+          />
         </label>
 
         {networkPathMode === "proxy" ? (
           <>
             <label>
               <span>代理类型</span>
-              <select
+              <AppSelect
+                ariaLabel="代理类型"
                 value={proxy.kind === "none" ? "http_connect" : proxy.kind}
-                onChange={(event) =>
+                options={proxyKindOptions}
+                onChange={(proxyKind) =>
                   setForm({
                     ...form,
                     proxy: {
                       ...defaultProxyConfig,
-                      kind: event.target.value as ConnectionProxyKind,
+                      kind: proxyKind,
                     },
                     jump: defaultJumpConfig,
                   })
                 }
-              >
-                <option value="http_connect">HTTP CONNECT</option>
-                <option value="socks5">SOCKS5</option>
-              </select>
+              />
             </label>
 
             <div className="form-grid">
@@ -890,27 +916,28 @@ export function ConnectionDialog({
           <>
             <label>
               <span>跳板机连接</span>
-              <select
+              <AppSelect
+                ariaLabel="跳板机连接"
                 value={jump.jump_connection_id || ""}
+                options={[
+                  { label: "选择跳板机", value: "" },
+                  ...jumpCandidates.map((item) => ({
+                    label: `${item.name} · ${item.username}@${item.host}:${item.port.toString()}`,
+                    value: item.id,
+                  })),
+                ]}
                 disabled={jumpCandidates.length === 0}
-                onChange={(event) =>
+                onChange={(jumpConnectionId) =>
                   setForm({
                     ...form,
                     proxy: defaultProxyConfig,
                     jump: {
                       kind: "ssh_jump",
-                      jump_connection_id: event.target.value,
+                      jump_connection_id: jumpConnectionId,
                     },
                   })
                 }
-              >
-                <option value="">选择跳板机</option>
-                {jumpCandidates.map((item) => (
-                  <option key={item.id} value={item.id}>
-                    {item.name} · {item.username}@{item.host}:{item.port.toString()}
-                  </option>
-                ))}
-              </select>
+              />
             </label>
             <p className="connection-dialog-note">
               当前仅保存跳板机连接引用。
@@ -983,24 +1010,20 @@ export function ConnectionDialog({
           </label>
           <label>
             <span>终端显示编码</span>
-            <select
+            <AppSelect
+              ariaLabel="终端显示编码"
               value={normalizeTerminalEncoding(advanced.terminal_encoding)}
-              onChange={(event) =>
+              options={terminalEncodingOptions}
+              onChange={(terminalEncoding) =>
                 setForm({
                   ...form,
                   advanced: {
                     ...advanced,
-                    terminal_encoding: event.target.value as ConnectionTerminalEncoding,
+                    terminal_encoding: terminalEncoding as ConnectionTerminalEncoding,
                   },
                 })
               }
-            >
-              {terminalEncodingOptions.map((option) => (
-                <option key={option.value} value={option.value}>
-                  {option.label}
-                </option>
-              ))}
-            </select>
+            />
           </label>
         </div>
       </section>

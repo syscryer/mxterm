@@ -33,6 +33,7 @@ import {
   X,
 } from "lucide-react";
 
+import { AppSelect } from "../../shared/ui/AppSelect";
 import { Tooltip } from "../../shared/ui/Tooltip";
 import { ConfirmDialog } from "../../shared/ui/ConfirmDialog";
 import { selectLocalDownloadDirectory } from "../../shared/tauri/dialog";
@@ -107,6 +108,14 @@ const settingsSections: Array<{
   { id: "credentials", label: "账号管理", description: "复用登录账号（用户名+密码/私钥）", icon: Shield },
   { id: "appearance", label: "外观", description: "字号、密度与强调色", icon: Palette },
   { id: "terminalTheme", label: "终端配色", description: "终端 ANSI 主题方案", icon: Terminal },
+];
+
+const credentialKindOptions: Array<{
+  label: string;
+  value: ConnectionAuthKind;
+}> = [
+  { label: "密码", value: "password" },
+  { label: "私钥", value: "private_key" },
 ];
 
 export function SettingsView({
@@ -451,19 +460,17 @@ function CredentialSettingsSection({
             </label>
             <label className="credential-field credential-field-kind">
               <span>类型</span>
-              <select
+              <AppSelect
+                ariaLabel="账号认证类型"
                 className="settings-select"
                 value={form.kind}
-                aria-label="账号认证类型"
-                onChange={(event) => {
-                  setForm(emptyCredentialForm(event.currentTarget.value as ConnectionAuthKind, form));
+                options={credentialKindOptions}
+                onChange={(kind) => {
+                  setForm(emptyCredentialForm(kind, form));
                   setShowSecret(false);
                   setShowPassphrase(false);
                 }}
-              >
-                <option value="password">密码</option>
-                <option value="private_key">私钥</option>
-              </select>
+              />
             </label>
 
             <label className="credential-field credential-field-full">
@@ -1152,18 +1159,16 @@ function FontFamilyControl<TPreset extends string>({
             }}
           />
         ) : (
-          <select
+          <AppSelect
+            ariaLabel="选择字体预设"
             className="settings-select"
             value={presetValue}
-            aria-label="选择字体预设"
-            onChange={(event) => onPresetChange(event.currentTarget.value as TPreset)}
-          >
-            {presetOptions.map((preset) => (
-              <option key={preset.value} value={preset.value}>
-                {preset.label}
-              </option>
-            ))}
-          </select>
+            options={presetOptions.map((preset) => ({
+              label: preset.label,
+              value: preset.value,
+            }))}
+            onChange={onPresetChange}
+          />
         )}
       </div>
     </div>
