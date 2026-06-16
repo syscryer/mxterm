@@ -66,6 +66,11 @@ Ant Design, Mantine, or similar libraries just to fix one modal or button.
   right-click menus, upload menus, and tooltips. The mXterm version should stay
   tighter and calmer than codem's large popovers: light blur, fine borders,
   modest shadow, and 7-10px radii.
+- Custom select/dropdown menus that portal to `document.body` and may appear
+  inside a Radix modal dialog must be wrapped with
+  `DismissableLayerBranch asChild` and the menu surface must explicitly set
+  `pointer-events: auto`. Without both, Radix can treat the portal as outside
+  the dialog, so the menu may render but option clicks do not select.
 - Window material styling is chrome-focused. Keep the material source on the
   root `.app-shell` layer and let `.custom-titlebar` plus every left navigation
   sidebar inherit from shared `--mx-chrome-*` and `--mx-sidebar-*` tokens. Main

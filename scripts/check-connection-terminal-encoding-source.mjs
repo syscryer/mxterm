@@ -23,8 +23,9 @@ for (const snippet of requiredFrontendTypeSnippets) {
 }
 
 const requiredDialogSnippets = [
+  "AppSelect",
   "终端显示编码",
-  "terminalEncodingOptions.map",
+  "options={terminalEncodingOptions}",
   "normalizeTerminalEncoding(form.advanced.terminal_encoding)",
   "connection_terminal_encoding_invalid",
 ];

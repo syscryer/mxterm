@@ -91,6 +91,7 @@ import {
 import { TerminalPanel } from "../terminal/TerminalPanel";
 import type { TerminalOutputEvent } from "../terminal/terminalTypes";
 import { ConfirmDialog } from "../../shared/ui/ConfirmDialog";
+import { AppSelect } from "../../shared/ui/AppSelect";
 import {
   connectionTest,
   connectionTestProfile,
@@ -257,6 +258,13 @@ const maxRightPaneWidth = 560;
 const minCenterPaneWidth = 520;
 const paneKeyboardResizeStep = 16;
 const defaultEditorTerminalSplitPercent = 44;
+const connectionPromptAuthKindOptions: Array<{
+  label: string;
+  value: ConnectionAuthKind;
+}> = [
+  { label: "密码", value: "password" },
+  { label: "私钥", value: "private_key" },
+];
 const minEditorTerminalSplitPercent = 24;
 const maxEditorTerminalSplitPercent = 72;
 const editorTerminalKeyboardResizeStep = 3;
@@ -3599,15 +3607,12 @@ function ConnectionStepPanel({
                   </header>
                   <label>
                     <span>认证方式</span>
-                    <select
+                    <AppSelect
+                      ariaLabel="认证方式"
                       value={step.authKind}
-                      onChange={(event) =>
-                        onPromptAuthKindChange(event.currentTarget.value as ConnectionAuthKind)
-                      }
-                    >
-                      <option value="password">密码</option>
-                      <option value="private_key">私钥</option>
-                    </select>
+                      options={connectionPromptAuthKindOptions}
+                      onChange={onPromptAuthKindChange}
+                    />
                   </label>
                   {step.authKind === "password" ? (
                     <label>
