@@ -46,6 +46,7 @@ import type {
   CredentialProfileInput,
   HostKeyInfo,
 } from "../connections/connectionTypes";
+import { defaultJumpConfig } from "../connections/connectionTypes";
 import { RemoteFileEditor } from "../editor/RemoteFileEditor";
 import type { RemoteFileEditorTab } from "../editor/remoteFileEditorTypes";
 import {
@@ -2991,6 +2992,7 @@ export function WorkspaceShell() {
 
         <ConnectionDialog
           connection={editingConnection}
+          connections={connections}
           credentials={credentials}
           defaultGroup={pendingConnectionGroupId}
           groups={connectionGroupCatalog.groups}
@@ -4687,6 +4689,7 @@ function connectionToInput(connection: ConnectionProfile): ConnectionProfileInpu
     inline_private_key_passphrase: connection.inline_private_key_passphrase || undefined,
     inline_private_key_path: connection.inline_private_key_path || undefined,
     is_favorite: connection.is_favorite,
+    jump: connection.jump || defaultJumpConfig,
     last_connected_at: connection.last_connected_at || undefined,
     name: connection.name,
     notes: connection.notes || undefined,

@@ -23,6 +23,7 @@
 - `inline_private_key_path`
 - `inline_private_key_passphrase`
 - `proxy`
+- `jump`
 - `advanced`
 - `notes`
 - `created_at`
@@ -73,6 +74,15 @@
 
 `none` 不需要其他字段。HTTP CONNECT 和 SOCKS5 必须校验代理主机和端口。代理认证可选。首版不做代理链和系统代理自动读取。
 
+### JumpConfig
+
+跳板机配置作为连接配置子对象：
+
+- `kind`: `none` / `ssh_jump`
+- `jump_connection_id`
+
+`none` 不需要其他字段。`ssh_jump` 必须引用一条已保存连接，引用值保存到 `jump_connection_id`。首版只完成前端入口、入库字段、后端校验和解析对象透传，不在终端、测试连接或远程文件路径中打开真实跳板机链路。后续接入时应先登录跳板机，再使用 russh `channel_open_direct_tcpip(target_host, target_port, ...)` 打开到目标机的通道，并将通道流交给目标机 SSH 握手。
+
 ### AdvancedConfig
 
 高级配置作为连接配置子对象：
@@ -80,8 +90,9 @@
 - `connect_timeout_ms`
 - `auth_timeout_ms`
 - `keepalive_interval_ms`
+- `terminal_encoding`: `utf-8` / `gbk` / `gb18030` / `big5` / `euc-jp` / `iso-2022-jp` / `shift-jis` / `euc-kr`
 
-终端编码如果要展示，必须同时支持 SSH 输出解码和终端输入编码。当前前端 `TextEncoder` 默认只支持 UTF-8，因此不能只保存一个下拉值。若本期不完整实现转码，则高级页不展示编码。
+终端显示编码由 Rust 终端层负责。SSH 输出仍以远端原始字节进入后端，后端按连接配置解码成 UTF-8 字节后发送给前端；前端输入仍发送 Unicode 字符串，后端按连接配置编码成远端字节后写入 SSH channel。远程文件 exec 不跟随终端显示编码，继续保持文件读写自身的 UTF-8/bytes 语义。
 
 ## Backend
 
@@ -123,7 +134,7 @@
 新增统一解析函数，例如 `resolve_connection_request(app, connection_id, prompt_secret)`：
 
 1. 加载连接。
-2. 校验连接目标、代理和高级参数。
+2. 校验连接目标、代理、跳板机引用和高级参数。
 3. 根据 `credential_mode` 解析凭据。
 4. 组合为运行时 SSH 请求。
 
@@ -169,7 +180,7 @@ SOCKS5：
 连接编辑弹窗使用顶部页签：
 
 - 基本
-- 代理
+- 网络路径
 - 高级
 
 页签使用文字和下划线选中态，不使用圆角按钮样式。底部固定“测试连接 / 取消 / 保存”。基本页包含连接高频字段和凭据来源，不把认证单独放到页签里。
@@ -185,19 +196,20 @@ SOCKS5：
 - 保存的凭据或 inline 凭据
 - 备注
 
-代理页字段：
+网络路径页字段：
 
-- 代理类型
-- 代理主机
-- 代理端口
-- 代理用户名
-- 代理密码
+- 连接方式：直连 / 网络代理 / SSH 跳板机
+- 网络代理：代理类型、代理主机、代理端口、代理用户名、代理密码
+- SSH 跳板机：已保存连接下拉，排除当前正在编辑的连接
+
+SSH 跳板机入口本次只保存 `jump.kind=ssh_jump` 和 `jump_connection_id`。如果用户选择 SSH 跳板机但未选择连接，前端应停留在网络路径页并提示，不应静默降级为直连。
 
 高级页字段：
 
 - 连接超时
 - 认证超时
 - 心跳间隔
+- 终端显示编码
 
 ### Credential Settings
 
@@ -235,7 +247,7 @@ SOCKS5：
 ## Error Handling
 
 - Rust command 返回现有 `AppError`，但需要增加可恢复错误 code。
-- 未知主机密钥、主机密钥变化、需要临时凭据、代理失败、凭据缺失、凭据被删除都应有明确 code。
+- 未知主机密钥、主机密钥变化、需要临时凭据、代理失败、跳板机引用缺失、凭据缺失、凭据被删除都应有明确 code。
 - 前端对可恢复错误展示下一步动作，对不可恢复错误展示编辑和重试入口。
 
 ## Migration
@@ -245,13 +257,14 @@ SOCKS5：
 - 旧 password/private key 连接迁为 `credential_mode=inline`
 - 分组为空
 - 代理为 `none`
+- 跳板机为 `none`
 - 高级使用默认值
 
 现有 localStorage 分组无法可靠跨设备迁移到后端 store；首版可在前端启动时尝试读取旧 `mxterm.connectionGroupAssignments.v1` 并写回连接分组，迁移成功后不再依赖该 localStorage。
 
 ## Validation
 
-- Rust store/validation 单测覆盖连接、凭据、known hosts、代理配置。
+- Rust store/validation 单测覆盖连接、凭据、known hosts、代理配置、跳板机引用。
 - Rust SSH handler 单测覆盖 unknown/known/changed host key 判断。
 - 前端 TypeScript 校验覆盖新增类型和状态流。
 - Tauri 窗口手动验证：测试连接、首次信任、密钥变化、保存凭据、引用凭据、代理失败、打开终端。

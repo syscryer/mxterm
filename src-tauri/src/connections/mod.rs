@@ -29,6 +29,13 @@ pub enum ConnectionProxyKind {
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ConnectionJumpKind {
+    None,
+    SshJump,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
 pub struct ConnectionProxyConfig {
     pub kind: ConnectionProxyKind,
     #[serde(default)]
@@ -54,10 +61,28 @@ impl Default for ConnectionProxyConfig {
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+pub struct ConnectionJumpConfig {
+    pub kind: ConnectionJumpKind,
+    #[serde(default)]
+    pub jump_connection_id: Option<String>,
+}
+
+impl Default for ConnectionJumpConfig {
+    fn default() -> Self {
+        Self {
+            kind: ConnectionJumpKind::None,
+            jump_connection_id: None,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
 pub struct ConnectionAdvancedConfig {
     pub connect_timeout_ms: u64,
     pub auth_timeout_ms: u64,
     pub keepalive_interval_ms: u64,
+    #[serde(default = "default_terminal_encoding")]
+    pub terminal_encoding: String,
 }
 
 impl Default for ConnectionAdvancedConfig {
@@ -66,6 +91,7 @@ impl Default for ConnectionAdvancedConfig {
             connect_timeout_ms: 30_000,
             auth_timeout_ms: 45_000,
             keepalive_interval_ms: 20_000,
+            terminal_encoding: default_terminal_encoding(),
         }
     }
 }
@@ -97,6 +123,8 @@ pub struct ConnectionProfileInput {
     pub prompt_auth_kind: Option<ConnectionAuthKind>,
     #[serde(default)]
     pub proxy: ConnectionProxyConfig,
+    #[serde(default)]
+    pub jump: ConnectionJumpConfig,
     #[serde(default)]
     pub advanced: ConnectionAdvancedConfig,
     #[serde(default)]
@@ -137,6 +165,7 @@ pub struct ValidatedConnectionProfileInput {
     pub inline_private_key_passphrase: Option<String>,
     pub prompt_auth_kind: Option<ConnectionAuthKind>,
     pub proxy: ConnectionProxyConfig,
+    pub jump: ConnectionJumpConfig,
     pub advanced: ConnectionAdvancedConfig,
     pub notes: Option<String>,
 }
@@ -166,6 +195,8 @@ pub struct ConnectionProfile {
     pub prompt_auth_kind: Option<ConnectionAuthKind>,
     #[serde(default)]
     pub proxy: ConnectionProxyConfig,
+    #[serde(default)]
+    pub jump: ConnectionJumpConfig,
     #[serde(default)]
     pub advanced: ConnectionAdvancedConfig,
     #[serde(default)]
@@ -327,6 +358,7 @@ impl ConnectionStore {
             inline_private_key_passphrase: validated.inline_private_key_passphrase,
             prompt_auth_kind: validated.prompt_auth_kind,
             proxy: validated.proxy,
+            jump: validated.jump,
             advanced: validated.advanced,
             notes: validated.notes,
             is_favorite,
@@ -594,6 +626,7 @@ pub fn validate_profile_input(
     };
 
     let proxy = validate_proxy_config(&input.proxy)?;
+    let jump = validate_jump_config(&input.jump)?;
     let advanced = validate_advanced_config(&input.advanced)?;
     let name = input
         .name
@@ -618,6 +651,7 @@ pub fn validate_profile_input(
         inline_private_key_passphrase,
         prompt_auth_kind,
         proxy,
+        jump,
         advanced,
         notes: trim_optional(input.notes.as_ref()),
     })
@@ -661,6 +695,28 @@ fn validate_proxy_config(input: &ConnectionProxyConfig) -> Result<ConnectionProx
     })
 }
 
+fn validate_jump_config(input: &ConnectionJumpConfig) -> Result<ConnectionJumpConfig, AppError> {
+    match input.kind {
+        ConnectionJumpKind::None => Ok(ConnectionJumpConfig::default()),
+        ConnectionJumpKind::SshJump => {
+            let jump_connection_id =
+                trim_optional(input.jump_connection_id.as_ref()).ok_or_else(|| {
+                    AppError::new(
+                        "connection_jump_missing",
+                        "请选择 SSH 跳板机连接。",
+                        "jump_connection_id is empty",
+                        true,
+                    )
+                })?;
+
+            Ok(ConnectionJumpConfig {
+                kind: ConnectionJumpKind::SshJump,
+                jump_connection_id: Some(jump_connection_id),
+            })
+        }
+    }
+}
+
 fn validate_advanced_config(
     input: &ConnectionAdvancedConfig,
 ) -> Result<ConnectionAdvancedConfig, AppError> {
@@ -689,7 +745,14 @@ fn validate_advanced_config(
         ));
     }
 
-    Ok(input.clone())
+    let terminal_encoding = normalize_terminal_encoding(&input.terminal_encoding)?;
+
+    Ok(ConnectionAdvancedConfig {
+        connect_timeout_ms: input.connect_timeout_ms,
+        auth_timeout_ms: input.auth_timeout_ms,
+        keepalive_interval_ms: input.keepalive_interval_ms,
+        terminal_encoding,
+    })
 }
 
 fn normalize_credential_mode(input: &ConnectionProfileInput) -> ConnectionCredentialMode {
@@ -743,6 +806,41 @@ fn strip_legacy_profile_fields(mut profile: ConnectionProfile) -> ConnectionProf
 
 fn default_credential_mode() -> ConnectionCredentialMode {
     ConnectionCredentialMode::Inline
+}
+
+fn default_terminal_encoding() -> String {
+    "utf-8".to_string()
+}
+
+pub(crate) const SUPPORTED_TERMINAL_ENCODINGS: &[&str] = &[
+    "utf-8",
+    "gbk",
+    "gb18030",
+    "big5",
+    "euc-jp",
+    "iso-2022-jp",
+    "shift-jis",
+    "euc-kr",
+];
+
+pub(crate) fn normalize_terminal_encoding(value: &str) -> Result<String, AppError> {
+    let normalized = value.trim().to_ascii_lowercase().replace('_', "-");
+    let normalized = if normalized.is_empty() {
+        default_terminal_encoding()
+    } else {
+        normalized
+    };
+
+    if SUPPORTED_TERMINAL_ENCODINGS.contains(&normalized.as_str()) {
+        Ok(normalized)
+    } else {
+        Err(AppError::new(
+            "connection_terminal_encoding_invalid",
+            "终端显示编码无效。",
+            format!("terminal_encoding={normalized}"),
+            true,
+        ))
+    }
 }
 
 pub const REMOTE_SYSTEM_PROBE_COMMAND: &str =
@@ -832,8 +930,9 @@ mod tests {
 
     use super::{
         parse_remote_system_probe, validate_profile_input, ConnectionAdvancedConfig,
-        ConnectionAuthKind, ConnectionCredentialMode, ConnectionProfileInput,
-        ConnectionProxyConfig, ConnectionProxyKind, ConnectionRemoteSystemInfo, ConnectionStore,
+        ConnectionAuthKind, ConnectionCredentialMode, ConnectionJumpConfig, ConnectionJumpKind,
+        ConnectionProfileInput, ConnectionProxyConfig, ConnectionProxyKind,
+        ConnectionRemoteSystemInfo, ConnectionStore,
     };
 
     fn password_input() -> ConnectionProfileInput {
@@ -852,6 +951,7 @@ mod tests {
             inline_private_key_passphrase: None,
             prompt_auth_kind: None,
             proxy: ConnectionProxyConfig::default(),
+            jump: ConnectionJumpConfig::default(),
             advanced: ConnectionAdvancedConfig::default(),
             notes: None,
             is_favorite: None,
@@ -965,6 +1065,7 @@ mod tests {
                 connect_timeout_ms: 10_000,
                 auth_timeout_ms: 20_000,
                 keepalive_interval_ms: 30_000,
+                terminal_encoding: "gbk".to_string(),
             },
             ..password_input()
         };
@@ -974,6 +1075,56 @@ mod tests {
         assert_eq!(validated.proxy.host, Some("proxy.local".to_string()));
         assert_eq!(validated.proxy.username, Some("user".to_string()));
         assert_eq!(validated.advanced.auth_timeout_ms, 20_000);
+        assert_eq!(validated.advanced.terminal_encoding, "gbk");
+    }
+
+    #[test]
+    fn validation_rejects_invalid_terminal_encoding() {
+        let input = ConnectionProfileInput {
+            advanced: ConnectionAdvancedConfig {
+                terminal_encoding: "utf-16".to_string(),
+                ..ConnectionAdvancedConfig::default()
+            },
+            ..password_input()
+        };
+
+        let error = validate_profile_input(&input).unwrap_err();
+
+        assert_eq!(error.code, "connection_terminal_encoding_invalid");
+    }
+
+    #[test]
+    fn validation_rejects_missing_jump_connection() {
+        let input = ConnectionProfileInput {
+            jump: ConnectionJumpConfig {
+                kind: ConnectionJumpKind::SshJump,
+                jump_connection_id: Some(" ".to_string()),
+            },
+            ..password_input()
+        };
+
+        let error = validate_profile_input(&input).unwrap_err();
+
+        assert_eq!(error.code, "connection_jump_missing");
+    }
+
+    #[test]
+    fn validation_accepts_ssh_jump_connection() {
+        let input = ConnectionProfileInput {
+            jump: ConnectionJumpConfig {
+                kind: ConnectionJumpKind::SshJump,
+                jump_connection_id: Some("  conn-bastion-001 ".to_string()),
+            },
+            ..password_input()
+        };
+
+        let validated = validate_profile_input(&input).unwrap();
+
+        assert_eq!(validated.jump.kind, ConnectionJumpKind::SshJump);
+        assert_eq!(
+            validated.jump.jump_connection_id,
+            Some("conn-bastion-001".to_string())
+        );
     }
 
     #[test]

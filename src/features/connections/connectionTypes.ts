@@ -1,6 +1,21 @@
 export type ConnectionAuthKind = "password" | "private_key";
 export type ConnectionCredentialMode = "saved" | "inline" | "prompt";
+export type ConnectionJumpKind = "none" | "ssh_jump";
 export type ConnectionProxyKind = "none" | "http_connect" | "socks5";
+export type ConnectionTerminalEncoding =
+  | "utf-8"
+  | "gbk"
+  | "gb18030"
+  | "big5"
+  | "euc-jp"
+  | "iso-2022-jp"
+  | "shift-jis"
+  | "euc-kr";
+
+export interface ConnectionJumpConfig {
+  kind: ConnectionJumpKind;
+  jump_connection_id?: string | null;
+}
 
 export interface ConnectionProxyConfig {
   kind: ConnectionProxyKind;
@@ -14,6 +29,7 @@ export interface ConnectionAdvancedConfig {
   connect_timeout_ms: number;
   auth_timeout_ms: number;
   keepalive_interval_ms: number;
+  terminal_encoding: ConnectionTerminalEncoding;
 }
 
 export interface ConnectionProfile {
@@ -31,6 +47,7 @@ export interface ConnectionProfile {
   inline_private_key_passphrase?: string | null;
   prompt_auth_kind?: ConnectionAuthKind | null;
   proxy: ConnectionProxyConfig;
+  jump: ConnectionJumpConfig;
   advanced: ConnectionAdvancedConfig;
   notes?: string | null;
   is_favorite: boolean;
@@ -61,6 +78,7 @@ export interface ConnectionProfileInput {
   inline_private_key_passphrase?: string;
   prompt_auth_kind?: ConnectionAuthKind;
   proxy: ConnectionProxyConfig;
+  jump: ConnectionJumpConfig;
   advanced: ConnectionAdvancedConfig;
   notes?: string;
   is_favorite?: boolean;
@@ -127,8 +145,36 @@ export const defaultProxyConfig: ConnectionProxyConfig = {
   username: "",
 };
 
+export const defaultJumpConfig: ConnectionJumpConfig = {
+  kind: "none",
+  jump_connection_id: "",
+};
+
 export const defaultAdvancedConfig: ConnectionAdvancedConfig = {
   auth_timeout_ms: 45000,
   connect_timeout_ms: 30000,
   keepalive_interval_ms: 20000,
+  terminal_encoding: "utf-8",
 };
+
+export const terminalEncodingOptions: Array<{
+  label: string;
+  value: ConnectionTerminalEncoding;
+}> = [
+  { label: "UTF-8", value: "utf-8" },
+  { label: "GBK", value: "gbk" },
+  { label: "GB18030", value: "gb18030" },
+  { label: "Big5", value: "big5" },
+  { label: "EUC-JP", value: "euc-jp" },
+  { label: "ISO-2022-JP", value: "iso-2022-jp" },
+  { label: "Shift_JIS", value: "shift-jis" },
+  { label: "EUC-KR", value: "euc-kr" },
+];
+
+export function normalizeTerminalEncoding(
+  value?: string | null,
+): ConnectionTerminalEncoding {
+  const normalized = (value || "").trim().toLowerCase().replace(/_/g, "-");
+  const option = terminalEncodingOptions.find((item) => item.value === normalized);
+  return option?.value || defaultAdvancedConfig.terminal_encoding;
+}
