@@ -77,6 +77,7 @@ export interface ConnectionProfileInput {
 export interface CredentialProfile {
   id: string;
   name: string;
+  username?: string | null;
   kind: ConnectionAuthKind;
   password?: string | null;
   private_key_path?: string | null;
@@ -89,6 +90,7 @@ export interface CredentialProfile {
 export interface CredentialProfileInput {
   id?: string;
   name?: string;
+  username?: string;
   kind: ConnectionAuthKind;
   password?: string;
   private_key_path?: string;

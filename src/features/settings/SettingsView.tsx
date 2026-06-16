@@ -104,7 +104,7 @@ const settingsSections: Array<{
   label: string;
 }> = [
   { id: "basic", label: "基础设置", description: "启动、连接与面板行为", icon: Settings },
-  { id: "credentials", label: "凭据管理", description: "复用 SSH 密码和私钥", icon: Shield },
+  { id: "credentials", label: "账号管理", description: "复用登录账号（用户名+密码/私钥）", icon: Shield },
   { id: "appearance", label: "外观", description: "字号、密度与强调色", icon: Palette },
   { id: "terminalTheme", label: "终端配色", description: "终端 ANSI 主题方案", icon: Terminal },
 ];
@@ -272,6 +272,7 @@ function CredentialSettingsSection({
       id: credential.id,
       kind: credential.kind,
       name: credential.name,
+      username: credential.username || "",
       notes: credential.notes || "",
       password: credential.password || "",
       private_key_passphrase: credential.private_key_passphrase || "",
@@ -319,8 +320,8 @@ function CredentialSettingsSection({
     <section className="settings-page-section credential-page-section">
       <header className="settings-section-head settings-section-head-row">
         <span>
-          <h1>凭据管理</h1>
-          <p>保存可复用的 SSH 密码或私钥，连接仍单独填写主机、端口和用户名。</p>
+          <h1>账号管理</h1>
+          <p>保存可复用的登录账号（用户名 + 密码或私钥），连接时直接引用。</p>
         </span>
         <button
           className="repository-primary-button credential-new-button"
@@ -328,21 +329,21 @@ function CredentialSettingsSection({
           onClick={() => startCreate()}
         >
           <Plus className="ui-icon" aria-hidden="true" />
-          <span>新增凭据</span>
+          <span>新增账号</span>
         </button>
       </header>
 
       <div className="credential-settings-layout">
-        <section className="settings-panel credential-list-panel" aria-label="凭据列表">
+        <section className="settings-panel credential-list-panel" aria-label="账号列表">
           <header className="credential-list-head">
             <span>
-              <strong>凭据库</strong>
+              <strong>账号库</strong>
               <small>{credentialSummary(credentials.length, passwordCount, privateKeyCount)}</small>
             </span>
             <button
               className="repository-icon-button"
               type="button"
-              aria-label="新增私钥凭据"
+              aria-label="新增私钥账号"
               onClick={() => startCreate("private_key")}
             >
               <FileKey className="ui-icon" aria-hidden="true" />
@@ -354,8 +355,8 @@ function CredentialSettingsSection({
               <Search className="ui-icon" aria-hidden="true" />
               <input
                 value={query}
-                placeholder="搜索凭据"
-                aria-label="搜索凭据"
+                placeholder="搜索账号"
+                aria-label="搜索账号"
                 onChange={(event) => setQuery(event.currentTarget.value)}
               />
             </label>
@@ -371,25 +372,25 @@ function CredentialSettingsSection({
           </div>
 
           <div className="credential-list-body">
-            {loading ? <p className="settings-note">加载凭据中...</p> : null}
+            {loading ? <p className="settings-note">加载账号中...</p> : null}
             {error ? <p className="form-error credential-list-error">{error}</p> : null}
             {credentials.length === 0 && !loading ? (
               <div className="credential-empty-state">
                 <ShieldCheck className="ui-icon" aria-hidden="true" />
-                <strong>还没有保存凭据</strong>
-                <small>先添加一个密码或私钥，之后连接配置里可以直接引用。</small>
+                <strong>还没有保存账号</strong>
+                <small>先添加一个账号（用户名 + 密码或私钥），连接配置里可以直接引用。</small>
                 <div>
                   <button type="button" onClick={() => startCreate("password")}>
-                    新建密码
+                    新建密码账号
                   </button>
                   <button type="button" onClick={() => startCreate("private_key")}>
-                    新建私钥
+                    新建私钥账号
                   </button>
                 </div>
               </div>
             ) : null}
             {credentials.length > 0 && filteredCredentials.length === 0 ? (
-              <p className="settings-note">没有匹配的凭据。</p>
+              <p className="settings-note">没有匹配的账号。</p>
             ) : null}
             {filteredCredentials.map((credential) => {
               const Icon = credential.kind === "private_key" ? FileKey : KeyRound;
@@ -408,7 +409,8 @@ function CredentialSettingsSection({
                   <span className="credential-list-copy">
                     <strong>{credential.name}</strong>
                     <small>
-                      {credential.kind === "private_key" ? "私钥" : "密码"}
+                      {credential.username || "未设置用户名"}
+                      {` · ${credential.kind === "private_key" ? "私钥" : "密码"}`}
                       {credential.notes ? ` · ${credential.notes}` : ""}
                     </small>
                   </span>
@@ -431,8 +433,8 @@ function CredentialSettingsSection({
               )}
             </span>
             <span>
-              <strong>{editing ? "编辑凭据" : `新增${editingKindLabel}凭据`}</strong>
-              <small>凭据只保存认证材料，不包含主机、端口或用户名。</small>
+              <strong>{editing ? "编辑账号" : `新增${editingKindLabel}账号`}</strong>
+              <small>账号包含用户名和认证材料，不包含主机、端口。</small>
             </span>
           </header>
 
@@ -443,7 +445,7 @@ function CredentialSettingsSection({
                 className="settings-input"
                 value={form.name || ""}
                 placeholder="例如：生产只读账号"
-                aria-label="凭据名称"
+                aria-label="账号名称"
                 onChange={(event) => setForm({ ...form, name: event.currentTarget.value })}
               />
             </label>
@@ -452,7 +454,7 @@ function CredentialSettingsSection({
               <select
                 className="settings-select"
                 value={form.kind}
-                aria-label="凭据类型"
+                aria-label="账号认证类型"
                 onChange={(event) => {
                   setForm(emptyCredentialForm(event.currentTarget.value as ConnectionAuthKind, form));
                   setShowSecret(false);
@@ -462,6 +464,17 @@ function CredentialSettingsSection({
                 <option value="password">密码</option>
                 <option value="private_key">私钥</option>
               </select>
+            </label>
+
+            <label className="credential-field credential-field-full">
+              <span>用户名</span>
+              <input
+                className="settings-input"
+                value={form.username || ""}
+                placeholder="例如：root、deploy"
+                aria-label="账号用户名"
+                onChange={(event) => setForm({ ...form, username: event.currentTarget.value })}
+              />
             </label>
 
             {form.kind === "password" ? (
@@ -569,7 +582,7 @@ function CredentialSettingsSection({
               </button>
               <button className="primary-button" disabled={busy} type="submit">
                 <ShieldCheck className="ui-icon" aria-hidden="true" />
-                保存凭据
+                保存账号
               </button>
             </div>
           </footer>
@@ -580,11 +593,11 @@ function CredentialSettingsSection({
         confirmLabel="删除"
         description={
           deleteTarget
-            ? `确认删除凭据“${deleteTarget.name}”吗？如果已有连接正在使用它，请先修改这些连接后再删除。`
+            ? `确认删除账号“${deleteTarget.name}”吗？如果已有连接正在使用它，请先修改这些连接后再删除。`
             : ""
         }
         open={Boolean(deleteTarget)}
-        title="删除凭据"
+        title="删除账号"
         onConfirm={confirmDelete}
         onOpenChange={(open) => {
           if (!open) {
@@ -604,6 +617,7 @@ function emptyCredentialForm(
     id: base?.id,
     kind,
     name: base?.name || "",
+    username: base?.username || "",
     notes: base?.notes || "",
     password: kind === "password" ? base?.password || "" : "",
     private_key_passphrase:
@@ -614,7 +628,7 @@ function emptyCredentialForm(
 
 function credentialSummary(total: number, passwordCount: number, privateKeyCount: number) {
   if (total === 0) {
-    return "0 项凭据";
+    return "0 项账号";
   }
   return `${total.toString()} 项 · ${passwordCount.toString()} 密码 · ${privateKeyCount.toString()} 私钥`;
 }

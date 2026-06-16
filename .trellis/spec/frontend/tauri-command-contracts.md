@@ -114,6 +114,7 @@ type HostKeyInfo = {
 - When opening a saved connection, the connection-preparation flow should pass `connection_id` plus prompt credentials only when `credential_mode === "prompt"`; Rust treats the saved profile as authoritative.
 - After a terminal connection succeeds, trigger `connectionProbeSystem(...)` in the background with the same runtime prompt credential payload when needed, then call `connectionMarkConnected(connection.id)` so the repository's recent views sort by real connection activity. Probe failures must not close or fail an already connected terminal. Favorite toggles must call `connectionSetFavorite(...)` and preserve repository metadata when editing or moving a connection.
 - `ConnectionDialog` must test the current form with `connectionTestProfile(input)`. It must not call `connectionUpsert`, `saveConnection`, or `connectionTest({ connection_id })` for unsaved dialog tests, because testing must not persist a profile or create a connection id. It must show validation and connection errors as dialog feedback instead of writing them into a terminal.
+- `ConnectionDialog` must treat `host_key_unknown` and `host_key_changed` from `connectionTestProfile(input)` as recoverable confirmation states, not ordinary errors. Parse the backend `raw_message` through the shared host-key parser, render host, port, algorithm, and SHA256 fingerprints in the compact feedback card, and never show the raw JSON payload to users.
 - Host-key confirmation UI must call `knownHostTrust(hostKey)` with the `HostKeyInfo` returned by a recoverable host-key error; do not synthesize fingerprints on the frontend.
 - Connection latency probing must go through `connectionProbeLatency(connection.id)`. The UI sends only a saved connection id; Rust reloads the saved host/port and never needs credential fields for this probe.
 - Remote system probing must go through `connectionProbeSystem(request)`. The UI sends a saved connection id and only the same prompt credentials already supplied by the user for the current connection attempt; Rust reloads all saved target and credential fields, probes `/etc/os-release`, and returns the updated `ConnectionProfile`.
@@ -133,6 +134,8 @@ type HostKeyInfo = {
 | `connectionList` fails in a browser preview without Tauri | Show the static fallback profile from `useConnections` so the layout remains inspectable. |
 | `connectionUpsert` rejects validation | Surface the Rust `AppError.message` as user-facing form feedback. |
 | `connectionTestProfile` rejects validation or connection setup | Keep the dialog open, show the Rust `AppError.message`, and do not add or update the connection list. |
+| `connectionTestProfile` returns `host_key_unknown` | Keep the dialog open, show an inline host-key confirmation card with the returned host, port, algorithm, and SHA256 fingerprint, then call `knownHostTrust(hostKey)` and rerun `connectionTestProfile(input)` only after the user clicks trust. |
+| `connectionTestProfile` returns `host_key_changed` | Keep the dialog open, show a high-risk inline confirmation card with old and current SHA256 fingerprints, then call `knownHostTrust(hostKey)` and rerun `connectionTestProfile(input)` only after the user explicitly updates trust. |
 | `credentialList` fails in a browser preview without Tauri | Show preview credentials from `useCredentials` so the credential management layout remains inspectable. |
 | `credentialUpsert` rejects validation | Surface the Rust `AppError.message` near the credential form. |
 | `credentialDelete` returns `credential_in_use` | Keep the credential, show that existing connections must be edited before deletion, and do not remove local UI state. |
@@ -158,7 +161,8 @@ type HostKeyInfo = {
 
 ### 6. Tests Required
 
-- Run `npm run check -- --pretty false` after changing command wrappers, connection types, credential types, terminal request types, or component props that carry command payloads.
+- Run `pnpm check` after changing command wrappers, connection types, credential types, terminal request types, or component props that carry command payloads.
+- Run `node scripts/check-connection-dialog-host-key-feedback.mjs` after changing `ConnectionDialog`, host-key error parsing, or connection-test feedback styles.
 - Run `node scripts/check-remote-file-editor-source.mjs` after changing `ConnectionDialog`, `WorkspaceShell` dialog test handlers, or connection command wrappers so the no-save dialog-test guard is checked.
 - Run `node scripts/check-remote-file-editor-source.mjs` after changing workspace terminal tab creation, so the same-connection new terminal path stays separate from the connection-preparation page.
 - Add focused tests once the frontend test runner exists for credential-mode field clearing, credential delete handling, host-key recoverable states, fallback behavior, and error display.
@@ -259,7 +263,7 @@ invoke<RemoteFileEntry[]>("remote_file_list", {
 
 ### 6. Tests Required
 
-- Run `npm run check` after changing `remoteFileList`, `RemoteFileEntry`, `RemoteFilePanel`, `TerminalPanel`, or `WorkspaceShell` path handoff props.
+- Run `pnpm check` after changing `remoteFileList`, `RemoteFileEntry`, `RemoteFilePanel`, `TerminalPanel`, or `WorkspaceShell` path handoff props.
 - Run `npm run build` after visible right-pane changes to catch bundling and CSS regressions.
 - Run `node scripts/check-terminal-cd-tracker.mjs` after changing terminal input directory tracking.
 - Add frontend unit tests once a test runner exists for path normalization, entry sorting, `OSC 7` parsing, and direct-wrapper payload shape.
@@ -554,7 +558,7 @@ type RemoteFileTransferProgressEvent = {
 - Run `node scripts/check-remote-file-editor-source.mjs` after changing remote editor wrappers, Monaco integration, file tab state, or file panel actions.
 - The source check must cover `remoteFileMetadata`, `remoteFileCheckPath`, upload conflict preflight, `remoteFileCheckDownloadTarget`, download conflict preflight, `remoteFileUploadLocalFile`, `remoteFileUploadLocalArchive`, Tauri dialog upload helpers, drag/drop upload temp helpers, `remoteFileDownloadToLocal`, drag upload/download handlers, `CompressionStream("gzip")`, `webkitdirectory`, `fileTransfer` settings, and basename-only rename.
 - The source check must cover `transfer_id`, `remote_file:transfer_progress`, speed text, streamed tar/gzip helpers, and progressbar markup whenever transfer UI or command wrappers change.
-- Run `npm run check -- --pretty false` after changing TypeScript command payloads, editor types, or workspace/file panel props.
+- Run `pnpm check` after changing TypeScript command payloads, editor types, or workspace/file panel props.
 - Run `npm run build` after visible Monaco/workspace/CSS changes.
 - Add frontend tests once the test runner exists for duplicate tab activation, dirty close confirmation, conflict branching, browser-preview upload blocking, and wrapper payload shape.
 - Cross-check frontend result fields against `RemoteFileMetadata`, `RemoteFileReadResult`, and `RemoteFileWriteResult` in `src-tauri/src/remote_files.rs`.
@@ -725,7 +729,7 @@ micaAlt = 4
 
 ### 6. Tests Required
 
-- Run `npm run check -- --pretty false` after changing `WindowMaterialMode`, material wrappers, `WorkspaceShell`, or settings props.
+- Run `pnpm check` after changing `WindowMaterialMode`, material wrappers, `WorkspaceShell`, or settings props.
 - Run `npm run build` after changing material CSS tokens, appearance settings UI, or `src-tauri/tauri.conf.json` window material settings.
 - Run `cargo fmt --manifest-path src-tauri/Cargo.toml --check` and `cargo check --manifest-path src-tauri/Cargo.toml` after changing `src-tauri/src/lib.rs`, command names, numeric ids, or backend response shape.
 - Browser-preview check: switch theme to dark, switch material, and verify `.app-shell` has `data-theme-mode` and `data-window-material` plus dark `--mx-*` tokens.

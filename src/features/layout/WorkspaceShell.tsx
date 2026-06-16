@@ -83,6 +83,10 @@ import {
 import { useSettings } from "../settings/useSettings";
 import { useConnections } from "../connections/useConnections";
 import { useCredentials } from "../connections/useCredentials";
+import {
+  parseHostKeyError,
+  type HostKeyDecision,
+} from "../connections/hostKeyErrors";
 import { TerminalPanel } from "../terminal/TerminalPanel";
 import type { TerminalOutputEvent } from "../terminal/terminalTypes";
 import { ConfirmDialog } from "../../shared/ui/ConfirmDialog";
@@ -142,7 +146,6 @@ interface TerminalTab {
 
 type ConnectionStepMode = "test" | "terminal";
 type ConnectionStepStatus = "idle" | "running" | "waiting_host_key" | "prompt" | "success" | "error";
-type HostKeyDecision = "unknown" | "changed";
 
 interface ConnectionStepState {
   activeStepIndex?: number | null;
@@ -170,12 +173,6 @@ interface ConnectionStepErrorDetail {
   recoverable: boolean;
   stage: string;
   suggestion: string;
-}
-
-interface ParsedHostKeyError {
-  decision: HostKeyDecision;
-  hostKey: HostKeyInfo;
-  oldFingerprint: string | null;
 }
 
 interface ConnectionGroupInfo {
@@ -2234,6 +2231,7 @@ export function WorkspaceShell() {
   }
 
   function openCredentialSettings() {
+    closeConnectionDialog();
     setSettingsSectionRequest("credentials");
     setActiveView("settings");
   }
@@ -3001,6 +2999,7 @@ export function WorkspaceShell() {
           onManageCredentials={openCredentialSettings}
           onSave={saveConnectionFromDialog}
           onTest={testConnectionFromDialog}
+          onTrustHostKey={knownHostTrust}
           open={dialogOpen}
         />
       </main>
@@ -4710,63 +4709,6 @@ function runtimeCredentialRequest(step: ConnectionStepState): ConnectionRuntimeC
       step.authKind === "private_key" ? step.privateKeyPassphrase || undefined : undefined,
     private_key_path: step.authKind === "private_key" ? step.privateKeyPath || undefined : undefined,
   };
-}
-
-function parseHostKeyError(error: unknown): ParsedHostKeyError | null {
-  if (typeof error !== "object" || error === null || !("code" in error)) {
-    return null;
-  }
-  const code = (error as { code: unknown }).code;
-  if (code !== "host_key_unknown" && code !== "host_key_changed") {
-    return null;
-  }
-  const raw = String((error as { raw_message?: unknown }).raw_message || "");
-  try {
-    const parsed = JSON.parse(raw) as unknown;
-    if (isHostKeyInfo(parsed)) {
-      return {
-        decision: "unknown",
-        hostKey: parsed,
-        oldFingerprint: null,
-      };
-    }
-    if (
-      typeof parsed === "object" &&
-      parsed !== null &&
-      "host_key" in parsed &&
-      isHostKeyInfo((parsed as { host_key: unknown }).host_key)
-    ) {
-      const changedPayload = parsed as {
-        host_key: HostKeyInfo;
-        old_fingerprint_sha256?: unknown;
-      };
-      return {
-        decision: code === "host_key_changed" ? "changed" : "unknown",
-        hostKey: changedPayload.host_key,
-        oldFingerprint:
-          typeof changedPayload.old_fingerprint_sha256 === "string"
-            ? changedPayload.old_fingerprint_sha256
-            : null,
-      };
-    }
-  } catch {
-    return null;
-  }
-  return null;
-}
-
-function isHostKeyInfo(value: unknown): value is HostKeyInfo {
-  if (typeof value !== "object" || value === null) {
-    return false;
-  }
-  const info = value as Partial<HostKeyInfo>;
-  return Boolean(
-    info.host &&
-      typeof info.port === "number" &&
-      info.key_algorithm &&
-      info.fingerprint_sha256 &&
-      info.public_key,
-  );
 }
 
 function formatConnectionAddress(connection: ConnectionProfile) {

@@ -5351,6 +5351,218 @@ button {
   line-height: 1.35;
 }
 
+/* ===== 协议 chip 选择器 ===== */
+.protocol-switch {
+  display: flex;
+  gap: 4px;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--mx-line);
+  background: var(--mx-panel-soft);
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.protocol-switch::-webkit-scrollbar {
+  display: none;
+}
+
+.protocol-chip {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid var(--mx-line);
+  border-radius: 8px;
+  background: var(--mx-panel);
+  color: var(--mx-muted);
+  font-size: 12.5px;
+  padding: 6px 12px;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: all 0.12s;
+}
+
+.protocol-chip:hover:not(:disabled) {
+  border-color: var(--mx-primary);
+  color: var(--mx-text);
+}
+
+.protocol-chip.active {
+  background: var(--mx-primary);
+  border-color: var(--mx-primary);
+  color: #fff;
+  font-weight: 600;
+}
+
+.protocol-chip:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.protocol-chip .chip-tag {
+  font-size: 10px;
+  opacity: 0.7;
+}
+
+/* ===== 连接字段平铺容器 ===== */
+.connection-dialog-fields {
+  display: grid;
+  gap: 12px;
+}
+
+/* ===== 认证方式 + 密码 并排压缩 ===== */
+.auth-inline-grid {
+  display: grid;
+  grid-template-columns: 132px minmax(0, 1fr);
+  gap: 8px;
+}
+
+/* ===== 错误反馈区（重做） ===== */
+.conn-feedback {
+  margin: 0 16px 10px;
+  border-radius: 8px;
+  padding: 11px 13px;
+  display: grid;
+  grid-template-columns: 20px minmax(0, 1fr);
+  gap: 10px;
+  align-items: start;
+}
+
+.conn-feedback .fb-icon {
+  width: 18px;
+  height: 18px;
+  display: grid;
+  place-items: center;
+  font-size: 15px;
+  line-height: 1;
+  margin-top: 1px;
+}
+
+.conn-feedback .fb-body {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+  overflow: hidden;
+}
+
+.conn-feedback .fb-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--mx-text);
+}
+
+.conn-feedback .fb-detail {
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--mx-muted);
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.conn-feedback .fb-detail code {
+  display: inline;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  background: rgb(0 0 0 / 5%);
+  padding: 1px 4px;
+  border-radius: 3px;
+  color: var(--mx-text);
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.conn-feedback .fb-host-key {
+  display: grid;
+  gap: 5px;
+  margin: 5px 0 0;
+  min-width: 0;
+}
+
+.conn-feedback .fb-host-key div {
+  display: grid;
+  grid-template-columns: 76px minmax(0, 1fr);
+  gap: 8px;
+  min-width: 0;
+}
+
+.conn-feedback .fb-host-key dt,
+.conn-feedback .fb-host-key dd {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.conn-feedback .fb-host-key dt {
+  color: var(--mx-muted);
+}
+
+.conn-feedback .fb-host-key dd {
+  min-width: 0;
+  color: var(--mx-text);
+  font-family: var(--font-mono);
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.conn-feedback .fb-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.conn-feedback .fb-actions button {
+  border: 1px solid var(--mx-line);
+  border-radius: 6px;
+  background: var(--mx-panel);
+  color: var(--mx-text);
+  font-size: 12px;
+  padding: 5px 10px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  cursor: pointer;
+}
+
+.conn-feedback .fb-actions .fb-primary {
+  background: var(--mx-primary);
+  border-color: var(--mx-primary);
+  color: #fff;
+  font-weight: 600;
+}
+
+.conn-feedback.running {
+  background: color-mix(in srgb, var(--mx-primary) 8%, transparent);
+}
+
+.conn-feedback.running .fb-icon {
+  color: var(--mx-primary);
+}
+
+.conn-feedback.success {
+  background: rgb(22 101 52 / 8%);
+}
+
+.conn-feedback.success .fb-icon {
+  color: var(--mx-success);
+}
+
+.conn-feedback.error {
+  background: rgb(220 38 38 / 8%);
+}
+
+.conn-feedback.error .fb-icon {
+  color: var(--mx-danger);
+}
+
+.conn-feedback.host-key {
+  background: rgb(245 158 11 / 10%);
+}
+
+.conn-feedback.host-key .fb-icon {
+  color: #d97706;
+}
+
 .credential-select-row {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;

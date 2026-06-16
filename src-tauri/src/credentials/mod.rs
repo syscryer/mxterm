@@ -12,6 +12,8 @@ pub struct CredentialProfileInput {
     pub id: Option<String>,
     #[serde(default)]
     pub name: Option<String>,
+    #[serde(default)]
+    pub username: Option<String>,
     pub kind: ConnectionAuthKind,
     #[serde(default)]
     pub password: Option<String>,
@@ -27,6 +29,7 @@ pub struct CredentialProfileInput {
 pub struct ValidatedCredentialProfileInput {
     pub id: Option<String>,
     pub name: String,
+    pub username: String,
     pub kind: ConnectionAuthKind,
     pub password: Option<String>,
     pub private_key_path: Option<String>,
@@ -38,6 +41,8 @@ pub struct ValidatedCredentialProfileInput {
 pub struct CredentialProfile {
     pub id: String,
     pub name: String,
+    #[serde(default)]
+    pub username: Option<String>,
     pub kind: ConnectionAuthKind,
     #[serde(default)]
     pub password: Option<String>,
@@ -128,6 +133,7 @@ impl CredentialStore {
         let profile = CredentialProfile {
             id,
             name: validated.name,
+            username: Some(validated.username),
             kind: validated.kind,
             password: validated.password,
             private_key_path: validated.private_key_path,
@@ -199,8 +205,17 @@ pub fn validate_credential_input(
     let name = trim_optional(input.name.as_ref()).ok_or_else(|| {
         AppError::new(
             "credential_name_missing",
-            "请填写凭据名称。",
+            "请填写账号名称。",
             "credential name is empty",
+            true,
+        )
+    })?;
+
+    let username = trim_optional(input.username.as_ref()).ok_or_else(|| {
+        AppError::new(
+            "credential_username_missing",
+            "请填写账号用户名。",
+            "credential username is empty",
             true,
         )
     })?;
@@ -237,6 +252,7 @@ pub fn validate_credential_input(
     Ok(ValidatedCredentialProfileInput {
         id: trim_optional(input.id.as_ref()),
         name,
+        username,
         kind: input.kind.clone(),
         password,
         private_key_path,
@@ -264,6 +280,7 @@ mod tests {
         CredentialProfileInput {
             id: None,
             name: Some(" 生产密码 ".to_string()),
+            username: Some(" deploy ".to_string()),
             kind: ConnectionAuthKind::Password,
             password: Some(" secret ".to_string()),
             private_key_path: None,
@@ -277,6 +294,7 @@ mod tests {
         let validated = validate_credential_input(&password_input()).unwrap();
 
         assert_eq!(validated.name, "生产密码");
+        assert_eq!(validated.username, "deploy");
         assert_eq!(validated.password, Some("secret".to_string()));
         assert_eq!(validated.private_key_path, None);
         assert_eq!(validated.notes, Some("共享".to_string()));
@@ -292,6 +310,18 @@ mod tests {
         let error = validate_credential_input(&input).unwrap_err();
 
         assert_eq!(error.code, "credential_name_missing");
+    }
+
+    #[test]
+    fn validation_rejects_missing_username() {
+        let input = CredentialProfileInput {
+            username: None,
+            ..password_input()
+        };
+
+        let error = validate_credential_input(&input).unwrap_err();
+
+        assert_eq!(error.code, "credential_username_missing");
     }
 
     #[test]

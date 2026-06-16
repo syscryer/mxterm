@@ -1,0 +1,850 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>mXterm 连接对话框 · 账号模型</title>
+  <style>
+    :root {
+      --bg: #f5f6f8;
+      --panel: #ffffff;
+      --panel-soft: #f8f9fb;
+      --line: #e2e8f0;
+      --line-soft: #f1f1f1;
+      --text: #242424;
+      --muted: #717171;
+      --subtle: #9a9a9a;
+      --accent: #2374c6;
+      --accent-strong: #202020;
+      --accent-soft: rgba(35, 116, 198, 0.1);
+      --danger: #d33a31;
+      --success: #15803d;
+      --font-ui: -apple-system, BlinkMacSystemFont, "Segoe UI Variable Text", "Segoe UI", Roboto, "Microsoft YaHei UI", system-ui, sans-serif;
+      --font-mono: "JetBrains Mono", "Cascadia Mono", Consolas, monospace;
+    }
+
+    * { box-sizing: border-box; }
+
+    html, body {
+      margin: 0;
+      width: 100%;
+      min-height: 100vh;
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--font-ui);
+      font-size: 14px;
+      letter-spacing: 0;
+    }
+
+    button, input, select, textarea { font: inherit; }
+    button { cursor: pointer; }
+
+    .page {
+      max-width: 880px;
+      margin: 0 auto;
+      padding: 32px 24px 80px;
+    }
+
+    .page-head { margin-bottom: 28px; }
+    .page-head h1 {
+      margin: 0 0 6px;
+      font-size: 20px;
+      font-weight: 600;
+    }
+    .page-head p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.6;
+    }
+    .section-divider {
+      margin: 48px 0 20px;
+      padding-bottom: 12px;
+      border-bottom: 1px solid var(--line);
+    }
+    .section-divider h2 {
+      margin: 0 0 4px;
+      font-size: 16px;
+      font-weight: 600;
+    }
+    .section-divider p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    /* ===== 对话框 ===== */
+    .connection-dialog {
+      width: 100%;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: var(--panel);
+      box-shadow: 0 18px 50px rgba(15, 23, 42, 0.12), 0 4px 12px rgba(15, 23, 42, 0.05);
+      overflow: hidden;
+    }
+
+    .dialog-head {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      align-items: center;
+      gap: 12px;
+      padding: 14px 16px;
+      border-bottom: 1px solid var(--line);
+    }
+    .dialog-head strong { font-size: 15px; font-weight: 600; }
+    .dialog-head .dialog-subtitle {
+      display: block;
+      margin-top: 2px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+    .icon-button {
+      width: 30px; height: 30px;
+      display: grid; place-items: center;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--panel-soft);
+      color: var(--muted);
+      font-size: 16px; line-height: 1;
+    }
+
+    .protocol-switch {
+      display: flex; gap: 4px;
+      padding: 10px 16px;
+      border-bottom: 1px solid var(--line);
+      background: var(--panel-soft);
+      overflow-x: auto;
+      scrollbar-width: none;
+    }
+    .protocol-switch::-webkit-scrollbar { display: none; }
+    .protocol-chip {
+      flex: 0 0 auto;
+      display: inline-flex; align-items: center; gap: 6px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--panel);
+      color: var(--muted);
+      font-size: 12.5px;
+      padding: 6px 12px;
+      white-space: nowrap;
+    }
+    .protocol-chip:hover { border-color: var(--accent); color: var(--text); }
+    .protocol-chip.active {
+      background: var(--accent); border-color: var(--accent);
+      color: #fff; font-weight: 600;
+    }
+    .protocol-chip .chip-glyph { font-size: 13px; opacity: 0.85; }
+
+    .connection-dialog-tabs {
+      display: flex; gap: 2px;
+      padding: 0 16px;
+      border-bottom: 1px solid var(--line);
+    }
+    .connection-dialog-tabs button {
+      border: 0; background: transparent;
+      color: var(--muted); font-size: 13px;
+      padding: 9px 12px;
+      border-bottom: 2px solid transparent;
+      margin-bottom: -1px;
+    }
+    .connection-dialog-tabs button.active {
+      color: var(--accent); border-bottom-color: var(--accent); font-weight: 600;
+    }
+
+    .dialog-body {
+      padding: 16px;
+      display: grid; gap: 8px;
+      max-height: 460px;
+      overflow: auto;
+    }
+
+    .connection-dialog label {
+      display: grid; gap: 4px;
+      color: var(--muted); font-size: 12px;
+    }
+    .connection-dialog input,
+    .connection-dialog select,
+    .connection-dialog textarea {
+      width: 100%;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 6px 8px;
+      color: var(--text);
+      background: var(--panel);
+      font-size: 13px;
+      outline: none;
+    }
+    .connection-dialog input:focus,
+    .connection-dialog select:focus,
+    .connection-dialog textarea:focus {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px rgba(35, 116, 198, 0.14);
+    }
+    .connection-dialog textarea {
+      min-height: 56px; resize: vertical; font-family: var(--font-mono);
+    }
+
+    .form-grid {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 86px;
+      gap: 8px;
+    }
+    .form-grid-wide { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+
+    .field-section { display: none; }
+    .field-section.active { display: grid; gap: 12px; }
+
+    /* 账号选择行 */
+    .account-row {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 8px;
+      align-items: end;
+    }
+    .account-row .manage-btn {
+      height: 32px;
+      min-width: 52px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: var(--panel-soft);
+      color: var(--text);
+      font-size: 12px;
+    }
+
+    /* inline 账号展开区（选择"在此填写"时） */
+    .account-inline {
+      display: grid;
+      gap: 8px;
+      padding: 10px;
+      border: 1px solid var(--line-soft);
+      border-radius: 8px;
+      background: var(--panel-soft);
+    }
+    .auth-kind-row {
+      display: grid;
+      grid-template-columns: 132px minmax(0, 1fr);
+      gap: 8px;
+    }
+    .auth-subbranch { display: grid; gap: 8px; }
+
+    .input-with-toggle {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 8px;
+    }
+    .field-toggle {
+      width: 32px; height: 32px;
+      display: grid; place-items: center;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: var(--panel-soft);
+      color: var(--muted);
+    }
+
+    /* 错误反馈区 */
+    .conn-feedback {
+      margin: 0 16px;
+      border-radius: 8px;
+      padding: 11px 13px;
+      display: grid;
+      grid-template-columns: 20px minmax(0, 1fr);
+      gap: 10px;
+      align-items: start;
+    }
+    .conn-feedback .fb-icon {
+      width: 18px; height: 18px;
+      display: grid; place-items: center;
+      font-size: 15px; line-height: 1; margin-top: 1px;
+    }
+    .conn-feedback .fb-body { min-width: 0; display: grid; gap: 3px; }
+    .conn-feedback .fb-title { font-size: 13px; font-weight: 600; color: var(--text); }
+    .conn-feedback .fb-detail { font-size: 12px; line-height: 1.5; color: var(--muted); }
+    .conn-feedback .fb-detail code {
+      font-family: var(--font-mono); font-size: 11.5px;
+      background: rgba(0,0,0,0.05); padding: 1px 4px; border-radius: 3px; color: var(--text);
+    }
+    .conn-feedback .fb-actions { display: flex; gap: 8px; margin-top: 6px; }
+    .conn-feedback .fb-actions button {
+      border: 1px solid var(--line); border-radius: 6px;
+      background: var(--panel); color: var(--text); font-size: 12px; padding: 5px 10px;
+    }
+    .conn-feedback .fb-actions .fb-primary {
+      background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600;
+    }
+    .conn-feedback.running { background: var(--accent-soft); }
+    .conn-feedback.running .fb-icon { color: var(--accent); }
+    .conn-feedback.running .fb-icon::before { content: "◌"; animation: spin 1s linear infinite; display: inline-block; }
+    .conn-feedback.success { background: rgba(22,101,52,0.08); }
+    .conn-feedback.success .fb-icon { color: var(--success); }
+    .conn-feedback.success .fb-icon::before { content: "✓"; }
+    .conn-feedback.error { background: rgba(211,58,49,0.08); }
+    .conn-feedback.error .fb-icon { color: var(--danger); }
+    .conn-feedback.error .fb-icon::before { content: "!"; font-weight: 700; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    .dialog-actions {
+      display: flex; justify-content: space-between; align-items: center;
+      gap: 8px; padding: 12px 16px; border-top: 1px solid var(--line);
+    }
+    .dialog-action-left, .dialog-action-right { display: flex; gap: 8px; }
+    .dialog-actions button {
+      border: 1px solid var(--line); border-radius: 7px;
+      background: var(--panel); color: var(--text); font-size: 13px; padding: 7px 14px;
+    }
+    .danger-button { color: var(--danger) !important; border-color: rgba(211,58,49,0.4) !important; }
+    .test-connection-button { color: var(--accent) !important; border-color: rgba(35,116,198,0.4) !important; }
+    .primary-button { background: var(--accent) !important; color: #fff !important; border-color: var(--accent) !important; font-weight: 600; }
+
+    /* ===== 账号管理界面 ===== */
+    .account-manager {
+      width: 100%;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: var(--panel);
+      box-shadow: 0 18px 50px rgba(15, 23, 42, 0.12), 0 4px 12px rgba(15, 23, 42, 0.05);
+      overflow: hidden;
+    }
+    .am-layout {
+      display: grid;
+      grid-template-columns: 280px minmax(0, 1fr);
+      min-height: 420px;
+    }
+    .am-list {
+      border-right: 1px solid var(--line);
+      display: grid;
+      grid-template-rows: auto auto 1fr;
+      background: var(--panel-soft);
+    }
+    .am-list-head {
+      padding: 14px 14px 10px;
+      display: grid; gap: 8px;
+    }
+    .am-list-head strong { font-size: 14px; font-weight: 600; }
+    .am-list-head small { color: var(--subtle); font-size: 12px; }
+    .am-search {
+      display: grid;
+      grid-template-columns: 14px minmax(0, 1fr);
+      gap: 7px;
+      align-items: center;
+      padding: 0 14px 8px;
+      color: var(--subtle);
+    }
+    .am-search input {
+      border: 0; background: transparent;
+      font-size: 13px; color: var(--text); outline: none;
+    }
+    .am-list-body { overflow: auto; padding: 0 6px 10px; }
+    .account-item {
+      display: grid;
+      grid-template-columns: 28px minmax(0, 1fr) auto;
+      gap: 10px;
+      align-items: center;
+      width: 100%;
+      border: 1px solid transparent;
+      border-radius: 8px;
+      background: transparent;
+      padding: 8px 10px;
+      margin-bottom: 2px;
+      text-align: left;
+    }
+    .account-item:hover { background: var(--panel); border-color: var(--line-soft); }
+    .account-item.active { background: var(--panel); border-color: var(--accent); }
+    .account-item .ai-glyph {
+      width: 28px; height: 28px;
+      display: grid; place-items: center;
+      border-radius: 7px;
+      background: var(--accent-soft);
+      color: var(--accent);
+      font-size: 13px; font-weight: 600;
+    }
+    .account-item .ai-body { min-width: 0; display: grid; gap: 2px; }
+    .account-item .ai-name {
+      font-size: 13px; font-weight: 500; color: var(--text);
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    .account-item .ai-meta {
+      font-size: 11.5px; color: var(--subtle);
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    .account-item .ai-kind {
+      font-size: 10.5px; color: var(--muted);
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 1px 7px;
+      white-space: nowrap;
+    }
+
+    .am-form {
+      padding: 18px 20px;
+      display: grid;
+      gap: 14px;
+      align-content: start;
+    }
+    .am-form-head {
+      display: flex; align-items: center; gap: 10px;
+    }
+    .am-form-head .fg-glyph {
+      width: 32px; height: 32px;
+      display: grid; place-items: center;
+      border-radius: 8px;
+      background: var(--accent-soft);
+      color: var(--accent);
+      font-size: 15px; font-weight: 600;
+    }
+    .am-form-head strong { font-size: 15px; font-weight: 600; }
+    .am-form-head small { display: block; color: var(--muted); font-size: 12px; margin-top: 1px; }
+
+    .am-field { display: grid; gap: 4px; }
+    .am-field > span { color: var(--muted); font-size: 12px; }
+    .am-field input, .am-field select {
+      width: 100%;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 6px 8px;
+      color: var(--text);
+      background: var(--panel);
+      font-size: 13px;
+      outline: none;
+    }
+    .am-field input:focus, .am-field select:focus {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px rgba(35,116,198,0.14);
+    }
+    .am-row-2 { display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 10px; }
+
+    .am-actions {
+      display: flex; justify-content: space-between; align-items: center;
+      padding-top: 6px;
+      border-top: 1px solid var(--line-soft);
+    }
+    .am-actions .am-left, .am-actions .am-right { display: flex; gap: 8px; }
+    .am-actions button {
+      border: 1px solid var(--line); border-radius: 7px;
+      background: var(--panel); color: var(--text); font-size: 13px; padding: 7px 14px;
+    }
+    .am-actions .am-danger { color: var(--danger) !important; border-color: rgba(211,58,49,0.4) !important; }
+    .am-actions .am-primary { background: var(--accent) !important; color: #fff !important; border-color: var(--accent) !important; font-weight: 600; }
+
+    .am-toolbar {
+      padding: 0 14px 10px;
+      display: flex; gap: 6px;
+    }
+    .am-toolbar button {
+      flex: 1;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: var(--panel);
+      color: var(--muted);
+      font-size: 11.5px;
+      padding: 5px 4px;
+    }
+    .am-toolbar button.active {
+      background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600;
+    }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <header class="page-head">
+      <h1>连接对话框 · 账号模型</h1>
+      <p>
+        将「用户名 + 密码/私钥」合并为「账号」。连接里只需选账号，不再分别填用户名和凭据。
+        下方先看连接对话框，再看配套的账号管理界面。
+      </p>
+    </header>
+
+    <!-- ============ 连接对话框 ============ -->
+    <form class="connection-dialog" onsubmit="return false">
+      <header class="dialog-head">
+        <div>
+          <strong id="dialog-title">新增 SSH 连接</strong>
+          <span class="dialog-subtitle" id="dialog-subtitle">203.0.113.70:22</span>
+        </div>
+        <button class="icon-button" type="button" aria-label="关闭">✕</button>
+      </header>
+
+      <div class="protocol-switch" role="tablist" aria-label="连接协议">
+        <button class="protocol-chip active" data-protocol="ssh" role="tab" aria-selected="true"><span class="chip-glyph">⌘</span>SSH</button>
+        <button class="protocol-chip" data-protocol="rdp" role="tab" aria-selected="false"><span class="chip-glyph">⊞</span>RDP</button>
+        <button class="protocol-chip" data-protocol="telnet" role="tab" aria-selected="false"><span class="chip-glyph">›_</span>Telnet</button>
+        <button class="protocol-chip" data-protocol="vnc" role="tab" aria-selected="false"><span class="chip-glyph">▦</span>VNC</button>
+        <button class="protocol-chip" data-protocol="tunnel" role="tab" aria-selected="false"><span class="chip-glyph">⇄</span>隧道</button>
+      </div>
+
+      <nav class="connection-dialog-tabs" aria-label="配置分类">
+        <button class="active" type="button">基本</button>
+        <button type="button">代理 / 跳板机</button>
+        <button type="button">高级</button>
+      </nav>
+
+      <div class="dialog-body">
+        <!-- ===== SSH：账号模型 ===== -->
+        <div class="field-section active" data-protocol-fields="ssh">
+          <div class="form-grid form-grid-wide">
+            <label><span>名称</span><input value="生产跳板"></label>
+            <label><span>分组</span><select><option>生产</option><option>测试</option></select></label>
+          </div>
+          <div class="form-grid">
+            <label><span>主机</span><input value="203.0.113.70"></label>
+            <label><span>端口</span><input inputmode="numeric" value="22"></label>
+          </div>
+          <!-- 账号选择（替代原 用户名 + 凭据来源） -->
+          <label>
+            <span>登录账号</span>
+            <div class="account-row">
+              <select id="ssh-account-source">
+                <option value="saved-prod">deploy（生产·私钥）</option>
+                <option value="saved-readonly">readonly（生产·密码）</option>
+                <option value="inline">在此填写…</option>
+                <option value="prompt">连接时询问</option>
+              </select>
+              <button class="manage-btn" type="button" title="管理账号">管理</button>
+            </div>
+          </label>
+          <!-- inline 分支：在此填写 -->
+          <div id="ssh-inline" style="display:none;">
+            <div class="account-inline">
+              <label><span>用户名</span><input value="root"></label>
+              <div class="auth-kind-row">
+                <label>
+                  <span>认证方式</span>
+                  <select id="ssh-auth-kind"><option value="password">密码</option><option value="private_key">私钥</option></select>
+                </label>
+                <div class="auth-subbranch" data-auth="password">
+                  <label>
+                    <span>密码</span>
+                    <div class="input-with-toggle">
+                      <input type="password" value="••••••">
+                      <button class="field-toggle" type="button">👁</button>
+                    </div>
+                  </label>
+                </div>
+                <div class="auth-subbranch" data-auth="private_key" style="display:none;">
+                  <label><span>私钥路径</span><input value="~/.ssh/id_ed25519"></label>
+                  <label>
+                    <span>私钥口令</span>
+                    <div class="input-with-toggle">
+                      <input type="password" value="">
+                      <button class="field-toggle" type="button">👁</button>
+                    </div>
+                  </label>
+                </div>
+              </div>
+            </div>
+          </div>
+          <label><span>说明</span><textarea placeholder="可记录用途、环境、连接注意事项。"></textarea></label>
+        </div>
+
+        <!-- ===== RDP ===== -->
+        <div class="field-section" data-protocol-fields="rdp">
+          <div class="form-grid form-grid-wide">
+            <label><span>名称</span><input value="Win 生产机"></label>
+            <label><span>分组</span><select><option>生产</option></select></label>
+          </div>
+          <div class="form-grid">
+            <label><span>主机</span><input value="203.0.113.88"></label>
+            <label><span>端口</span><input inputmode="numeric" value="3389"></label>
+          </div>
+          <label>
+            <span>登录账号</span>
+            <div class="account-row">
+              <select><option>CORP\administrator（密码）</option><option>在此填写…</option></select>
+              <button class="manage-btn" type="button">管理</button>
+            </div>
+          </label>
+          <div class="form-grid">
+            <label><span>分辨率</span><select><option>1920×1080</option><option>1280×720</option><option>全屏</option></select></label>
+            <label><span>颜色深度</span><select><option>32 位</option><option>24 位</option></select></label>
+          </div>
+        </div>
+
+        <!-- ===== Telnet ===== -->
+        <div class="field-section" data-protocol-fields="telnet">
+          <div class="form-grid form-grid-wide">
+            <label><span>名称</span><input value="网络设备"></label>
+            <label><span>分组</span><select><option>网络</option></select></label>
+          </div>
+          <div class="form-grid">
+            <label><span>主机</span><input value="10.0.1.1"></label>
+            <label><span>端口</span><input inputmode="numeric" value="23"></label>
+          </div>
+          <div class="form-grid">
+            <label><span>终端类型</span><select><option>xterm-256color</option><option>vt100</option></select></label>
+            <label><span>字符编码</span><select><option>UTF-8</option><option>GBK</option></select></label>
+          </div>
+        </div>
+
+        <!-- ===== VNC ===== -->
+        <div class="field-section" data-protocol-fields="vnc">
+          <div class="form-grid form-grid-wide">
+            <label><span>名称</span><input value="桌面控制"></label>
+            <label><span>分组</span><select><option>桌面</option></select></label>
+          </div>
+          <div class="form-grid">
+            <label><span>主机</span><input value="203.0.113.55"></label>
+            <label><span>端口</span><input inputmode="numeric" value="5901"></label>
+          </div>
+          <label>
+            <span>VNC 账号</span>
+            <div class="account-row">
+              <select><option>显示号 :1（密码）</option><option>在此填写…</option></select>
+              <button class="manage-btn" type="button">管理</button>
+            </div>
+          </label>
+          <label><span>质量等级</span><select><option>高</option><option>中</option><option>低</option></select></label>
+        </div>
+
+        <!-- ===== 隧道 ===== -->
+        <div class="field-section" data-protocol-fields="tunnel">
+          <label><span>隧道类型</span><select><option>本地转发（-L）</option><option>远程转发（-R）</option><option>动态 SOCKS（-D）</option></select></label>
+          <div class="form-grid">
+            <label><span>本地绑定地址</span><input value="127.0.0.1"></label>
+            <label><span>本地端口</span><input inputmode="numeric" value="8080"></label>
+          </div>
+          <div class="form-grid">
+            <label><span>远程目标地址</span><input value="db.internal"></label>
+            <label><span>远程端口</span><input inputmode="numeric" value="3306"></label>
+          </div>
+          <label>
+            <span>SSH 跳板账号</span>
+            <div class="account-row">
+              <select><option>deploy（生产·私钥）</option></select>
+              <button class="manage-btn" type="button">管理</button>
+            </div>
+          </label>
+        </div>
+      </div>
+
+      <div id="feedback-region"></div>
+
+      <footer class="dialog-actions">
+        <div class="dialog-action-left">
+          <button class="danger-button" type="button">删除</button>
+          <button class="test-connection-button" type="button">测试连接</button>
+        </div>
+        <div class="dialog-action-right">
+          <button type="button">取消</button>
+          <button class="primary-button" type="submit">创建连接</button>
+        </div>
+      </footer>
+    </form>
+
+    <!-- ============ 账号管理界面 ============ -->
+    <div class="section-divider">
+      <h2>账号管理</h2>
+      <p>集中维护「用户名 + 认证材料」，连接里直接引用。一个账号 = 一个完整登录身份。</p>
+    </div>
+
+    <div class="account-manager">
+      <div class="am-layout">
+        <!-- 左：账号列表 -->
+        <div class="am-list">
+          <div class="am-list-head">
+            <strong>账号库</strong>
+            <small>4 项 · 2 密码 · 2 私钥</small>
+          </div>
+          <div class="am-search">
+            <span>🔍</span>
+            <input placeholder="搜索账号">
+          </div>
+          <div class="am-toolbar">
+            <button class="active">全部</button>
+            <button>密码</button>
+            <button>私钥</button>
+          </div>
+          <div class="am-list-body" id="am-list-body">
+            <button class="account-item active">
+              <span class="ai-glyph">D</span>
+              <span class="ai-body">
+                <span class="ai-name">deploy</span>
+                <span class="ai-meta">用于生产跳板、隧道载体</span>
+              </span>
+              <span class="ai-kind">私钥</span>
+            </button>
+            <button class="account-item">
+              <span class="ai-glyph">R</span>
+              <span class="ai-body">
+                <span class="ai-name">readonly</span>
+                <span class="ai-meta">生产只读巡检</span>
+              </span>
+              <span class="ai-kind">密码</span>
+            </button>
+            <button class="account-item">
+              <span class="ai-glyph">A</span>
+              <span class="ai-body">
+                <span class="ai-name">CORP\administrator</span>
+                <span class="ai-meta">Windows 生产机</span>
+              </span>
+              <span class="ai-kind">密码</span>
+            </button>
+            <button class="account-item">
+              <span class="ai-glyph">C</span>
+              <span class="ai-body">
+                <span class="ai-name">ci-runner</span>
+                <span class="ai-meta">CI/CD 部署机</span>
+              </span>
+              <span class="ai-kind">私钥</span>
+            </button>
+          </div>
+        </div>
+
+        <!-- 右：编辑表单 -->
+        <div class="am-form">
+          <div class="am-form-head">
+            <span class="fg-glyph">D</span>
+            <div>
+              <strong>编辑账号：deploy</strong>
+              <small>账号含完整登录身份（用户名 + 认证材料），不包含主机端口。</small>
+            </div>
+          </div>
+
+          <div class="am-row-2">
+            <div class="am-field"><span>名称</span><input value="deploy"></div>
+            <div class="am-field"><span>认证方式</span><select><option>私钥</option><option>密码</option></select></div>
+          </div>
+
+          <div class="am-field"><span>用户名</span><input value="deploy"></div>
+
+          <div class="am-field"><span>私钥路径</span><input value="~/.ssh/id_ed25519" style="font-family:var(--font-mono);"></div>
+          <div class="am-field">
+            <span>私钥口令</span>
+            <div class="input-with-toggle">
+              <input type="password" value="••••••">
+              <button class="field-toggle" type="button">👁</button>
+            </div>
+          </div>
+
+          <div class="am-field"><span>备注</span><input value="用于生产跳板、隧道载体"></div>
+
+          <div class="am-actions">
+            <div class="am-left">
+              <button class="am-danger" type="button">删除</button>
+            </div>
+            <div class="am-right">
+              <button type="button">新建账号</button>
+              <button class="am-primary" type="button">保存</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // ===== 协议切换 + 端口联动 =====
+    const protocolTitles = {
+      ssh: { title: 'SSH 连接', sub: '203.0.113.70:22' },
+      rdp: { title: 'RDP 远程桌面', sub: '203.0.113.88:3389' },
+      telnet: { title: 'Telnet 连接', sub: '10.0.1.1:23' },
+      vnc: { title: 'VNC 远程桌面', sub: '203.0.113.55:5901' },
+      tunnel: { title: '隧道（端口转发）', sub: '本地 127.0.0.1:8080 → db.internal:3306' },
+    };
+    const protocolDefaultPorts = { ssh: 22, rdp: 3389, telnet: 23, vnc: 5900 };
+    const defaultPortSet = new Set(Object.values(protocolDefaultPorts));
+
+    const chips = document.querySelectorAll('.protocol-chip');
+    const fieldSections = document.querySelectorAll('.field-section');
+
+    function selectProtocol(key) {
+      chips.forEach((c) => {
+        const active = c.dataset.protocol === key;
+        c.classList.toggle('active', active);
+        c.setAttribute('aria-selected', active ? 'true' : 'false');
+      });
+      fieldSections.forEach((s) => {
+        s.classList.toggle('active', s.dataset.protocolFields === key);
+      });
+      const info = protocolTitles[key];
+      document.getElementById('dialog-title').textContent = '新增 ' + info.title;
+      document.getElementById('dialog-subtitle').textContent = info.sub;
+
+      const portInput = document.querySelector(`[data-protocol-fields="${key}"] input[inputmode="numeric"]`);
+      if (portInput) {
+        const cur = Number(portInput.value);
+        if (defaultPortSet.has(cur)) {
+          const next = protocolDefaultPorts[key];
+          if (next && next !== cur) portInput.value = String(next);
+        }
+      }
+    }
+    chips.forEach((chip) => chip.addEventListener('click', () => selectProtocol(chip.dataset.protocol)));
+
+    // 子页签占位
+    document.querySelectorAll('.connection-dialog-tabs button').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        document.querySelectorAll('.connection-dialog-tabs button').forEach((b) => b.classList.remove('active'));
+        btn.classList.add('active');
+      });
+    });
+
+    // SSH 账号来源切换：inline 才展开表单
+    const sshAccountSource = document.getElementById('ssh-account-source');
+    const sshInline = document.getElementById('ssh-inline');
+    if (sshAccountSource) {
+      sshAccountSource.addEventListener('change', () => {
+        sshInline.style.display = sshAccountSource.value === 'inline' ? '' : 'none';
+      });
+    }
+
+    // SSH 认证方式子分支
+    const authKind = document.getElementById('ssh-auth-kind');
+    if (authKind) {
+      authKind.addEventListener('change', () => {
+        document.querySelectorAll('#ssh-inline .auth-subbranch').forEach((sub) => {
+          sub.style.display = sub.dataset.auth === authKind.value ? '' : 'none';
+        });
+      });
+    }
+
+    // 密码眼睛
+    document.querySelectorAll('.field-toggle').forEach((t) => {
+      t.addEventListener('click', () => {
+        const input = t.parentElement.querySelector('input');
+        if (input) input.type = input.type === 'password' ? 'text' : 'password';
+      });
+    });
+
+    // 账号列表选中
+    document.querySelectorAll('.account-item').forEach((item) => {
+      item.addEventListener('click', () => {
+        document.querySelectorAll('.account-item').forEach((i) => i.classList.remove('active'));
+        item.classList.add('active');
+      });
+    });
+    // 筛选工具栏
+    document.querySelectorAll('.am-toolbar button').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        document.querySelectorAll('.am-toolbar button').forEach((b) => b.classList.remove('active'));
+        btn.classList.add('active');
+      });
+    });
+
+    // ===== 错误反馈循环 =====
+    const feedbackRegion = document.getElementById('feedback-region');
+    const feedbackStates = [
+      { state: 'running', title: '203.0.113.70:22 正在检查', detail: '测试会复用当前表单配置，不会打开终端。' },
+      { state: 'success', title: '连接测试通过', detail: '当前配置可以继续保存。' },
+      { state: 'error', title: '认证失败', detail: '请检查账号的用户名、密码或私钥。底层：<code>Permission denied (publickey)</code>', actions: [{ label: '重试', primary: true }, { label: '管理账号' }] },
+      { state: 'error', title: '端口无法连接', detail: '目标主机拒绝了连接，请确认 SSH 服务已启动。底层：<code>Connection refused (os error 111)</code>', actions: [{ label: '重试', primary: true }, { label: '检查端口' }] },
+      { state: 'error', title: '连接超时', detail: '在限定时间内无法连接，请检查 IP、防火墙或网络连通性。', actions: [{ label: '重试', primary: true }, { label: '调整超时' }] },
+    ];
+    let fi = 0;
+    document.querySelector('.test-connection-button').addEventListener('click', () => {
+      const fb = feedbackStates[fi];
+      const actionsHtml = fb.actions ? fb.actions.map((a) => `<button class="${a.primary ? 'fb-primary' : ''}" type="button">${a.label}</button>`).join('') : '';
+      feedbackRegion.innerHTML = `
+        <div class="conn-feedback ${fb.state}" style="margin-top:12px;">
+          <span class="fb-icon"></span>
+          <div class="fb-body">
+            <strong class="fb-title">${fb.title}</strong>
+            <span class="fb-detail">${fb.detail}</span>
+            ${actionsHtml ? `<div class="fb-actions">${actionsHtml}</div>` : ''}
+          </div>
+        </div>`;
+      fi = (fi + 1) % feedbackStates.length;
+    });
+
+    selectProtocol('ssh');
+  </script>
+</body>
+</html>
