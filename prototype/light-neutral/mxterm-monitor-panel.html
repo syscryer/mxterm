@@ -368,6 +368,12 @@
       display: grid;
       align-content: start;
       gap: 10px;
+      scrollbar-width: thin;
+      scrollbar-color: transparent transparent;
+    }
+
+    .monitor-scroll:hover {
+      scrollbar-color: rgba(100, 116, 139, 0.10) transparent;
     }
 
     .monitor-scroll::-webkit-scrollbar {
@@ -384,7 +390,16 @@
       border: 2px solid transparent;
       border-radius: 999px;
       background-clip: padding-box;
-      background-color: rgba(100, 116, 139, 0.22);
+      background-color: transparent;
+    }
+
+    .monitor-scroll:hover::-webkit-scrollbar-thumb,
+    .monitor-scroll::-webkit-scrollbar-thumb:hover {
+      background-color: rgba(100, 116, 139, 0.10);
+    }
+
+    .monitor-scroll::-webkit-scrollbar-thumb:active {
+      background-color: rgba(100, 116, 139, 0.18);
     }
 
     .monitor-view {
@@ -594,7 +609,11 @@
       overflow-y: auto;
       padding-right: 4px;
       scrollbar-width: thin;
-      scrollbar-color: rgba(138, 143, 150, 0.36) transparent;
+      scrollbar-color: transparent transparent;
+    }
+
+    .core-list-scroll:hover {
+      scrollbar-color: rgba(100, 116, 139, 0.10) transparent;
     }
 
     .core-list-scroll::-webkit-scrollbar {
@@ -607,7 +626,16 @@
 
     .core-list-scroll::-webkit-scrollbar-thumb {
       border-radius: 999px;
-      background: rgba(138, 143, 150, 0.34);
+      background: transparent;
+    }
+
+    .core-list-scroll:hover::-webkit-scrollbar-thumb,
+    .core-list-scroll::-webkit-scrollbar-thumb:hover {
+      background: rgba(100, 116, 139, 0.10);
+    }
+
+    .core-list-scroll::-webkit-scrollbar-thumb:active {
+      background: rgba(100, 116, 139, 0.18);
     }
 
     .activity-row {

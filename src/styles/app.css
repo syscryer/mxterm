@@ -71,12 +71,14 @@ button {
 
 .app-shell {
   --mx-scrollbar-size: 6px;
-  --mx-scrollbar-thumb: rgb(100 116 139 / 10%);
-  --mx-scrollbar-thumb-hover: rgb(100 116 139 / 18%);
+  --mx-scrollbar-thumb: transparent;
+  --mx-scrollbar-thumb-hover: rgb(100 116 139 / 10%);
+  --mx-scrollbar-thumb-active: rgb(100 116 139 / 18%);
   --mx-scrollbar-track: transparent;
   --mx-terminal-scrollbar-size: 6px;
-  --mx-terminal-scrollbar-thumb: rgb(148 163 184 / 18%);
-  --mx-terminal-scrollbar-thumb-hover: rgb(148 163 184 / 34%);
+  --mx-terminal-scrollbar-thumb: transparent;
+  --mx-terminal-scrollbar-thumb-hover: rgb(100 116 139 / 14%);
+  --mx-terminal-scrollbar-thumb-active: rgb(100 116 139 / 22%);
   --terminal-glassbar-height: 32px;
   --title-left-width: var(--left-pane-custom-width, 336px);
   --left-pane-width: var(--left-pane-custom-width, 336px);
@@ -166,12 +168,16 @@ button {
   border: 2px solid transparent;
   border-radius: 999px;
   background-clip: padding-box;
-  background-color: transparent;
+  background-color: var(--mx-scrollbar-thumb);
 }
 
 .app-shell *:hover::-webkit-scrollbar-thumb,
 .app-shell *::-webkit-scrollbar-thumb:hover {
   background-color: var(--mx-scrollbar-thumb-hover);
+}
+
+.app-shell *::-webkit-scrollbar-thumb:active {
+  background-color: var(--mx-scrollbar-thumb-active);
 }
 
 .app-shell[data-left-collapsed="true"] {
@@ -4711,7 +4717,7 @@ button {
 }
 
 .terminal-host .xterm .xterm-scrollable-element > .scrollbar > .slider.active {
-  background: rgb(148 163 184 / 42%) !important;
+  background: var(--mx-terminal-scrollbar-thumb-active) !important;
 }
 
 .terminal-host .xterm .xterm-decoration-overview-ruler {
@@ -6252,13 +6258,6 @@ button {
   background: color-mix(in srgb, var(--mx-danger) 9%, var(--mx-panel)) !important;
 }
 
-.app-shell[data-theme-mode="dark"] {
-  --mx-scrollbar-thumb: rgb(148 163 184 / 20%);
-  --mx-scrollbar-thumb-hover: rgb(148 163 184 / 38%);
-  --mx-terminal-scrollbar-thumb: rgb(148 163 184 / 20%);
-  --mx-terminal-scrollbar-thumb-hover: rgb(148 163 184 / 40%);
-}
-
 .app-shell[data-theme-mode="dark"] :where(.settings-toggle span) {
   background: #f8fafc;
 }
@@ -6351,13 +6350,6 @@ button {
 }
 
 @media (prefers-color-scheme: dark) {
-  .app-shell[data-theme-mode="system"] {
-    --mx-scrollbar-thumb: rgb(148 163 184 / 20%);
-    --mx-scrollbar-thumb-hover: rgb(148 163 184 / 38%);
-    --mx-terminal-scrollbar-thumb: rgb(148 163 184 / 20%);
-    --mx-terminal-scrollbar-thumb-hover: rgb(148 163 184 / 40%);
-  }
-
   .app-shell[data-theme-mode="system"] :where(.settings-toggle span) {
     background: #f8fafc;
   }
