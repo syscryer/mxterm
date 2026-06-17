@@ -170,10 +170,12 @@ Ant Design, Mantine, or similar libraries just to fix one modal or button.
   invisible attributes so remote output colors remain authoritative.
 - Scrollable app panes should use the shared light scrollbar treatment in
   `src/styles/app.css`: transparent tracks/corners, no WebKit scrollbar
-  buttons/arrows, muted rounded thumbs that become visible on hover, and a
-  narrower terminal scrollbar than ordinary side panes. For xterm, hide the
-  native `.xterm-viewport` WebKit/Firefox scrollbar completely and style
-  xterm's internal `.xterm-scrollable-element > .scrollbar`; keep the Terminal
+  buttons/arrows, transparent thumbs by default, and only a low-alpha neutral
+  thumb on hover or active drag. Keep hover thumbs subtle (around
+  `rgb(100 116 139 / 10%)`) so the scrollbar does not compete with dense
+  operational content. Use a narrower terminal scrollbar than ordinary side
+  panes. For xterm, hide the native `.xterm-viewport` WebKit/Firefox scrollbar
+  completely and style xterm's internal `.xterm-scrollable-element > .scrollbar`; keep the Terminal
   `overviewRuler` width aligned with the CSS size so FitAddon does not reserve
   a wider gutter, but hide `.xterm-decoration-overview-ruler` when the ruler is
   only used for scrollbar sizing so it cannot draw a bright edge line.
