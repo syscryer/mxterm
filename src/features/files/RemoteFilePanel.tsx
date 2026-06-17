@@ -1,4 +1,5 @@
 import {
+  Activity,
   ChevronDown,
   ChevronUp,
   ChevronRight,
@@ -43,7 +44,7 @@ import {
 } from "./remoteFilePaths";
 import type { RemoteFileEntry } from "./remoteFileTypes";
 
-export type RemoteFileTool = "files" | "transfers";
+export type RemoteFileTool = "files" | "transfers" | "monitor";
 
 export interface RemoteFileUploadItem {
   file: File;
@@ -58,6 +59,7 @@ interface RemoteFilePanelProps {
   transferCount?: number;
   transferPanel?: ReactNode;
   nativeDropTargetPath?: string | null;
+  monitorPanel?: ReactNode;
   onCopyPath?: (path: string) => void;
   onCreateDirectory?: (parentPath: string) => void;
   onCreateFile?: (parentPath: string) => void;
@@ -135,6 +137,7 @@ export function RemoteFilePanel({
   transferCount = 0,
   transferPanel,
   nativeDropTargetPath = null,
+  monitorPanel,
   onCopyPath,
   onCreateDirectory,
   onCreateFile,
@@ -223,6 +226,10 @@ export function RemoteFilePanel({
       {activeTool === "transfers" ? (
         <div className="transfer-tool-body">
           {transferPanel || <p className="file-panel-empty">还没有传输任务。</p>}
+        </div>
+      ) : activeTool === "monitor" ? (
+        <div className="monitor-tool-body">
+          {monitorPanel || <p className="file-panel-empty">打开一个 SSH 会话后显示监控。</p>}
         </div>
       ) : (
         <FilePanelShell
@@ -731,6 +738,10 @@ function FilePanelTabs({
         <Upload className="ui-icon" aria-hidden="true" />
         传输
         {transferCount > 0 ? <span className="tool-tab-badge">{transferCount.toString()}</span> : null}
+      </button>
+      <button className={activeTool === "monitor" ? "active" : ""} type="button" onClick={() => onToolChange?.("monitor")}>
+        <Activity className="ui-icon" aria-hidden="true" />
+        监控
       </button>
       {onToggleRightPane ? (
         <Tooltip label="收起右侧面板">

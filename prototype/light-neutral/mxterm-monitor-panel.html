@@ -1,0 +1,2314 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>mXterm Monitor Panel Prototype</title>
+  <style>
+    :root {
+      --mx-bg: #f5f6f8;
+      --mx-panel: #ffffff;
+      --mx-panel-soft: #f8f9fb;
+      --mx-panel-muted: #f1f4f8;
+      --mx-line: #dde1e7;
+      --mx-line-soft: #edf0f4;
+      --mx-line-strong: #c9ced6;
+      --mx-text: #20242a;
+      --mx-muted: #69727d;
+      --mx-subtle: #8a8f96;
+      --mx-primary: #2563eb;
+      --mx-primary-soft: rgba(37, 99, 235, 0.1);
+      --mx-success: #15803d;
+      --mx-warning: #d97706;
+      --mx-danger: #dc2626;
+      --mx-upload: #d94b12;
+      --font-ui: "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI", system-ui, sans-serif;
+      --font-mono: "Cascadia Mono", Consolas, "Microsoft YaHei UI", monospace;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    [hidden] {
+      display: none !important;
+    }
+
+    html,
+    body {
+      width: 100%;
+      height: 100%;
+    }
+
+    body {
+      margin: 0;
+      min-width: 760px;
+      min-height: 620px;
+      overflow: hidden;
+      color: var(--mx-text);
+      background: var(--mx-bg);
+      font-family: var(--font-ui);
+      letter-spacing: 0;
+    }
+
+    button,
+    input {
+      font: inherit;
+    }
+
+    button {
+      cursor: pointer;
+    }
+
+    button:focus-visible,
+    input:focus-visible {
+      outline: 2px solid var(--mx-primary);
+      outline-offset: 2px;
+    }
+
+    .ui-icon {
+      width: 16px;
+      height: 16px;
+      stroke: currentColor;
+      stroke-width: 1.55;
+      fill: none;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+      flex: 0 0 auto;
+    }
+
+    .prototype-stage {
+      width: 100vw;
+      height: 100vh;
+      display: grid;
+      grid-template-columns: minmax(280px, 1fr) 360px;
+      background: var(--mx-panel);
+    }
+
+    .terminal-context {
+      min-width: 0;
+      min-height: 0;
+      display: grid;
+      grid-template-rows: 34px minmax(0, 1fr);
+      border-right: 1px solid var(--mx-line);
+      background: var(--mx-panel);
+    }
+
+    .terminal-tabs {
+      height: 34px;
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      padding: 0 12px;
+      border-bottom: 1px solid var(--mx-line);
+      background: #fbfcfe;
+    }
+
+    .terminal-tab {
+      height: 28px;
+      border: 0;
+      border-radius: 7px;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 0 10px;
+      color: var(--mx-text);
+      background: rgba(156, 163, 175, 0.12);
+      font-size: 13px;
+      font-weight: 560;
+    }
+
+    .terminal-preview {
+      min-width: 0;
+      min-height: 0;
+      overflow: hidden;
+      padding: 16px 18px;
+      color: #cbd5e1;
+      background: #0f172a;
+      font-family: var(--font-mono);
+      font-size: 13px;
+      line-height: 1.65;
+    }
+
+    .terminal-preview pre {
+      margin: 0;
+      white-space: pre-wrap;
+    }
+
+    .right-monitor-pane {
+      min-width: 0;
+      min-height: 0;
+      display: grid;
+      grid-template-rows: 34px minmax(0, 1fr);
+      background: var(--mx-panel-soft);
+    }
+
+    .file-panel-tabs {
+      min-width: 0;
+      height: 34px;
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      padding: 0 8px;
+      border-bottom: 1px solid var(--mx-line);
+      background: #fbfcfe;
+    }
+
+    .file-panel-tab,
+    .right-collapse-button {
+      height: 28px;
+      border: 0;
+      border-radius: 7px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      padding: 0 10px;
+      color: var(--mx-muted);
+      background: transparent;
+      font-size: 13px;
+    }
+
+    .file-panel-tab:hover,
+    .right-collapse-button:hover,
+    .file-panel-tab.active {
+      color: var(--mx-text);
+      background: rgba(156, 163, 175, 0.12);
+    }
+
+    .file-panel-tab .ui-icon,
+    .right-collapse-button .ui-icon {
+      width: 14px;
+      height: 14px;
+    }
+
+    .right-collapse-button {
+      width: 28px;
+      padding: 0;
+      margin-left: auto;
+      flex: 0 0 28px;
+    }
+
+    .monitor-shell {
+      min-width: 0;
+      min-height: 0;
+      display: grid;
+      grid-template-rows: auto auto minmax(0, 1fr);
+      background: var(--mx-panel-soft);
+    }
+
+    .monitor-host {
+      min-width: 0;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 10px;
+      padding: 11px 12px 10px;
+      border-bottom: 1px solid var(--mx-line-soft);
+      background: var(--mx-panel);
+    }
+
+    .host-main {
+      min-width: 0;
+      display: grid;
+      gap: 4px;
+    }
+
+    .host-title-row,
+    .host-meta-row,
+    .card-title-row,
+    .metric-head,
+    .activity-row,
+    .connection-row,
+    .process-tools {
+      min-width: 0;
+      display: flex;
+      align-items: center;
+    }
+
+    .host-title-row {
+      gap: 7px;
+    }
+
+    .host-name {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      color: var(--mx-text);
+      font-size: 13px;
+      font-weight: 680;
+    }
+
+    .status-pill,
+    .small-pill,
+    .state-pill {
+      height: 20px;
+      border-radius: 999px;
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      padding: 0 8px;
+      font-size: 11px;
+      font-weight: 620;
+      white-space: nowrap;
+    }
+
+    .status-pill {
+      color: #1d4ed8;
+      background: rgba(37, 99, 235, 0.09);
+    }
+
+    .small-pill,
+    .state-pill {
+      color: var(--mx-muted);
+      background: var(--mx-panel-muted);
+    }
+
+    .state-pill.estab {
+      color: #1d4ed8;
+      background: rgba(37, 99, 235, 0.09);
+    }
+
+    .state-pill.listen {
+      color: #475569;
+      background: #eef2f7;
+    }
+
+    .status-dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 999px;
+      background: var(--mx-primary);
+      flex: 0 0 auto;
+    }
+
+    .host-meta-row {
+      gap: 11px;
+      color: var(--mx-muted);
+      font-size: 12px;
+    }
+
+    .host-meta-row span {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      min-width: 0;
+      white-space: nowrap;
+    }
+
+    .host-meta-row .ui-icon {
+      width: 13px;
+      height: 13px;
+    }
+
+    .host-actions {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+    }
+
+    .icon-action {
+      width: 28px;
+      height: 28px;
+      border: 0;
+      border-radius: 8px;
+      display: grid;
+      place-items: center;
+      color: var(--mx-muted);
+      background: transparent;
+    }
+
+    .icon-action:hover {
+      color: var(--mx-text);
+      background: rgba(156, 163, 175, 0.12);
+    }
+
+    .view-switcher {
+      min-width: 0;
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 4px;
+      padding: 8px;
+      border-bottom: 1px solid var(--mx-line-soft);
+      background: var(--mx-panel-soft);
+    }
+
+    .view-tab {
+      height: 30px;
+      border: 1px solid transparent;
+      border-radius: 8px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 5px;
+      padding: 0 7px;
+      color: var(--mx-muted);
+      background: transparent;
+      font-size: 12px;
+      font-weight: 620;
+    }
+
+    .view-tab:hover,
+    .view-tab.active {
+      border-color: var(--mx-line);
+      color: var(--mx-text);
+      background: var(--mx-panel);
+    }
+
+    .view-tab .ui-icon {
+      width: 14px;
+      height: 14px;
+    }
+
+    .monitor-scroll {
+      min-width: 0;
+      min-height: 0;
+      overflow: auto;
+      padding: 10px 10px 16px;
+      display: grid;
+      align-content: start;
+      gap: 10px;
+    }
+
+    .monitor-scroll::-webkit-scrollbar {
+      width: 8px;
+      height: 8px;
+    }
+
+    .monitor-scroll::-webkit-scrollbar-track,
+    .monitor-scroll::-webkit-scrollbar-corner {
+      background: transparent;
+    }
+
+    .monitor-scroll::-webkit-scrollbar-thumb {
+      border: 2px solid transparent;
+      border-radius: 999px;
+      background-clip: padding-box;
+      background-color: rgba(100, 116, 139, 0.22);
+    }
+
+    .monitor-view {
+      min-width: 0;
+      display: none;
+      align-content: start;
+      gap: 10px;
+    }
+
+    .monitor-view.active {
+      display: grid;
+    }
+
+    .monitor-card {
+      min-width: 0;
+      border: 1px solid var(--mx-line-soft);
+      border-radius: 8px;
+      padding: 12px;
+      background: var(--mx-panel);
+      box-shadow: 0 1px 2px rgba(15, 23, 42, 0.03);
+    }
+
+    .card-title-row {
+      justify-content: space-between;
+      gap: 8px;
+      margin-bottom: 10px;
+    }
+
+    .card-title {
+      min-width: 0;
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      color: var(--mx-text);
+      font-size: 13px;
+      font-weight: 720;
+    }
+
+    .card-title .ui-icon {
+      width: 15px;
+      height: 15px;
+      color: var(--mx-primary);
+    }
+
+    .mono-value,
+    .metric-value,
+    .process-metric,
+    .connection-address {
+      font-family: var(--font-mono);
+      font-variant-numeric: tabular-nums;
+    }
+
+    .metric-grid {
+      min-width: 0;
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 8px;
+    }
+
+    .metric-tile {
+      min-width: 0;
+      border: 1px solid var(--mx-line-soft);
+      border-radius: 8px;
+      padding: 9px;
+      background: #fbfcfe;
+    }
+
+    .metric-tile:only-child {
+      grid-column: 1 / -1;
+    }
+
+    .metric-head {
+      justify-content: space-between;
+      gap: 8px;
+      margin-bottom: 6px;
+      color: var(--mx-muted);
+      font-size: 11px;
+      font-weight: 620;
+    }
+
+    .metric-name {
+      min-width: 0;
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .metric-name .ui-icon {
+      width: 12px;
+      height: 12px;
+      color: var(--mx-subtle);
+      stroke-width: 1.65;
+    }
+
+    .metric-name-text {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .metric-head > span:last-child {
+      flex: 0 0 auto;
+    }
+
+    .metric-value {
+      color: var(--mx-text);
+      font-size: 18px;
+      font-weight: 680;
+      line-height: 1;
+    }
+
+    .metric-value.unavailable {
+      color: var(--mx-subtle);
+      font-size: 15px;
+    }
+
+    .metric-sub {
+      margin-top: 4px;
+      color: var(--mx-subtle);
+      font-size: 11px;
+      line-height: 1.4;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .component-model {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      margin: -4px 0 10px;
+      color: var(--mx-subtle);
+      font-size: 11px;
+      font-weight: 620;
+    }
+
+    .bar {
+      height: 7px;
+      overflow: hidden;
+      border-radius: 999px;
+      background: #e8ebf3;
+    }
+
+    .bar-fill {
+      display: block;
+      height: 100%;
+      width: var(--value);
+      border-radius: inherit;
+      background: var(--bar-color, var(--mx-primary));
+    }
+
+    .split-stats {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+    }
+
+    .stat-line {
+      min-width: 0;
+      display: grid;
+      gap: 3px;
+    }
+
+    .stat-label {
+      color: var(--mx-subtle);
+      font-size: 11px;
+      font-weight: 620;
+    }
+
+    .stat-value {
+      color: var(--mx-text);
+      font-family: var(--font-mono);
+      font-size: 17px;
+      font-weight: 680;
+      line-height: 1.1;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .activity-list,
+    .process-list,
+    .connection-list,
+    .disk-list,
+    .core-list {
+      min-width: 0;
+      display: grid;
+    }
+
+    .core-list-head {
+      min-width: 0;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      margin-top: 10px;
+      color: var(--mx-subtle);
+      font-size: 11px;
+      font-weight: 620;
+    }
+
+    .core-list-scroll {
+      max-height: 192px;
+      overflow-y: auto;
+      padding-right: 4px;
+      overscroll-behavior: contain;
+      scrollbar-width: thin;
+      scrollbar-color: rgba(138, 143, 150, 0.36) transparent;
+    }
+
+    .core-list-scroll::-webkit-scrollbar {
+      width: 4px;
+    }
+
+    .core-list-scroll::-webkit-scrollbar-track {
+      background: transparent;
+    }
+
+    .core-list-scroll::-webkit-scrollbar-thumb {
+      border-radius: 999px;
+      background: rgba(138, 143, 150, 0.34);
+    }
+
+    .activity-row {
+      gap: 9px;
+      padding: 9px 0;
+      border-top: 1px solid var(--mx-line-soft);
+    }
+
+    .activity-row:first-child {
+      padding-top: 0;
+      border-top: 0;
+    }
+
+    .activity-icon {
+      width: 24px;
+      height: 24px;
+      border-radius: 7px;
+      display: grid;
+      place-items: center;
+      flex: 0 0 auto;
+      color: var(--mx-primary);
+      background: var(--mx-primary-soft);
+    }
+
+    .activity-icon.warn {
+      color: var(--mx-upload);
+      background: rgba(217, 75, 18, 0.08);
+    }
+
+    .activity-text {
+      min-width: 0;
+      display: grid;
+      gap: 2px;
+    }
+
+    .activity-text strong,
+    .process-name,
+    .connection-title {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      color: var(--mx-text);
+      font-size: 12px;
+      font-weight: 650;
+    }
+
+    .activity-text span,
+    .process-pid,
+    .connection-address,
+    .connection-meta {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      color: var(--mx-subtle);
+      font-size: 11px;
+    }
+
+    .core-row {
+      min-width: 0;
+      display: grid;
+      grid-template-columns: 48px minmax(0, 1fr) 48px;
+      align-items: center;
+      gap: 9px;
+      padding: 6px 0;
+      color: var(--mx-muted);
+      font-size: 12px;
+    }
+
+    .core-row strong {
+      color: var(--mx-text);
+      font-family: var(--font-mono);
+      font-size: 12px;
+      text-align: right;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .donut-wrap {
+      min-width: 0;
+      display: grid;
+      grid-template-columns: 104px minmax(0, 1fr);
+      align-items: center;
+      gap: 14px;
+    }
+
+    .donut {
+      position: relative;
+      width: 104px;
+      height: 104px;
+      display: grid;
+      place-items: center;
+    }
+
+    .donut svg {
+      width: 104px;
+      height: 104px;
+      transform: rotate(-90deg);
+    }
+
+    .donut-track {
+      fill: none;
+      stroke: #eef1f8;
+      stroke-width: 13;
+    }
+
+    .donut-segment {
+      fill: none;
+      stroke-width: 13;
+      stroke-linecap: butt;
+    }
+
+    .donut-label {
+      position: absolute;
+      inset: 0;
+      display: grid;
+      place-items: center;
+      text-align: center;
+      color: var(--mx-text);
+      font-family: var(--font-mono);
+      font-size: 19px;
+      font-weight: 720;
+      line-height: 1.05;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .donut-label small {
+      display: block;
+      margin-top: 2px;
+      color: var(--mx-subtle);
+      font-family: var(--font-ui);
+      font-size: 10px;
+      font-weight: 620;
+    }
+
+    .memory-usage {
+      grid-template-columns: 84px minmax(0, 1fr);
+      gap: 12px;
+      align-items: center;
+    }
+
+    .memory-usage .donut,
+    .memory-usage .donut svg {
+      width: 82px;
+      height: 82px;
+    }
+
+    .memory-usage .donut-track,
+    .memory-usage .donut-segment {
+      stroke-width: 11;
+    }
+
+    .memory-usage .donut-label {
+      font-size: 17px;
+    }
+
+    .memory-usage .legend {
+      gap: 6px;
+    }
+
+    .memory-usage .legend-row {
+      grid-template-columns: 8px minmax(0, 1fr) auto;
+      gap: 7px;
+      font-size: 11px;
+    }
+
+    .memory-usage .legend-row strong {
+      font-size: 12px;
+    }
+
+    .legend {
+      min-width: 0;
+      display: grid;
+      gap: 7px;
+    }
+
+    .legend-row {
+      min-width: 0;
+      display: grid;
+      grid-template-columns: 9px minmax(0, 1fr) auto;
+      align-items: center;
+      gap: 7px;
+      color: var(--mx-muted);
+      font-size: 12px;
+    }
+
+    .legend-dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 999px;
+      background: var(--legend-color);
+    }
+
+    .legend-row strong {
+      color: var(--mx-text);
+      font-family: var(--font-mono);
+      font-weight: 650;
+    }
+
+    .disk-row {
+      min-width: 0;
+      display: grid;
+      gap: 7px;
+      padding: 10px;
+      border: 1px solid var(--mx-line-soft);
+      border-radius: 8px;
+      background: #fbfcfe;
+    }
+
+    .disk-row + .disk-row {
+      margin-top: 8px;
+    }
+
+    .disk-head {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 8px;
+      align-items: center;
+      color: var(--mx-text);
+      font-size: 12px;
+      font-weight: 660;
+    }
+
+    .disk-head small {
+      color: var(--mx-subtle);
+      font-weight: 600;
+    }
+
+    .disk-mount,
+    .disk-capacity {
+      min-width: 0;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .disk-mount .ui-icon,
+    .disk-capacity .ui-icon {
+      width: 12px;
+      height: 12px;
+      color: var(--mx-subtle);
+      stroke-width: 1.65;
+    }
+
+    .disk-capacity .ui-icon {
+      width: 13px;
+      height: 13px;
+      color: var(--mx-muted);
+    }
+
+    .disk-mount span {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .disk-meta {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 8px;
+      color: var(--mx-muted);
+      font-size: 11px;
+    }
+
+    .disk-meta span {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .disk-summary {
+      min-width: 0;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 10px;
+    }
+
+    .disk-total {
+      min-width: 0;
+      display: grid;
+      gap: 5px;
+    }
+
+    .disk-total strong {
+      color: var(--mx-text);
+      font-family: var(--font-mono);
+      font-size: 18px;
+      font-weight: 680;
+      font-variant-numeric: tabular-nums;
+      line-height: 1;
+    }
+
+    .disk-description {
+      color: var(--mx-subtle);
+      font-size: 11px;
+    }
+
+    .disk-count {
+      height: 22px;
+      border-radius: 999px;
+      display: inline-flex;
+      align-items: center;
+      padding: 0 8px;
+      color: var(--mx-muted);
+      background: var(--mx-panel-muted);
+      font-size: 11px;
+      font-weight: 620;
+      white-space: nowrap;
+    }
+
+    .disk-toggle {
+      margin-top: 8px;
+    }
+
+    .io-grid {
+      min-width: 0;
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 8px;
+      margin-bottom: 10px;
+    }
+
+    .io-tile,
+    .network-identity {
+      min-width: 0;
+      border: 1px solid var(--mx-line-soft);
+      border-radius: 8px;
+      background: #fbfcfe;
+    }
+
+    .io-tile {
+      padding: 9px;
+    }
+
+    .io-label {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      margin-bottom: 6px;
+      color: var(--mx-subtle);
+      font-size: 11px;
+      font-weight: 620;
+    }
+
+    .io-label .ui-icon {
+      width: 13px;
+      height: 13px;
+    }
+
+    .io-value {
+      color: var(--mx-text);
+      font-family: var(--font-mono);
+      font-size: 16px;
+      font-weight: 680;
+      font-variant-numeric: tabular-nums;
+      line-height: 1;
+    }
+
+    .network-identity {
+      display: grid;
+      grid-template-columns: 28px minmax(0, 1fr) auto;
+      align-items: center;
+      gap: 8px;
+      padding: 9px;
+      margin-bottom: 10px;
+    }
+
+    .network-icon {
+      width: 28px;
+      height: 28px;
+      border-radius: 7px;
+      display: grid;
+      place-items: center;
+      color: var(--mx-primary);
+      background: var(--mx-primary-soft);
+    }
+
+    .network-icon .ui-icon {
+      width: 14px;
+      height: 14px;
+    }
+
+    .network-main {
+      min-width: 0;
+      display: grid;
+      gap: 3px;
+    }
+
+    .network-main strong,
+    .network-main span {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .network-main strong {
+      color: var(--mx-text);
+      font-size: 12px;
+      font-weight: 660;
+    }
+
+    .network-main span {
+      color: var(--mx-subtle);
+      font-size: 11px;
+    }
+
+    .hardware-profile {
+      min-width: 0;
+      display: grid;
+      grid-template-columns: 42px minmax(0, 1fr);
+      align-items: center;
+      gap: 10px;
+    }
+
+    .hardware-mark {
+      width: 42px;
+      height: 42px;
+      border: 1px solid var(--mx-line-soft);
+      border-radius: 8px;
+      display: grid;
+      place-items: center;
+      color: var(--mx-primary);
+      background: var(--mx-primary-soft);
+      font-family: var(--font-mono);
+      font-size: 13px;
+      font-weight: 720;
+    }
+
+    .hardware-title {
+      min-width: 0;
+      display: grid;
+      gap: 4px;
+    }
+
+    .hardware-title strong {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      color: var(--mx-text);
+      font-size: 13px;
+      font-weight: 700;
+    }
+
+    .hardware-title span {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      color: var(--mx-subtle);
+      font-size: 11px;
+      font-weight: 600;
+    }
+
+    .hardware-kv-list,
+    .hardware-part-list {
+      min-width: 0;
+      display: grid;
+    }
+
+    .hardware-kv-list {
+      margin-top: 11px;
+      border-top: 1px solid var(--mx-line-soft);
+    }
+
+    .hardware-kv-row {
+      min-width: 0;
+      display: grid;
+      grid-template-columns: 82px minmax(0, 1fr);
+      gap: 10px;
+      padding: 8px 0;
+      border-bottom: 1px solid var(--mx-line-soft);
+      font-size: 11px;
+    }
+
+    .hardware-kv-row span {
+      color: var(--mx-subtle);
+      font-weight: 620;
+    }
+
+    .hardware-kv-row strong {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      color: var(--mx-text);
+      font-family: var(--font-mono);
+      font-weight: 650;
+    }
+
+    .hardware-part {
+      min-width: 0;
+      display: grid;
+      grid-template-columns: 26px minmax(0, 1fr) auto;
+      align-items: center;
+      gap: 9px;
+      padding: 9px 0;
+      border-top: 1px solid var(--mx-line-soft);
+    }
+
+    .hardware-part:first-child {
+      padding-top: 0;
+      border-top: 0;
+    }
+
+    .hardware-part-icon {
+      width: 26px;
+      height: 26px;
+      border-radius: 7px;
+      display: grid;
+      place-items: center;
+      color: var(--mx-primary);
+      background: var(--mx-primary-soft);
+    }
+
+    .hardware-part-icon .ui-icon {
+      width: 14px;
+      height: 14px;
+    }
+
+    .hardware-part-main {
+      min-width: 0;
+      display: grid;
+      gap: 3px;
+    }
+
+    .hardware-part-main strong {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      color: var(--mx-text);
+      font-size: 12px;
+      font-weight: 660;
+    }
+
+    .hardware-part-main span {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      color: var(--mx-subtle);
+      font-size: 11px;
+    }
+
+    .hardware-badge {
+      height: 22px;
+      border-radius: 999px;
+      display: inline-flex;
+      align-items: center;
+      padding: 0 8px;
+      color: var(--mx-muted);
+      background: var(--mx-panel-muted);
+      font-family: var(--font-mono);
+      font-size: 11px;
+      font-weight: 650;
+      white-space: nowrap;
+    }
+
+    .traffic-chart {
+      width: 100%;
+      height: 122px;
+      border: 1px solid var(--mx-line-soft);
+      border-radius: 8px;
+      overflow: hidden;
+      background: linear-gradient(180deg, #fbfcff, #ffffff);
+    }
+
+    .traffic-chart svg {
+      width: 100%;
+      height: 100%;
+      display: block;
+    }
+
+    .chart-grid {
+      stroke: #edf0f4;
+      stroke-width: 1;
+    }
+
+    .upload-line {
+      fill: none;
+      stroke: var(--mx-upload);
+      stroke-width: 2;
+      stroke-linecap: round;
+    }
+
+    .download-line {
+      fill: none;
+      stroke: var(--mx-primary);
+      stroke-width: 2;
+      stroke-linecap: round;
+    }
+
+    .download-area {
+      fill: rgba(37, 99, 235, 0.08);
+    }
+
+    .process-tools {
+      gap: 6px;
+      margin-bottom: 10px;
+    }
+
+    .search-field {
+      min-width: 0;
+      height: 32px;
+      flex: 1 1 auto;
+      border: 1px solid var(--mx-line);
+      border-radius: 8px;
+      display: grid;
+      grid-template-columns: 17px minmax(0, 1fr);
+      align-items: center;
+      gap: 6px;
+      padding: 0 9px;
+      color: var(--mx-subtle);
+      background: var(--mx-panel);
+    }
+
+    .search-field input {
+      min-width: 0;
+      border: 0;
+      outline: none;
+      color: var(--mx-text);
+      background: transparent;
+      font-size: 12px;
+    }
+
+    .search-field input::placeholder {
+      color: var(--mx-subtle);
+    }
+
+    .process-row {
+      min-width: 0;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 48px 44px 56px;
+      align-items: center;
+      gap: 8px;
+      padding: 10px 0;
+      border-top: 1px solid var(--mx-line-soft);
+    }
+
+    .process-row:first-child {
+      padding-top: 0;
+      border-top: 0;
+    }
+
+    .process-row.is-focused {
+      margin-inline: -8px;
+      padding-inline: 8px;
+      border-radius: 8px;
+      background: var(--mx-panel-muted);
+    }
+
+    .process-main {
+      min-width: 0;
+      display: grid;
+      gap: 3px;
+    }
+
+    .process-metric {
+      color: var(--mx-text);
+      font-size: 12px;
+      text-align: right;
+    }
+
+    .process-metric.hot {
+      color: var(--mx-danger);
+      font-weight: 700;
+    }
+
+    .process-actions {
+      min-width: 0;
+      display: inline-flex;
+      align-items: center;
+      justify-content: flex-end;
+      gap: 4px;
+    }
+
+    .process-action-button {
+      width: 24px;
+      height: 24px;
+      border: 1px solid transparent;
+      border-radius: 7px;
+      display: inline-grid;
+      place-items: center;
+      color: var(--mx-subtle);
+      background: transparent;
+    }
+
+    .process-action-button:hover {
+      color: var(--mx-text);
+      border-color: var(--mx-line-soft);
+      background: var(--mx-panel-muted);
+    }
+
+    .process-action-button.danger:hover {
+      color: var(--mx-danger);
+      border-color: rgba(220, 38, 38, 0.2);
+      background: rgba(220, 38, 38, 0.06);
+    }
+
+    .process-action-button .ui-icon {
+      width: 13px;
+      height: 13px;
+    }
+
+    .process-action-confirm {
+      min-width: 0;
+      display: grid;
+      grid-template-columns: 22px minmax(0, 1fr) auto auto;
+      align-items: center;
+      gap: 7px;
+      margin-bottom: 10px;
+      padding: 8px;
+      border: 1px solid rgba(220, 38, 38, 0.16);
+      border-radius: 8px;
+      color: var(--mx-muted);
+      background: rgba(220, 38, 38, 0.045);
+      font-size: 11px;
+    }
+
+    .process-action-confirm .ui-icon {
+      width: 15px;
+      height: 15px;
+      color: var(--mx-danger);
+    }
+
+    .process-action-confirm strong {
+      color: var(--mx-text);
+      font-weight: 650;
+    }
+
+    .process-action-confirm.neutral {
+      border-color: var(--mx-line-soft);
+      color: var(--mx-muted);
+      background: var(--mx-panel-muted);
+    }
+
+    .process-action-confirm.neutral .ui-icon {
+      color: var(--mx-primary);
+    }
+
+    .process-action-confirm.neutral [data-process-confirm-send] {
+      display: none;
+    }
+
+    .process-confirm-button {
+      height: 24px;
+      border: 1px solid var(--mx-line);
+      border-radius: 7px;
+      padding: 0 8px;
+      color: var(--mx-muted);
+      background: var(--mx-panel);
+      font-size: 11px;
+      font-weight: 620;
+      white-space: nowrap;
+    }
+
+    .process-confirm-button.danger {
+      color: var(--mx-danger);
+      border-color: rgba(220, 38, 38, 0.28);
+      background: rgba(255, 255, 255, 0.72);
+    }
+
+    .process-confirm-button:hover {
+      color: var(--mx-text);
+      background: #fff;
+    }
+
+    .process-confirm-button.danger:hover {
+      color: #b91c1c;
+      background: rgba(220, 38, 38, 0.08);
+    }
+
+    .connection-row {
+      gap: 8px;
+      padding: 9px 0;
+      border-top: 1px solid var(--mx-line-soft);
+    }
+
+    .connection-row:first-child {
+      padding-top: 0;
+      border-top: 0;
+    }
+
+    .connection-body {
+      min-width: 0;
+      display: grid;
+      gap: 3px;
+      flex: 1 1 auto;
+    }
+
+    .section-foot-button {
+      width: 100%;
+      height: 32px;
+      border: 1px solid var(--mx-line);
+      border-radius: 8px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 7px;
+      color: var(--mx-primary);
+      background: var(--mx-panel);
+      font-size: 12px;
+      font-weight: 650;
+    }
+
+    .section-foot-button:hover {
+      background: var(--mx-primary-soft);
+    }
+
+    .subtle-caption {
+      color: var(--mx-subtle);
+      font-size: 11px;
+      font-weight: 620;
+      white-space: nowrap;
+    }
+
+    [hidden] {
+      display: none !important;
+    }
+
+    @media (max-width: 900px) {
+      body {
+        min-width: 360px;
+      }
+
+      .prototype-stage {
+        grid-template-columns: 1fr;
+      }
+
+      .terminal-context {
+        display: none;
+      }
+
+      .right-monitor-pane {
+        width: min(100vw, 380px);
+        justify-self: center;
+        border-left: 1px solid var(--mx-line);
+        border-right: 1px solid var(--mx-line);
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="prototype-stage">
+    <section class="terminal-context" aria-label="终端上下文">
+      <header class="terminal-tabs">
+        <button class="terminal-tab" type="button">
+          <svg class="ui-icon" data-lucide="terminal"></svg>
+          <span>AI Compute Node H200-4</span>
+        </button>
+      </header>
+      <div class="terminal-preview">
+        <pre>root@h200node-01:~# uptime
+ 23:41:08 up 1 day,  2:36,  3 users,  load average: 12.20, 10.80, 8.50
+
+root@h200node-01:~# nvidia-smi
+Tasks: 168 total,   1 running, 167 sleeping
+%Cpu(s): 34.2 us,  6.1 sy,  0.0 ni, 58.9 id
+GPU 0 NVIDIA H200  68%  82GiB / 141GiB
+GPU 1 NVIDIA H200  74%  88GiB / 141GiB
+GPU 2 NVIDIA H200  91% 109GiB / 141GiB</pre>
+      </div>
+    </section>
+
+    <aside class="right-monitor-pane" aria-label="远程监控面板">
+      <header class="file-panel-tabs">
+        <button class="file-panel-tab" type="button">
+          <svg class="ui-icon" data-lucide="folder"></svg>
+          <span>文件</span>
+        </button>
+        <button class="file-panel-tab" type="button">
+          <svg class="ui-icon" data-lucide="list"></svg>
+          <span>传输</span>
+        </button>
+        <button class="file-panel-tab active" type="button">
+          <svg class="ui-icon" data-lucide="activity"></svg>
+          <span>监控</span>
+        </button>
+        <button class="right-collapse-button" type="button" aria-label="收起右侧面板">
+          <svg class="ui-icon" data-lucide="server"></svg>
+        </button>
+      </header>
+
+      <section class="monitor-shell">
+        <header class="monitor-host">
+          <div class="host-main">
+            <div class="host-title-row">
+              <strong class="host-name">AI Compute Node H200-4</strong>
+              <span class="status-pill"><span class="status-dot"></span>Online</span>
+            </div>
+            <div class="host-meta-row">
+              <span>
+                <svg class="ui-icon" data-lucide="gauge"></svg>
+                1d 2h 36m
+              </span>
+              <span>
+                <svg class="ui-icon" data-lucide="users"></svg>
+                3 Users
+              </span>
+            </div>
+          </div>
+          <div class="host-actions">
+            <button class="icon-action" type="button" aria-label="刷新监控">
+              <svg class="ui-icon" data-lucide="refreshCw"></svg>
+            </button>
+          </div>
+        </header>
+
+        <nav class="view-switcher" aria-label="监控视图">
+          <button class="view-tab active" type="button" data-view="overview">
+            <svg class="ui-icon" data-lucide="activity"></svg>
+            状态
+          </button>
+          <button class="view-tab" type="button" data-view="hardware">
+            <svg class="ui-icon" data-lucide="cpu"></svg>
+            硬件
+          </button>
+          <button class="view-tab" type="button" data-view="network">
+            <svg class="ui-icon" data-lucide="network"></svg>
+            网络
+          </button>
+          <button class="view-tab" type="button" data-view="processes">
+            <svg class="ui-icon" data-lucide="list"></svg>
+            进程
+          </button>
+        </nav>
+
+        <div class="monitor-scroll">
+          <section class="monitor-view active" data-panel="overview" aria-label="监控状态">
+            <section class="monitor-card">
+              <div class="card-title-row">
+                <span class="card-title">
+                  <svg class="ui-icon" data-lucide="cpu"></svg>
+                  CPU
+                </span>
+                <span class="subtle-caption">32C / 64T</span>
+              </div>
+              <div class="component-model">Intel Xeon Gold 6448Y · 2.10 GHz base · AVX-512</div>
+              <div class="metric-grid">
+                <div class="metric-tile">
+                  <div class="metric-head"><span class="metric-name"><svg class="ui-icon" data-lucide="activity"></svg><span class="metric-name-text">Usage</span></span><span>Avg</span></div>
+                  <div class="metric-value">15%</div>
+                  <div class="metric-sub">Load 12.2 / 10.8 / 8.5</div>
+                  <div class="bar" style="margin-top:8px"><span class="bar-fill" style="--value:15%"></span></div>
+                </div>
+                <div class="metric-tile">
+                  <div class="metric-head"><span class="metric-name"><svg class="ui-icon" data-lucide="gauge"></svg><span class="metric-name-text">Clock</span></span><span>Now</span></div>
+                  <div class="metric-value">2.78 GHz</div>
+                  <div class="metric-sub">Base 2.10G · max 4.10G</div>
+                  <div class="bar" style="margin-top:8px"><span class="bar-fill" style="--value:68%;--bar-color:#0d9488"></span></div>
+                </div>
+              </div>
+              <div class="core-list-head">
+                <span>All Cores</span>
+                <span>32 cores · internal scroll</span>
+              </div>
+              <div class="core-list core-list-scroll" data-core-list aria-label="CPU 所有核心使用率">
+              </div>
+            </section>
+
+            <section class="monitor-card" data-gpu-only>
+              <div class="card-title-row">
+                <span class="card-title">
+                  <svg class="ui-icon" data-lucide="gpu"></svg>
+                  GPU
+                </span>
+                <span class="small-pill" data-gpu-count-label>4 Cards</span>
+              </div>
+              <div class="component-model">NVIDIA H200 SXM 141GB · CUDA 12.4 · driver 550.54</div>
+              <div class="metric-grid">
+                <div class="metric-tile">
+                  <div class="metric-head"><span class="metric-name"><svg class="ui-icon" data-lucide="gpu"></svg><span class="metric-name-text">Usage</span></span><span>Avg</span></div>
+                  <div class="metric-value">72%</div>
+                  <div class="metric-sub">Peak GPU2 · 91%</div>
+                  <div class="bar" style="margin-top:8px"><span class="bar-fill" style="--value:72%;--bar-color:#0d9488"></span></div>
+                </div>
+                <div class="metric-tile">
+                  <div class="metric-head"><span class="metric-name"><svg class="ui-icon" data-lucide="memoryStick"></svg><span class="metric-name-text">VRAM</span></span><span>Total</span></div>
+                  <div class="metric-value" style="font-size:15px">352G</div>
+                  <div class="metric-sub">Used of 564G · 62%</div>
+                  <div class="bar" style="margin-top:8px"><span class="bar-fill" style="--value:62%;--bar-color:#0d9488"></span></div>
+                </div>
+              </div>
+              <div class="hardware-part-list" style="margin-top:10px">
+                <div class="hardware-part">
+                  <span class="hardware-part-icon">
+                    <svg class="ui-icon" data-lucide="gpu"></svg>
+                  </span>
+                  <span class="hardware-part-main">
+                    <strong>GPU 0 · NVIDIA H200 SXM</strong>
+                    <span>68% · VRAM 82/141G · 61°C · 512W</span>
+                  </span>
+                  <span class="hardware-badge">H200</span>
+                </div>
+                <div class="hardware-part">
+                  <span class="hardware-part-icon">
+                    <svg class="ui-icon" data-lucide="gpu"></svg>
+                  </span>
+                  <span class="hardware-part-main">
+                    <strong>GPU 1 · NVIDIA H200 SXM</strong>
+                    <span>74% · VRAM 88/141G · 64°C · 536W</span>
+                  </span>
+                  <span class="hardware-badge">H200</span>
+                </div>
+                <div class="hardware-part">
+                  <span class="hardware-part-icon">
+                    <svg class="ui-icon" data-lucide="gpu"></svg>
+                  </span>
+                  <span class="hardware-part-main">
+                    <strong>GPU 2 · NVIDIA H200 SXM</strong>
+                    <span>91% · VRAM 109/141G · 67°C · 582W</span>
+                  </span>
+                  <span class="hardware-badge">H200</span>
+                </div>
+                <div class="hardware-part">
+                  <span class="hardware-part-icon">
+                    <svg class="ui-icon" data-lucide="gpu"></svg>
+                  </span>
+                  <span class="hardware-part-main">
+                    <strong>GPU 3 · NVIDIA H200 SXM</strong>
+                    <span>55% · VRAM 73/141G · 58°C · 468W</span>
+                  </span>
+                  <span class="hardware-badge">H200</span>
+                </div>
+              </div>
+            </section>
+
+            <section class="monitor-card">
+              <div class="card-title-row">
+                <span class="card-title">
+                  <svg class="ui-icon" data-lucide="memoryStick"></svg>
+                  Memory
+                </span>
+                <span class="subtle-caption">512 GB ECC</span>
+              </div>
+              <div class="donut-wrap memory-usage">
+                <div class="donut" aria-label="内存使用率 37%">
+                  <svg viewBox="0 0 120 120" aria-hidden="true">
+                    <circle class="donut-track" cx="60" cy="60" r="43"></circle>
+                    <circle class="donut-segment" cx="60" cy="60" r="43" style="stroke:var(--mx-primary);stroke-dasharray:100 270.2;stroke-dashoffset:0"></circle>
+                    <circle class="donut-segment" cx="60" cy="60" r="43" style="stroke:#0d9488;stroke-dasharray:48 322.2;stroke-dashoffset:-108"></circle>
+                  </svg>
+                  <div class="donut-label">37%</div>
+                </div>
+                <div class="legend">
+                  <div class="legend-row">
+                    <span class="legend-dot" style="--legend-color:var(--mx-primary)"></span>
+                    <span>Used</span>
+                    <strong>188G</strong>
+                  </div>
+                  <div class="legend-row">
+                    <span class="legend-dot" style="--legend-color:#0d9488"></span>
+                    <span>Cache</span>
+                    <strong>38G</strong>
+                  </div>
+                  <div class="legend-row">
+                    <span class="legend-dot" style="--legend-color:#cbd5e1"></span>
+                    <span>Free</span>
+                    <strong>286G</strong>
+                  </div>
+                </div>
+              </div>
+              <div class="metric-sub" style="margin-top:10px">ECC healthy · swap 0.6G / 32G</div>
+            </section>
+
+            <section class="monitor-card">
+              <div class="card-title-row">
+                <span class="card-title">
+                  <svg class="ui-icon" data-lucide="storageStack"></svg>
+                  Disk Space
+                </span>
+                <span class="subtle-caption">6 Mounts</span>
+              </div>
+              <div class="disk-summary">
+                <div class="disk-total">
+                  <span class="disk-capacity"><svg class="ui-icon" data-lucide="storageStack"></svg><strong>5.1T / 11.5T</strong></span>
+                  <span class="disk-description">44.3% used across mounted filesystems</span>
+                </div>
+                <span class="disk-count">3 hidden</span>
+              </div>
+              <div class="io-grid" aria-label="磁盘实时读写">
+                <div class="io-tile">
+                  <div class="io-label">
+                    <svg class="ui-icon" data-lucide="download"></svg>
+                    Read Now
+                  </div>
+                  <div class="io-value">8.4 MB/s</div>
+                  <div class="metric-sub">IOPS 128 · await 2.1ms</div>
+                </div>
+                <div class="io-tile">
+                  <div class="io-label">
+                    <svg class="ui-icon" data-lucide="upload"></svg>
+                    Write Now
+                  </div>
+                  <div class="io-value">1.7 MB/s</div>
+                  <div class="metric-sub">IOPS 42 · await 3.8ms</div>
+                </div>
+              </div>
+              <div class="disk-list">
+                <div class="disk-row">
+                  <div class="disk-head"><span class="disk-mount"><svg class="ui-icon" data-lucide="volumeFolder"></svg><span>/</span></span><small>ext4</small></div>
+                  <div class="bar"><span class="bar-fill" style="--value:15%"></span></div>
+                  <div class="disk-meta"><span>Used: 684G (18%)</span><span>Free: 3.1T</span></div>
+                </div>
+                <div class="disk-row">
+                  <div class="disk-head"><span class="disk-mount"><svg class="ui-icon" data-lucide="volumeFolder"></svg><span>/boot</span></span><small>vfat</small></div>
+                  <div class="bar"><span class="bar-fill" style="--value:24%;--bar-color:#9db9ff"></span></div>
+                  <div class="disk-meta"><span>Used: 120M (24%)</span><span>Free: 380M</span></div>
+                </div>
+                <div class="disk-row">
+                  <div class="disk-head"><span class="disk-mount"><svg class="ui-icon" data-lucide="volumeFolder"></svg><span>/data</span></span><small>ext4</small></div>
+                  <div class="bar"><span class="bar-fill" style="--value:9%;--bar-color:#0d9488"></span></div>
+                  <div class="disk-meta"><span>Used: 4.2T (55%)</span><span>Free: 3.4T</span></div>
+                </div>
+                <div class="disk-row disk-extra" hidden>
+                  <div class="disk-head"><span class="disk-mount"><svg class="ui-icon" data-lucide="volumeFolder"></svg><span>/var/log</span></span><small>ext4</small></div>
+                  <div class="bar"><span class="bar-fill" style="--value:68%;--bar-color:var(--mx-warning)"></span></div>
+                  <div class="disk-meta"><span>Used: 6.8G (68%)</span><span>Free: 3.2G</span></div>
+                </div>
+                <div class="disk-row disk-extra" hidden>
+                  <div class="disk-head"><span class="disk-mount"><svg class="ui-icon" data-lucide="volumeFolder"></svg><span>/srv</span></span><small>xfs</small></div>
+                  <div class="bar"><span class="bar-fill" style="--value:22%"></span></div>
+                  <div class="disk-meta"><span>Used: 4.4G (22%)</span><span>Free: 15.6G</span></div>
+                </div>
+                <div class="disk-row disk-extra" hidden>
+                  <div class="disk-head"><span class="disk-mount"><svg class="ui-icon" data-lucide="volumeFolder"></svg><span>/mnt/backup</span></span><small>nfs</small></div>
+                  <div class="bar"><span class="bar-fill" style="--value:3%;--bar-color:#0d9488"></span></div>
+                  <div class="disk-meta"><span>Used: 600M (3%)</span><span>Free: 19.4G</span></div>
+                </div>
+              </div>
+              <button class="section-foot-button disk-toggle" type="button" data-disk-toggle aria-expanded="false">
+                展开 3 个更多磁盘
+              </button>
+            </section>
+
+            <section class="monitor-card">
+              <div class="card-title-row">
+                <span class="card-title">
+                  <svg class="ui-icon" data-lucide="network"></svg>
+                  Network
+                </span>
+                <span class="subtle-caption">Live</span>
+              </div>
+              <div class="network-identity" aria-label="物理主网卡">
+                <span class="network-icon">
+                  <svg class="ui-icon" data-lucide="network"></svg>
+                </span>
+                <span class="network-main">
+                  <strong>eth0 · 192.168.31.190</strong>
+                  <span>Realtek RTL8211E · physical primary · 1 Gbps</span>
+                </span>
+                <span class="hardware-badge">PHY</span>
+              </div>
+              <div class="metric-grid">
+                <div class="metric-tile">
+                  <div class="metric-head"><span class="metric-name"><svg class="ui-icon" data-lucide="download"></svg><span class="metric-name-text">Download</span></span><span>eth0</span></div>
+                  <div class="metric-value" style="font-size:15px">732 B/s</div>
+                  <div class="metric-sub">Total 22.3 MB</div>
+                  <div class="bar" style="margin-top:8px"><span class="bar-fill" style="--value:44%;--bar-color:#0d9488"></span></div>
+                </div>
+                <div class="metric-tile">
+                  <div class="metric-head"><span class="metric-name"><svg class="ui-icon" data-lucide="upload"></svg><span class="metric-name-text">Upload</span></span><span>eth0</span></div>
+                  <div class="metric-value" style="font-size:15px">1.9 KB/s</div>
+                  <div class="metric-sub">Total 11.3 MB</div>
+                  <div class="bar" style="margin-top:8px"><span class="bar-fill" style="--value:28%;--bar-color:var(--mx-upload)"></span></div>
+                </div>
+              </div>
+            </section>
+
+            <section class="monitor-card">
+              <div class="card-title-row">
+                <span class="card-title">
+                  <svg class="ui-icon" data-lucide="eye"></svg>
+                  Recent Activity
+                </span>
+                <span class="subtle-caption">View all</span>
+              </div>
+              <div class="activity-list">
+                <div class="activity-row">
+                  <span class="activity-icon">
+                    <svg class="ui-icon" data-lucide="refreshCw"></svg>
+                  </span>
+                  <span class="activity-text">
+                    <strong>System Update Available</strong>
+                    <span>15 updates total: apt upgrade · 1 hour ago</span>
+                  </span>
+                </div>
+              </div>
+            </section>
+          </section>
+
+          <section class="monitor-view" data-panel="hardware" aria-label="硬件信息">
+            <section class="monitor-card">
+              <div class="card-title-row">
+                <span class="card-title">
+                  <svg class="ui-icon" data-lucide="memoryStick"></svg>
+                  硬件档案
+                </span>
+                <span class="small-pill">Local Probe</span>
+              </div>
+              <div class="hardware-profile">
+                <div class="hardware-mark">AI</div>
+                <div class="hardware-title">
+                  <strong>AI Compute Node H200-4</strong>
+                  <span>Ubuntu 22.04.4 LTS · x86_64 · Bare metal</span>
+                </div>
+              </div>
+              <div class="hardware-kv-list">
+                <div class="hardware-kv-row"><span>设备型号</span><strong>HGX H200 4-GPU Node</strong></div>
+                <div class="hardware-kv-row"><span>内核版本</span><strong>Linux 6.8.0-45-generic</strong></div>
+                <div class="hardware-kv-row"><span>序列号</span><strong>H200-NODE-****-2190</strong></div>
+                <div class="hardware-kv-row"><span>启动方式</span><strong>NVMe · UEFI secure boot</strong></div>
+              </div>
+            </section>
+
+            <section class="monitor-card">
+              <div class="card-title-row">
+                <span class="card-title">
+                  <svg class="ui-icon" data-lucide="cpu"></svg>
+                  核心部件
+                </span>
+                <span class="subtle-caption" data-hardware-group-count>4 groups</span>
+              </div>
+              <div class="hardware-part-list">
+                <div class="hardware-part">
+                  <span class="hardware-part-icon">
+                    <svg class="ui-icon" data-lucide="cpu"></svg>
+                  </span>
+                  <span class="hardware-part-main">
+                    <strong>Intel Xeon Gold 6448Y</strong>
+                    <span>32C / 64T · base 2.10 GHz · max 4.10 GHz</span>
+                  </span>
+                  <span class="hardware-badge">2.78G</span>
+                </div>
+                <div class="hardware-part" data-gpu-only>
+                  <span class="hardware-part-icon">
+                    <svg class="ui-icon" data-lucide="gpu"></svg>
+                  </span>
+                  <span class="hardware-part-main">
+                    <strong>NVIDIA H200 SXM 141GB × 4</strong>
+                    <span>NVLink · CUDA 12.4 · total VRAM 564 GB</span>
+                  </span>
+                  <span class="hardware-badge">4x</span>
+                </div>
+                <div class="hardware-part">
+                  <span class="hardware-part-icon">
+                    <svg class="ui-icon" data-lucide="memoryStick"></svg>
+                  </span>
+                  <span class="hardware-part-main">
+                    <strong>DDR5 ECC 512 GB</strong>
+                    <span>8 channels · 4800 MT/s · registered DIMM</span>
+                  </span>
+                  <span class="hardware-badge">512G</span>
+                </div>
+                <div class="hardware-part">
+                  <span class="hardware-part-icon">
+                    <svg class="ui-icon" data-lucide="storageStack"></svg>
+                  </span>
+                  <span class="hardware-part-main">
+                    <strong>Samsung PM9A3 NVMe</strong>
+                    <span>3.84 TB system disk · 7.68 TB data disk</span>
+                  </span>
+                  <span class="hardware-badge">11T</span>
+                </div>
+              </div>
+            </section>
+
+            <section class="monitor-card">
+              <div class="card-title-row">
+                <span class="card-title">
+                  <svg class="ui-icon" data-lucide="network"></svg>
+                  存储与网络
+                </span>
+                <span class="subtle-caption">Interfaces</span>
+              </div>
+              <div class="hardware-part-list">
+                <div class="hardware-part">
+                  <span class="hardware-part-icon">
+                    <svg class="ui-icon" data-lucide="storageStack"></svg>
+                  </span>
+                  <span class="hardware-part-main">
+                    <strong>/dev/mmcblk0</strong>
+                    <span>Samsung BJNB4R · eMMC 5.1 · system disk</span>
+                  </span>
+                  <span class="hardware-badge">32G</span>
+                </div>
+                <div class="hardware-part">
+                  <span class="hardware-part-icon">
+                    <svg class="ui-icon" data-lucide="storageStack"></svg>
+                  </span>
+                  <span class="hardware-part-main">
+                    <strong>/dev/nvme0n1</strong>
+                    <span>WD Blue SN570 · PCIe 3.0 x2 · data disk</span>
+                  </span>
+                  <span class="hardware-badge">256G</span>
+                </div>
+                <div class="hardware-part">
+                  <span class="hardware-part-icon">
+                    <svg class="ui-icon" data-lucide="network"></svg>
+                  </span>
+                  <span class="hardware-part-main">
+                    <strong>eth0 · 192.168.31.190</strong>
+                    <span>Realtek RTL8211E · physical primary · 1 Gbps full duplex</span>
+                  </span>
+                  <span class="hardware-badge">PHY</span>
+                </div>
+              </div>
+            </section>
+
+            <section class="monitor-card" data-gpu-only>
+              <div class="card-title-row">
+                <span class="card-title">
+                  <svg class="ui-icon" data-lucide="thermometer"></svg>
+                  传感器
+                </span>
+                <span class="small-pill">Healthy</span>
+              </div>
+              <div class="metric-grid">
+                <div class="metric-tile" data-gpu-only>
+                  <div class="metric-head"><span class="metric-name"><svg class="ui-icon" data-lucide="gpu"></svg><span class="metric-name-text">GPU Max</span></span><span>Thermal</span></div>
+                  <div class="metric-value" style="font-size:15px">67°C</div>
+                  <div class="metric-sub">GPU2 · throttle limit 95°C</div>
+                </div>
+              </div>
+            </section>
+          </section>
+
+          <section class="monitor-view" data-panel="network" aria-label="网络详情">
+            <section class="monitor-card">
+              <div class="card-title-row">
+                <span class="card-title">
+                  <svg class="ui-icon" data-lucide="network"></svg>
+                  Real-time Traffic
+                </span>
+                <span class="status-pill"><span class="status-dot"></span>Live</span>
+              </div>
+              <div class="network-identity" aria-label="物理主网卡">
+                <span class="network-icon">
+                  <svg class="ui-icon" data-lucide="network"></svg>
+                </span>
+                <span class="network-main">
+                  <strong>eth0 · 192.168.31.190</strong>
+                  <span>Realtek RTL8211E · physical primary · 1 Gbps</span>
+                </span>
+                <span class="hardware-badge">PHY</span>
+              </div>
+              <div class="split-stats">
+                <div class="stat-line">
+                  <span class="stat-label" style="color:var(--mx-upload)">Upload</span>
+                  <strong class="stat-value">1.9 KB/s</strong>
+                  <span class="activity-text"><span>Total: 11.3 MB</span></span>
+                </div>
+                <div class="stat-line">
+                  <span class="stat-label" style="color:var(--mx-primary)">Download</span>
+                  <strong class="stat-value">732 B/s</strong>
+                  <span class="activity-text"><span>Total: 22.3 MB</span></span>
+                </div>
+              </div>
+              <div class="traffic-chart" style="margin-top:12px">
+                <svg viewBox="0 0 320 122" preserveAspectRatio="none" aria-hidden="true">
+                  <path class="chart-grid" d="M0 30H320M0 61H320M0 92H320"/>
+                  <path class="download-area" d="M0 76 C55 61 110 43 153 39 C195 38 232 76 267 69 C302 65 284 0 320 33 L320 122 L0 122 Z"/>
+                  <path class="download-line" d="M0 76 C55 61 110 43 153 39 C195 38 232 76 267 69 C302 65 284 0 320 33"/>
+                  <path class="upload-line" d="M0 100 C40 85 75 99 110 86 C151 69 173 84 193 102 C223 121 254 78 284 58 C303 48 316 70 320 91"/>
+                </svg>
+              </div>
+            </section>
+
+            <section class="monitor-card">
+              <div class="card-title-row">
+                <span class="card-title">Active Connections</span>
+                <span class="small-pill">4</span>
+              </div>
+              <div class="connection-list">
+                <div class="connection-row">
+                  <div class="connection-body">
+                    <span class="connection-title">192.168.31.190:22</span>
+                    <span class="connection-address">101.34.85.216:54431</span>
+                  </div>
+                  <span class="state-pill estab">ESTAB</span>
+                </div>
+                <div class="connection-row">
+                  <div class="connection-body">
+                    <span class="connection-title">127.0.0.1:3306</span>
+                    <span class="connection-address">0.0.0.0:*</span>
+                  </div>
+                  <span class="state-pill listen">LISTEN</span>
+                </div>
+                <div class="connection-row">
+                  <div class="connection-body">
+                    <span class="connection-title">192.168.31.190:443</span>
+                    <span class="connection-address">8.211.134.178:61288</span>
+                  </div>
+                  <span class="state-pill estab">ESTAB</span>
+                </div>
+                <div class="connection-row">
+                  <div class="connection-body">
+                    <span class="connection-title">0.0.0.0:80</span>
+                    <span class="connection-address">0.0.0.0:*</span>
+                  </div>
+                  <span class="state-pill listen">LISTEN</span>
+                </div>
+              </div>
+            </section>
+
+            <button class="section-foot-button" type="button">
+              <svg class="ui-icon" data-lucide="list"></svg>
+              View All Connections
+            </button>
+          </section>
+
+          <section class="monitor-view" data-panel="processes" aria-label="进程管理">
+            <section class="monitor-card">
+              <div class="process-tools">
+                <label class="search-field">
+                  <svg class="ui-icon" data-lucide="search"></svg>
+                  <input aria-label="搜索进程" placeholder="Search processes...">
+                </label>
+                <button class="icon-action" type="button" aria-label="筛选进程">
+                  <svg class="ui-icon" data-lucide="filter"></svg>
+                </button>
+                <button class="icon-action" type="button" aria-label="刷新进程">
+                  <svg class="ui-icon" data-lucide="refreshCw"></svg>
+                </button>
+              </div>
+              <div class="process-action-confirm" data-process-confirm hidden>
+                <svg class="ui-icon" data-lucide="shieldAlert"></svg>
+                <span><span data-process-action-label>Send SIGTERM to</span> <strong data-process-target>process</strong><span data-process-action-suffix>?</span></span>
+                <button class="process-confirm-button danger" type="button" data-process-confirm-send>Confirm</button>
+                <button class="process-confirm-button" type="button" data-process-confirm-cancel>Cancel</button>
+              </div>
+              <div class="card-title-row" style="margin-bottom:6px">
+                <span class="subtle-caption">NAME / PID</span>
+                <span class="subtle-caption">CPU% ↓ &nbsp; MEM% &nbsp; ACT</span>
+              </div>
+              <div class="process-list">
+                <div class="process-row" data-process-name="openclaw-gateway" data-process-pid="565345">
+                  <span class="process-main">
+                    <strong class="process-name">openclaw-gateway</strong>
+                    <span class="process-pid">PID 565345</span>
+                  </span>
+                  <span class="process-metric hot">155.0%</span>
+                  <span class="process-metric">6.9%</span>
+                  <span class="process-actions">
+                    <button class="process-action-button" type="button" aria-label="查看 openclaw-gateway 详情" data-process-detail><svg class="ui-icon" data-lucide="info"></svg></button>
+                    <button class="process-action-button danger" type="button" aria-label="结束 openclaw-gateway" data-process-kill><svg class="ui-icon" data-lucide="circleStop"></svg></button>
+                  </span>
+                </div>
+                <div class="process-row" data-process-name="mysqld" data-process-pid="3906">
+                  <span class="process-main">
+                    <strong class="process-name">mysqld</strong>
+                    <span class="process-pid">PID 3906</span>
+                  </span>
+                  <span class="process-metric">1.5%</span>
+                  <span class="process-metric">5.7%</span>
+                  <span class="process-actions">
+                    <button class="process-action-button" type="button" aria-label="查看 mysqld 详情" data-process-detail><svg class="ui-icon" data-lucide="info"></svg></button>
+                    <button class="process-action-button danger" type="button" aria-label="结束 mysqld" data-process-kill><svg class="ui-icon" data-lucide="circleStop"></svg></button>
+                  </span>
+                </div>
+                <div class="process-row" data-process-name="/usr/sbin/rsyslogd" data-process-pid="845">
+                  <span class="process-main">
+                    <strong class="process-name">/usr/sbin/rsyslogd</strong>
+                    <span class="process-pid">PID 845</span>
+                  </span>
+                  <span class="process-metric">1.4%</span>
+                  <span class="process-metric">0.1%</span>
+                  <span class="process-actions">
+                    <button class="process-action-button" type="button" aria-label="查看 rsyslogd 详情" data-process-detail><svg class="ui-icon" data-lucide="info"></svg></button>
+                    <button class="process-action-button danger" type="button" aria-label="结束 rsyslogd" data-process-kill><svg class="ui-icon" data-lucide="circleStop"></svg></button>
+                  </span>
+                </div>
+                <div class="process-row" data-process-name="/lib/systemd/systemd" data-process-pid="788">
+                  <span class="process-main">
+                    <strong class="process-name">/lib/systemd/systemd</strong>
+                    <span class="process-pid">PID 788</span>
+                  </span>
+                  <span class="process-metric">0.7%</span>
+                  <span class="process-metric">0.2%</span>
+                  <span class="process-actions">
+                    <button class="process-action-button" type="button" aria-label="查看 systemd 详情" data-process-detail><svg class="ui-icon" data-lucide="info"></svg></button>
+                    <button class="process-action-button danger" type="button" aria-label="结束 systemd" data-process-kill><svg class="ui-icon" data-lucide="circleStop"></svg></button>
+                  </span>
+                </div>
+                <div class="process-row" data-process-name="node /app/server.js" data-process-pid="10234">
+                  <span class="process-main">
+                    <strong class="process-name">node /app/server.js</strong>
+                    <span class="process-pid">PID 10234</span>
+                  </span>
+                  <span class="process-metric">0.2%</span>
+                  <span class="process-metric">12.4%</span>
+                  <span class="process-actions">
+                    <button class="process-action-button" type="button" aria-label="查看 node server 详情" data-process-detail><svg class="ui-icon" data-lucide="info"></svg></button>
+                    <button class="process-action-button danger" type="button" aria-label="结束 node server" data-process-kill><svg class="ui-icon" data-lucide="circleStop"></svg></button>
+                  </span>
+                </div>
+              </div>
+            </section>
+
+            <button class="section-foot-button" type="button">Load More Processes</button>
+          </section>
+        </div>
+      </section>
+    </aside>
+  </div>
+
+  <script>
+    const INLINE_ICONS = {
+      activity: [["path", { d: "M22 12h-2.48a2 2 0 0 0-1.93 1.46l-2.35 8.36a.25.25 0 0 1-.48 0L9.24 2.18a.25.25 0 0 0-.48 0l-2.35 8.36A2 2 0 0 1 4.49 12H2" }]],
+      circleStop: [["circle", { cx: "12", cy: "12", r: "10" }], ["rect", { x: "9", y: "9", width: "6", height: "6", rx: "1" }]],
+      cpu: [["path", { d: "M12 20v2" }], ["path", { d: "M12 2v2" }], ["path", { d: "M17 20v2" }], ["path", { d: "M17 2v2" }], ["path", { d: "M2 12h2" }], ["path", { d: "M2 17h2" }], ["path", { d: "M2 7h2" }], ["path", { d: "M20 12h2" }], ["path", { d: "M20 17h2" }], ["path", { d: "M20 7h2" }], ["path", { d: "M7 20v2" }], ["path", { d: "M7 2v2" }], ["rect", { x: "4", y: "4", width: "16", height: "16", rx: "2" }], ["rect", { x: "8", y: "8", width: "8", height: "8", rx: "1" }]],
+      download: [["path", { d: "M12 15V3" }], ["path", { d: "M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" }], ["path", { d: "m7 10 5 5 5-5" }]],
+      eye: [["path", { d: "M2.062 12.348a1 1 0 0 1 0-.696 10.75 10.75 0 0 1 19.876 0 1 1 0 0 1 0 .696 10.75 10.75 0 0 1-19.876 0" }], ["circle", { cx: "12", cy: "12", r: "3" }]],
+      filter: [["path", { d: "M10 20a1 1 0 0 0 .553.895l2 1A1 1 0 0 0 14 21v-7a2 2 0 0 1 .517-1.341L21.74 4.67A1 1 0 0 0 21 3H3a1 1 0 0 0-.742 1.67l7.225 7.989A2 2 0 0 1 10 14z" }]],
+      folder: [["path", { d: "M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z" }]],
+      gauge: [["path", { d: "m12 14 4-4" }], ["path", { d: "M3.34 19a10 10 0 1 1 17.32 0" }]],
+      gpu: [["path", { d: "M2 17h18a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2H2" }], ["path", { d: "M2 21V3" }], ["path", { d: "M7 17v3a1 1 0 0 0 1 1h5a1 1 0 0 0 1-1v-3" }], ["circle", { cx: "16", cy: "11", r: "2" }], ["circle", { cx: "8", cy: "11", r: "2" }]],
+      info: [["circle", { cx: "12", cy: "12", r: "10" }], ["path", { d: "M12 16v-4" }], ["path", { d: "M12 8h.01" }]],
+      list: [["path", { d: "M3 5h.01" }], ["path", { d: "M3 12h.01" }], ["path", { d: "M3 19h.01" }], ["path", { d: "M8 5h13" }], ["path", { d: "M8 12h13" }], ["path", { d: "M8 19h13" }]],
+      memoryStick: [["path", { d: "M12 12v-2" }], ["path", { d: "M12 18v-2" }], ["path", { d: "M16 12v-2" }], ["path", { d: "M16 18v-2" }], ["path", { d: "M2 11h1.5" }], ["path", { d: "M20 18v-2" }], ["path", { d: "M20.5 11H22" }], ["path", { d: "M4 18v-2" }], ["path", { d: "M8 12v-2" }], ["path", { d: "M8 18v-2" }], ["rect", { x: "2", y: "6", width: "20", height: "10", rx: "2" }]],
+      network: [["rect", { x: "16", y: "16", width: "6", height: "6", rx: "1" }], ["rect", { x: "2", y: "16", width: "6", height: "6", rx: "1" }], ["rect", { x: "9", y: "2", width: "6", height: "6", rx: "1" }], ["path", { d: "M5 16v-3a1 1 0 0 1 1-1h12a1 1 0 0 1 1 1v3" }], ["path", { d: "M12 12V8" }]],
+      refreshCw: [["path", { d: "M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8" }], ["path", { d: "M21 3v5h-5" }], ["path", { d: "M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16" }], ["path", { d: "M8 16H3v5" }]],
+      search: [["path", { d: "m21 21-4.34-4.34" }], ["circle", { cx: "11", cy: "11", r: "8" }]],
+      server: [["rect", { width: "20", height: "8", x: "2", y: "2", rx: "2", ry: "2" }], ["rect", { width: "20", height: "8", x: "2", y: "14", rx: "2", ry: "2" }], ["line", { x1: "6", x2: "6.01", y1: "6", y2: "6" }], ["line", { x1: "6", x2: "6.01", y1: "18", y2: "18" }]],
+      shieldAlert: [["path", { d: "M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z" }], ["path", { d: "M12 8v4" }], ["path", { d: "M12 16h.01" }]],
+      storageStack: [["path", { d: "M4 6a8 3 0 1 0 16 0a8 3 0 1 0 -16 0" }], ["path", { d: "M4 6v6a8 3 0 0 0 16 0v-6" }], ["path", { d: "M4 12v6a8 3 0 0 0 16 0v-6" }]],
+      terminal: [["path", { d: "M12 19h8" }], ["path", { d: "m4 17 6-6-6-6" }]],
+      thermometer: [["path", { d: "M14 4v10.54a4 4 0 1 1-4 0V4a2 2 0 0 1 4 0Z" }]],
+      triangleAlert: [["path", { d: "m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3" }], ["path", { d: "M12 9v4" }], ["path", { d: "M12 17h.01" }]],
+      upload: [["path", { d: "M12 3v12" }], ["path", { d: "m17 8-5-5-5 5" }], ["path", { d: "M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" }]],
+      users: [["path", { d: "M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" }], ["path", { d: "M16 3.128a4 4 0 0 1 0 7.744" }], ["path", { d: "M22 21v-2a4 4 0 0 0-3-3.87" }], ["circle", { cx: "9", cy: "7", r: "4" }]],
+      volumeFolder: [["path", { d: "M5 4h4l3 3h7a2 2 0 0 1 2 2v8a2 2 0 0 1 -2 2h-14a2 2 0 0 1 -2 -2v-11a2 2 0 0 1 2 -2" }]]
+    };
+
+    function renderInlineIcons() {
+      document.querySelectorAll("svg[data-lucide]").forEach((svg) => {
+        const icon = INLINE_ICONS[svg.dataset.lucide];
+        if (!icon) return;
+        svg.setAttribute("viewBox", "0 0 24 24");
+        svg.setAttribute("aria-hidden", "true");
+        svg.replaceChildren(...icon.map(([tag, attrs]) => {
+          const node = document.createElementNS("http://www.w3.org/2000/svg", tag);
+          Object.entries(attrs).forEach(([key, value]) => node.setAttribute(key, value));
+          return node;
+        }));
+      });
+    }
+
+    const MONITOR_CAPABILITIES = {
+      gpuCount: 4
+    };
+
+    const CPU_CORE_VALUES = [
+      45, 22, 88, 15, 12, 19, 31, 17,
+      9, 14, 27, 33, 18, 21, 44, 16,
+      11, 24, 39, 52, 28, 13, 7, 20,
+      36, 41, 18, 26, 63, 29, 10, 23
+    ];
+
+    function renderCpuCores(values) {
+      const coreList = document.querySelector("[data-core-list]");
+      if (!coreList) return;
+
+      coreList.replaceChildren(...values.map((value, index) => {
+        const row = document.createElement("div");
+        row.className = "core-row";
+
+        const label = document.createElement("span");
+        label.textContent = `Core ${index}`;
+
+        const bar = document.createElement("div");
+        bar.className = "bar";
+
+        const fill = document.createElement("span");
+        fill.className = "bar-fill";
+        fill.style.setProperty("--value", `${value}%`);
+        if (value >= 80) {
+          fill.style.setProperty("--bar-color", "var(--mx-upload)");
+        }
+        bar.append(fill);
+
+        const metric = document.createElement("strong");
+        metric.textContent = `${value.toFixed(1)}%`;
+        if (value >= 80) {
+          metric.style.color = "var(--mx-upload)";
+        }
+
+        row.append(label, bar, metric);
+        return row;
+      }));
+    }
+
+    function applyHardwareAvailability(capabilities) {
+      const gpuCount = Math.max(0, Number(capabilities.gpuCount) || 0);
+      const hasGpu = gpuCount > 0;
+
+      document.querySelectorAll("[data-gpu-only]").forEach((item) => {
+        item.hidden = !hasGpu;
+      });
+
+      document.querySelectorAll("[data-gpu-count-label]").forEach((item) => {
+        item.textContent = gpuCount === 1 ? "1 Card" : `${gpuCount} Cards`;
+      });
+
+      document.querySelectorAll("[data-hardware-group-count]").forEach((item) => {
+        item.textContent = `${hasGpu ? 4 : 3} groups`;
+      });
+    }
+
+    renderInlineIcons();
+    renderCpuCores(CPU_CORE_VALUES);
+    applyHardwareAvailability(MONITOR_CAPABILITIES);
+
+    const tabs = Array.from(document.querySelectorAll(".view-tab"));
+    const panels = Array.from(document.querySelectorAll(".monitor-view"));
+
+    tabs.forEach((tab) => {
+      tab.addEventListener("click", () => {
+        const view = tab.dataset.view;
+        tabs.forEach((item) => item.classList.toggle("active", item === tab));
+        panels.forEach((panel) => {
+          panel.classList.toggle("active", panel.dataset.panel === view);
+        });
+      });
+    });
+
+    const diskToggle = document.querySelector("[data-disk-toggle]");
+    const extraDisks = Array.from(document.querySelectorAll(".disk-extra"));
+
+    diskToggle?.addEventListener("click", () => {
+      const expanded = diskToggle.getAttribute("aria-expanded") === "true";
+      extraDisks.forEach((row) => {
+        row.hidden = expanded;
+      });
+      diskToggle.setAttribute("aria-expanded", String(!expanded));
+      diskToggle.textContent = expanded ? "展开 3 个更多磁盘" : "收起更多磁盘";
+    });
+
+    const processConfirm = document.querySelector("[data-process-confirm]");
+    const processTarget = document.querySelector("[data-process-target]");
+    const processActionLabel = document.querySelector("[data-process-action-label]");
+    const processActionSuffix = document.querySelector("[data-process-action-suffix]");
+    const processConfirmSend = document.querySelector("[data-process-confirm-send]");
+    const processConfirmCancel = document.querySelector("[data-process-confirm-cancel]");
+    let selectedProcessRow = null;
+
+    function focusProcessRow(row) {
+      document.querySelectorAll(".process-row.is-focused").forEach((item) => {
+        item.classList.remove("is-focused");
+      });
+      selectedProcessRow = row;
+      row?.classList.add("is-focused");
+    }
+
+    document.querySelectorAll("[data-process-detail]").forEach((button) => {
+      button.addEventListener("click", () => {
+        const row = button.closest(".process-row");
+        if (!row || !processConfirm || !processTarget) return;
+        focusProcessRow(row);
+        processConfirm.classList.add("neutral");
+        processConfirm.hidden = false;
+        if (processActionLabel) processActionLabel.textContent = "Inspect details for";
+        if (processActionSuffix) processActionSuffix.textContent = ".";
+        processTarget.textContent = `${row.dataset.processName} · PID ${row.dataset.processPid}`;
+        if (processConfirmCancel) processConfirmCancel.textContent = "Close";
+      });
+    });
+
+    document.querySelectorAll("[data-process-kill]").forEach((button) => {
+      button.addEventListener("click", () => {
+        const row = button.closest(".process-row");
+        if (!row || !processConfirm || !processTarget) return;
+        focusProcessRow(row);
+        processConfirm.classList.remove("neutral");
+        processConfirm.hidden = false;
+        if (processActionLabel) processActionLabel.textContent = "Send SIGTERM to";
+        if (processActionSuffix) processActionSuffix.textContent = "?";
+        processTarget.textContent = `${row.dataset.processName} · PID ${row.dataset.processPid}`;
+        if (processConfirmCancel) processConfirmCancel.textContent = "Cancel";
+      });
+    });
+
+    processConfirmCancel?.addEventListener("click", () => {
+      processConfirm.hidden = true;
+      selectedProcessRow?.classList.remove("is-focused");
+      selectedProcessRow = null;
+    });
+
+    processConfirmSend?.addEventListener("click", () => {
+      if (!selectedProcessRow || !processConfirm) return;
+      selectedProcessRow.hidden = true;
+      processConfirm.hidden = true;
+      selectedProcessRow = null;
+    });
+  </script>
+</body>
+</html>

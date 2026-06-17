@@ -20,6 +20,10 @@ use crate::remote_files::{
     RemoteFileMetadata, RemoteFilePathCheckResult, RemoteFileReadResult, RemoteFileUploadResult,
     RemoteFileWriteResult, TransferConflictPolicy,
 };
+use crate::remote_monitor::{
+    RemoteMonitorCollectionOptions, RemoteMonitorManager, RemoteMonitorSnapshot,
+    RemoteProcessActionResult, RemoteProcessSignal,
+};
 use crate::ssh_config::{
     connection_store_path, credential_store_path, known_host_store_path, load_connection_profile,
     resolve_saved_connection, resolve_transient_connection, ResolvedSshConfig,
@@ -293,6 +297,22 @@ pub struct RemoteFileDownloadTargetCheckResult {
 }
 
 #[derive(Debug, Deserialize)]
+pub struct RemoteMonitorSnapshotRequest {
+    pub connection_id: String,
+    #[serde(default)]
+    pub include_processes: bool,
+    #[serde(default)]
+    pub process_limit: Option<u16>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct RemoteProcessSignalRequest {
+    pub connection_id: String,
+    pub pid: u32,
+    pub signal: RemoteProcessSignal,
+}
+
+#[derive(Debug, Deserialize)]
 pub struct ConnectionLatencyProbeRequest {
     pub connection_id: String,
 }
@@ -403,6 +423,37 @@ pub async fn remote_file_list(
         .filter(|value| !value.is_empty())
         .unwrap_or(".");
     manager.list_directory(&app, profile, path).await
+}
+
+#[tauri::command]
+pub async fn remote_monitor_snapshot(
+    app: AppHandle,
+    manager: State<'_, RemoteMonitorManager>,
+    request: RemoteMonitorSnapshotRequest,
+) -> Result<RemoteMonitorSnapshot, AppError> {
+    let config = resolve_remote_monitor_connection(&app, &request.connection_id)?;
+    manager
+        .snapshot(
+            &app,
+            config,
+            RemoteMonitorCollectionOptions {
+                include_processes: request.include_processes,
+                process_limit: request.process_limit,
+            },
+        )
+        .await
+}
+
+#[tauri::command]
+pub async fn remote_monitor_process_signal(
+    app: AppHandle,
+    manager: State<'_, RemoteMonitorManager>,
+    request: RemoteProcessSignalRequest,
+) -> Result<RemoteProcessActionResult, AppError> {
+    let config = resolve_remote_monitor_connection(&app, &request.connection_id)?;
+    manager
+        .signal_process(&app, config, request.pid, request.signal)
+        .await
 }
 
 #[tauri::command]
@@ -1163,6 +1214,23 @@ fn resolve_remote_connection_profile(
     if connection_id.is_empty() {
         return Err(AppError::new(
             "remote_file_connection_missing",
+            "请选择活动连接。",
+            "connection_id is empty",
+            false,
+        ));
+    }
+
+    resolve_saved_connection(app, connection_id, None)
+}
+
+fn resolve_remote_monitor_connection(
+    app: &AppHandle,
+    connection_id: &str,
+) -> Result<ResolvedSshConfig, AppError> {
+    let connection_id = connection_id.trim();
+    if connection_id.is_empty() {
+        return Err(AppError::new(
+            "remote_monitor_connection_missing",
             "请选择活动连接。",
             "connection_id is empty",
             false,

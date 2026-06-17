@@ -32,6 +32,12 @@ import type {
   RemoteFileWriteInput,
   RemoteFileWriteResult,
 } from "../../features/files/remoteFileTypes";
+import type {
+  RemoteMonitorProcessSignalInput,
+  RemoteMonitorSnapshot,
+  RemoteMonitorSnapshotOptions,
+  RemoteProcessActionResult,
+} from "../../features/monitor/monitorTypes";
 import type { TerminalConnectRequest } from "../../features/terminal/terminalTypes";
 
 export interface NativeWindowMaterial {
@@ -150,6 +156,33 @@ export function remoteFileList(connectionId: string, path?: string) {
     request: {
       connection_id: connectionId,
       path,
+    },
+  });
+}
+
+export function remoteMonitorSnapshot(
+  connectionId: string,
+  options: RemoteMonitorSnapshotOptions = {},
+) {
+  return invoke<RemoteMonitorSnapshot>("remote_monitor_snapshot", {
+    request: {
+      connection_id: connectionId,
+      include_processes: options.includeProcesses ?? false,
+      process_limit: options.processLimit,
+    },
+  });
+}
+
+export function remoteMonitorProcessSignal({
+  connectionId,
+  pid,
+  signal,
+}: RemoteMonitorProcessSignalInput) {
+  return invoke<RemoteProcessActionResult>("remote_monitor_process_signal", {
+    request: {
+      connection_id: connectionId,
+      pid,
+      signal,
     },
   });
 }

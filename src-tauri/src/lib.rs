@@ -5,6 +5,7 @@ mod credentials;
 mod events;
 mod known_hosts;
 mod remote_files;
+mod remote_monitor;
 mod ssh_config;
 mod terminal;
 
@@ -13,6 +14,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
+        .manage(remote_monitor::RemoteMonitorManager::default())
         .manage(remote_files::RemoteFileManager::default())
         .manage(terminal::manager::TerminalManager::default())
         .setup(|app| {
@@ -64,6 +66,8 @@ pub fn run() {
             commands::remote_file_download,
             commands::remote_file_check_download_target,
             commands::remote_file_download_to_local,
+            commands::remote_monitor_snapshot,
+            commands::remote_monitor_process_signal,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

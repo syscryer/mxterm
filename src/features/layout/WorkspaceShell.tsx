@@ -54,6 +54,7 @@ import {
   type RemoteFileTool,
   type RemoteFileUploadItem,
 } from "../files/RemoteFilePanel";
+import { MonitorPanel } from "../monitor/MonitorPanel";
 import {
   isRemotePathStrictDescendant,
   normalizeRemotePath,
@@ -2744,7 +2745,6 @@ export function WorkspaceShell() {
             onDelete={deleteConnection}
             onEdit={editConnection}
             onRefresh={reload}
-            onToggleFavorite={toggleConnectionFavorite}
             hidden={!showingHome}
           />
 
@@ -2950,7 +2950,7 @@ export function WorkspaceShell() {
           <div
             className="pane-resizer right-pane-resizer"
             role="separator"
-            aria-label="拖拽调整右侧文件面板宽度，双击恢复默认"
+            aria-label="拖拽调整右侧工具面板宽度，双击恢复默认"
             aria-orientation="vertical"
             aria-valuemin={minRightPaneWidth}
             aria-valuemax={maxRightPaneWidth}
@@ -2971,6 +2971,12 @@ export function WorkspaceShell() {
             transferAttention={transferAttention}
             transferCount={transferBadgeCount}
             nativeDropTargetPath={nativeFileDropTargetPath}
+            monitorPanel={
+              <MonitorPanel
+                active={showSessionWorkspace && !rightPaneCollapsed && rightTool === "monitor"}
+                connection={remoteFileConnection}
+              />
+            }
             transferPanel={
               <RemoteFileTransferPanel
                 transfers={remoteFileTransfers}
@@ -3956,7 +3962,6 @@ function ConnectionHome({
   onDelete,
   onEdit,
   onRefresh,
-  onToggleFavorite,
 }: {
   connections: ConnectionProfile[];
   error: string | null;
@@ -3968,17 +3973,12 @@ function ConnectionHome({
   onDelete: (connection: ConnectionProfile) => void | Promise<void>;
   onEdit: (connection: ConnectionProfile) => void;
   onRefresh: () => void | Promise<void>;
-  onToggleFavorite: (connection: ConnectionProfile) => void | Promise<void>;
 }) {
   const [filter, setFilter] = useState<ConnectionFilter>("recent");
   const [query, setQuery] = useState("");
   const [deleteTarget, setDeleteTarget] = useState<ConnectionProfile | null>(null);
   const [latencyByConnectionId, setLatencyByConnectionId] = useState<Record<string, LatencyProbeState>>({});
   const latencyProbeRunRef = useRef(0);
-  const groupById = useMemo(
-    () => new Map(groups.groups.map((group) => [group.id, group])),
-    [groups.groups],
-  );
   const rows = useMemo(() => {
     const normalizedQuery = query.trim().toLowerCase();
     const sorted = [...connections].sort(sortConnectionsByRecent);
@@ -4133,9 +4133,7 @@ function ConnectionHome({
             <span>最后连接</span>
             <span>延迟</span>
             <span>名称</span>
-            <span>地址</span>
             <span>备注</span>
-            <span>分组</span>
             <span className="action-head">操作</span>
           </div>
 
@@ -4146,11 +4144,9 @@ function ConnectionHome({
           ) : null}
 
           {rows.map((connection) => {
-            const group = groupById.get(groups.assignments[connection.id]);
             const latencyState = latencyByConnectionId[connection.id];
             const lastConnectedAt = connection.last_connected_at;
             const hasLastConnectedAt = Boolean(lastConnectedAt);
-            const favoriteLabel = connection.is_favorite ? "取消收藏" : "加入收藏";
 
             return (
               <div className="connection-row" role="row" key={connection.id}>
@@ -4172,24 +4168,11 @@ function ConnectionHome({
                 </span>
                 <span className="name-cell">
                   <span className="connection-name">{connection.name}</span>
-                  <span className="connection-user">{connection.username}</span>
-                </span>
-                <span className="address-cell">
-                  <span className="address-main">{connection.host}</span>
-                  <span className="address-sub">{connection.port.toString()} / SSH</span>
+                  <span className="connection-user">{connection.username}@{connection.host}:{connection.port.toString()}</span>
                 </span>
                 <span className="remark-cell">
                   <span className="remark-main">{primaryNote(connection)}</span>
                   <span className="remark-sub">{credentialLabel(connection)}</span>
-                </span>
-                <span className="group-cell">
-                  <span
-                    className="group-pill"
-                    style={{ "--group-color": group?.color || "#94a3b8" } as CSSProperties}
-                  >
-                    <span className="group-dot" />
-                    {group?.name || "未分组"}
-                  </span>
                 </span>
                 <span className="action-cell">
                   <button
@@ -4200,15 +4183,6 @@ function ConnectionHome({
                     onClick={() => onConnect(connection)}
                   >
                     <Play className="ui-icon" aria-hidden="true" />
-                  </button>
-                  <button
-                    className={`connection-action-icon favorite ${connection.is_favorite ? "active" : ""}`}
-                    type="button"
-                    aria-label={`${favoriteLabel} ${connection.name}`}
-                    title={favoriteLabel}
-                    onClick={() => void onToggleFavorite(connection)}
-                  >
-                    <Star className="ui-icon" aria-hidden="true" />
                   </button>
                   <button
                     className="connection-action-icon"
