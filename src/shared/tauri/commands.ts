@@ -447,3 +447,11 @@ export function remoteFileDownloadToLocal({
     },
   });
 }
+
+export function remoteFileCancelTransfer(transferId: string) {
+  return invoke<boolean>("remote_file_cancel_transfer", {
+    request: {
+      transfer_id: transferId,
+    },
+  });
+}

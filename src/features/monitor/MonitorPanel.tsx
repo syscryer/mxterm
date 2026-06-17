@@ -81,7 +81,7 @@ export function MonitorPanel({ active, connection }: MonitorPanelProps) {
   const [view, setView] = useState<MonitorPanelView>("status");
   const [diskExpanded, setDiskExpanded] = useState(false);
   const [processQuery, setProcessQuery] = useState("");
-  const [busyOnly, setBusyOnly] = useState(false);
+  const [busyOnly, setBusyOnly] = useState(true);
   const [selectedProcessPid, setSelectedProcessPid] = useState<number | null>(null);
   const [pendingProcessAction, setPendingProcessAction] =
     useState<ProcessActionTarget | null>(null);
@@ -668,15 +668,25 @@ function MonitorProcessView({
   onRefresh: () => void;
 }) {
   const normalizedQuery = query.trim().toLowerCase();
-  const processes = snapshot.processes.items.filter((process) => {
-    const haystack = `${process.pid.toString()} ${process.user || ""} ${process.command} ${process.args || ""}`.toLowerCase();
-    const matchesQuery = !normalizedQuery || haystack.includes(normalizedQuery);
-    const matchesBusy = !busyOnly || (process.cpu_percent || 0) >= 1;
-    return matchesQuery && matchesBusy;
-  });
+  const processes = snapshot.processes.items
+    .filter((process) => {
+      const haystack = `${process.pid.toString()} ${process.user || ""} ${process.command} ${process.args || ""}`.toLowerCase();
+      const matchesQuery = !normalizedQuery || haystack.includes(normalizedQuery);
+      const matchesBusy =
+        !busyOnly || (process.cpu_percent || 0) >= 1 || (process.memory_percent || 0) >= 1;
+      return matchesQuery && matchesBusy;
+    })
+    .slice()
+    .sort((left, right) => {
+      const cpuDelta = (right.cpu_percent || 0) - (left.cpu_percent || 0);
+      if (cpuDelta !== 0) {
+        return cpuDelta;
+      }
+      return (right.memory_percent || 0) - (left.memory_percent || 0);
+    });
 
   return (
-    <MonitorCard errors={snapshot.processes.errors} title="进程管理">
+    <MonitorCard badge={busyOnly ? "热点进程" : "全部进程"} errors={snapshot.processes.errors} title="进程管理">
       <div className="monitor-process-tools">
         <label className="monitor-search-field">
           <Search className="ui-icon" aria-hidden="true" />
@@ -687,11 +697,11 @@ function MonitorProcessView({
             onChange={(event) => onProcessQueryChange(event.target.value)}
           />
         </label>
-        <Tooltip label={busyOnly ? "显示全部进程" : "只看活跃进程"}>
+        <Tooltip label={busyOnly ? "显示全部进程" : "只看热点进程"}>
           <button
             className={`monitor-icon-action ${busyOnly ? "active" : ""}`}
             type="button"
-            aria-label={busyOnly ? "显示全部进程" : "只看活跃进程"}
+            aria-label={busyOnly ? "显示全部进程" : "只看热点进程"}
             aria-pressed={busyOnly}
             onClick={() => onBusyOnlyChange(!busyOnly)}
           >
@@ -718,7 +728,9 @@ function MonitorProcessView({
 
       <div className="monitor-process-head">
         <span>NAME / PID</span>
-        <span>CPU% ↓ &nbsp; MEM% &nbsp; ACT</span>
+        <span>CPU% ↓</span>
+        <span>MEM%</span>
+        <span>ACT</span>
       </div>
       <div className="monitor-process-list">
         {processes.length ? (
@@ -729,9 +741,7 @@ function MonitorProcessView({
             >
               <span className="monitor-process-main">
                 <strong className="monitor-process-name">{process.command}</strong>
-                <span className="monitor-process-pid">
-                  PID {process.pid.toString()} · {process.user || "unknown"}
-                </span>
+                <span className="monitor-process-pid">{formatProcessMeta(process)}</span>
               </span>
               <span className={`monitor-process-metric ${(process.cpu_percent || 0) >= 80 ? "hot" : ""}`}>
                 {formatPercent(process.cpu_percent, 1)}
@@ -777,7 +787,9 @@ function MonitorProcessView({
             </div>
           ))
         ) : (
-          <p className="monitor-muted-copy">没有匹配的进程。</p>
+          <p className="monitor-muted-copy">
+            {busyOnly ? "没有匹配的热点进程，可关闭筛选查看全部。" : "没有匹配的进程。"}
+          </p>
         )}
       </div>
     </MonitorCard>
@@ -1086,6 +1098,14 @@ function processConfirmDescription(target: ProcessActionTarget | null) {
   }
   const signalLabel = target.signal === "kill" ? "SIGKILL" : target.signal === "hup" ? "SIGHUP" : "SIGTERM";
   return `将向 ${target.command} · PID ${target.pid.toString()} 发送 ${signalLabel}。失败时进程行会保留并显示错误。`;
+}
+
+function formatProcessMeta(process: RemoteProcessSummary) {
+  return [
+    `PID ${process.pid.toString()}`,
+    process.user || "unknown",
+    process.state ? `状态 ${process.state}` : null,
+  ].filter(Boolean).join(" · ");
 }
 
 function percentOf(used?: number | null, total?: number | null) {

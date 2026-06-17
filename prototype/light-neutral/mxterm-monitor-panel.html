@@ -1300,10 +1300,38 @@
       color: var(--mx-subtle);
     }
 
+    .process-head,
+    .process-row {
+      --process-columns: minmax(0, 1fr) 48px 44px 56px;
+      grid-template-columns: var(--process-columns);
+    }
+
+    .process-head {
+      min-width: 0;
+      display: grid;
+      align-items: center;
+      gap: 8px;
+      padding-bottom: 6px;
+      border-bottom: 1px solid var(--mx-line-soft);
+      color: var(--mx-subtle);
+      font-size: 11px;
+      font-weight: 700;
+    }
+
+    .process-head span {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .process-head span:nth-child(n + 2) {
+      text-align: right;
+    }
+
     .process-row {
       min-width: 0;
       display: grid;
-      grid-template-columns: minmax(0, 1fr) 48px 44px 56px;
       align-items: center;
       gap: 8px;
       padding: 10px 0;
@@ -2112,15 +2140,17 @@ GPU 2 NVIDIA H200  91% 109GiB / 141GiB</pre>
                 <button class="process-confirm-button danger" type="button" data-process-confirm-send>Confirm</button>
                 <button class="process-confirm-button" type="button" data-process-confirm-cancel>Cancel</button>
               </div>
-              <div class="card-title-row" style="margin-bottom:6px">
-                <span class="subtle-caption">NAME / PID</span>
-                <span class="subtle-caption">CPU% ↓ &nbsp; MEM% &nbsp; ACT</span>
+              <div class="process-head">
+                <span>NAME / PID</span>
+                <span>CPU% ↓</span>
+                <span>MEM%</span>
+                <span>ACT</span>
               </div>
               <div class="process-list">
                 <div class="process-row" data-process-name="openclaw-gateway" data-process-pid="565345">
                   <span class="process-main">
                     <strong class="process-name">openclaw-gateway</strong>
-                    <span class="process-pid">PID 565345</span>
+                    <span class="process-pid">PID 565345 · deploy · 状态 R</span>
                   </span>
                   <span class="process-metric hot">155.0%</span>
                   <span class="process-metric">6.9%</span>
@@ -2132,7 +2162,7 @@ GPU 2 NVIDIA H200  91% 109GiB / 141GiB</pre>
                 <div class="process-row" data-process-name="mysqld" data-process-pid="3906">
                   <span class="process-main">
                     <strong class="process-name">mysqld</strong>
-                    <span class="process-pid">PID 3906</span>
+                    <span class="process-pid">PID 3906 · mysql · 状态 S</span>
                   </span>
                   <span class="process-metric">1.5%</span>
                   <span class="process-metric">5.7%</span>
@@ -2144,7 +2174,7 @@ GPU 2 NVIDIA H200  91% 109GiB / 141GiB</pre>
                 <div class="process-row" data-process-name="/usr/sbin/rsyslogd" data-process-pid="845">
                   <span class="process-main">
                     <strong class="process-name">/usr/sbin/rsyslogd</strong>
-                    <span class="process-pid">PID 845</span>
+                    <span class="process-pid">PID 845 · syslog · 状态 S</span>
                   </span>
                   <span class="process-metric">1.4%</span>
                   <span class="process-metric">0.1%</span>
@@ -2156,7 +2186,7 @@ GPU 2 NVIDIA H200  91% 109GiB / 141GiB</pre>
                 <div class="process-row" data-process-name="/lib/systemd/systemd" data-process-pid="788">
                   <span class="process-main">
                     <strong class="process-name">/lib/systemd/systemd</strong>
-                    <span class="process-pid">PID 788</span>
+                    <span class="process-pid">PID 788 · root · 状态 S</span>
                   </span>
                   <span class="process-metric">0.7%</span>
                   <span class="process-metric">0.2%</span>
@@ -2168,7 +2198,7 @@ GPU 2 NVIDIA H200  91% 109GiB / 141GiB</pre>
                 <div class="process-row" data-process-name="node /app/server.js" data-process-pid="10234">
                   <span class="process-main">
                     <strong class="process-name">node /app/server.js</strong>
-                    <span class="process-pid">PID 10234</span>
+                    <span class="process-pid">PID 10234 · node · 状态 S</span>
                   </span>
                   <span class="process-metric">0.2%</span>
                   <span class="process-metric">12.4%</span>
