@@ -337,7 +337,6 @@
   max-height: 192px;
   overflow-y: auto;
   padding-right: 4px;
-  overscroll-behavior: contain;
 }
 
 .monitor-core-list,
@@ -515,6 +514,35 @@
   font-family: var(--font-mono);
   font-size: 12px;
   font-weight: 650;
+}
+
+.monitor-memory-facts {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin-top: 10px;
+  padding-top: 9px;
+  border-top: 1px solid #edf1f7;
+}
+
+.monitor-memory-fact-row {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+  color: var(--mx-subtle);
+  font-size: 11px;
+  line-height: 1.15;
+}
+
+.monitor-memory-fact-row strong {
+  min-width: 0;
+  color: var(--mx-text);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 650;
+  line-height: 1.15;
+  white-space: nowrap;
 }
 
 .monitor-disk-summary {

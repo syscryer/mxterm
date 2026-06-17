@@ -28,6 +28,7 @@ import {
   getTerminalSemanticHighlightPalette,
   type TerminalSemanticHighlighter,
 } from "./terminalSemanticHighlight";
+import { normalizeStartupOutput } from "./terminalStartupOutput";
 
 const TERMINAL_SCROLLBAR_WIDTH = 6;
 const STARTUP_OUTPUT_BUFFER_MS = 250;
@@ -143,8 +144,7 @@ export function TerminalPanel({
       startupOutputBufferRef.current = "";
       startupOutputBufferingRef.current = false;
       if (bufferedOutput) {
-        const trimmedLeading = bufferedOutput.replace(/^[\r\n]+/, "");
-        terminal.write(stripLeadingDuplicateStartupPrompt(trimmedLeading));
+        terminal.write(normalizeStartupOutput(bufferedOutput));
       }
     };
 
@@ -426,42 +426,6 @@ function withTerminalChromeTheme(theme: ITheme): ITheme {
     scrollbarSliderBackground: "transparent",
     scrollbarSliderHoverBackground: "rgba(148, 163, 184, 0.28)",
   };
-}
-
-function stripLeadingDuplicateStartupPrompt(output: string) {
-  const firstLineMatch = output.match(/^([^\r\n]{1,180})(\r?\n)([\s\S]+)$/);
-  if (!firstLineMatch) {
-    return output;
-  }
-
-  const firstLine = stripAnsi(firstLineMatch[1]).trim();
-  const rest = firstLineMatch[3];
-  const plainRest = stripAnsi(rest);
-  if (!looksLikeShellPrompt(firstLine) || !looksLikeLoginBanner(plainRest)) {
-    return output;
-  }
-
-  const restLines = plainRest.split(/\r?\n/).map((line) => line.trim());
-  if (!restLines.some((line) => line === firstLine)) {
-    return output;
-  }
-
-  return rest;
-}
-
-function looksLikeShellPrompt(line: string) {
-  return /^[^\s@]+@[^\s:]+:.{0,120}[#$>]$/.test(line);
-}
-
-function looksLikeLoginBanner(output: string) {
-  return /Welcome to|Last login|System load|security updates|updates total|Linux/i.test(output);
-}
-
-function stripAnsi(value: string) {
-  return value.replace(
-    /\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1B\\))/g,
-    "",
-  );
 }
 
 function formatError(error: unknown) {

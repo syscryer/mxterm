@@ -593,7 +593,6 @@
       max-height: 192px;
       overflow-y: auto;
       padding-right: 4px;
-      overscroll-behavior: contain;
       scrollbar-width: thin;
       scrollbar-color: rgba(138, 143, 150, 0.36) transparent;
     }
@@ -777,6 +776,35 @@
 
     .memory-usage .legend-row strong {
       font-size: 12px;
+    }
+
+    .memory-facts {
+      min-width: 0;
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+      margin-top: 10px;
+      padding-top: 9px;
+      border-top: 1px solid #edf1f7;
+    }
+
+    .memory-fact-row {
+      min-width: 0;
+      display: grid;
+      gap: 4px;
+      color: var(--mx-subtle);
+      font-size: 11px;
+      line-height: 1.15;
+    }
+
+    .memory-fact-row strong {
+      min-width: 0;
+      color: var(--mx-text);
+      font-family: var(--font-mono);
+      font-size: 12px;
+      font-weight: 650;
+      line-height: 1.15;
+      white-space: nowrap;
     }
 
     .legend {
@@ -1550,7 +1578,7 @@ GPU 2 NVIDIA H200  91% 109GiB / 141GiB</pre>
                   <svg class="ui-icon" data-lucide="cpu"></svg>
                   CPU
                 </span>
-                <span class="subtle-caption">32C / 64T</span>
+                <span class="subtle-caption">32 核 / 64 线程</span>
               </div>
               <div class="component-model">Intel Xeon Gold 6448Y · 2.10 GHz base · AVX-512</div>
               <div class="metric-grid">
@@ -1568,8 +1596,8 @@ GPU 2 NVIDIA H200  91% 109GiB / 141GiB</pre>
                 </div>
               </div>
               <div class="core-list-head">
-                <span>All Cores</span>
-                <span>32 cores · internal scroll</span>
+                <span>逻辑线程</span>
+                <span>64 线程实时占用</span>
               </div>
               <div class="core-list core-list-scroll" data-core-list aria-label="CPU 所有核心使用率">
               </div>
@@ -1662,22 +1690,32 @@ GPU 2 NVIDIA H200  91% 109GiB / 141GiB</pre>
                 <div class="legend">
                   <div class="legend-row">
                     <span class="legend-dot" style="--legend-color:var(--mx-primary)"></span>
-                    <span>Used</span>
+                    <span>Occupied</span>
                     <strong>188G</strong>
                   </div>
                   <div class="legend-row">
                     <span class="legend-dot" style="--legend-color:#0d9488"></span>
-                    <span>Cache</span>
+                    <span>Cache/buffers</span>
                     <strong>38G</strong>
                   </div>
                   <div class="legend-row">
                     <span class="legend-dot" style="--legend-color:#cbd5e1"></span>
-                    <span>Free</span>
+                    <span>Available</span>
                     <strong>286G</strong>
                   </div>
                 </div>
               </div>
-              <div class="metric-sub" style="margin-top:10px">ECC healthy · swap 0.6G / 32G</div>
+              <div class="memory-facts">
+                <div class="memory-fact-row">
+                  <span>Total memory</span>
+                  <strong>512G</strong>
+                </div>
+                <div class="memory-fact-row">
+                  <span>Swap</span>
+                  <strong>0.6G / 32G</strong>
+                </div>
+              </div>
+              <div class="metric-sub" style="margin-top:10px">ECC healthy</div>
             </section>
 
             <section class="monitor-card">
@@ -1693,7 +1731,7 @@ GPU 2 NVIDIA H200  91% 109GiB / 141GiB</pre>
                   <span class="disk-capacity"><svg class="ui-icon" data-lucide="storageStack"></svg><strong>5.1T / 11.5T</strong></span>
                   <span class="disk-description">44.3% used across mounted filesystems</span>
                 </div>
-                <span class="disk-count">3 hidden</span>
+                <span class="disk-count">3 storage devices</span>
               </div>
               <div class="io-grid" aria-label="磁盘实时读写">
                 <div class="io-tile">

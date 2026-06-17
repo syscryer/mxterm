@@ -132,7 +132,7 @@ type HostKeyInfo = {
 - `TerminalPanel` receives an already-created `initialSessionId`; it must not start a second SSH connection for that tab.
 - During terminal handoff, match terminal output/state events by `request_id` as well as by `session_id`; shell prompts can arrive before the frontend receives the returned session id.
 - Keep the terminal handoff warmup listener alive briefly after replacing the connecting tab, and make `TerminalPanel` consume appended `initialOutput` bytes. Otherwise the remote prompt can land between `terminalConnect` resolving and the xterm listener mounting, leaving a connected but visually blank terminal while remote file browsing works.
-- `TerminalPanel` should buffer startup handoff output briefly and write it as one ordered batch with early live events. If the combined startup batch contains a duplicated leading shell prompt before a login banner / motd and the same prompt appears again at the end, remove only that leading duplicate before writing to xterm.
+- `TerminalPanel` should buffer startup handoff output briefly and write it as one ordered batch with early live events. If the combined startup batch contains a duplicated leading shell prompt before a login banner / motd and the same prompt appears again at the end, remove only that leading duplicate before writing to xterm. If warmup and live capture produce adjacent duplicate prompts such as `[root@host ~]# [root@host ~]#`, collapse them to a single prompt before writing.
 - Do not store terminal session runtime state inside a `ConnectionProfile`. Connection profiles are persistent data; terminal tabs and session ids are runtime state.
 - Do not log passwords, private-key passphrases, or full command payloads.
 
@@ -176,6 +176,7 @@ type HostKeyInfo = {
 - Run `node scripts/check-connection-jump-source.mjs` after changing SSH jump profile fields, network path UI, connection normalization, or backend jump persistence.
 - Run `node scripts/check-connection-terminal-encoding-source.mjs` after changing terminal encoding profile fields, advanced-tab UI, connection normalization, or backend terminal encoding behavior.
 - Run `node scripts/check-connection-dialog-host-key-feedback.mjs` after changing `ConnectionDialog`, host-key error parsing, or connection-test feedback styles.
+- Run `node scripts/check-terminal-startup-output-source.mjs` after changing `TerminalPanel` startup output buffering or prompt deduplication.
 - Run `node scripts/check-remote-file-editor-source.mjs` after changing `ConnectionDialog`, `WorkspaceShell` dialog test handlers, or connection command wrappers so the no-save dialog-test guard is checked.
 - Run `node scripts/check-remote-file-editor-source.mjs` after changing workspace terminal tab creation, so the same-connection new terminal path stays separate from the connection-preparation page.
 - Add focused tests once the frontend test runner exists for credential-mode field clearing, credential delete handling, host-key recoverable states, fallback behavior, and error display.
@@ -710,7 +711,14 @@ invoke<RemoteMonitorSnapshot>("remote_monitor_snapshot", {
 - Frontend monitor types live in `src/features/monitor/monitorTypes.ts` and mirror Rust `snake_case` serialized fields.
 - `gpus: []` means no GPU card should render. Do not show placeholder GPU rows.
 - `cpu.temperature_celsius == null` or `gpu.temperature_celsius == null` means hide the temperature metric for that device.
+- CPU topology labels must distinguish physical cores from logical threads. Do not label `logical_cores` or `cpu.cores.length` as physical cores when `physical_cores` is unavailable.
+- When `cpu.is_virtualized` is true, monitor cards should present logical CPUs as `vCPU` and avoid showing guest socket/core values as real physical cores.
+- When an old or partially detected payload reports an implausible topology such as `physical_cores: 1` and `logical_cores: 8`, the UI should treat the physical count as unreliable and display only the logical thread count, for example `8 线程`, instead of `1 核 / 8 线程`.
+- The memory card should label `memory.used_bytes` as occupied/unavailable memory, not as the `free` command's `used` column. Show total memory and Swap as text rows outside the donut; render Swap even when the total is `0`.
+- Disk device counts and hardware storage totals must use backend-normalized `disks.devices`; React should label them as storage devices and must not count raw partitions, loop devices, ROMs, LVM child volumes, or zram nodes in the UI.
 - First-sample CPU, disk, and network rate fields may be `null`. The UI should keep the card stable and wait for the next snapshot rather than inventing a value.
+- Polling must not overlap monitor snapshot requests. Schedule the next poll only after the previous snapshot request finishes, or explicitly skip while one is in flight, so a slow SSH collector cannot build a backend request queue.
+- Hardware view is mostly static and should use a longer refresh interval such as 30 seconds or manual refresh, while status/network/process views can keep their shorter real-time intervals.
 - Process destructive actions must require explicit confirmation before calling `remoteMonitorProcessSignal(...)`.
 - Process rows must remain visible or show inline failure when signaling returns an error; do not remove a process row until a follow-up snapshot confirms it disappeared.
 
@@ -730,6 +738,7 @@ invoke<RemoteMonitorSnapshot>("remote_monitor_snapshot", {
 ### 5. Good / Base / Bad Cases
 
 - Good: `MonitorPanel` asks for `remoteMonitorSnapshot(activeConnection.id, { includeProcesses: activeTab === "processes" })` and renders the typed response.
+- Good: `useRemoteMonitor` waits for the current snapshot request to finish before scheduling the next poll and uses a longer hardware-view interval so mostly static hardware data does not drive high-frequency SSH collection.
 - Good: process termination opens the shared confirmation dialog, then calls `remoteMonitorProcessSignal({ connectionId, pid, signal: "term" })`.
 - Base: a no-GPU host returns `gpus: []`, so the status and hardware tabs omit GPU sections.
 - Base: the first snapshot has `disk.io[].read_bytes_per_sec: null`; the UI keeps the disk card visible with pending/neutral speed copy.
@@ -738,8 +747,9 @@ invoke<RemoteMonitorSnapshot>("remote_monitor_snapshot", {
 ### 6. Tests Required
 
 - Run `pnpm check` after changing `monitorTypes.ts`, command wrappers, hook props, or monitor components.
+- Run `node scripts/check-monitor-cpu-topology-source.mjs` after changing monitor CPU topology formatter behavior.
 - Run `cargo test --manifest-path src-tauri/Cargo.toml remote_monitor --lib` and `cargo check --manifest-path src-tauri/Cargo.toml` when frontend type changes require Rust payload changes.
-- Add focused frontend tests once the test runner exists for no-GPU hiding, null-temperature hiding, process confirmation, and polling pause behavior.
+- Add focused frontend tests once the test runner exists for no-GPU hiding, null-temperature hiding, process confirmation, non-overlapping polling, hardware-view refresh cadence, and polling pause behavior.
 - Browser/desktop visual checks must compare monitor UI against `prototype/light-neutral/mxterm-monitor-panel.html` before accepting UI migration.
 
 ### 7. Wrong vs Correct

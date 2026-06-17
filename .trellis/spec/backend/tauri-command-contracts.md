@@ -887,7 +887,11 @@ Snapshot response includes `host`, `cpu`, `memory`, `gpus`, `disks`, `network`, 
 - Partial source failures stay local to `MonitorSourceError` where possible. SSH connection, authentication, host-key, channel, or collector process failure may return command-level `AppError`.
 - Missing GPU support is not an error. No `nvidia-smi` or no NVIDIA devices must produce `gpus: []`.
 - Missing CPU or GPU temperature must serialize as `None`; UI hides temperature fragments instead of showing unavailable placeholders.
+- Virtualized CPU topology must be marked with `cpu.is_virtualized = true` when `lscpu` reports a hypervisor vendor or virtualization type. In that case, do not serialize `physical_cores` from guest socket/core values, because they are virtual topology rather than real physical cores.
+- Memory `used_bytes` means `MemTotal - MemAvailable`, matching the panel's occupied/unavailable memory ratio rather than the `free` command's `used` column. `cached_bytes` should match Linux `free`'s `buff/cache` intent where possible: `Buffers + Cached + SReclaimable - Shmem`.
+- `RemoteDiskSummary.devices` is the UI-facing storage-device list, not raw `lsblk` rows. It must exclude partitions, loop devices, optical drives, LVM child volumes, and RAM/zram pseudo disks so status counts and hardware storage totals do not inflate.
 - `RemoteMonitorManager` stores previous CPU, disk, and network counters per connection id to compute usage percentages and byte rates. The first sample may return `None` rates.
+- `RemoteMonitorManager` may keep a short-lived cached `ReusableExecSession` for monitor exec commands, but it must be keyed by `connection_id` plus `ResolvedSshConfig::signature()`, capped to the active monitor connection, and closed after a short idle timeout such as 30 seconds. Signature changes, idle expiry, or exec errors must invalidate and close the cached session; do not keep a permanent monitor SSH connection or retry in a background reconnect loop.
 - `process_limit` is clamped server-side. The process collector may request only a bounded top list.
 - `remote_monitor_process_signal` accepts only enum signals and validates `pid > 1`. The remote command may contain only the fixed signal flag plus the validated numeric PID.
 - All new monitor commands must be registered in `src-tauri/src/lib.rs` through `tauri::generate_handler!`.
@@ -910,14 +914,17 @@ Snapshot response includes `host`, `cpu`, `memory`, `gpus`, `disks`, `network`, 
 
 - Good: `remote_monitor_snapshot` receives a saved connection id, resolves credentials/proxy/jump in Rust, runs the fixed collector, parses Linux sections, and returns CPU model, memory, disk I/O, primary physical NIC/IP, GPU devices, and optional process rows.
 - Good: a second snapshot for the same connection computes CPU usage, disk read/write bytes per second, and network rx/tx bytes per second from stored counters.
+- Good: monitor polling reuses the same cached exec session while the resolved SSH signature matches and the session is active, then closes it when the monitor has been idle long enough.
 - Base: a host without `nvidia-smi` returns an empty GPU array and no visible GPU error.
 - Base: a host without readable temperature sensors returns `temperature_celsius: None`.
-- Bad: frontend sends `command: "ps aux"` or a signal string interpolated into shell, backend shows a fake GPU placeholder, or UI hides parser errors by filtering data instead of preserving section errors.
+- Bad: frontend sends `command: "ps aux"` or a signal string interpolated into shell, backend shows a fake GPU placeholder, monitor caching ignores `ResolvedSshConfig::signature()`, or UI hides parser errors by filtering data instead of preserving section errors.
 
 ### 6. Tests Required
 
 - Unit-test monitor parser fixtures for `/proc/stat`, `/proc/meminfo`, `df -P -B1`, `lsblk -P`, `/proc/diskstats`, `/proc/net/dev`, `nvidia-smi` CSV, default route/IP parsing, and `ps` output.
+- Unit-test virtualized CPU topology so guest `1 core / 8 threads` style `lscpu` output becomes `is_virtualized: true`, `logical_cores: 8`, and no physical core count.
 - Unit-test delta calculation from previous CPU, disk, and network counters.
+- Unit-test monitor session-cache reuse rules for matching signature, changed signature, and idle expiry.
 - Unit-test process PID validation and signal command construction.
 - Run `cargo test --manifest-path src-tauri/Cargo.toml remote_monitor --lib` after changing `src-tauri/src/remote_monitor.rs`.
 - Run `cargo fmt --manifest-path src-tauri/Cargo.toml --check` and `cargo check --manifest-path src-tauri/Cargo.toml` after changing command registration, monitor structs, or collector behavior.

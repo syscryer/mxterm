@@ -26,6 +26,7 @@ interface RefreshOptions {
 const statusPollMs = 3000;
 const networkPollMs = 2000;
 const processPollMs = 5000;
+const hardwarePollMs = 30_000;
 const processLimit = 80;
 const historyWindowMs = 60_000;
 
@@ -39,6 +40,7 @@ export function useRemoteMonitor({ active, connectionId, view }: UseRemoteMonito
     () => document.visibilityState !== "hidden",
   );
   const mountedRef = useRef(true);
+  const inFlightRunRef = useRef<number | null>(null);
   const requestRunRef = useRef(0);
   const snapshotRef = useRef<RemoteMonitorSnapshot | null>(null);
   const includeProcesses = view === "processes";
@@ -69,6 +71,7 @@ export function useRemoteMonitor({ active, connectionId, view }: UseRemoteMonito
 
   useEffect(() => {
     requestRunRef.current += 1;
+    inFlightRunRef.current = null;
     setSnapshot(null);
     setHistory([]);
     setError(null);
@@ -83,6 +86,9 @@ export function useRemoteMonitor({ active, connectionId, view }: UseRemoteMonito
     if (view === "network") {
       return networkPollMs;
     }
+    if (view === "hardware") {
+      return hardwarePollMs;
+    }
     return snapshot?.refresh_hint_ms || statusPollMs;
   }, [snapshot?.refresh_hint_ms, view]);
 
@@ -91,9 +97,13 @@ export function useRemoteMonitor({ active, connectionId, view }: UseRemoteMonito
       if (!connectionId) {
         return null;
       }
+      if (inFlightRunRef.current != null) {
+        return snapshotRef.current;
+      }
 
       const runId = requestRunRef.current + 1;
       requestRunRef.current = runId;
+      inFlightRunRef.current = runId;
       if (!silent) {
         setLoading(true);
       }
@@ -121,6 +131,9 @@ export function useRemoteMonitor({ active, connectionId, view }: UseRemoteMonito
         }
         return null;
       } finally {
+        if (inFlightRunRef.current === runId) {
+          inFlightRunRef.current = null;
+        }
         if (mountedRef.current && requestRunRef.current === runId) {
           setLoading(false);
           setRefreshing(false);
@@ -135,12 +148,25 @@ export function useRemoteMonitor({ active, connectionId, view }: UseRemoteMonito
       return;
     }
 
-    void refresh({ silent: Boolean(snapshotRef.current) });
-    const timer = window.setInterval(() => {
-      void refresh({ silent: true });
-    }, pollingMs);
+    let cancelled = false;
+    let timer: number | undefined;
+    const poll = async (silent: boolean) => {
+      await refresh({ silent });
+      if (!cancelled) {
+        timer = window.setTimeout(() => {
+          void poll(true);
+        }, pollingMs);
+      }
+    };
 
-    return () => window.clearInterval(timer);
+    void poll(Boolean(snapshotRef.current));
+
+    return () => {
+      cancelled = true;
+      if (timer != null) {
+        window.clearTimeout(timer);
+      }
+    };
   }, [active, connectionId, documentVisible, pollingMs, refresh]);
 
   const signalProcess = useCallback(
@@ -214,6 +240,7 @@ function createPreviewMonitorSnapshot(includeProcesses: boolean): RemoteMonitorS
     cpu: {
       model: "Rockchip RK3588S / 8-Core ARM",
       sockets: 1,
+      is_virtualized: false,
       physical_cores: 8,
       logical_cores: 8,
       usage_percent: cpuUsage,
