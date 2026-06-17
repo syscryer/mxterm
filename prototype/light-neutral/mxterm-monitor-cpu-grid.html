@@ -1,0 +1,469 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>mXterm CPU Grid Reference</title>
+  <style>
+    :root {
+      --mx-bg: #f5f6f8;
+      --mx-panel: #ffffff;
+      --mx-panel-soft: #f8f9fb;
+      --mx-panel-muted: #f1f4f8;
+      --mx-line: #dde1e7;
+      --mx-line-soft: #edf0f4;
+      --mx-text: #20242a;
+      --mx-muted: #69727d;
+      --mx-subtle: #8a8f96;
+      --mx-primary: #2563eb;
+      --mx-primary-soft: rgba(37, 99, 235, 0.1);
+      --mx-danger: #dc2626;
+      --mx-upload: #d94b12;
+      --cpu-line: #2563eb;
+      --cpu-fill: rgba(37, 99, 235, 0.13);
+      --grid: #edf0f4;
+      --font-ui: "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI", system-ui, sans-serif;
+      --font-mono: "Cascadia Mono", Consolas, "Microsoft YaHei UI", monospace;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html,
+    body {
+      width: 100%;
+      height: 100%;
+    }
+
+    body {
+      margin: 0;
+      min-width: 360px;
+      min-height: 620px;
+      overflow: hidden;
+      color: var(--mx-text);
+      background: var(--mx-bg);
+      font-family: var(--font-ui);
+      letter-spacing: 0;
+    }
+
+    .reference-stage {
+      width: 100vw;
+      height: 100vh;
+      display: grid;
+      place-items: center;
+      background: var(--mx-panel-soft);
+    }
+
+    .right-pane {
+      width: 360px;
+      height: min(620px, 100vh);
+      min-height: 0;
+      border-left: 1px solid var(--mx-line);
+      border-right: 1px solid var(--mx-line);
+      display: grid;
+      grid-template-rows: minmax(0, 1fr);
+      background: var(--mx-panel-soft);
+    }
+
+    .monitor-scroll {
+      min-width: 0;
+      min-height: 0;
+      overflow: auto;
+      padding: 10px;
+    }
+
+    .monitor-scroll::-webkit-scrollbar {
+      width: 8px;
+    }
+
+    .monitor-scroll::-webkit-scrollbar-track,
+    .monitor-scroll::-webkit-scrollbar-corner {
+      background: transparent;
+    }
+
+    .monitor-scroll::-webkit-scrollbar-thumb {
+      border: 2px solid transparent;
+      border-radius: 999px;
+      background-clip: padding-box;
+      background-color: rgba(100, 116, 139, 0.22);
+    }
+
+    .monitor-card {
+      min-width: 0;
+      border: 1px solid var(--mx-line-soft);
+      border-radius: 8px;
+      padding: 12px;
+      background: var(--mx-panel);
+      box-shadow: 0 1px 2px rgba(15, 23, 42, 0.03);
+    }
+
+    .card-title-row,
+    .cpu-title-main,
+    .metric-head,
+    .core-head {
+      min-width: 0;
+      display: flex;
+      align-items: center;
+    }
+
+    .card-title-row {
+      justify-content: space-between;
+      gap: 8px;
+      margin-bottom: 8px;
+    }
+
+    .cpu-title-main {
+      gap: 7px;
+    }
+
+    .ui-icon {
+      width: 15px;
+      height: 15px;
+      stroke: currentColor;
+      stroke-width: 1.55;
+      fill: none;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+      flex: 0 0 auto;
+    }
+
+    .card-title {
+      color: var(--mx-text);
+      font-size: 13px;
+      font-weight: 720;
+    }
+
+    .cpu-title-main .ui-icon {
+      color: var(--mx-primary);
+    }
+
+    .mono-value,
+    .metric-value {
+      font-family: var(--font-mono);
+      font-variant-numeric: tabular-nums;
+    }
+
+    .avg-value {
+      color: var(--mx-primary);
+      font-family: var(--font-mono);
+      font-size: 12px;
+      font-weight: 700;
+      font-variant-numeric: tabular-nums;
+      white-space: nowrap;
+    }
+
+    .core-mode-switch {
+      display: inline-flex;
+      gap: 2px;
+      padding: 2px;
+      border: 1px solid var(--mx-line-soft);
+      border-radius: 8px;
+      background: var(--mx-panel-soft);
+    }
+
+    .core-mode-button {
+      height: 22px;
+      border: 0;
+      border-radius: 6px;
+      padding: 0 8px;
+      color: var(--mx-muted);
+      background: transparent;
+      font: inherit;
+      font-size: 11px;
+      font-weight: 650;
+      cursor: pointer;
+    }
+
+    .core-mode-button.active,
+    .core-mode-button:hover {
+      color: var(--mx-text);
+      background: var(--mx-panel);
+    }
+
+    .cpu-model {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      margin-bottom: 10px;
+      color: var(--mx-subtle);
+      font-size: 11px;
+      font-weight: 620;
+    }
+
+    .metric-grid {
+      min-width: 0;
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 8px;
+      margin-bottom: 10px;
+    }
+
+    .metric-tile {
+      min-width: 0;
+      border: 1px solid var(--mx-line-soft);
+      border-radius: 8px;
+      padding: 8px;
+      background: #fbfcfe;
+    }
+
+    .metric-head {
+      justify-content: space-between;
+      gap: 6px;
+      margin-bottom: 5px;
+      color: var(--mx-muted);
+      font-size: 11px;
+      font-weight: 620;
+    }
+
+    .metric-name {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .metric-value {
+      color: var(--mx-text);
+      font-size: 15px;
+      font-weight: 680;
+      line-height: 1;
+    }
+
+    .metric-value.hot {
+      color: var(--mx-danger);
+    }
+
+    .core-head {
+      justify-content: space-between;
+      margin-bottom: 7px;
+      color: var(--mx-subtle);
+      font-size: 11px;
+      font-weight: 620;
+    }
+
+    .core-grid {
+      display: grid;
+      gap: 5px;
+    }
+
+    .core-grid.total-view {
+      grid-template-columns: minmax(0, 1fr);
+    }
+
+    .core-grid.core-view {
+      grid-template-columns: repeat(auto-fit, minmax(58px, 1fr));
+    }
+
+    .core-grid.low-core {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 8px;
+    }
+
+    .core-chart {
+      width: 100%;
+      height: 46px;
+      border: 1px solid var(--mx-line-soft);
+      border-radius: 6px;
+      display: block;
+      overflow: hidden;
+      background: #ffffff;
+    }
+
+    .core-grid.total-view .core-chart {
+      height: 170px;
+      border-radius: 8px;
+    }
+
+    .core-grid.low-core .core-chart {
+      height: 96px;
+    }
+
+    .area {
+      fill: var(--cpu-fill);
+    }
+
+    .line {
+      fill: none;
+      stroke: var(--cpu-line);
+      stroke-width: 1.2;
+      stroke-linejoin: round;
+      stroke-linecap: round;
+    }
+  </style>
+</head>
+<body>
+  <div class="reference-stage">
+    <aside class="right-pane" aria-label="CPU 参考组件所在右侧面板">
+      <div class="monitor-scroll">
+        <section class="monitor-card" aria-label="CPU 多核心利用率参考">
+          <div class="card-title-row">
+            <div class="cpu-title-main">
+              <svg class="ui-icon" viewBox="0 0 16 16"><rect x="4.3" y="4.3" width="7.4" height="7.4" rx="1.3"/><path d="M6.2 2.5v1.8M9.8 2.5v1.8M6.2 11.7v1.8M9.8 11.7v1.8M2.5 6.2h1.8M2.5 9.8h1.8M11.7 6.2h1.8M11.7 9.8h1.8"/></svg>
+              <span class="card-title">CPU Usage</span>
+            </div>
+            <span class="avg-value">34.2% Avg</span>
+          </div>
+
+          <div class="cpu-model">13th Gen Intel(R) Core(TM) i7-13700H · 20 logical cores · 60s</div>
+
+          <div class="metric-grid">
+            <div class="metric-tile">
+              <div class="metric-head"><span class="metric-name">Usage</span><span>Now</span></div>
+              <div class="metric-value">34%</div>
+            </div>
+            <div class="metric-tile">
+              <div class="metric-head"><span class="metric-name">Load</span><span>1m</span></div>
+              <div class="metric-value">1.20</div>
+            </div>
+            <div class="metric-tile">
+              <div class="metric-head"><span class="metric-name">Temp</span><span>Board</span></div>
+              <div class="metric-value hot">59°C</div>
+            </div>
+          </div>
+
+          <div class="core-head">
+            <span class="core-range-label">60 秒内的总利用率</span>
+            <div class="core-mode-switch" aria-label="CPU 图表视图">
+              <button class="core-mode-button active" type="button" data-cpu-view="total">总览</button>
+              <button class="core-mode-button" type="button" data-cpu-view="cores">每核心</button>
+            </div>
+          </div>
+          <section class="core-grid total-view" aria-label="CPU 总利用率折线图"></section>
+        </section>
+      </div>
+    </aside>
+  </div>
+
+  <script>
+    const coreGrid = document.querySelector(".core-grid");
+    const modeButtons = Array.from(document.querySelectorAll(".core-mode-button"));
+    const avgValue = document.querySelector(".avg-value");
+    const cpuModel = document.querySelector(".cpu-model");
+    const metricValues = Array.from(document.querySelectorAll(".metric-value"));
+    const coreRangeLabel = document.querySelector(".core-range-label");
+    const cpuProfile = {
+      model: "13th Gen Intel(R) Core(TM) i7-13700H",
+      logicalCores: 20,
+      usage: 34,
+      average: 34.2,
+      load: "1.20",
+      temp: 59
+    };
+    const miniWidth = 58;
+    const totalWidth = 316;
+    const points = 44;
+
+    function seededNoise(seed) {
+      let value = seed * 9301 + 49297;
+      return () => {
+        value = (value * 233280 + 49297) % 99991;
+        return value / 99991;
+      };
+    }
+
+    function buildSeries(index) {
+      const rand = seededNoise(index + 7);
+      const mode = index % 6;
+      let level = mode === 1 || mode === 3 ? 8 : 42;
+
+      return Array.from({ length: points }, (_, point) => {
+        const drift = Math.sin((point + index * 3) / (4.4 + (index % 4))) * (mode === 4 ? 22 : 10);
+        const spike = rand() > 0.86 ? rand() * 52 : 0;
+        const trend = mode === 2 ? point * 1.1 : mode === 5 ? point * 0.45 : 0;
+        const quiet = mode === 1 ? rand() * 8 : 0;
+        level = Math.max(0, Math.min(96, level + (rand() - 0.48) * 20));
+        return Math.max(0, Math.min(100, level * 0.55 + drift + spike + trend + quiet));
+      });
+    }
+
+    function buildTotalSeries() {
+      const coreSeries = Array.from({ length: Math.min(cpuProfile.logicalCores, 8) }, (_, index) => buildSeries(index));
+      return Array.from({ length: points }, (_, point) => {
+        const average = coreSeries.reduce((sum, series) => sum + series[point], 0) / coreSeries.length;
+        const smoothing = Math.sin(point / 5.2) * 4;
+        return Math.max(0, Math.min(100, average * 0.78 + smoothing + 7));
+      });
+    }
+
+    function toPath(series, chartWidth, chartHeight) {
+      return series.map((value, index) => {
+        const x = (index / (series.length - 1)) * chartWidth;
+        const y = chartHeight - (value / 100) * chartHeight;
+        return `${index === 0 ? "M" : "L"}${x.toFixed(1)} ${y.toFixed(1)}`;
+      }).join(" ");
+    }
+
+    function toAreaPath(series, chartWidth, chartHeight) {
+      const line = toPath(series, chartWidth, chartHeight);
+      return `${line} L${chartWidth} ${chartHeight} L0 ${chartHeight} Z`;
+    }
+
+    function renderChart(series, chartWidth, chartHeight, label) {
+      const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+      svg.setAttribute("class", "core-chart");
+      svg.setAttribute("viewBox", `0 0 ${chartWidth} ${chartHeight}`);
+      svg.setAttribute("role", "img");
+      svg.setAttribute("aria-label", label);
+
+      const area = document.createElementNS("http://www.w3.org/2000/svg", "path");
+      area.setAttribute("class", "area");
+      area.setAttribute("d", toAreaPath(series, chartWidth, chartHeight));
+      svg.appendChild(area);
+
+      const line = document.createElementNS("http://www.w3.org/2000/svg", "path");
+      line.setAttribute("class", "line");
+      line.setAttribute("d", toPath(series, chartWidth, chartHeight));
+      svg.appendChild(line);
+
+      return svg;
+    }
+
+    function syncMetrics() {
+      avgValue.textContent = `${cpuProfile.average.toFixed(1)}% Avg`;
+      cpuModel.textContent = `${cpuProfile.model} · ${cpuProfile.logicalCores} logical cores · 60s`;
+      metricValues[0].textContent = `${cpuProfile.usage}%`;
+      metricValues[1].textContent = cpuProfile.load;
+      metricValues[2].textContent = `${cpuProfile.temp}°C`;
+    }
+
+    function renderTotalChart() {
+      coreGrid.replaceChildren(renderChart(buildTotalSeries(), totalWidth, 150, "CPU total utilization over the last 60 seconds"));
+      coreGrid.className = "core-grid total-view";
+      coreGrid.setAttribute("aria-label", "CPU 总利用率折线图");
+      coreRangeLabel.textContent = "60 秒内的总利用率";
+    }
+
+    function renderCoreCharts(count) {
+      const lowCore = count <= 2;
+      const chartHeight = lowCore ? 96 : 46;
+      coreGrid.replaceChildren();
+      coreGrid.className = `core-grid core-view${lowCore ? " low-core" : ""}`;
+      coreGrid.setAttribute("aria-label", "CPU 每核心利用率小图");
+      coreRangeLabel.textContent = `每核心 60 秒利用率 · ${count} 核`;
+      for (let index = 0; index < count; index += 1) {
+        coreGrid.appendChild(renderChart(buildSeries(index), miniWidth, chartHeight, `CPU core ${index + 1}`));
+      }
+    }
+
+    function applyCpuView(view) {
+      modeButtons.forEach((button) => {
+        button.classList.toggle("active", button.dataset.cpuView === view);
+      });
+      syncMetrics();
+      if (view === "cores") {
+        renderCoreCharts(cpuProfile.logicalCores);
+        return;
+      }
+      renderTotalChart();
+    }
+
+    modeButtons.forEach((button) => {
+      button.addEventListener("click", () => applyCpuView(button.dataset.cpuView));
+    });
+
+    applyCpuView("total");
+  </script>
+</body>
+</html>

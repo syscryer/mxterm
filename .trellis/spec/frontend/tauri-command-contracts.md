@@ -668,6 +668,106 @@ listenRemoteFileTransferProgress((event) => {
 });
 ```
 
+## Scenario: Remote Monitor Wrappers
+
+### 1. Scope / Trigger
+
+- Trigger: a React feature calls, changes, or adds remote monitor snapshot or process signaling commands.
+- Source files: `src/shared/tauri/commands.ts`, `src/features/monitor/monitorTypes.ts`, `src-tauri/src/commands.rs`, and `src-tauri/src/remote_monitor.rs`.
+- This is a cross-layer command contract because the UI renders a narrow monitoring panel from Rust-owned Linux SSH collection data.
+
+### 2. Signatures
+
+```ts
+remoteMonitorSnapshot(
+  connectionId: string,
+  options?: { includeProcesses?: boolean; processLimit?: number },
+): Promise<RemoteMonitorSnapshot>
+
+remoteMonitorProcessSignal(input: {
+  connectionId: string;
+  pid: number;
+  signal: "term" | "kill" | "hup";
+}): Promise<RemoteProcessActionResult>
+```
+
+Wrapper payloads must match Rust:
+
+```ts
+invoke<RemoteMonitorSnapshot>("remote_monitor_snapshot", {
+  request: {
+    connection_id: connectionId,
+    include_processes: options.includeProcesses ?? false,
+    process_limit: options.processLimit,
+  },
+});
+```
+
+### 3. Contracts
+
+- Components must call `remoteMonitorSnapshot(...)` and `remoteMonitorProcessSignal(...)`; do not call `invoke("remote_monitor_*")` directly.
+- UI sends only the saved `connectionId`, process `pid`, and enum `signal`. Do not send host, port, credentials, raw shell commands, proxy, or jump data from React.
+- Frontend monitor types live in `src/features/monitor/monitorTypes.ts` and mirror Rust `snake_case` serialized fields.
+- `gpus: []` means no GPU card should render. Do not show placeholder GPU rows.
+- `cpu.temperature_celsius == null` or `gpu.temperature_celsius == null` means hide the temperature metric for that device.
+- First-sample CPU, disk, and network rate fields may be `null`. The UI should keep the card stable and wait for the next snapshot rather than inventing a value.
+- Process destructive actions must require explicit confirmation before calling `remoteMonitorProcessSignal(...)`.
+- Process rows must remain visible or show inline failure when signaling returns an error; do not remove a process row until a follow-up snapshot confirms it disappeared.
+
+### 4. Validation & Error Matrix
+
+| Condition | Frontend behavior |
+| --- | --- |
+| No active SSH connection | Render monitor empty state and do not call the wrapper. |
+| Snapshot command returns `remote_monitor_connection_missing` or `connection_missing` | Show connection-level error and stop polling. |
+| Snapshot command returns recoverable SSH/collector error | Show retry affordance and keep previous snapshot if available. |
+| Section data contains source errors | Show a light card-level warning while rendering other sections. |
+| `gpus` is empty | Hide all GPU cards/rows. |
+| Temperature is `null` | Hide temperature metric; do not render `N/A`. |
+| Process signal fails | Show row-level failure and keep the row. |
+| Browser preview has no Tauri runtime | Use mock data only for visual inspection; do not fire real SSH commands. |
+
+### 5. Good / Base / Bad Cases
+
+- Good: `MonitorPanel` asks for `remoteMonitorSnapshot(activeConnection.id, { includeProcesses: activeTab === "processes" })` and renders the typed response.
+- Good: process termination opens the shared confirmation dialog, then calls `remoteMonitorProcessSignal({ connectionId, pid, signal: "term" })`.
+- Base: a no-GPU host returns `gpus: []`, so the status and hardware tabs omit GPU sections.
+- Base: the first snapshot has `disk.io[].read_bytes_per_sec: null`; the UI keeps the disk card visible with pending/neutral speed copy.
+- Bad: a component calls `invoke` directly, sends raw command text, shows fake GPU placeholders, or renders `N/A` temperature cards after Rust returns `null`.
+
+### 6. Tests Required
+
+- Run `pnpm check` after changing `monitorTypes.ts`, command wrappers, hook props, or monitor components.
+- Run `cargo test --manifest-path src-tauri/Cargo.toml remote_monitor --lib` and `cargo check --manifest-path src-tauri/Cargo.toml` when frontend type changes require Rust payload changes.
+- Add focused frontend tests once the test runner exists for no-GPU hiding, null-temperature hiding, process confirmation, and polling pause behavior.
+- Browser/desktop visual checks must compare monitor UI against `prototype/light-neutral/mxterm-monitor-panel.html` before accepting UI migration.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```tsx
+await invoke("remote_monitor_snapshot", { command: "cat /proc/stat" });
+```
+
+#### Correct
+
+```tsx
+await remoteMonitorSnapshot(connection.id, { includeProcesses: activeTab === "processes" });
+```
+
+#### Wrong
+
+```tsx
+await remoteMonitorProcessSignal({ connectionId, pid, signal: userTypedSignal as any });
+```
+
+#### Correct
+
+```tsx
+await remoteMonitorProcessSignal({ connectionId, pid, signal: "term" });
+```
+
 ## Scenario: Window Material Commands
 
 ### 1. Scope / Trigger

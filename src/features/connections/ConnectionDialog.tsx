@@ -1274,7 +1274,7 @@ function describeDialogError(error: unknown): DialogFeedback {
 
   return {
     title: formatError(error),
-    detail: rawMessage || "请根据提示调整配置后重试。",
+    detail: "请根据提示调整配置后重试。",
     rawMessage,
   };
 }
@@ -1316,5 +1316,8 @@ function isTimeoutError(code: string, raw: string) {
   return code.includes("timeout") ||
     raw.includes("timeout") ||
     raw.includes("timed out") ||
-    raw.includes("operation timed out");
+    raw.includes("operation timed out") ||
+    raw.includes("10060") ||
+    raw.includes("一段时间内没有正确答复") ||
+    raw.includes("连接的主机没有反应");
 }

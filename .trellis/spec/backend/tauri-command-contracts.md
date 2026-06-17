@@ -846,6 +846,110 @@ let output = self
     .await?;
 ```
 
+## Scenario: Remote Monitor Commands
+
+### 1. Scope / Trigger
+
+- Trigger: backend code adds or changes remote monitoring snapshots, Linux collector scripts, parser output, process signaling, or the `remote_monitor_*` Tauri commands.
+- Source files: `src-tauri/src/remote_monitor.rs`, `src-tauri/src/commands.rs`, `src-tauri/src/lib.rs`, `src/shared/tauri/commands.ts`, and `src/features/monitor/monitorTypes.ts`.
+- This is a cross-layer command contract because React renders a typed monitoring panel while Rust owns saved SSH resolution, fixed Linux collection scripts, parsing, rate calculation, and process signal safety.
+
+### 2. Signatures
+
+- `remote_monitor_snapshot(app: AppHandle, manager: State<RemoteMonitorManager>, request: RemoteMonitorSnapshotRequest) -> Result<RemoteMonitorSnapshot, AppError>`
+- `remote_monitor_process_signal(app: AppHandle, manager: State<RemoteMonitorManager>, request: RemoteProcessSignalRequest) -> Result<RemoteProcessActionResult, AppError>`
+- `RemoteMonitorManager::snapshot(app, config, options) -> Result<RemoteMonitorSnapshot, AppError>`
+- `RemoteMonitorManager::signal_process(app, config, pid, signal) -> Result<RemoteProcessActionResult, AppError>`
+
+Request fields:
+
+```rust
+RemoteMonitorSnapshotRequest {
+    connection_id: String,
+    include_processes: bool,
+    process_limit: Option<u16>,
+}
+
+RemoteProcessSignalRequest {
+    connection_id: String,
+    pid: u32,
+    signal: RemoteProcessSignal, // term | kill | hup
+}
+```
+
+Snapshot response includes `host`, `cpu`, `memory`, `gpus`, `disks`, `network`, `processes`, `collected_at_ms`, and `refresh_hint_ms`.
+
+### 3. Contracts
+
+- `remote_monitor_snapshot` and `remote_monitor_process_signal` must load saved SSH configuration by `connection_id` through `resolve_saved_connection(...)`; React must not send raw host, credentials, proxy, jump, or command strings.
+- The collector script is fixed Rust-owned code executed as `sh -lc <quoted script>`. Do not accept arbitrary frontend shell commands or interpolate user text into the collector.
+- The collector output uses `MXBEGIN<TAB>section` / `MXEND<TAB>section`. Each section parser owns normalization from remote text into the typed snapshot.
+- Partial source failures stay local to `MonitorSourceError` where possible. SSH connection, authentication, host-key, channel, or collector process failure may return command-level `AppError`.
+- Missing GPU support is not an error. No `nvidia-smi` or no NVIDIA devices must produce `gpus: []`.
+- Missing CPU or GPU temperature must serialize as `None`; UI hides temperature fragments instead of showing unavailable placeholders.
+- `RemoteMonitorManager` stores previous CPU, disk, and network counters per connection id to compute usage percentages and byte rates. The first sample may return `None` rates.
+- `process_limit` is clamped server-side. The process collector may request only a bounded top list.
+- `remote_monitor_process_signal` accepts only enum signals and validates `pid > 1`. The remote command may contain only the fixed signal flag plus the validated numeric PID.
+- All new monitor commands must be registered in `src-tauri/src/lib.rs` through `tauri::generate_handler!`.
+
+### 4. Validation & Error Matrix
+
+| Condition | Error code | Recoverable |
+| --- | --- | --- |
+| Blank snapshot/signaling `connection_id` | `remote_monitor_connection_missing` | false |
+| Unknown connection id | `connection_missing` | false |
+| SSH command channel cannot start | existing `remote_exec_*` code | true |
+| Collector exits non-zero | `remote_monitor_collect_failed` | true |
+| `pid <= 1` | `remote_monitor_process_pid_invalid` | true |
+| `kill` exits non-zero | `remote_monitor_process_signal_failed` | true |
+| Missing GPU collector | `gpus: []` | n/a |
+| Missing CPU/GPU temperature | temperature field `None` | n/a |
+| First CPU/disk/network sample has no baseline | usage/rate field `None` | n/a |
+
+### 5. Good / Base / Bad Cases
+
+- Good: `remote_monitor_snapshot` receives a saved connection id, resolves credentials/proxy/jump in Rust, runs the fixed collector, parses Linux sections, and returns CPU model, memory, disk I/O, primary physical NIC/IP, GPU devices, and optional process rows.
+- Good: a second snapshot for the same connection computes CPU usage, disk read/write bytes per second, and network rx/tx bytes per second from stored counters.
+- Base: a host without `nvidia-smi` returns an empty GPU array and no visible GPU error.
+- Base: a host without readable temperature sensors returns `temperature_celsius: None`.
+- Bad: frontend sends `command: "ps aux"` or a signal string interpolated into shell, backend shows a fake GPU placeholder, or UI hides parser errors by filtering data instead of preserving section errors.
+
+### 6. Tests Required
+
+- Unit-test monitor parser fixtures for `/proc/stat`, `/proc/meminfo`, `df -P -B1`, `lsblk -P`, `/proc/diskstats`, `/proc/net/dev`, `nvidia-smi` CSV, default route/IP parsing, and `ps` output.
+- Unit-test delta calculation from previous CPU, disk, and network counters.
+- Unit-test process PID validation and signal command construction.
+- Run `cargo test --manifest-path src-tauri/Cargo.toml remote_monitor --lib` after changing `src-tauri/src/remote_monitor.rs`.
+- Run `cargo fmt --manifest-path src-tauri/Cargo.toml --check` and `cargo check --manifest-path src-tauri/Cargo.toml` after changing command registration, monitor structs, or collector behavior.
+- Run `pnpm check` after changing frontend monitor types or wrappers.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```rust
+let output = session.exec(&request.command).await?;
+```
+
+#### Correct
+
+```rust
+let command = build_monitor_collect_command(options);
+let output = session.exec(&command).await?;
+```
+
+#### Wrong
+
+```rust
+let command = format!("kill -{} {}", request.signal, request.pid);
+```
+
+#### Correct
+
+```rust
+let command = build_process_signal_command(pid, signal)?;
+```
+
 ## Scenario: Window Material Commands
 
 ### 1. Scope / Trigger

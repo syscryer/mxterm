@@ -70,9 +70,9 @@ button {
 }
 
 .app-shell {
-  --mx-scrollbar-size: 8px;
-  --mx-scrollbar-thumb: rgb(100 116 139 / 16%);
-  --mx-scrollbar-thumb-hover: rgb(100 116 139 / 34%);
+  --mx-scrollbar-size: 6px;
+  --mx-scrollbar-thumb: rgb(100 116 139 / 10%);
+  --mx-scrollbar-thumb-hover: rgb(100 116 139 / 18%);
   --mx-scrollbar-track: transparent;
   --mx-terminal-scrollbar-size: 6px;
   --mx-terminal-scrollbar-thumb: rgb(148 163 184 / 18%);
@@ -137,43 +137,40 @@ button {
   -webkit-backdrop-filter: blur(18px) saturate(1.16);
 }
 
-:is(.pane-scroll, .file-list) {
-  scrollbar-color: transparent var(--mx-scrollbar-track);
+.app-shell * {
+  scrollbar-color: transparent transparent;
   scrollbar-width: thin;
 }
 
-:is(.pane-scroll, .file-list):hover {
-  scrollbar-color: var(--mx-scrollbar-thumb-hover) var(--mx-scrollbar-track);
+.app-shell *:hover {
+  scrollbar-color: var(--mx-scrollbar-thumb-hover) transparent;
 }
 
-:is(.pane-scroll, .file-list)::-webkit-scrollbar {
+.app-shell *::-webkit-scrollbar {
   width: var(--mx-scrollbar-size);
   height: var(--mx-scrollbar-size);
 }
 
-:is(.pane-scroll, .file-list)::-webkit-scrollbar-track,
-:is(.pane-scroll, .file-list)::-webkit-scrollbar-corner {
-  background: var(--mx-scrollbar-track);
+.app-shell *::-webkit-scrollbar-track,
+.app-shell *::-webkit-scrollbar-corner {
+  background: transparent;
 }
 
-.app-shell *::-webkit-scrollbar-button,
-:is(.pane-scroll, .file-list)::-webkit-scrollbar-button {
+.app-shell *::-webkit-scrollbar-button {
   display: none;
   width: 0;
   height: 0;
 }
 
-:is(.pane-scroll, .file-list)::-webkit-scrollbar-thumb {
-  min-width: 24px;
-  min-height: 24px;
+.app-shell *::-webkit-scrollbar-thumb {
   border: 2px solid transparent;
   border-radius: 999px;
-  background-clip: content-box;
+  background-clip: padding-box;
   background-color: transparent;
 }
 
-:is(.pane-scroll, .file-list):hover::-webkit-scrollbar-thumb,
-:is(.pane-scroll, .file-list)::-webkit-scrollbar-thumb:hover {
+.app-shell *:hover::-webkit-scrollbar-thumb,
+.app-shell *::-webkit-scrollbar-thumb:hover {
   background-color: var(--mx-scrollbar-thumb-hover);
 }
 
@@ -2533,7 +2530,7 @@ button {
 }
 
 .connection-home {
-  --connection-action-width: 144px;
+  --connection-action-width: 116px;
   min-width: 0;
   min-height: 0;
   grid-area: 1 / 1;
@@ -3550,10 +3547,10 @@ button {
 .connection-head,
 .connection-row {
   display: grid;
-  grid-template-columns: 48px minmax(106px, 0.58fr) 74px minmax(128px, 1fr) minmax(138px, 1fr) minmax(150px, 1.05fr) minmax(112px, 0.68fr) var(--connection-action-width);
+  grid-template-columns: 48px minmax(106px, 0.58fr) 74px minmax(220px, 1.3fr) minmax(160px, 1.1fr) var(--connection-action-width);
   align-items: center;
   gap: 12px;
-  min-width: 980px;
+  min-width: 720px;
 }
 
 .connection-head {
@@ -5544,7 +5541,7 @@ button {
   line-height: 1.35;
 }
 
-/* ===== 协议 chip 选择器 ===== */
+/* ===== 协议 chip 选择�?===== */
 .protocol-switch {
   display: flex;
   gap: 4px;
@@ -5610,7 +5607,7 @@ button {
   gap: 8px;
 }
 
-/* ===== 错误反馈区（重做） ===== */
+/* ===== 错误反馈区（重做�?===== */
 .conn-feedback {
   margin: 0 16px 10px;
   border-radius: 8px;
