@@ -3,7 +3,6 @@ use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::net::{TcpStream, ToSocketAddrs};
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Emitter, Manager, State};
 
@@ -18,7 +17,7 @@ use crate::known_hosts::{HostKeyInfo, KnownHostStore};
 use crate::remote_files::{
     RemoteFileArchiveUploadResult, RemoteFileEntry, RemoteFileEntryMetadata, RemoteFileManager,
     RemoteFileMetadata, RemoteFilePathCheckResult, RemoteFileReadResult, RemoteFileUploadResult,
-    RemoteFileWriteResult, TransferConflictPolicy,
+    RemoteFileWriteResult, SftpProgressCallback, TransferConflictPolicy,
 };
 use crate::remote_monitor::{
     RemoteMonitorCollectionOptions, RemoteMonitorManager, RemoteMonitorSnapshot,
@@ -255,6 +254,11 @@ pub struct RemoteFileDownloadToLocalRequest {
     pub conflict_policy: Option<String>,
     #[serde(default)]
     pub transfer_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct RemoteFileCancelTransferRequest {
+    pub transfer_id: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -603,23 +607,28 @@ pub async fn remote_file_upload_local_file(
             )
         })?
         .len();
-    let progress = remote_transfer_progress_callback(
+    let registration = manager
+        .register_transfer(request.transfer_id.as_deref())
+        .await;
+    let progress = remote_sftp_transfer_progress_callback(
         &app,
         request.transfer_id.as_deref(),
         "upload",
         Some(total_bytes),
-    )
-    .unwrap_or_else(noop_transfer_progress_callback);
-    manager
-        .upload_local_file(
+    );
+    let result = manager
+        .upload_local_file_sftp(
             &app,
             profile,
             path,
             &local_path,
             TransferConflictPolicy::from_request(request.conflict_policy.as_deref()),
             progress,
+            registration.token.clone(),
         )
-        .await
+        .await;
+    registration.finish().await;
+    result
 }
 
 #[tauri::command]
@@ -663,7 +672,7 @@ pub async fn remote_file_upload_local_archive(
     let requested_root_name =
         require_safe_name(&request.root_name, "remote_file_archive_root_missing")?;
     let local_path = require_existing_local_path(&request.local_path)?;
-    let (upload_path, root_name, cleanup_path) = if local_path.is_dir() {
+    if local_path.is_dir() {
         let root_name = local_path
             .file_name()
             .and_then(|value| value.to_str())
@@ -678,11 +687,32 @@ pub async fn remote_file_upload_local_archive(
             .to_string();
         let root_name =
             require_safe_name(&root_name, "remote_file_archive_root_missing")?.to_string();
-        let archive_path = create_local_directory_archive(&local_path, &root_name)?;
-        (archive_path.clone(), root_name, Some(archive_path))
-    } else {
-        (local_path, requested_root_name.to_string(), None)
-    };
+        let registration = manager
+            .register_transfer(request.transfer_id.as_deref())
+            .await;
+        let progress = remote_sftp_transfer_progress_callback(
+            &app,
+            request.transfer_id.as_deref(),
+            "upload",
+            None,
+        );
+        let result = manager
+            .upload_local_directory_sftp(
+                &app,
+                profile,
+                target_dir,
+                &root_name,
+                &local_path,
+                TransferConflictPolicy::from_request(request.conflict_policy.as_deref()),
+                progress,
+                registration.token.clone(),
+            )
+            .await;
+        registration.finish().await;
+        return result;
+    }
+    let upload_path = local_path;
+    let root_name = requested_root_name.to_string();
     let total_bytes = fs::metadata(&upload_path)
         .map_err(|error| {
             AppError::new(
@@ -712,9 +742,6 @@ pub async fn remote_file_upload_local_archive(
             progress,
         )
         .await;
-    if let Some(path) = cleanup_path {
-        let _ = fs::remove_file(path);
-    }
     result
 }
 
@@ -787,6 +814,14 @@ pub async fn remote_file_delete_upload_temp(
             true,
         )),
     }
+}
+
+#[tauri::command]
+pub async fn remote_file_cancel_transfer(
+    manager: State<'_, RemoteFileManager>,
+    request: RemoteFileCancelTransferRequest,
+) -> Result<bool, AppError> {
+    Ok(manager.cancel_transfer(&request.transfer_id).await)
 }
 
 #[tauri::command]
@@ -868,6 +903,7 @@ pub async fn remote_file_download_to_local(
     manager: State<'_, RemoteFileManager>,
     request: RemoteFileDownloadToLocalRequest,
 ) -> Result<RemoteFileDownloadToLocalResult, AppError> {
+    let _ = request.keep_archives;
     let profile = resolve_remote_connection_profile(&app, &request.connection_id)?;
     let path = require_remote_path(&request.path)?;
     let name = remote_path_name(path);
@@ -889,53 +925,30 @@ pub async fn remote_file_download_to_local(
             });
         }
 
-        let progress = remote_transfer_progress_callback(
+        let registration = manager
+            .register_transfer(request.transfer_id.as_deref())
+            .await;
+        let progress = remote_sftp_transfer_progress_callback(
             &app,
             request.transfer_id.as_deref(),
             "download",
             None,
         );
-        let content = manager
-            .download_archive(&app, profile, path, progress)
-            .await?;
-        fs::create_dir_all(&local_directory).map_err(|error| {
-            AppError::new(
-                "remote_file_download_create_dir_failed",
-                "本地下载目录创建失败。",
-                error,
-                true,
+        let result = manager
+            .download_directory_to_local_sftp(
+                &app,
+                profile,
+                path,
+                &target,
+                progress,
+                registration.token.clone(),
             )
-        })?;
-
-        let archive_path = if request.keep_archives {
-            let archive_target =
-                local_directory.join(format!("{}.tar.gz", sanitize_local_path_segment(&name)));
-            resolve_local_conflict(&archive_target, TransferConflictPolicy::Rename, true)?.1
-        } else {
-            std::env::temp_dir().join(format!(
-                "mxterm-download-{}-{}.tar.gz",
-                now_millis(),
-                sanitize_local_path_segment(&name)
-            ))
-        };
-        fs::write(&archive_path, content).map_err(|error| {
-            AppError::new(
-                "remote_file_download_write_failed",
-                "本地归档写入失败。",
-                error,
-                true,
-            )
-        })?;
-
-        unpack_remote_directory_archive(&archive_path, &local_directory, &name, &target, policy)?;
-        if !request.keep_archives {
-            let _ = fs::remove_file(&archive_path);
-        }
+            .await;
+        registration.finish().await;
+        result?;
 
         Ok(RemoteFileDownloadToLocalResult {
-            archive_path: request
-                .keep_archives
-                .then(|| archive_path.to_string_lossy().to_string()),
+            archive_path: None,
             directory: true,
             local_directory: local_directory.to_string_lossy().to_string(),
             local_path: target.to_string_lossy().to_string(),
@@ -945,7 +958,11 @@ pub async fn remote_file_download_to_local(
         })
     } else {
         let target = local_directory.join(sanitize_local_path_segment(&name));
-        let (skipped, target) = resolve_local_conflict(&target, policy, true)?;
+        let (skipped, target) = if policy == TransferConflictPolicy::Overwrite && target.exists() {
+            (false, target)
+        } else {
+            resolve_local_conflict(&target, policy, true)?
+        };
         if skipped {
             return Ok(RemoteFileDownloadToLocalResult {
                 archive_path: None,
@@ -958,29 +975,27 @@ pub async fn remote_file_download_to_local(
             });
         }
 
-        let progress = remote_transfer_progress_callback(
+        let registration = manager
+            .register_transfer(request.transfer_id.as_deref())
+            .await;
+        let progress = remote_sftp_transfer_progress_callback(
             &app,
             request.transfer_id.as_deref(),
             "download",
             None,
         );
-        let content = manager.download_file(&app, profile, path, progress).await?;
-        fs::create_dir_all(&local_directory).map_err(|error| {
-            AppError::new(
-                "remote_file_download_create_dir_failed",
-                "本地下载目录创建失败。",
-                error,
-                true,
+        let result = manager
+            .download_file_to_local_sftp(
+                &app,
+                profile,
+                path,
+                &target,
+                progress,
+                registration.token.clone(),
             )
-        })?;
-        fs::write(&target, content).map_err(|error| {
-            AppError::new(
-                "remote_file_download_write_failed",
-                "本地文件写入失败。",
-                error,
-                true,
-            )
-        })?;
+            .await;
+        registration.finish().await;
+        result?;
 
         Ok(RemoteFileDownloadToLocalResult {
             archive_path: None,
@@ -1382,111 +1397,6 @@ fn remove_local_target(target: &Path) -> Result<(), AppError> {
     })
 }
 
-fn unpack_remote_directory_archive(
-    archive_path: &Path,
-    local_directory: &Path,
-    root_name: &str,
-    target: &Path,
-    policy: TransferConflictPolicy,
-) -> Result<(), AppError> {
-    fs::create_dir_all(local_directory).map_err(|error| {
-        AppError::new(
-            "remote_file_download_create_dir_failed",
-            "本地下载目录创建失败。",
-            error,
-            true,
-        )
-    })?;
-    if target.exists() {
-        match policy {
-            TransferConflictPolicy::Skip => return Ok(()),
-            TransferConflictPolicy::Overwrite => remove_local_target(target)?,
-            TransferConflictPolicy::Rename => {}
-        }
-    }
-
-    let tmp_dir = local_directory.join(format!(".mxterm-extract-{}", now_millis()));
-    fs::create_dir_all(&tmp_dir).map_err(|error| {
-        AppError::new(
-            "remote_file_download_extract_dir_failed",
-            "本地解压临时目录创建失败。",
-            error,
-            true,
-        )
-    })?;
-
-    let output = Command::new("tar")
-        .arg("-xzf")
-        .arg(archive_path)
-        .arg("-C")
-        .arg(&tmp_dir)
-        .output()
-        .map_err(|error| {
-            AppError::new(
-                "remote_file_download_extract_start_failed",
-                "本地 tar 解压启动失败。",
-                error,
-                true,
-            )
-        })?;
-    if !output.status.success() {
-        let detail = if output.stderr.is_empty() {
-            String::from_utf8_lossy(&output.stdout).to_string()
-        } else {
-            String::from_utf8_lossy(&output.stderr).to_string()
-        };
-        let _ = fs::remove_dir_all(&tmp_dir);
-        return Err(AppError::new(
-            "remote_file_download_extract_failed",
-            "本地目录解压失败。",
-            detail.trim(),
-            true,
-        ));
-    }
-
-    let extracted = tmp_dir.join(root_name);
-    if !extracted.exists() {
-        let _ = fs::remove_dir_all(&tmp_dir);
-        return Err(AppError::new(
-            "remote_file_download_extract_missing",
-            "本地解压结果缺少目录根。",
-            root_name,
-            true,
-        ));
-    }
-    fs::rename(&extracted, target)
-        .or_else(|_| {
-            copy_local_directory(&extracted, target)?;
-            fs::remove_dir_all(&extracted)
-        })
-        .map_err(|error| {
-            AppError::new(
-                "remote_file_download_extract_move_failed",
-                "本地解压结果移动失败。",
-                error,
-                true,
-            )
-        })?;
-    let _ = fs::remove_dir_all(&tmp_dir);
-    Ok(())
-}
-
-fn copy_local_directory(from: &Path, to: &Path) -> std::io::Result<()> {
-    fs::create_dir_all(to)?;
-    for entry in fs::read_dir(from)? {
-        let entry = entry?;
-        let source = entry.path();
-        let target = to.join(entry.file_name());
-        let file_type = entry.file_type()?;
-        if file_type.is_dir() {
-            copy_local_directory(&source, &target)?;
-        } else {
-            fs::copy(&source, &target)?;
-        }
-    }
-    Ok(())
-}
-
 fn split_local_name(name: &str, file_like: bool) -> (String, String) {
     if !file_like {
         return (name.to_string(), String::new());
@@ -1599,58 +1509,12 @@ fn require_upload_temp_path(local_path: &str) -> Result<PathBuf, AppError> {
     Ok(path)
 }
 
-fn create_local_directory_archive(directory: &Path, root_name: &str) -> Result<PathBuf, AppError> {
-    let parent = directory.parent().ok_or_else(|| {
-        AppError::new(
-            "remote_file_upload_archive_parent_missing",
-            "本地上传文件夹父目录不可用。",
-            directory.to_string_lossy(),
-            true,
-        )
-    })?;
-    let archive_dir = upload_temp_dir()?;
-    fs::create_dir_all(&archive_dir).map_err(|error| {
-        AppError::new(
-            "remote_file_upload_temp_create_dir_failed",
-            "本地上传临时目录创建失败。",
-            error,
-            true,
-        )
-    })?;
-    let archive_path = archive_dir.join(format!(
-        "{}-{}.tar.gz",
-        now_millis(),
-        sanitize_local_path_segment(root_name)
-    ));
-    let status = Command::new("tar")
-        .arg("-czf")
-        .arg(&archive_path)
-        .arg("-C")
-        .arg(parent)
-        .arg(root_name)
-        .status()
-        .map_err(|error| {
-            AppError::new(
-                "remote_file_upload_archive_start_failed",
-                "本地 tar 打包启动失败。",
-                error,
-                true,
-            )
-        })?;
-    if !status.success() {
-        let _ = fs::remove_file(&archive_path);
-        return Err(AppError::new(
-            "remote_file_upload_archive_failed",
-            "本地 tar.gz 打包失败。",
-            status.to_string(),
-            true,
-        ));
-    }
-    Ok(archive_path)
-}
-
 fn noop_transfer_progress_callback() -> ExecProgressCallback {
     std::sync::Arc::new(|_| {})
+}
+
+fn noop_sftp_progress_callback() -> SftpProgressCallback {
+    std::sync::Arc::new(|_, _| {})
 }
 
 fn remote_path_name(path: &str) -> String {
@@ -1689,6 +1553,48 @@ fn remote_transfer_progress_callback(
             },
         );
     }))
+}
+
+fn remote_sftp_transfer_progress_callback(
+    app: &AppHandle,
+    transfer_id: Option<&str>,
+    direction: &'static str,
+    fallback_total_bytes: Option<u64>,
+) -> SftpProgressCallback {
+    let transfer_id = match transfer_id.map(str::trim).filter(|value| !value.is_empty()) {
+        Some(value) => value.to_string(),
+        None => return noop_sftp_progress_callback(),
+    };
+    let app = app.clone();
+    let state = std::sync::Arc::new(std::sync::Mutex::new((Instant::now(), 0u64)));
+    std::sync::Arc::new(move |loaded_bytes, total_bytes| {
+        let total_bytes = total_bytes.or(fallback_total_bytes);
+        let should_emit = {
+            let mut state = state.lock().expect("progress throttle lock poisoned");
+            let now = Instant::now();
+            let elapsed = now.duration_since(state.0);
+            let byte_delta = loaded_bytes.saturating_sub(state.1);
+            let finished = total_bytes.is_some_and(|total| loaded_bytes >= total);
+            if finished || elapsed >= Duration::from_millis(200) || byte_delta >= 1024 * 1024 {
+                *state = (now, loaded_bytes);
+                true
+            } else {
+                false
+            }
+        };
+        if !should_emit {
+            return;
+        }
+        let _ = app.emit(
+            crate::events::REMOTE_FILE_TRANSFER_PROGRESS,
+            RemoteFileTransferProgressEvent {
+                transfer_id: transfer_id.clone(),
+                direction: direction.to_string(),
+                loaded_bytes,
+                total_bytes,
+            },
+        );
+    })
 }
 
 fn window_material_info(id: i32) -> WindowMaterial {

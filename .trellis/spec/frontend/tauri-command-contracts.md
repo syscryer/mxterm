@@ -347,6 +347,7 @@ localPathMetadata(path: string): Promise<LocalPathMetadataResult>
 remoteFileDownload(connectionId: string, path: string): Promise<RemoteFileDownloadResult>
 remoteFileCheckDownloadTarget(input: RemoteFileDownloadTargetCheckInput): Promise<RemoteFileDownloadTargetCheckResult>
 remoteFileDownloadToLocal(input: RemoteFileDownloadToLocalInput): Promise<RemoteFileDownloadToLocalResult>
+remoteFileCancelTransfer(transferId: string): Promise<boolean>
 listenRemoteFileTransferProgress(handler: (event: RemoteFileTransferProgressEvent) => Promise<UnlistenFn>
 ```
 
@@ -508,7 +509,7 @@ type RemoteFileTransferProgressEvent = {
 ### 3. Contracts
 
 - UI components must call the typed wrappers in `src/shared/tauri/commands.ts`; do not call `invoke("remote_file_*", ...)` directly from feature components.
-- Wrapper request keys must match Rust exactly: `connection_id`, `path`, `content`, `expected_mtime`, `expected_size`, `overwrite`, `new_path`, `recursive`, `conflict_policy`, `target_dir`, `root_name`, `archive_content`, `local_path`, `file_name`, `chunk`, `keep_archive`, `directory`, `download_root`, `group_by_session`, `keep_archives`, `session_name`, `timestamp_directory`, and `timestamp_name`.
+- Wrapper request keys must match Rust exactly: `connection_id`, `path`, `content`, `expected_mtime`, `expected_size`, `overwrite`, `new_path`, `recursive`, `conflict_policy`, `target_dir`, `root_name`, `archive_content`, `local_path`, `file_name`, `chunk`, `keep_archive`, `directory`, `download_root`, `group_by_session`, `keep_archives`, `session_name`, `timestamp_directory`, `timestamp_name`, and `transfer_id`.
 - `connectionId` is always the saved `ConnectionProfile.id`. Do not send host, username, password, private-key path, or passphrase from React for file editor commands.
 - `WorkspaceShell` owns open file tabs and must de-duplicate by `connectionId + path`; opening the same file again activates the existing tab.
 - `RemoteFileEditor` owns Monaco lifecycle only. Command calls, dirty close confirmation, save conflict dialogs, and tree refresh orchestration stay in `WorkspaceShell` / file panel integration.
@@ -518,12 +519,14 @@ type RemoteFileTransferProgressEvent = {
 - Browser preview must not fire real upload/download or SSH commands when Tauri is unavailable; preview-only mock behavior is acceptable for layout checks.
 - Legacy byte upload wrappers convert `Uint8Array | number[]` to a plain number array before invoking Rust, but WorkspaceShell must not use them for real desktop uploads. Toolbar and context-menu uploads must use the Tauri dialog wrapper to get real local paths, then call `remoteFileUploadLocalFile(...)` or `remoteFileUploadLocalArchive(...)` with that original `localPath` so there is no pre-upload cache copy. Browser `File` uploads from drag/drop are the fallback path: they may write small chunks into a backend-owned local upload temp file before calling the same local upload wrappers because the browser does not expose a trusted original file path.
 - Windows/Tauri native file drops must use `getCurrentWebview().onDragDropEvent(...)` to receive absolute local paths, resolve the remote target from `data-remote-file-drop-target`, call `localPathMetadata(...)`, then dispatch files to `remoteFileUploadLocalFile(...)` and directories to `remoteFileUploadLocalArchive(...)`.
-- File upload, archive upload, and download-to-local calls may pass `transferId`. The value must be the matching `RemoteFileTransferItem.id`, and `WorkspaceShell` must listen for `remote_file:transfer_progress` events to update bytes, progress, and transfer speed for that item only.
+- File upload, directory upload, and download-to-local calls may pass `transferId`. The value must be the matching `RemoteFileTransferItem.id`, and `WorkspaceShell` must listen for `remote_file:transfer_progress` events to update bytes, progress, and transfer speed for that item only.
+- Queued and running transfer rows must expose cancellation. Queued cancellation is local UI state; running cancellation calls `remoteFileCancelTransfer(transferId)` and treats `remote_file_transfer_canceled` as a canceled state, not a failed transfer.
 - Remote transfer progress events are advisory UI events. The command result remains the source of truth for success, skipped state, final remote path, and final local path.
-- Folder upload from the Tauri dialog must pass the selected directory path to `remoteFileUploadLocalArchive(...)` and let Rust create the local `tar.gz` before uploading. Folder upload from drag/drop must stream tar entries directly into `CompressionStream("gzip")` and persist gzip output chunks with `remoteFileAppendUploadTemp(...)`, then call `remoteFileUploadLocalArchive(...)`; do not recursively invoke `remoteFileUploadFile` per file, and do not build a full uncompressed tar buffer or full compressed archive in JS memory for large folders.
+- Folder upload from the Tauri dialog or native file drop must pass the selected directory path to `remoteFileUploadLocalArchive(...)` and let Rust scan/upload it over SFTP. Do not pulse fake progress or show archive/extract copy for this real desktop path.
+- Browser preview or browser-only `File` fallback may still stream tar entries into `CompressionStream("gzip")` and persist gzip output chunks with `remoteFileAppendUploadTemp(...)` because the browser does not expose trusted original directory paths. Keep this path visually separate from the Tauri desktop SFTP path.
 - Folder download and file download from the desktop app should call `remoteFileCheckDownloadTarget(...)` when the default conflict policy is `ask`, then `remoteFileDownloadToLocal(...)` so Rust resolves the system/custom download directory and writes to disk. Browser Blob download is only acceptable as a preview fallback.
 - `conflictPolicyDefault: "ask"` must be resolved in UI before invoking Rust. Upload flows must call `remoteFileCheckPath(...)` for the exact target path and prompt only when `exists === true`; missing targets should continue with `rename` as the non-destructive default. Rust receives only `overwrite`, `skip`, or `rename`; if an old caller sends `ask`, the wrapper/backend must keep non-destructive behavior.
-- Upload preflight must be lightweight: check only the target file path or directory root (`targetDir/rootName`) before local tar/gzip or SSH transfer. Do not list large parent directories or scan folder contents just to decide whether to show the conflict prompt.
+- Upload preflight must be lightweight: check only the target file path or directory root (`targetDir/rootName`) before local scanning or SFTP transfer. Do not list large parent directories or scan folder contents just to decide whether to show the conflict prompt.
 - Download preflight must reuse the exact same download-root, connection grouping name (`sessionName`), timestamp, and grouping options as the subsequent download command. Prompt only when `remoteFileCheckDownloadTarget(...)` reports the resolved local target already exists; otherwise continue with `rename` as the non-destructive default.
 - The download `sessionName` segment is the connection grouping name: derive it from `ConnectionProfile.name`, fall back to `ConnectionProfile.host`, then `mxterm-session`. Do not use the active terminal tab title such as the default `终端`, because terminal tabs are runtime UI state and should not change the local download directory.
 - File transfer settings live under `settings.fileTransfer` and include `downloadRoot`, `groupBySession`, `timestampDirectory`, `timestampFormat`, `keepArchives`, and `conflictPolicyDefault`.
@@ -551,27 +554,30 @@ type RemoteFileTransferProgressEvent = {
 | Download target exists and default policy is `ask` | Prompt for rename / skip / overwrite after `remoteFileCheckDownloadTarget(...)` confirms the resolved local target exists. |
 | Download target does not exist and default policy is `ask` | Do not prompt; continue with `rename` so backend behavior stays non-destructive if a race creates the target later. |
 | Transfer progress event arrives for another `transfer_id` | Ignore it; never update unrelated transfer rows. |
-| Download progress has no `total_bytes` | Show bytes received and speed, keep an indeterminate progress bar until the command resolves. |
+| SFTP progress has `total_bytes` | Show `loaded / total`, speed, and a determinate bar based directly on `loaded_bytes / total_bytes`; do not map real bytes into an old staged range such as 38%-92%. |
+| Legacy or preview progress has no `total_bytes` | Show bytes received and speed, keep an indeterminate progress bar until the command resolves. |
 | Single file upload succeeds with rename | Update the transfer item to the returned `path` and refresh the returned parent directory. |
-| Folder upload succeeds | Show archive/extract completion, then refresh the returned parent directory. |
+| Folder upload succeeds | Show directory upload completion, then refresh the returned parent directory. |
 | Download to local succeeds | Show `local_path` in the transfer panel and offer copy/open/reveal actions. |
 | Download returns `skipped: true` | Keep a skipped transfer item instead of treating it as an error. |
+| Running transfer is canceled | Mark the row canceled, clear fake progress/pulse state, and do not show a failure toast for `remote_file_transfer_canceled`. |
 
 ### 5. Good / Base / Bad Cases
 
 - Good: a file row double-click calls `openRemoteFile(connection.id, entry.path)`, `WorkspaceShell` reuses an existing tab when present, `remoteFileRead` loads content, Monaco edits the model, and `remoteFileWrite` saves with expected metadata.
 - Good: a toolbar upload-file action opens the Tauri dialog, receives one or more local paths, preflights the exact remote target with `remoteFileCheckPath`, calls `remoteFileUploadLocalFile` directly for each path, and does not show a "write upload cache" stage.
 - Good: a file download action computes one timestamp/options object, checks `remoteFileCheckDownloadTarget(...)`, prompts only when the local target exists, then passes the same options into `remoteFileDownloadToLocal(...)`.
-- Good: a local directory drop is grouped by root folder, streamed into a backend-owned temporary `tar.gz` with local byte/speed feedback, uploaded once through `remoteFileUploadLocalArchive` with the matching `transferId`, extracted remotely, and reported in the transfer panel.
+- Good: a local directory drop resolves to an absolute native path, calls `remoteFileUploadLocalArchive` once with the matching `transferId`, lets Rust scan/upload over SFTP, and reports real loaded/total progress in the transfer panel.
 - Good: `WorkspaceShell` listens to `remote_file:transfer_progress`, matches by `transfer_id`, and displays `loaded / total` plus `MB/s` while the command is still running.
+- Good: the user clicks cancel on a running transfer, `WorkspaceShell` calls `remoteFileCancelTransfer`, and a later `remote_file_transfer_canceled` command error leaves the row canceled rather than failed.
 - Base: a user creates `/tmp/app.conf`; React calls `remoteFileCreateFile(connection.id, path)`, refreshes the parent directory, then opens the new file tab.
-- Bad: a component stores passwords in file action state, calls `invoke("remote_file_write", ...)` directly, uploads every folder child through separate commands, or closes a dirty Monaco tab without confirmation.
+- Bad: a component stores passwords in file action state, calls `invoke("remote_file_write", ...)` directly, uploads every folder child through separate commands from React, shows fake pulse progress over real SFTP events, or closes a dirty Monaco tab without confirmation.
 
 ### 6. Tests Required
 
 - Run `node scripts/check-remote-file-editor-source.mjs` after changing remote editor wrappers, Monaco integration, file tab state, or file panel actions.
 - The source check must cover `remoteFileMetadata`, `remoteFileCheckPath`, upload conflict preflight, `remoteFileCheckDownloadTarget`, download conflict preflight, `remoteFileUploadLocalFile`, `remoteFileUploadLocalArchive`, Tauri dialog upload helpers, drag/drop upload temp helpers, `remoteFileDownloadToLocal`, drag upload/download handlers, `CompressionStream("gzip")`, `webkitdirectory`, `fileTransfer` settings, and basename-only rename.
-- The source check must cover `transfer_id`, `remote_file:transfer_progress`, speed text, streamed tar/gzip helpers, and progressbar markup whenever transfer UI or command wrappers change.
+- The source check must cover `transfer_id`, `remote_file:transfer_progress`, `remoteFileCancelTransfer`, speed text, streamed tar/gzip preview helpers, and progressbar markup whenever transfer UI or command wrappers change.
 - Run `pnpm check` after changing TypeScript command payloads, editor types, or workspace/file panel props.
 - Run `npm run build` after visible Monaco/workspace/CSS changes.
 - Add frontend tests once the test runner exists for duplicate tab activation, dirty close confirmation, conflict branching, browser-preview upload blocking, and wrapper payload shape.
@@ -625,7 +631,7 @@ if (existing) {
 #### Wrong
 
 ```tsx
-// Uploads a folder with one SSH round-trip per child and loses directory-level conflict handling.
+// Uploads a folder with one frontend command per child and loses directory-level conflict handling.
 for (const file of files) {
   const { local_path: localPath } = await remoteFilePrepareUploadTemp(file.name);
 await writeFileToUploadTemp(localPath, file);
@@ -636,11 +642,9 @@ await remoteFileUploadLocalFile({ connectionId, path: `${targetDir}/${file.name}
 #### Correct
 
 ```tsx
-const { local_path: localPath } = await remoteFilePrepareUploadTemp(`${rootName}.tar.gz`);
-await buildTarGzArchiveToTemp(localPath, items);
 await remoteFileUploadLocalArchive({
   connectionId,
-  localPath,
+  localPath: selectedDirectoryPath,
   targetDir,
   rootName,
   conflictPolicy,

@@ -150,21 +150,33 @@ for (const backendSymbol of [
   "read_file",
   "write_file",
   "upload_file",
-  "upload_local_file",
+  "upload_local_file_sftp",
+  "upload_local_directory_sftp",
   "upload_archive",
   "upload_local_archive",
-  "download_archive",
+  "download_file_to_local_sftp",
+  "download_directory_to_local_sftp",
   "build_remote_write_command",
   "build_remote_path_check_command",
   "build_remote_upload_command",
   "build_remote_resolve_child_command",
   "build_remote_extract_archive_command",
-  "build_remote_archive_download_command",
   "parse_remote_file_metadata",
   "parse_remote_entry_metadata",
   "parse_remote_path_check_output",
   "parse_remote_transfer_path",
   "looks_like_binary",
+  "ReusableSftpSession",
+  "SftpProgressCallback",
+  "TransferCancelToken",
+  "register_transfer",
+  "cancel_transfer",
+  "remote_file_cancel_transfer",
+  "remote_transfer_part_path",
+  "local_download_part_path",
+  "resume_offset_for_partial",
+  "upload_sftp_file",
+  "download_sftp_file",
   "ExecProgressCallback",
   "exec_with_stdin_progress",
   "exec_with_stdin_file_progress",
@@ -183,6 +195,7 @@ for (const eventNeedle of [
   "REMOTE_FILE_TRANSFER_PROGRESS",
   "RemoteFileTransferProgressEvent",
   "remote_transfer_progress_callback",
+  "remote_sftp_transfer_progress_callback",
 ]) {
   if (!eventsRs.includes(eventNeedle) && !commandsRs.includes(eventNeedle)) {
     throw new Error(`Remote file transfer progress events should include ${eventNeedle}`);
@@ -287,6 +300,7 @@ for (const workspaceNeedle of [
   "remoteFileAppendUploadTemp",
   "remoteFileDeleteUploadTemp",
   "remoteFileDownloadToLocal",
+  "remoteFileCancelTransfer",
   "remoteFileCheckDownloadTarget",
   "resolveDownloadConflictPolicy",
   "downloadTargetOptions",
@@ -296,6 +310,7 @@ for (const workspaceNeedle of [
   "progressDetail",
   "speedText",
   "formatTransferSpeed",
+  "transferProgressPercent",
   "RemoteFileTransferItem",
   "resolveUploadConflictPolicy",
   "resolveDownloadConflictPolicy",
@@ -306,6 +321,7 @@ for (const workspaceNeedle of [
   "selectLocalUploadDirectories",
   "runLocalFileUpload",
   "runLocalDirectoryUpload",
+  "requestCancelTransfer",
   "localPathName",
   "writeFileToUploadTemp",
   "buildTarGzArchiveToTemp",
@@ -321,6 +337,10 @@ for (const workspaceNeedle of [
   if (!workspaceShell.includes(workspaceNeedle)) {
     throw new Error(`WorkspaceShell should include ${workspaceNeedle}`);
   }
+}
+
+if (/interpolateTransferProgress\(\s*38,\s*92,\s*event\.loaded_bytes/.test(workspaceShell)) {
+  throw new Error("SFTP transfer progress should use loaded_bytes / total_bytes directly");
 }
 
 for (const forbiddenNameDialogNeedle of [

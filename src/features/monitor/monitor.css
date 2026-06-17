@@ -851,6 +851,12 @@
   gap: 6px;
 }
 
+.monitor-process-head,
+.monitor-process-row {
+  --monitor-process-columns: minmax(0, 1fr) 50px 44px 76px;
+  grid-template-columns: var(--monitor-process-columns);
+}
+
 .monitor-search-field {
   min-width: 0;
   flex: 1 1 auto;
@@ -929,17 +935,29 @@
 .monitor-process-head {
   min-width: 0;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 8px;
+  align-items: center;
+  gap: 7px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--mx-line-soft);
   color: var(--mx-subtle);
   font-size: 11px;
   font-weight: 620;
 }
 
+.monitor-process-head span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.monitor-process-head span:nth-child(n + 2) {
+  text-align: right;
+}
+
 .monitor-process-row {
   min-width: 0;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 50px 44px 76px;
   align-items: center;
   gap: 7px;
   padding: 9px 0;

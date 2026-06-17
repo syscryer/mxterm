@@ -448,7 +448,9 @@ let output = TerminalSession::exec(
 - `remote_file_download(app: AppHandle, manager: State<RemoteFileManager>, request: RemoteFilePathRequest) -> Result<RemoteFileDownloadResult, AppError>`
 - `remote_file_check_download_target(app: AppHandle, request: RemoteFileDownloadTargetCheckRequest) -> Result<RemoteFileDownloadTargetCheckResult, AppError>`
 - `remote_file_download_to_local(app: AppHandle, manager: State<RemoteFileManager>, request: RemoteFileDownloadToLocalRequest) -> Result<RemoteFileDownloadToLocalResult, AppError>`
+- `remote_file_cancel_transfer(manager: State<RemoteFileManager>, request: RemoteFileCancelTransferRequest) -> Result<bool, AppError>`
 - `ReusableExecSession::exec_with_stdin(command: &str, stdin: &[u8]) -> Result<ExecOutput, AppError>`
+- `ReusableSftpSession::connect_resolved(app: &AppHandle, config: &ResolvedSshConfig) -> Result<ReusableSftpSession, AppError>`
 
 Request fields:
 
@@ -552,6 +554,10 @@ RemoteFileDownloadToLocalRequest {
     keep_archives: bool, // #[serde(default)]
     conflict_policy: Option<String>,
     transfer_id: Option<String>, // #[serde(default)], enables progress events
+}
+
+RemoteFileCancelTransferRequest {
+    transfer_id: String,
 }
 ```
 
@@ -664,22 +670,24 @@ LocalPathMetadataResult {
 - File content must never be embedded in a shell command string. Save and upload must call `exec_with_reconnect_stdin(..., content.as_bytes())` or `exec_with_reconnect_stdin(..., content)` and send bytes through the SSH channel stdin.
 - `build_remote_write_command` writes stdin to a same-directory hidden temp file, tries to preserve mode from the existing file, then moves the temp file over the target path. Cleanup must remove the temp file on command failure where possible.
 - `ReusableExecSession::exec_with_stdin` must send `channel.data_bytes(stdin)` and then `channel.eof()` before collecting stdout, stderr, and exit status.
-- Transfer commands with `transfer_id` must emit `remote_file:transfer_progress` events from Rust while bytes move over the SSH exec channel. Single-file and archive uploads emit after each stdin chunk; local-path uploads read backend-owned temp files in bounded chunks before writing SSH stdin; downloads emit after each stdout data chunk.
-- Upload progress events must include `total_bytes: Some(content.len() as u64)`. Download progress events may use `total_bytes: None` when the remote stream size is not known without an extra command.
+- Transfer commands with `transfer_id` must emit `remote_file:transfer_progress` events from Rust while bytes move. SFTP transfers emit `{ loaded_bytes, total_bytes }` from bounded read/write chunks; legacy exec archive uploads may still emit stdin progress.
+- SFTP upload and download progress events must include `total_bytes` once the backend has scanned the source file or directory. Directory progress is global: completed previous files plus the current file's loaded bytes.
 - `ReusableExecSession` must keep non-progress `exec_with_stdin` behavior available for save/write commands, and add progress-aware variants instead of forcing every exec caller to emit UI events.
 - `RemoteFileManager` may reuse a `ReusableExecSession` per connection signature. If an exec fails, invalidate the handle, reconnect once, and retry the command.
+- `RemoteFileManager` owns a transfer registry keyed by `transfer_id`. `remote_file_cancel_transfer` sets the matching token; chunk loops and directory scans must check the token and return `remote_file_transfer_canceled` quickly without deleting `.mxpart` files.
 - `remote_file_metadata` returns regular file, directory, symlink, or other metadata for the properties dialog. The serialized kind field is `type`.
 - `remote_file_check_path` is a lightweight existence/type preflight for exact transfer targets. It must check only the requested path, return `{ exists, path, type }`, and must not list the parent directory, scan directory contents, read file content, create archives, or start upload/download work.
 - `remote_file_upload_file` is a single-file byte upload. It accepts a conflict policy and returns the final remote path plus optional metadata; skipped uploads return `metadata: None`.
-- `remote_file_upload_local_file` accepts a trusted local file path from the Tauri dialog path or a backend-owned upload temp path from the drag/drop fallback, streams that file through SSH stdin, and emits transfer progress from bytes read on the Rust side.
+- `remote_file_upload_local_file` accepts a trusted local file path from the Tauri dialog path or a backend-owned upload temp path from the drag/drop fallback, streams that file through SFTP to `{remote_path}.mxpart`, and renames the part file to the final path only after the upload completes.
 - `remote_file_upload_archive` accepts a legacy frontend-built `tar.gz` archive, uploads it through stdin to a remote temporary archive, extracts it with remote `tar -xzf`, and removes the remote archive unless `keep_archive == true`. Desktop UI should prefer `remote_file_upload_local_archive` so the selected directory path or compressed archive stays in Rust-owned local IO instead of crossing IPC as one `Vec<u8>`.
-- `remote_file_upload_local_archive` accepts either a local `tar.gz` path or a local directory path. Directory paths must be packed into a backend-owned temporary `tar.gz` before upload, then cleaned up after upload/extract completes.
+- `remote_file_upload_local_archive` accepts either a local `tar.gz` path or a local directory path. Directory paths must be scanned into a local file plan and uploaded through SFTP file-by-file under `{resolved_root}.mxpart`, then renamed to the resolved root only after completion; do not create a tarball for native directory paths.
 - `local_path_metadata` is a read-only helper for native desktop drops. It canonicalizes a local path and returns whether it is a file, directory, or other local item before the UI chooses the file or archive upload command.
-- Directory upload conflict handling is root-folder level: resolve `target_dir/root_name` using overwrite / skip / rename before extraction. Do not silently extract over an existing directory.
+- Directory upload conflict handling is root-folder level: resolve `target_dir/root_name` using overwrite / skip / rename before creating the SFTP staging directory. Do not remove the old root until the staged SFTP directory has uploaded successfully and is ready to rename.
 - `remote_file_check_download_target` resolves the same system/custom download directory shape as `remote_file_download_to_local`, checks only the final local path with `Path::exists`, and returns the path plus `exists`. It must not contact SSH or create directories/files.
-- `remote_file_download_to_local` resolves the system or custom download root on the Rust side, creates optional session and timestamp subdirectories, writes files directly to disk, and returns the final local path.
+- `remote_file_download_to_local` resolves the system or custom download root on the Rust side, creates optional session and timestamp subdirectories, writes files directly to disk, and returns the final local path. File and directory downloads must use SFTP and write to `{local_path}.mxpart` before renaming to the final path.
 - The frontend-owned `session_name` value represents the connection grouping name, not a terminal tab title. Rust should sanitize it as a local path segment and use the fallback segment only when the provided value is blank.
-- Directory download must call `download_archive`, write a local temporary or retained `tar.gz`, extract it with local `tar -xzf`, then remove the temporary archive unless `keep_archives == true`.
+- Directory download must scan the remote directory over SFTP, create the local directory tree, then download each regular file to its sibling `.mxpart` file with resume support. `keep_archives` is ignored for SFTP directory downloads and `archive_path` should be `None`.
+- Existing `.mxpart` files are resume candidates only when their byte length is less than or equal to the source total. Oversized parts must be discarded and restarted from byte 0.
 - Local file and directory conflicts use the same overwrite / skip / rename policy as remote transfers. If the frontend sends `ask`, treat it as `rename` to keep behavior non-destructive.
 - Windows path segments for download directories must be sanitized before joining paths. Do not use remote names directly as local path components.
 - `remote_file_delete` with `recursive == true` must refuse to delete `/`; non-recursive delete should not recursively remove directories.
@@ -704,6 +712,7 @@ LocalPathMetadataResult {
 | SSH stdin send fails | `remote_exec_stdin_failed` | true |
 | SSH stdin EOF fails | `remote_exec_stdin_eof_failed` | true |
 | Transfer event emit fails | no command error | n/a |
+| User cancels a registered transfer | `remote_file_transfer_canceled` | true |
 | Create file command exits non-zero | `remote_file_create_failed` | true |
 | Create directory command exits non-zero | `remote_file_create_directory_failed` | true |
 | Rename command exits non-zero | `remote_file_rename_failed` | true |
@@ -717,25 +726,23 @@ LocalPathMetadataResult {
 | Archive upload target cannot resolve | `remote_file_archive_resolve_failed` / `remote_file_archive_resolve_parse_failed` | true |
 | Archive upload write fails | `remote_file_archive_upload_failed` | true |
 | Remote archive extraction fails | `remote_file_archive_extract_failed` | true |
-| Remote archive download fails | `remote_file_archive_download_failed` | true |
+| SFTP directory scan or transfer fails | `remote_file_archive_download_failed` / `remote_file_download_failed` / `remote_file_upload_failed` | true |
 | System download root cannot resolve | `remote_file_download_root_failed` | true |
 | Local download directory cannot be created | `remote_file_download_create_dir_failed` | true |
-| Local file/archive write fails | `remote_file_download_write_failed` | true |
+| Local file or `.mxpart` write fails | `remote_file_download_write_failed` | true |
 | Local overwrite fails | `remote_file_download_overwrite_failed` | true |
 | Local auto-rename cannot find a free name | `remote_file_download_rename_failed` | true |
-| Local tar extraction cannot start or fails | `remote_file_download_extract_start_failed` / `remote_file_download_extract_failed` | true |
-| Local extracted root is missing or cannot move | `remote_file_download_extract_missing` / `remote_file_download_extract_move_failed` | true |
 
 ### 5. Good / Base / Bad Cases
 
 - Good: `remote_file_write` receives `/opt/app/app.conf`, current metadata still matches `expected_mtime` and `expected_size`, the shell command contains only quoted path/temp-file logic, content is sent over stdin, and the response returns fresh metadata.
-- Good: `remote_file_upload_local_file` receives a Tauri-dialog file path for `app.log`, streams that file directly from disk through SSH stdin, emits uploaded-byte progress, and never asks React to copy the file into an upload cache first.
+- Good: `remote_file_upload_local_file` receives a Tauri-dialog file path for `app.log`, streams that file directly from disk through SFTP to `.mxpart`, emits `loaded / total` progress, and renames the part file only after completion.
 - Good: `remote_file_check_path` receives `/opt/app/dist`, runs a single `test -e/-L/-d/-f` style shell command, returns `exists: true` and `type: "directory"` when the root exists, and does not inspect the directory tree.
-- Good: `remote_file_upload_local_archive` receives a Tauri-dialog directory path for `dist`, creates a backend-owned local tar.gz, resolves `/opt/app/dist (1)` under rename policy, streams the archive through stdin from disk, extracts with `tar -xzf`, cleans local and remote temporary archives, and returns the final remote path.
-- Good: `remote_file_upload_local_archive` receives `transfer_id`, sends the local archive in chunks, emits `remote_file:transfer_progress` with uploaded bytes, then continues to extraction and returns the final remote path.
-- Good: `remote_file_download_to_local` receives a directory path and settings-derived timestamp name, downloads one remote archive while emitting received-byte progress, extracts it under `Downloads/<session>/<timestamp>/`, and returns `local_path` plus `local_directory`.
+- Good: `remote_file_upload_local_archive` receives a Tauri-dialog directory path for `dist`, resolves `/opt/app/dist (1)` under rename policy, creates `/opt/app/dist (1).mxpart`, uploads regular files through SFTP with resume, renames the staged root to the final root, and returns the final remote path.
+- Good: `remote_file_download_to_local` receives a directory path and settings-derived timestamp name, scans the remote directory over SFTP, downloads each file under `Downloads/<session>/<timestamp>/dist`, emits global loaded/total progress, and returns `local_path` plus `local_directory`.
+- Good: `remote_file_cancel_transfer` receives a running `transfer_id`, marks its token canceled, the active SFTP chunk loop returns `remote_file_transfer_canceled`, and the UI keeps the row canceled rather than failed.
 - Base: `remote_file_read` receives a small UTF-8 file, metadata parses with optional mode, content has no NUL bytes, and the response sets `encoding = "utf-8"` and `editable = true`.
-- Bad: write logic builds `format!("cat > {}", content)`, extracts a directory archive over an existing target without applying conflict policy, or accepts a frontend password field for a remote file command.
+- Bad: write logic builds `format!("cat > {}", content)`, extracts a directory archive over an existing target instead of using SFTP conflict policy, deletes `.mxpart` on user cancellation, or accepts a frontend password field for a remote file command.
 
 ### 6. Tests Required
 
@@ -744,8 +751,9 @@ LocalPathMetadataResult {
 - Unit-test `looks_like_binary` for plain text and NUL-containing bytes.
 - Unit-test `build_remote_write_command` to assert it creates a temp file, uses `cat > "$tmp"`, moves the temp file to the target, and does not contain literal content.
 - Unit-test `build_remote_path_check_command` and `parse_remote_path_check_output` for missing targets, existing file/directory/symlink targets, quoted paths, and no directory listing/archive work.
-- Unit-test `build_remote_upload_command`, `build_remote_resolve_child_command`, `build_remote_extract_archive_command`, and `build_remote_archive_download_command` for quoted paths, POSIX shell syntax, tar usage, and no embedded file content. Source-check local upload temp helpers and `exec_with_stdin_file_progress` when changing upload plumbing.
-- Source-check progress plumbing for `REMOTE_FILE_TRANSFER_PROGRESS`, `RemoteFileTransferProgressEvent`, `ExecProgressCallback`, `exec_with_stdin_progress`, and `exec_with_stdout_progress`.
+- Unit-test `build_remote_upload_command`, `build_remote_resolve_child_command`, and `build_remote_extract_archive_command` for quoted paths, POSIX shell syntax, tar usage in legacy archive upload, and no embedded file content. Source-check local upload temp helpers and `exec_with_stdin_file_progress` when changing legacy upload plumbing.
+- Unit-test SFTP part-path helpers, resume offset handling, remote relative path joining, local relative path joining, and remote rename parent/name helpers.
+- Source-check progress plumbing for `REMOTE_FILE_TRANSFER_PROGRESS`, `RemoteFileTransferProgressEvent`, `ExecProgressCallback`, `SftpProgressCallback`, `remote_sftp_transfer_progress_callback`, `exec_with_stdin_progress`, and `exec_with_stdout_progress`.
 - Unit-test `parse_remote_entry_metadata` and `parse_remote_transfer_path` for NUL-delimited fields and skipped/final path parsing.
 - Unit-test local download helpers for sanitized path segments, rename conflict behavior, skip/overwrite handling, and retained archive naming.
 - Unit-test the edit limit constant so `REMOTE_FILE_EDIT_LIMIT_BYTES == 2 * 1024 * 1024`.
@@ -824,26 +832,29 @@ if (current.mtime != expected_mtime || current.size != expected_size) && !overwr
 #### Wrong
 
 ```rust
-// Extracts into the destination directly and bypasses directory-level conflict policy.
-let command = format!("tar -xzf {} -C {}", archive_path, target_dir);
+// Downloads a directory as one in-memory archive, so progress has no stable total
+// and large transfers can spike memory.
+let content = self.download_archive(app, profile, path, progress).await?;
+fs::write(&archive_path, content)?;
 ```
 
 #### Correct
 
 ```rust
-let output = self
-    .exec_with_reconnect(
-        &config,
-        &build_remote_extract_archive_command(
-            &archive_path,
-            target_dir,
-            root_name,
-            &final_path,
-            conflict_policy == TransferConflictPolicy::Overwrite,
-            keep_archive,
-        ),
+let plan = build_remote_transfer_plan(session.sftp(), path, &cancel).await?;
+for file in &plan.files {
+    download_sftp_file(
+        session.sftp(),
+        &file.remote_path,
+        &local_relative_path(target, &file.relative_path),
+        file.size,
+        base_loaded,
+        progress.clone(),
+        &cancel,
     )
     .await?;
+    base_loaded += file.size;
+}
 ```
 
 ## Scenario: Remote Monitor Commands

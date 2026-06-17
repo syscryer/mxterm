@@ -61,6 +61,7 @@ pub fn run() {
             commands::remote_file_upload_local_archive,
             commands::remote_file_prepare_upload_temp,
             commands::remote_file_append_upload_temp,
+            commands::remote_file_cancel_transfer,
             commands::remote_file_delete_upload_temp,
             commands::local_path_metadata,
             commands::remote_file_download,

@@ -7,6 +7,7 @@ use encoding_rs::{CoderResult, Decoder, Encoding};
 use russh::client;
 use russh::keys::{load_secret_key, PrivateKeyWithHashAlg};
 use russh::{ChannelMsg, ChannelReadHalf, ChannelWriteHalf, Disconnect};
+use russh_sftp::client::SftpSession;
 use std::future::Future;
 use tauri::AppHandle;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -110,6 +111,11 @@ enum ExecStdin<'a> {
 
 pub struct ReusableExecSession {
     client: SshHandle,
+}
+
+pub struct ReusableSftpSession {
+    client: SshHandle,
+    sftp: SftpSession,
 }
 
 pub(crate) struct TerminalOutputDecoder {
@@ -493,6 +499,103 @@ impl ReusableExecSession {
     }
 
     pub async fn close(&self) {
+        let _ = self
+            .client
+            .disconnect(Disconnect::ByApplication, "", "English")
+            .await;
+    }
+}
+
+impl ReusableSftpSession {
+    pub async fn connect_resolved(
+        app: &AppHandle,
+        config: &ResolvedSshConfig,
+    ) -> Result<Self, AppError> {
+        let username = config.username.clone();
+        let auth_method = auth_method(config)?;
+        let ssh_config = Arc::new(client::Config {
+            keepalive_interval: Some(duration_from_ms(config.advanced.keepalive_interval_ms)),
+            keepalive_max: 1,
+            nodelay: true,
+            ..<_>::default()
+        });
+        let host_key_handler = KnownHostClient {
+            host: config.host.clone(),
+            port: config.port,
+            store_path: known_host_store_path(app)?,
+        };
+
+        let mut client = run_with_timeout(
+            "remote_sftp_connect_timeout",
+            "SFTP 连接超时。",
+            duration_from_ms(config.advanced.connect_timeout_ms),
+            connect_ssh_client(ssh_config, config, host_key_handler),
+        )
+        .await?
+        .map_err(|error| {
+            app_error_from_russh(error, "remote_sftp_connect_failed", "SFTP 连接失败。")
+        })?;
+
+        run_with_timeout(
+            "remote_sftp_auth_timeout",
+            "SFTP 认证超时。",
+            duration_from_ms(config.advanced.auth_timeout_ms),
+            authenticate(&mut client, &username, auth_method),
+        )
+        .await??;
+
+        let channel = run_with_timeout(
+            "remote_sftp_channel_timeout",
+            "SFTP 通道打开超时。",
+            Duration::from_secs(20),
+            client.channel_open_session(),
+        )
+        .await?
+        .map_err(|error| {
+            AppError::new(
+                "remote_sftp_channel_failed",
+                "SFTP 通道打开失败。",
+                error,
+                true,
+            )
+        })?;
+
+        run_with_timeout(
+            "remote_sftp_subsystem_timeout",
+            "SFTP 子系统启动超时。",
+            Duration::from_secs(20),
+            channel.request_subsystem(true, "sftp"),
+        )
+        .await?
+        .map_err(|error| {
+            AppError::new(
+                "remote_sftp_subsystem_failed",
+                "SFTP 子系统启动失败。",
+                error,
+                true,
+            )
+        })?;
+
+        let sftp = SftpSession::new(channel.into_stream())
+            .await
+            .map_err(|error| {
+                AppError::new(
+                    "remote_sftp_init_failed",
+                    "SFTP 会话初始化失败。",
+                    error,
+                    true,
+                )
+            })?;
+
+        Ok(Self { client, sftp })
+    }
+
+    pub fn sftp(&self) -> &SftpSession {
+        &self.sftp
+    }
+
+    pub async fn close(&self) {
+        let _ = self.sftp.close().await;
         let _ = self
             .client
             .disconnect(Disconnect::ByApplication, "", "English")
