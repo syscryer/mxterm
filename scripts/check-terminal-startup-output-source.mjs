@@ -76,6 +76,48 @@ try {
     ].join("\n"),
   );
 
+  const leadingPromptJoinedToBanner = [
+    "root@lululemon-virtual-machine:~# Welcome to Ubuntu 22.04.4 LTS (GNU/Linux 6.8.0-94-generic x86_64)",
+    "",
+    "* Documentation:  https://help.ubuntu.com",
+    "Last login: Thu Jun 18 00:19:00 2026 from 192.168.0.225",
+    "root@lululemon-virtual-machine:~# ",
+  ].join("\n");
+
+  assert.equal(
+    normalizeStartupOutput(leadingPromptJoinedToBanner),
+    [
+      "Welcome to Ubuntu 22.04.4 LTS (GNU/Linux 6.8.0-94-generic x86_64)",
+      "",
+      "* Documentation:  https://help.ubuntu.com",
+      "Last login: Thu Jun 18 00:19:00 2026 from 192.168.0.225",
+      "root@lululemon-virtual-machine:~# ",
+    ].join("\n"),
+  );
+
+  const repeatedLoginBanner = [
+    "Last login: Thu Jun 18 00:51:59 2026 from 219.139.229.36",
+    "",
+    "Welcome to Alibaba Cloud Elastic Compute Service !",
+    "",
+    "Last login: Thu Jun 18 00:51:59 2026 from 219.139.229.36",
+    "",
+    "Welcome to Alibaba Cloud Elastic Compute Service !",
+    "",
+    "[root@iZ6wed7x33nsqpktcf5yjZ ~]# ",
+  ].join("\n");
+
+  assert.equal(
+    normalizeStartupOutput(repeatedLoginBanner),
+    [
+      "Last login: Thu Jun 18 00:51:59 2026 from 219.139.229.36",
+      "",
+      "Welcome to Alibaba Cloud Elastic Compute Service !",
+      "",
+      "[root@iZ6wed7x33nsqpktcf5yjZ ~]# ",
+    ].join("\n"),
+  );
+
   const terminalPanelSource = readFileSync(
     "src/features/terminal/TerminalPanel.tsx",
     "utf8",

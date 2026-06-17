@@ -428,6 +428,22 @@ pub fn build_remote_extract_archive_command(
     )
 }
 
+pub fn build_remote_archive_download_command(path: &str) -> String {
+    let quoted_path = quote_posix_shell(path);
+    let tmp_suffix = timestamp_millis();
+    format!(
+        "path={quoted_path}; \
+         [ -d \"$path\" ] || {{ printf '%s\\n' \"not a directory: $path\" >&2; exit 2; }}; \
+         case \"$path\" in */*) parent=${{path%/*}}; [ -z \"$parent\" ] && parent=/ ;; *) parent=. ;; esac; \
+         name=${{path##*/}}; \
+         tmp=\"${{TMPDIR:-/tmp}}/.mxterm-download-{tmp_suffix}.$.tar.gz\"; \
+         cleanup() {{ rm -f \"$tmp\"; }}; trap cleanup INT TERM HUP; \
+         tar -czf \"$tmp\" -C \"$parent\" \"$name\" || {{ cleanup; exit 3; }}; \
+         cat \"$tmp\" || {{ cleanup; exit 4; }}; \
+         cleanup; trap - INT TERM HUP"
+    )
+}
+
 pub fn parse_remote_file_metadata(output: &[u8]) -> Option<RemoteFileMetadata> {
     let mut fields = output.split(|byte| *byte == 0);
     let path = fields.next()?;
@@ -1347,6 +1363,49 @@ impl RemoteFileManager {
         Ok(output.stdout)
     }
 
+    /// Download a remote directory as a single in-memory `tar.gz` archive.
+    /// Requires the remote host to provide `tar`. Used by the optional
+    /// compressed directory-download path; callers should probe
+    /// [`remote_tar_available`] first and fall back to SFTP when unavailable.
+    pub async fn download_archive(
+        &self,
+        app: &AppHandle,
+        profile: ResolvedSshConfig,
+        path: &str,
+        progress: Option<ExecProgressCallback>,
+    ) -> Result<Vec<u8>, AppError> {
+        let config = RemoteFileSessionConfig::from_config(profile);
+        let output = self
+            .exec_with_reconnect_stdout_progress(
+                app,
+                &config,
+                &build_remote_archive_download_command(path),
+                progress,
+            )
+            .await?;
+        if output.exit_status != Some(0) {
+            return Err(remote_file_command_error(
+                "remote_file_archive_download_failed",
+                "远程目录归档下载失败。",
+                &output,
+            ));
+        }
+        Ok(output.stdout)
+    }
+
+    /// Probe whether the remote host can run `tar`. Returns `false` on any
+    /// exec error so callers can silently fall back to SFTP transfer.
+    pub async fn remote_tar_available(&self, app: &AppHandle, profile: ResolvedSshConfig) -> bool {
+        let config = RemoteFileSessionConfig::from_config(profile);
+        let Ok(output) = self
+            .exec_with_reconnect(app, &config, "command -v tar >/dev/null 2>&1")
+            .await
+        else {
+            return false;
+        };
+        output.exit_status == Some(0)
+    }
+
     async fn metadata(
         &self,
         app: &AppHandle,
@@ -2041,18 +2100,27 @@ async fn download_sftp_file(
     let mut buffer = vec![0u8; SFTP_TRANSFER_CHUNK_BYTES];
     let mut loaded = resume_offset;
     progress(base_loaded + loaded, Some(base_loaded + total_bytes));
-    loop {
+    while loaded < total_bytes {
         ensure_not_cancelled(cancel)?;
-        let read = remote_file.read(&mut buffer).await.map_err(|error| {
-            AppError::new(
-                "remote_file_download_failed",
-                "远程文件下载失败。",
-                error,
-                true,
-            )
-        })?;
+        let read_len = next_transfer_read_len(loaded, total_bytes, buffer.len());
+        let read = remote_file
+            .read(&mut buffer[..read_len])
+            .await
+            .map_err(|error| {
+                AppError::new(
+                    "remote_file_download_failed",
+                    "远程文件下载失败。",
+                    error,
+                    true,
+                )
+            })?;
         if read == 0 {
-            break;
+            return Err(AppError::new(
+                "remote_file_download_failed",
+                "远程文件提前结束。",
+                format!("expected {total_bytes} bytes, received {loaded} bytes"),
+                true,
+            ));
         }
         local_file
             .write_all(&buffer[..read])
@@ -2067,6 +2135,14 @@ async fn download_sftp_file(
             })?;
         loaded += read as u64;
         progress(base_loaded + loaded, Some(base_loaded + total_bytes));
+    }
+    if loaded != total_bytes {
+        return Err(AppError::new(
+            "remote_file_download_failed",
+            "远程文件下载不完整。",
+            format!("expected {total_bytes} bytes, received {loaded} bytes"),
+            true,
+        ));
     }
     local_file.flush().await.map_err(|error| {
         AppError::new(
@@ -2389,15 +2465,20 @@ fn resume_offset_for_partial(partial_bytes: u64, total_bytes: u64) -> u64 {
     }
 }
 
+fn next_transfer_read_len(loaded_bytes: u64, total_bytes: u64, buffer_len: usize) -> usize {
+    let remaining = total_bytes.saturating_sub(loaded_bytes);
+    remaining.min(buffer_len as u64) as usize
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
         build_remote_list_command, build_remote_path_check_command, build_remote_write_command,
         join_remote_relative_path, local_download_part_path, local_relative_path,
-        local_upload_relative_path, looks_like_binary, parse_remote_file_metadata,
-        parse_remote_list_output, parse_remote_path_check_output, quote_posix_shell,
-        remote_parent_path, remote_transfer_part_path, resume_offset_for_partial,
-        split_remote_name, REMOTE_FILE_EDIT_LIMIT_BYTES,
+        local_upload_relative_path, looks_like_binary, next_transfer_read_len,
+        parse_remote_file_metadata, parse_remote_list_output, parse_remote_path_check_output,
+        quote_posix_shell, remote_parent_path, remote_transfer_part_path,
+        resume_offset_for_partial, split_remote_name, REMOTE_FILE_EDIT_LIMIT_BYTES,
     };
     use std::path::Path;
 
@@ -2544,6 +2625,15 @@ mod tests {
         assert_eq!(resume_offset_for_partial(512, 1024), 512);
         assert_eq!(resume_offset_for_partial(1024, 1024), 1024);
         assert_eq!(resume_offset_for_partial(2048, 1024), 0);
+    }
+
+    #[test]
+    fn next_transfer_read_len_stops_at_expected_total() {
+        assert_eq!(next_transfer_read_len(0, 10, 64), 10);
+        assert_eq!(next_transfer_read_len(7, 10, 64), 3);
+        assert_eq!(next_transfer_read_len(10, 10, 64), 0);
+        assert_eq!(next_transfer_read_len(12, 10, 64), 0);
+        assert_eq!(next_transfer_read_len(0, 128, 32), 32);
     }
 
     #[test]

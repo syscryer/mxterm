@@ -132,7 +132,7 @@ type HostKeyInfo = {
 - `TerminalPanel` receives an already-created `initialSessionId`; it must not start a second SSH connection for that tab.
 - During terminal handoff, match terminal output/state events by `request_id` as well as by `session_id`; shell prompts can arrive before the frontend receives the returned session id.
 - Keep the terminal handoff warmup listener alive briefly after replacing the connecting tab, and make `TerminalPanel` consume appended `initialOutput` bytes. Otherwise the remote prompt can land between `terminalConnect` resolving and the xterm listener mounting, leaving a connected but visually blank terminal while remote file browsing works.
-- `TerminalPanel` should buffer startup handoff output briefly and write it as one ordered batch with early live events. If the combined startup batch contains a duplicated leading shell prompt before a login banner / motd and the same prompt appears again at the end, remove only that leading duplicate before writing to xterm. If warmup and live capture produce adjacent duplicate prompts such as `[root@host ~]# [root@host ~]#`, collapse them to a single prompt before writing.
+- `TerminalPanel` should buffer startup handoff output briefly and write it as one ordered batch with early live events. If the combined startup batch contains a duplicated leading shell prompt before a login banner / motd and the same prompt appears again at the end, remove only that leading duplicate before writing to xterm. If the prompt is joined to the first banner line, such as `root@host:~# Welcome to ...`, strip only the prompt prefix and keep the banner text. If warmup and live capture the same leading login banner block before the first prompt, keep one copy of that startup banner. If warmup and live capture produce adjacent duplicate prompts such as `[root@host ~]# [root@host ~]#`, collapse them to a single prompt before writing.
 - Do not store terminal session runtime state inside a `ConnectionProfile`. Connection profiles are persistent data; terminal tabs and session ids are runtime state.
 - Do not log passwords, private-key passphrases, or full command payloads.
 
@@ -558,7 +558,7 @@ type RemoteFileTransferProgressEvent = {
 | Legacy or preview progress has no `total_bytes` | Show bytes received and speed, keep an indeterminate progress bar until the command resolves. |
 | Single file upload succeeds with rename | Update the transfer item to the returned `path` and refresh the returned parent directory. |
 | Folder upload succeeds | Show directory upload completion, then refresh the returned parent directory. |
-| Download to local succeeds | Show `local_path` in the transfer panel and offer copy/open/reveal actions. |
+| Download to local succeeds | Show `local_path` in the transfer panel. File downloads offer copy/open/reveal actions; directory downloads offer copy/reveal only, because revealing the folder is clearer than opening it as a generic shell target. |
 | Download returns `skipped: true` | Keep a skipped transfer item instead of treating it as an error. |
 | Running transfer is canceled | Mark the row canceled, clear fake progress/pulse state, and do not show a failure toast for `remote_file_transfer_canceled`. |
 

@@ -518,6 +518,7 @@ RemoteFileUploadLocalArchiveRequest {
     root_name: String,
     local_path: String,
     conflict_policy: Option<String>,
+    compress: bool, // #[serde(default = "default_compress_enabled")]
     keep_archive: bool,
     transfer_id: Option<String>,
 }
@@ -552,6 +553,7 @@ RemoteFileDownloadToLocalRequest {
     group_by_session: bool, // #[serde(default)]
     timestamp_directory: bool, // #[serde(default)]
     keep_archives: bool, // #[serde(default)]
+    compress: bool, // #[serde(default = "default_compress_enabled")], optional tar.gz directory transfer
     conflict_policy: Option<String>,
     transfer_id: Option<String>, // #[serde(default)], enables progress events
 }
@@ -680,14 +682,17 @@ LocalPathMetadataResult {
 - `remote_file_upload_file` is a single-file byte upload. It accepts a conflict policy and returns the final remote path plus optional metadata; skipped uploads return `metadata: None`.
 - `remote_file_upload_local_file` accepts a trusted local file path from the Tauri dialog path or a backend-owned upload temp path from the drag/drop fallback, streams that file through SFTP to `{remote_path}.mxpart`, and renames the part file to the final path only after the upload completes.
 - `remote_file_upload_archive` accepts a legacy frontend-built `tar.gz` archive, uploads it through stdin to a remote temporary archive, extracts it with remote `tar -xzf`, and removes the remote archive unless `keep_archive == true`. Desktop UI should prefer `remote_file_upload_local_archive` so the selected directory path or compressed archive stays in Rust-owned local IO instead of crossing IPC as one `Vec<u8>`.
-- `remote_file_upload_local_archive` accepts either a local `tar.gz` path or a local directory path. Directory paths must be scanned into a local file plan and uploaded through SFTP file-by-file under `{resolved_root}.mxpart`, then renamed to the resolved root only after completion; do not create a tarball for native directory paths.
+- `remote_file_upload_local_archive` accepts either a local `tar.gz` path or a local directory path. For a native directory path the backend chooses between two modes based on the `compress` flag (default `true`) and tar availability: when `compress` is on and both `local_tar_available()` and `remote_tar_available(...)` are true, it packs the directory into a backend-owned `tar.gz` via `create_local_directory_archive` and uploads it through `upload_local_archive` (exec + remote `tar -xzf` extract); otherwise it silently falls back to SFTP file-by-file under `{resolved_root}.mxpart` renamed to the resolved root only after completion. A pre-packed `tar.gz` file path always takes the compressed exec path regardless of `compress`.
 - `local_path_metadata` is a read-only helper for native desktop drops. It canonicalizes a local path and returns whether it is a file, directory, or other local item before the UI chooses the file or archive upload command.
 - Directory upload conflict handling is root-folder level: resolve `target_dir/root_name` using overwrite / skip / rename before creating the SFTP staging directory. Do not remove the old root until the staged SFTP directory has uploaded successfully and is ready to rename.
 - `remote_file_check_download_target` resolves the same system/custom download directory shape as `remote_file_download_to_local`, checks only the final local path with `Path::exists`, and returns the path plus `exists`. It must not contact SSH or create directories/files.
-- `remote_file_download_to_local` resolves the system or custom download root on the Rust side, creates optional session and timestamp subdirectories, writes files directly to disk, and returns the final local path. File and directory downloads must use SFTP and write to `{local_path}.mxpart` before renaming to the final path.
+- `remote_file_download_to_local` resolves the system or custom download root on the Rust side, creates optional session and timestamp subdirectories, writes files directly to disk, and returns the final local path. Single-file downloads always use SFTP and write to `{local_path}.mxpart` before renaming to the final path. Directory downloads choose between compressed and SFTP modes based on the `compress` flag (default `true`) and tar availability.
 - The frontend-owned `session_name` value represents the connection grouping name, not a terminal tab title. Rust should sanitize it as a local path segment and use the fallback segment only when the provided value is blank.
-- Directory download must scan the remote directory over SFTP, create the local directory tree, then download each regular file to its sibling `.mxpart` file with resume support. `keep_archives` is ignored for SFTP directory downloads and `archive_path` should be `None`.
+- Directory download mode selection: when `compress` is on and both `local_tar_extract_available()` and `remote_tar_available(...)` are true, the backend calls `download_archive` (remote `tar -czf` streamed back over exec), writes a temporary or retained `tar.gz`, and extracts it locally via `unpack_remote_directory_archive` (local `tar -xzf`); `keep_archives` controls whether the `tar.gz` is retained and `archive_path` reflects that. On Windows, local extraction must pass `--options=hdrcharset=UTF-8` so Linux-created archives with non-ASCII path segments decode correctly under bsdtar. Otherwise it silently falls back to scanning the remote directory over SFTP, creating the local tree, and downloading each regular file to its sibling `.mxpart` with resume support; in SFTP mode `keep_archives` is ignored and `archive_path` is `None`. The compressed path is not resumable mid-stream; only the pre-flight tar-availability probe triggers fallback, not a mid-transfer failure.
+- Compressed directory transfer (upload pack + remote extract, or remote pack + local extract) reintroduces a `tar` dependency on both ends. Before choosing the compressed path the backend must probe `local_tar_available()` and `remote_tar_available(...)`; if either is unavailable the command silently falls back to SFTP file-by-file so the user is never blocked by a missing `tar`. The compressed stream is not resumable, so fallback happens only at the pre-flight probe, not after a mid-transfer failure.
+- `compress` defaults to `true` (`default_compress_enabled`) to restore the legacy bandwidth-saving experience. The frontend exposes it as a `compressDirectories` setting; single-file transfers ignore it. `keep_archives` / `keep_archive` only take effect on the compressed path.
 - Existing `.mxpart` files are resume candidates only when their byte length is less than or equal to the source total. Oversized parts must be discarded and restarted from byte 0.
+- SFTP single-file download loops must stop when `loaded_bytes == total_bytes` from remote metadata. Do not issue an extra read only to observe EOF: some SFTP servers or client wrappers surface EOF/past-end reads as a status error, which makes a fully downloaded file fail at 100%. If a read returns zero before the expected total, return `remote_file_download_failed` and keep the `.mxpart` file for retry instead of renaming an incomplete file.
 - Local file and directory conflicts use the same overwrite / skip / rename policy as remote transfers. If the frontend sends `ask`, treat it as `rename` to keep behavior non-destructive.
 - Windows path segments for download directories must be sanitized before joining paths. Do not use remote names directly as local path components.
 - `remote_file_delete` with `recursive == true` must refuse to delete `/`; non-recursive delete should not recursively remove directories.
@@ -727,6 +732,10 @@ LocalPathMetadataResult {
 | Archive upload write fails | `remote_file_archive_upload_failed` | true |
 | Remote archive extraction fails | `remote_file_archive_extract_failed` | true |
 | SFTP directory scan or transfer fails | `remote_file_archive_download_failed` / `remote_file_download_failed` / `remote_file_upload_failed` | true |
+| Compressed directory download (remote `tar -czf`) fails | `remote_file_archive_download_failed` | true |
+| Local `tar -xzf` extraction cannot start or fails | `remote_file_download_extract_start_failed` / `remote_file_download_extract_failed` | true |
+| Local extracted root missing or cannot move | `remote_file_download_extract_missing` / `remote_file_download_extract_move_failed` | true |
+| Local `tar -czf` packing for upload fails | `remote_file_upload_archive_start_failed` / `remote_file_upload_archive_failed` | true |
 | System download root cannot resolve | `remote_file_download_root_failed` | true |
 | Local download directory cannot be created | `remote_file_download_create_dir_failed` | true |
 | Local file or `.mxpart` write fails | `remote_file_download_write_failed` | true |
@@ -752,7 +761,7 @@ LocalPathMetadataResult {
 - Unit-test `build_remote_write_command` to assert it creates a temp file, uses `cat > "$tmp"`, moves the temp file to the target, and does not contain literal content.
 - Unit-test `build_remote_path_check_command` and `parse_remote_path_check_output` for missing targets, existing file/directory/symlink targets, quoted paths, and no directory listing/archive work.
 - Unit-test `build_remote_upload_command`, `build_remote_resolve_child_command`, and `build_remote_extract_archive_command` for quoted paths, POSIX shell syntax, tar usage in legacy archive upload, and no embedded file content. Source-check local upload temp helpers and `exec_with_stdin_file_progress` when changing legacy upload plumbing.
-- Unit-test SFTP part-path helpers, resume offset handling, remote relative path joining, local relative path joining, and remote rename parent/name helpers.
+- Unit-test SFTP part-path helpers, resume offset handling, capped SFTP read lengths, remote relative path joining, local relative path joining, and remote rename parent/name helpers.
 - Source-check progress plumbing for `REMOTE_FILE_TRANSFER_PROGRESS`, `RemoteFileTransferProgressEvent`, `ExecProgressCallback`, `SftpProgressCallback`, `remote_sftp_transfer_progress_callback`, `exec_with_stdin_progress`, and `exec_with_stdout_progress`.
 - Unit-test `parse_remote_entry_metadata` and `parse_remote_transfer_path` for NUL-delimited fields and skipped/final path parsing.
 - Unit-test local download helpers for sanitized path segments, rename conflict behavior, skip/overwrite handling, and retained archive naming.

@@ -1,8 +1,10 @@
 use serde::{Deserialize, Serialize};
+use std::ffi::OsString;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::net::{TcpStream, ToSocketAddrs};
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Emitter, Manager, State};
 
@@ -186,6 +188,8 @@ pub struct RemoteFileUploadLocalArchiveRequest {
     pub local_path: String,
     #[serde(default)]
     pub conflict_policy: Option<String>,
+    #[serde(default = "default_compress_enabled")]
+    pub compress: bool,
     #[serde(default)]
     pub keep_archive: bool,
     #[serde(default)]
@@ -250,6 +254,8 @@ pub struct RemoteFileDownloadToLocalRequest {
     pub timestamp_directory: bool,
     #[serde(default)]
     pub keep_archives: bool,
+    #[serde(default = "default_compress_enabled")]
+    pub compress: bool,
     #[serde(default)]
     pub conflict_policy: Option<String>,
     #[serde(default)]
@@ -687,6 +693,48 @@ pub async fn remote_file_upload_local_archive(
             .to_string();
         let root_name =
             require_safe_name(&root_name, "remote_file_archive_root_missing")?.to_string();
+
+        // Compressed path: only when requested and both local & remote tar are
+        // available. Otherwise silently fall back to SFTP file-by-file.
+        let want_compress = request.compress
+            && local_tar_available()
+            && manager.remote_tar_available(&app, profile.clone()).await;
+
+        if want_compress {
+            let archive_path = create_local_directory_archive(&local_path, &root_name)?;
+            let total_bytes = fs::metadata(&archive_path)
+                .map_err(|error| {
+                    AppError::new(
+                        "remote_file_upload_local_metadata_failed",
+                        "本地上传归档信息读取失败。",
+                        error,
+                        true,
+                    )
+                })?
+                .len();
+            let progress = remote_transfer_progress_callback(
+                &app,
+                request.transfer_id.as_deref(),
+                "upload",
+                Some(total_bytes),
+            )
+            .unwrap_or_else(noop_transfer_progress_callback);
+            let result = manager
+                .upload_local_archive(
+                    &app,
+                    profile,
+                    target_dir,
+                    &root_name,
+                    &archive_path,
+                    TransferConflictPolicy::from_request(request.conflict_policy.as_deref()),
+                    request.keep_archive,
+                    progress,
+                )
+                .await;
+            let _ = fs::remove_file(&archive_path);
+            return result;
+        }
+
         let registration = manager
             .register_transfer(request.transfer_id.as_deref())
             .await;
@@ -903,7 +951,7 @@ pub async fn remote_file_download_to_local(
     manager: State<'_, RemoteFileManager>,
     request: RemoteFileDownloadToLocalRequest,
 ) -> Result<RemoteFileDownloadToLocalResult, AppError> {
-    let _ = request.keep_archives;
+    let keep_archives = request.keep_archives;
     let profile = resolve_remote_connection_profile(&app, &request.connection_id)?;
     let path = require_remote_path(&request.path)?;
     let name = remote_path_name(path);
@@ -922,6 +970,81 @@ pub async fn remote_file_download_to_local(
                 name,
                 remote_path: path.to_string(),
                 skipped: true,
+            });
+        }
+
+        // Compressed path: only when requested and both local & remote tar are
+        // available. Otherwise silently fall back to SFTP file-by-file.
+        let want_compress = request.compress
+            && local_tar_extract_available()
+            && manager.remote_tar_available(&app, profile.clone()).await;
+
+        if want_compress {
+            let registration = manager
+                .register_transfer(request.transfer_id.as_deref())
+                .await;
+            let progress = remote_transfer_progress_callback(
+                &app,
+                request.transfer_id.as_deref(),
+                "download",
+                None,
+            )
+            .unwrap_or_else(noop_transfer_progress_callback);
+            let content = manager
+                .download_archive(&app, profile, path, Some(progress))
+                .await;
+            registration.finish().await;
+            let content = content?;
+
+            let archive_path = if keep_archives {
+                resolve_local_conflict(
+                    &local_directory.join(format!("{}.tar.gz", sanitize_local_path_segment(&name))),
+                    TransferConflictPolicy::Rename,
+                    true,
+                )?
+                .1
+            } else {
+                std::env::temp_dir().join(format!(
+                    "mxterm-download-{}-{}.tar.gz",
+                    now_millis(),
+                    sanitize_local_path_segment(&name)
+                ))
+            };
+            fs::create_dir_all(&local_directory).map_err(|error| {
+                AppError::new(
+                    "remote_file_download_create_dir_failed",
+                    "本地下载目录创建失败。",
+                    error,
+                    true,
+                )
+            })?;
+            fs::write(&archive_path, &content).map_err(|error| {
+                AppError::new(
+                    "remote_file_download_write_failed",
+                    "本地归档写入失败。",
+                    error,
+                    true,
+                )
+            })?;
+            unpack_remote_directory_archive(
+                &archive_path,
+                &local_directory,
+                &name,
+                &target,
+                policy,
+            )?;
+            if !keep_archives {
+                let _ = fs::remove_file(&archive_path);
+            }
+
+            return Ok(RemoteFileDownloadToLocalResult {
+                archive_path: keep_archives.then(|| archive_path.to_string_lossy().to_string()),
+                directory: true,
+                local_directory: local_directory.to_string_lossy().to_string(),
+                local_path: target.to_string_lossy().to_string(),
+                name,
+                remote_path: path.to_string(),
+                skipped: false,
             });
         }
 
@@ -1397,6 +1520,122 @@ fn remove_local_target(target: &Path) -> Result<(), AppError> {
     })
 }
 
+/// Extract a downloaded directory `tar.gz` archive into the local download
+/// tree. Belongs to the optional compressed directory-download path and
+/// requires a local `tar` executable; callers should probe
+/// [`local_tar_available`] first and fall back to SFTP when unavailable.
+fn unpack_remote_directory_archive(
+    archive_path: &Path,
+    local_directory: &Path,
+    root_name: &str,
+    target: &Path,
+    policy: TransferConflictPolicy,
+) -> Result<(), AppError> {
+    fs::create_dir_all(local_directory).map_err(|error| {
+        AppError::new(
+            "remote_file_download_create_dir_failed",
+            "本地下载目录创建失败。",
+            error,
+            true,
+        )
+    })?;
+    if target.exists() {
+        match policy {
+            TransferConflictPolicy::Skip => return Ok(()),
+            TransferConflictPolicy::Overwrite => remove_local_target(target)?,
+            TransferConflictPolicy::Rename => {}
+        }
+    }
+
+    let tmp_dir = local_directory.join(format!(".mxterm-extract-{}", now_millis()));
+    fs::create_dir_all(&tmp_dir).map_err(|error| {
+        AppError::new(
+            "remote_file_download_extract_dir_failed",
+            "本地解压临时目录创建失败。",
+            error,
+            true,
+        )
+    })?;
+
+    let mut command = Command::new("tar");
+    command.args(local_tar_extract_args(archive_path, &tmp_dir));
+    let output = command.output().map_err(|error| {
+        AppError::new(
+            "remote_file_download_extract_start_failed",
+            "本地 tar 解压启动失败。",
+            error,
+            true,
+        )
+    })?;
+    if !output.status.success() {
+        let detail = if output.stderr.is_empty() {
+            String::from_utf8_lossy(&output.stdout).to_string()
+        } else {
+            String::from_utf8_lossy(&output.stderr).to_string()
+        };
+        let _ = fs::remove_dir_all(&tmp_dir);
+        return Err(AppError::new(
+            "remote_file_download_extract_failed",
+            "本地目录解压失败。",
+            detail.trim(),
+            true,
+        ));
+    }
+
+    let extracted = tmp_dir.join(root_name);
+    if !extracted.exists() {
+        let _ = fs::remove_dir_all(&tmp_dir);
+        return Err(AppError::new(
+            "remote_file_download_extract_missing",
+            "本地解压结果缺少目录根。",
+            root_name,
+            true,
+        ));
+    }
+    fs::rename(&extracted, target)
+        .or_else(|_| {
+            copy_local_directory(&extracted, target)?;
+            fs::remove_dir_all(&extracted)
+        })
+        .map_err(|error| {
+            AppError::new(
+                "remote_file_download_extract_move_failed",
+                "本地解压结果移动失败。",
+                error,
+                true,
+            )
+        })?;
+    let _ = fs::remove_dir_all(&tmp_dir);
+    Ok(())
+}
+
+fn local_tar_extract_args(archive_path: &Path, target_dir: &Path) -> Vec<OsString> {
+    let mut args = Vec::new();
+    #[cfg(windows)]
+    args.push(OsString::from("--options=hdrcharset=UTF-8"));
+    args.push(OsString::from("-xzf"));
+    args.push(archive_path.as_os_str().to_os_string());
+    args.push(OsString::from("-C"));
+    args.push(target_dir.as_os_str().to_os_string());
+    args
+}
+
+fn copy_local_directory(from: &Path, to: &Path) -> std::io::Result<()> {
+    fs::create_dir_all(to)?;
+    for entry in fs::read_dir(from)? {
+        let entry = entry?;
+        let source = entry.path();
+        let target = to.join(entry.file_name());
+        let file_type = entry.file_type()?;
+        if file_type.is_dir() {
+            copy_local_directory(&source, &target)?;
+        } else {
+            fs::copy(&source, &target)?;
+        }
+    }
+    Ok(())
+}
+
 fn split_local_name(name: &str, file_like: bool) -> (String, String) {
     if !file_like {
         return (name.to_string(), String::new());
@@ -1509,6 +1748,99 @@ fn require_upload_temp_path(local_path: &str) -> Result<PathBuf, AppError> {
     Ok(path)
 }
 
+/// Pack a local directory into a backend-owned temporary `tar.gz`. Belongs to
+/// the optional compressed directory-upload path and requires a local `tar`
+/// executable; callers should probe [`local_tar_available`] first.
+fn create_local_directory_archive(directory: &Path, root_name: &str) -> Result<PathBuf, AppError> {
+    let parent = directory.parent().ok_or_else(|| {
+        AppError::new(
+            "remote_file_upload_archive_parent_missing",
+            "本地上传文件夹父目录不可用。",
+            directory.to_string_lossy(),
+            true,
+        )
+    })?;
+    let archive_dir = upload_temp_dir()?;
+    fs::create_dir_all(&archive_dir).map_err(|error| {
+        AppError::new(
+            "remote_file_upload_temp_create_dir_failed",
+            "本地上传临时目录创建失败。",
+            error,
+            true,
+        )
+    })?;
+    let archive_path = archive_dir.join(format!(
+        "{}-{}.tar.gz",
+        now_millis(),
+        sanitize_local_path_segment(root_name)
+    ));
+    let status = Command::new("tar")
+        .arg("-czf")
+        .arg(&archive_path)
+        .arg("-C")
+        .arg(parent)
+        .arg(root_name)
+        .status()
+        .map_err(|error| {
+            AppError::new(
+                "remote_file_upload_archive_start_failed",
+                "本地 tar 打包启动失败。",
+                error,
+                true,
+            )
+        })?;
+    if !status.success() {
+        let _ = fs::remove_file(&archive_path);
+        return Err(AppError::new(
+            "remote_file_upload_archive_failed",
+            "本地 tar.gz 打包失败。",
+            status.to_string(),
+            true,
+        ));
+    }
+    Ok(archive_path)
+}
+
+/// serde default for the `compress` request flag. Defaults to `true` so the
+/// legacy compressed experience is restored unless the caller opts out.
+fn default_compress_enabled() -> bool {
+    true
+}
+
+/// Probe whether a local `tar` executable is available. Used to decide whether
+/// the compressed directory transfer path can run, or must fall back to SFTP.
+fn local_tar_available() -> bool {
+    Command::new("tar")
+        .arg("--version")
+        .output()
+        .map(|output| output.status.success())
+        .unwrap_or(false)
+}
+
+/// Probe whether local `tar` can extract remote archives with UTF-8 path
+/// headers. Windows' bundled bsdtar needs this option for Linux-created
+/// archives that contain non-ASCII path segments.
+fn local_tar_extract_available() -> bool {
+    if !local_tar_available() {
+        return false;
+    }
+
+    #[cfg(windows)]
+    {
+        Command::new("tar")
+            .arg("--options=hdrcharset=UTF-8")
+            .arg("--version")
+            .output()
+            .map(|output| output.status.success())
+            .unwrap_or(false)
+    }
+
+    #[cfg(not(windows))]
+    {
+        true
+    }
+}
+
 fn noop_transfer_progress_callback() -> ExecProgressCallback {
     std::sync::Arc::new(|_| {})
 }
@@ -1595,6 +1927,27 @@ fn remote_sftp_transfer_progress_callback(
             },
         );
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::local_tar_extract_args;
+    use std::ffi::OsString;
+    use std::path::Path;
+
+    #[test]
+    fn remote_files_tar_extract_args_use_utf8_header_on_windows() {
+        let args = local_tar_extract_args(Path::new("archive.tar.gz"), Path::new("target"));
+        let xzf_index = if cfg!(windows) { 1 } else { 0 };
+
+        #[cfg(windows)]
+        assert_eq!(args[0], OsString::from("--options=hdrcharset=UTF-8"));
+
+        assert_eq!(args[xzf_index], OsString::from("-xzf"));
+        assert_eq!(args[xzf_index + 1], OsString::from("archive.tar.gz"));
+        assert_eq!(args[xzf_index + 2], OsString::from("-C"));
+        assert_eq!(args[xzf_index + 3], OsString::from("target"));
+    }
 }
 
 fn window_material_info(id: i32) -> WindowMaterial {

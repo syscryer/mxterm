@@ -331,6 +331,7 @@ export function remoteFileUploadArchive({
 }
 
 export function remoteFileUploadLocalArchive({
+  compress = true,
   connectionId,
   conflictPolicy = "rename",
   keepArchive = false,
@@ -341,6 +342,7 @@ export function remoteFileUploadLocalArchive({
 }: RemoteFileArchiveUploadLocalInput) {
   return invoke<RemoteFileArchiveUploadResult>("remote_file_upload_local_archive", {
     request: {
+      compress,
       connection_id: connectionId,
       conflict_policy: conflictPolicy,
       keep_archive: keepArchive,
@@ -419,6 +421,7 @@ export function remoteFileCheckDownloadTarget({
 }
 
 export function remoteFileDownloadToLocal({
+  compress = true,
   connectionId,
   conflictPolicy = "rename",
   directory = false,
@@ -433,6 +436,7 @@ export function remoteFileDownloadToLocal({
 }: RemoteFileDownloadToLocalInput) {
   return invoke<RemoteFileDownloadToLocalResult>("remote_file_download_to_local", {
     request: {
+      compress,
       connection_id: connectionId,
       conflict_policy: conflictPolicy,
       directory,

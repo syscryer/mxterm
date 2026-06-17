@@ -181,6 +181,15 @@ for (const backendSymbol of [
   "exec_with_stdin_progress",
   "exec_with_stdin_file_progress",
   "exec_with_stdout_progress",
+  "download_archive",
+  "build_remote_archive_download_command",
+  "remote_tar_available",
+  "unpack_remote_directory_archive",
+  "local_tar_extract_args",
+  "copy_local_directory",
+  "create_local_directory_archive",
+  "local_tar_available",
+  "local_tar_extract_available",
 ]) {
   if (
     !remoteFilesRs.includes(backendSymbol) &&
@@ -189,6 +198,10 @@ for (const backendSymbol of [
   ) {
     throw new Error(`remote file backend should include ${backendSymbol}`);
   }
+}
+
+if (!commandsRs.includes("--options=hdrcharset=UTF-8")) {
+  throw new Error("Windows directory archive extraction should force UTF-8 tar headers");
 }
 
 for (const eventNeedle of [
@@ -341,6 +354,10 @@ for (const workspaceNeedle of [
 
 if (/interpolateTransferProgress\(\s*38,\s*92,\s*event\.loaded_bytes/.test(workspaceShell)) {
   throw new Error("SFTP transfer progress should use loaded_bytes / total_bytes directly");
+}
+
+if (!workspaceShell.includes('item.localPath && item.kind !== "directory"')) {
+  throw new Error("Downloaded directories should not show the local open button");
 }
 
 for (const forbiddenNameDialogNeedle of [

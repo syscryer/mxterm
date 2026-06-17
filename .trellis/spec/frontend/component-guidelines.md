@@ -134,9 +134,12 @@ Ant Design, Mantine, or similar libraries just to fix one modal or button.
   paint so `initialOutput` and early live events are written to xterm in one
   ordered batch. If the batch contains a duplicated leading shell prompt before
   a login banner / motd and the same prompt appears again at the end, strip only
-  that leading duplicate prompt line. If the warmup and live listeners capture
-  the same final prompt as adjacent text on one line, collapse the adjacent
-  duplicate prompt before writing to xterm.
+  that leading duplicate prompt line. If the duplicated prompt is joined to the
+  first banner line, such as `root@host:~# Welcome to ...`, strip only the prompt
+  prefix and keep the banner text. If the warmup and live listeners capture the
+  same leading login banner block before the first prompt, keep one copy of that
+  startup banner. If they capture the same final prompt as adjacent text on one
+  line, collapse the adjacent duplicate prompt before writing to xterm.
 - Terminal tab chrome spacing should live outside the xterm host, for example
   as a grid row gap between `.terminal-subtabs` and `.terminal-stack`. Do not
   add decorative padding directly to `.terminal-host` or `.terminal-panel`
