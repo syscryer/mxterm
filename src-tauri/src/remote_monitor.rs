@@ -9,9 +9,11 @@ use tokio::sync::Mutex;
 use crate::app_error::AppError;
 use crate::remote_files::quote_posix_shell;
 use crate::ssh_config::ResolvedSshConfig;
-use crate::terminal::session::ReusableExecSession;
+use crate::terminal::session::{ExecOutput, ReusableExecSession};
 
 const REMOTE_MONITOR_REFRESH_HINT_MS: u64 = 3000;
+const MONITOR_SESSION_IDLE_TIMEOUT_MS: u64 = 30_000;
+const MONITOR_MAX_CACHED_SESSIONS: usize = 1;
 const DEFAULT_PROCESS_LIMIT: u16 = 80;
 const MAX_PROCESS_LIMIT: u16 = 300;
 const DISK_SECTOR_BYTES: f64 = 512.0;
@@ -19,6 +21,20 @@ const DISK_SECTOR_BYTES: f64 = 512.0;
 #[derive(Clone, Default)]
 pub struct RemoteMonitorManager {
     counters: Arc<Mutex<HashMap<String, MonitorCounters>>>,
+    sessions: Arc<Mutex<HashMap<String, RemoteMonitorSessionHandle>>>,
+}
+
+#[derive(Clone)]
+struct RemoteMonitorSessionHandle {
+    signature: String,
+    last_used_ms: Arc<Mutex<u64>>,
+    session: Arc<Mutex<ReusableExecSession>>,
+}
+
+#[derive(Clone, Debug)]
+struct MonitorSessionMeta {
+    signature: String,
+    last_used_ms: u64,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -87,6 +103,7 @@ pub struct RemoteHostOsSummary {
 pub struct RemoteCpuSummary {
     pub model: Option<String>,
     pub sockets: Option<u16>,
+    pub is_virtualized: bool,
     pub physical_cores: Option<u16>,
     pub logical_cores: Option<u16>,
     pub usage_percent: Option<f64>,
@@ -258,10 +275,9 @@ impl RemoteMonitorManager {
     ) -> Result<RemoteMonitorSnapshot, AppError> {
         let connection_id = config.connection_id.clone();
         let command = build_monitor_collect_command(options);
-        let session = ReusableExecSession::connect_resolved(app, &config).await?;
-        let output = session.exec(&command).await;
-        session.close().await;
-        let output = output?;
+        let output = self
+            .exec_with_cached_session(app, &config, &command)
+            .await?;
 
         if output.exit_status != Some(0) {
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -294,10 +310,9 @@ impl RemoteMonitorManager {
         signal: RemoteProcessSignal,
     ) -> Result<RemoteProcessActionResult, AppError> {
         let command = build_process_signal_command(pid, signal)?;
-        let session = ReusableExecSession::connect_resolved(app, &config).await?;
-        let output = session.exec(&command).await;
-        session.close().await;
-        let output = output?;
+        let output = self
+            .exec_with_cached_session(app, &config, &command)
+            .await?;
 
         if output.exit_status != Some(0) {
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -322,6 +337,176 @@ impl RemoteMonitorManager {
             message: "进程信号已发送。".to_string(),
         })
     }
+
+    async fn exec_with_cached_session(
+        &self,
+        app: &AppHandle,
+        config: &ResolvedSshConfig,
+        command: &str,
+    ) -> Result<ExecOutput, AppError> {
+        let handle = self.session_handle(app, config).await?;
+        self.mark_handle_used(&handle).await;
+        let result = {
+            let session = handle.session.lock().await;
+            session.exec(command).await
+        };
+
+        match result {
+            Ok(output) => {
+                self.mark_handle_used(&handle).await;
+                Ok(output)
+            }
+            Err(error) => {
+                self.invalidate_handle(&config.connection_id, &handle).await;
+                Err(error)
+            }
+        }
+    }
+
+    async fn session_handle(
+        &self,
+        app: &AppHandle,
+        config: &ResolvedSshConfig,
+    ) -> Result<RemoteMonitorSessionHandle, AppError> {
+        let now_ms = now_millis();
+        let connection_id = config.connection_id.as_str();
+        let signature = config.signature();
+
+        self.prune_idle_sessions(now_ms).await;
+
+        if let Some(existing) = self.lookup_handle(connection_id).await {
+            let last_used_ms = *existing.last_used_ms.lock().await;
+            let meta = MonitorSessionMeta {
+                signature: existing.signature.clone(),
+                last_used_ms,
+            };
+            if can_reuse_monitor_session(&meta, &signature, now_ms) {
+                return Ok(existing);
+            }
+            self.invalidate_handle(connection_id, &existing).await;
+        }
+
+        self.connect_and_store(app, config, signature, now_ms).await
+    }
+
+    async fn lookup_handle(&self, connection_id: &str) -> Option<RemoteMonitorSessionHandle> {
+        self.sessions.lock().await.get(connection_id).cloned()
+    }
+
+    async fn connect_and_store(
+        &self,
+        app: &AppHandle,
+        config: &ResolvedSshConfig,
+        signature: String,
+        now_ms: u64,
+    ) -> Result<RemoteMonitorSessionHandle, AppError> {
+        self.close_other_sessions(&config.connection_id).await;
+
+        let new_handle = RemoteMonitorSessionHandle {
+            signature,
+            last_used_ms: Arc::new(Mutex::new(now_ms)),
+            session: Arc::new(Mutex::new(
+                ReusableExecSession::connect_resolved(app, config).await?,
+            )),
+        };
+
+        let replaced = {
+            let mut sessions = self.sessions.lock().await;
+            if let Some(existing) = sessions.get(&config.connection_id).cloned() {
+                if existing.signature == new_handle.signature {
+                    existing
+                } else {
+                    sessions.insert(config.connection_id.clone(), new_handle.clone());
+                    drop(sessions);
+                    self.close_handle(existing).await;
+                    return Ok(new_handle);
+                }
+            } else {
+                sessions.insert(config.connection_id.clone(), new_handle.clone());
+                return Ok(new_handle);
+            }
+        };
+
+        self.close_handle(new_handle).await;
+        Ok(replaced)
+    }
+
+    async fn prune_idle_sessions(&self, now_ms: u64) {
+        let handles = {
+            let sessions = self.sessions.lock().await;
+            sessions
+                .iter()
+                .map(|(connection_id, handle)| (connection_id.clone(), handle.clone()))
+                .collect::<Vec<_>>()
+        };
+
+        for (connection_id, handle) in handles {
+            let last_used_ms = *handle.last_used_ms.lock().await;
+            let meta = MonitorSessionMeta {
+                signature: handle.signature.clone(),
+                last_used_ms,
+            };
+            if !can_reuse_monitor_session(&meta, &handle.signature, now_ms) {
+                self.invalidate_handle(&connection_id, &handle).await;
+            }
+        }
+    }
+
+    async fn close_other_sessions(&self, active_connection_id: &str) {
+        let stale = {
+            let mut sessions = self.sessions.lock().await;
+            if sessions.len() < MONITOR_MAX_CACHED_SESSIONS {
+                Vec::new()
+            } else {
+                let stale_ids = sessions
+                    .keys()
+                    .filter(|connection_id| connection_id.as_str() != active_connection_id)
+                    .cloned()
+                    .collect::<Vec<_>>();
+                stale_ids
+                    .into_iter()
+                    .filter_map(|connection_id| sessions.remove(&connection_id))
+                    .collect::<Vec<_>>()
+            }
+        };
+
+        for handle in stale {
+            self.close_handle(handle).await;
+        }
+    }
+
+    async fn invalidate_handle(&self, connection_id: &str, handle: &RemoteMonitorSessionHandle) {
+        let removed = {
+            let mut sessions = self.sessions.lock().await;
+            if let Some(current) = sessions.get(connection_id) {
+                if Arc::ptr_eq(&current.session, &handle.session) {
+                    sessions.remove(connection_id)
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        };
+
+        if let Some(stale) = removed {
+            self.close_handle(stale).await;
+        }
+    }
+
+    async fn close_handle(&self, handle: RemoteMonitorSessionHandle) {
+        let session = handle.session.lock().await;
+        session.close().await;
+    }
+
+    async fn mark_handle_used(&self, handle: &RemoteMonitorSessionHandle) {
+        *handle.last_used_ms.lock().await = now_millis();
+    }
+}
+
+fn can_reuse_monitor_session(meta: &MonitorSessionMeta, signature: &str, now_ms: u64) -> bool {
+    meta.signature == signature
+        && now_ms.saturating_sub(meta.last_used_ms) <= MONITOR_SESSION_IDLE_TIMEOUT_MS
 }
 
 pub fn validate_process_pid(pid: u32) -> Result<(), AppError> {
@@ -635,10 +820,15 @@ fn parse_cpu_summary(
         });
     let sockets = parse_u16(lscpu_fields.get("Socket(s)").map(String::as_str));
     let cores_per_socket = parse_u16(lscpu_fields.get("Core(s) per socket").map(String::as_str));
-    let physical_cores = sockets
-        .zip(cores_per_socket)
-        .map(|(sockets, cores)| sockets.saturating_mul(cores))
-        .or_else(|| parse_u16(cpuinfo_fields.first_value("cpu cores")));
+    let is_virtualized = is_virtualized_lscpu(&lscpu_fields);
+    let physical_cores = if is_virtualized {
+        None
+    } else {
+        sockets
+            .zip(cores_per_socket)
+            .map(|(sockets, cores)| sockets.saturating_mul(cores))
+            .or_else(|| parse_u16(cpuinfo_fields.first_value("cpu cores")))
+    };
 
     let mut core_ids = BTreeSet::new();
     if let Some(current) = current {
@@ -672,6 +862,7 @@ fn parse_cpu_summary(
             .or_else(|| cpuinfo_fields.first_value("Hardware").map(str::to_string))
             .or_else(|| cpuinfo_fields.first_value("Processor").map(str::to_string)),
         sockets,
+        is_virtualized,
         physical_cores,
         logical_cores,
         usage_percent: current
@@ -709,10 +900,18 @@ fn parse_memory_summary(section: Option<&String>) -> RemoteMemorySummary {
     let free = values.get("MemFree").copied();
     let buffers = values.get("Buffers").copied();
     let cached = values.get("Cached").copied();
+    let reclaimable = values.get("SReclaimable").copied();
+    let shmem = values.get("Shmem").copied();
+    let buff_cache = cached.map(|cached| {
+        cached
+            .saturating_add(buffers.unwrap_or(0))
+            .saturating_add(reclaimable.unwrap_or(0))
+            .saturating_sub(shmem.unwrap_or(0))
+    });
     let available = values
         .get("MemAvailable")
         .copied()
-        .or_else(|| Some(free.unwrap_or(0) + buffers.unwrap_or(0) + cached.unwrap_or(0)))
+        .or_else(|| Some(free.unwrap_or(0) + buff_cache.unwrap_or(0)))
         .unwrap_or(0);
     let used = total.saturating_sub(available);
     let swap_total = values.get("SwapTotal").copied();
@@ -723,7 +922,7 @@ fn parse_memory_summary(section: Option<&String>) -> RemoteMemorySummary {
         used_bytes: used,
         available_bytes: available,
         free_bytes: free,
-        cached_bytes: cached,
+        cached_bytes: buff_cache,
         buffers_bytes: buffers,
         swap_total_bytes: swap_total,
         swap_used_bytes: swap_total
@@ -1129,9 +1328,14 @@ fn parse_disk_devices(section: &str) -> Vec<RemoteDiskDevice> {
         .filter_map(|line| {
             let fields = parse_lsblk_pairs(line);
             let name = fields.get("NAME")?.to_string();
+            let kind = disk_kind_from_str(fields.get("TYPE").map(String::as_str));
+            if !is_monitor_storage_device(&kind, &name) {
+                return None;
+            }
+
             Some(RemoteDiskDevice {
                 name,
-                kind: disk_kind_from_str(fields.get("TYPE").map(String::as_str)),
+                kind,
                 size_bytes: fields
                     .get("SIZE")
                     .and_then(|value| value.parse::<u64>().ok()),
@@ -1387,6 +1591,24 @@ fn parse_colon_fields(section: &str) -> HashMap<String, String> {
     values
 }
 
+fn is_virtualized_lscpu(fields: &HashMap<String, String>) -> bool {
+    has_non_empty_lscpu_field(fields, "Hypervisor vendor")
+        || fields
+            .get("Virtualization type")
+            .map(|value| {
+                let value = value.trim();
+                !value.is_empty() && !value.eq_ignore_ascii_case("none")
+            })
+            .unwrap_or(false)
+}
+
+fn has_non_empty_lscpu_field(fields: &HashMap<String, String>, key: &str) -> bool {
+    fields
+        .get(key)
+        .map(|value| !value.trim().is_empty())
+        .unwrap_or(false)
+}
+
 fn parse_repeated_colon_fields(section: &str) -> HashMap<String, Vec<String>> {
     let mut values = HashMap::<String, Vec<String>>::new();
     for line in section.lines() {
@@ -1526,6 +1748,21 @@ fn disk_kind_from_str(value: Option<&str>) -> RemoteDiskDeviceKind {
     }
 }
 
+fn is_monitor_storage_device(kind: &RemoteDiskDeviceKind, name: &str) -> bool {
+    match kind {
+        RemoteDiskDeviceKind::Disk | RemoteDiskDeviceKind::Raid => !is_pseudo_disk_name(name),
+        RemoteDiskDeviceKind::Part
+        | RemoteDiskDeviceKind::Lvm
+        | RemoteDiskDeviceKind::Rom
+        | RemoteDiskDeviceKind::Loop
+        | RemoteDiskDeviceKind::Other => false,
+    }
+}
+
+fn is_pseudo_disk_name(name: &str) -> bool {
+    name.starts_with("zram") || name.starts_with("ram") || name.starts_with("fd")
+}
+
 fn is_pseudo_mount(filesystem: &str, mount_point: &str) -> bool {
     matches!(
         filesystem,
@@ -1584,6 +1821,30 @@ mod tests {
     };
 
     #[test]
+    fn monitor_session_cache_reuses_only_matching_active_signature() {
+        let meta = super::MonitorSessionMeta {
+            signature: "host-a|user-a".to_string(),
+            last_used_ms: 1_000,
+        };
+
+        assert!(super::can_reuse_monitor_session(
+            &meta,
+            "host-a|user-a",
+            5_000
+        ));
+        assert!(!super::can_reuse_monitor_session(
+            &meta,
+            "host-b|user-a",
+            5_000
+        ));
+        assert!(!super::can_reuse_monitor_session(
+            &meta,
+            "host-a|user-a",
+            40_001
+        ));
+    }
+
+    #[test]
     fn process_signal_command_uses_fixed_signal_and_numeric_pid() {
         assert_eq!(
             build_process_signal_command(4242, RemoteProcessSignal::Term).unwrap(),
@@ -1638,6 +1899,7 @@ mod tests {
             Some("Intel(R) Xeon(R) Gold 6338N CPU @ 2.20GHz")
         );
         assert_eq!(snapshot.cpu.logical_cores, Some(2));
+        assert!(!snapshot.cpu.is_virtualized);
         assert_eq!(snapshot.cpu.cores.len(), 2);
         assert_eq!(snapshot.cpu.usage_percent, None);
         assert_eq!(snapshot.cpu.current_frequency_mhz, Some(2200.0));
@@ -1645,13 +1907,27 @@ mod tests {
         assert_eq!(snapshot.cpu.max_frequency_mhz, Some(3500.0));
         assert_eq!(snapshot.cpu.temperature_celsius, Some(45.0));
         assert_eq!(snapshot.memory.total_bytes, 16_384 * 1024);
+        assert_eq!(snapshot.memory.used_bytes, 8_384 * 1024);
         assert_eq!(snapshot.memory.available_bytes, 8_000 * 1024);
+        assert_eq!(snapshot.memory.free_bytes, Some(4_000 * 1024));
+        assert_eq!(snapshot.memory.buffers_bytes, Some(500 * 1024));
+        assert_eq!(snapshot.memory.cached_bytes, Some(4_400 * 1024));
+        assert_eq!(snapshot.memory.swap_total_bytes, Some(2_048 * 1024));
+        assert_eq!(snapshot.memory.swap_used_bytes, Some(1_024 * 1024));
         assert_eq!(snapshot.gpus.len(), 2);
         assert_eq!(snapshot.gpus[0].name, "NVIDIA H200 141GB HBM3");
         assert_eq!(snapshot.gpus[1].temperature_celsius, None);
         assert_eq!(snapshot.disks.mounts.len(), 2);
         assert_eq!(snapshot.disks.mounts[0].mount_point, "/");
-        assert_eq!(snapshot.disks.devices[0].name, "nvme0n1");
+        assert_eq!(
+            snapshot
+                .disks
+                .devices
+                .iter()
+                .map(|device| device.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["nvme0n1"]
+        );
         assert_eq!(
             snapshot
                 .network
@@ -1675,6 +1951,24 @@ mod tests {
         assert!(counters.cpu.is_some());
         assert!(counters.disks.contains_key("nvme0n1"));
         assert!(counters.networks.contains_key("eno1"));
+    }
+
+    #[test]
+    fn parse_monitor_snapshot_output_marks_virtualized_cpu_topology() {
+        let (snapshot, _) = parse_monitor_snapshot_output(
+            fixture_virtual_cpu_topology_output(),
+            RemoteMonitorCollectionOptions {
+                include_processes: false,
+                process_limit: None,
+            },
+            None,
+            10_000,
+        );
+
+        assert!(snapshot.cpu.is_virtualized);
+        assert_eq!(snapshot.cpu.logical_cores, Some(8));
+        assert_eq!(snapshot.cpu.physical_cores, None);
+        assert_eq!(snapshot.cpu.cores.len(), 8);
     }
 
     #[test]
@@ -1765,6 +2059,8 @@ MemFree:         4000 kB
 MemAvailable:    8000 kB
 Buffers:          500 kB
 Cached:          3500 kB
+SReclaimable:     700 kB
+Shmem:            300 kB
 SwapTotal:       2048 kB
 SwapFree:        1024 kB
 MXEND	meminfo
@@ -1781,6 +2077,10 @@ MXEND	df
 MXBEGIN	lsblk
 NAME="nvme0n1" TYPE="disk" SIZE="1000204886016" MODEL="Samsung SSD" TRAN="nvme" MOUNTPOINTS=""
 NAME="nvme0n1p2" TYPE="part" SIZE="999000000000" MODEL="" TRAN="" MOUNTPOINTS="/"
+NAME="loop0" TYPE="loop" SIZE="67108864" MODEL="" TRAN="" MOUNTPOINTS="/snap/core20/2015"
+NAME="sr0" TYPE="rom" SIZE="1073741312" MODEL="Virtual DVD" TRAN="sata" MOUNTPOINTS=""
+NAME="ubuntu--vg-root" TYPE="lvm" SIZE="998000000000" MODEL="" TRAN="" MOUNTPOINTS="/"
+NAME="zram0" TYPE="disk" SIZE="4294967296" MODEL="" TRAN="" MOUNTPOINTS="[SWAP]"
 MXEND	lsblk
 MXBEGIN	diskstats
 259 0 nvme0n1 10 0 1000 0 20 0 2000 0 0 300 0
@@ -1838,6 +2138,30 @@ Inter-|   Receive                                                |  Transmit
  face |bytes    packets errs drop fifo frame compressed multicast|bytes    packets errs drop fifo colls carrier compressed
  eno1: 104096 1 0 0 0 0 0 0 208192 1 0 0 0 0 0 0
 MXEND	net_dev
+"#
+    }
+
+    fn fixture_virtual_cpu_topology_output() -> &'static [u8] {
+        br#"MXBEGIN	cpu_stat
+cpu  100 0 100 800 0 0 0 0 0 0
+cpu0 10 0 10 80 0 0 0 0 0 0
+cpu1 10 0 10 80 0 0 0 0 0 0
+cpu2 10 0 10 80 0 0 0 0 0 0
+cpu3 10 0 10 80 0 0 0 0 0 0
+cpu4 10 0 10 80 0 0 0 0 0 0
+cpu5 10 0 10 80 0 0 0 0 0 0
+cpu6 10 0 10 80 0 0 0 0 0 0
+cpu7 10 0 10 80 0 0 0 0 0 0
+MXEND	cpu_stat
+MXBEGIN	lscpu
+CPU(s):                          8
+Socket(s):                       1
+Core(s) per socket:              1
+Thread(s) per core:              8
+Hypervisor vendor:               KVM
+Virtualization type:             full
+Model name:                      Intel(R) Xeon(R) CPU E5-2695 v2 @ 2.40GHz
+MXEND	lscpu
 "#
     }
 }

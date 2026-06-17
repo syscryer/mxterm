@@ -48,6 +48,11 @@ import {
   useRemoteMonitor,
   type MonitorPanelView,
 } from "./useRemoteMonitor";
+import {
+  formatCoreShape,
+  formatCpuTopologyBadge,
+  formatLogicalCpuCount,
+} from "./monitorFormatters";
 import "./monitor.css";
 
 interface MonitorPanelProps {
@@ -285,11 +290,11 @@ function MonitorStatusView({
 }
 
 function CpuCard({ cpu }: { cpu: RemoteCpuSummary }) {
-  const coreCount = cpu.cores.length || cpu.logical_cores || 0;
+  const logicalCount = cpu.logical_cores || cpu.cores.length || 0;
 
   return (
     <MonitorCard
-      badge={coreCount ? `${coreCount.toString()} 核心` : undefined}
+      badge={formatCpuTopologyBadge(cpu)}
       errors={cpu.errors}
       icon={<Cpu className="ui-icon" aria-hidden="true" />}
       title="CPU"
@@ -318,8 +323,8 @@ function CpuCard({ cpu }: { cpu: RemoteCpuSummary }) {
         ) : null}
       </div>
       <div className="monitor-core-list-head">
-        <span>全部核心</span>
-        <span>{coreCount > 10 ? "内部滚动" : "实时占用"}</span>
+        <span>逻辑线程</span>
+        <span>{logicalCount ? `${formatLogicalCpuCount(cpu)} 实时占用` : "实时占用"}</span>
       </div>
       <div className="monitor-core-list-scroll">
         <div className="monitor-core-list">
@@ -383,17 +388,17 @@ function MemoryCard({ memory }: { memory: RemoteMemorySummary }) {
       <div className="monitor-donut-wrap monitor-memory-usage">
         <Donut percent={usedPercent} label={`${usedPercent.toFixed(0)}%`} />
         <div className="monitor-legend">
-          <LegendRow label="已用" value={formatBytes(memory.used_bytes)} color="var(--mx-primary)" />
+          <LegendRow label="已占用" value={formatBytes(memory.used_bytes)} color="var(--mx-primary)" />
           <LegendRow label="可用" value={formatBytes(memory.available_bytes)} color="#16a34a" />
-          <LegendRow label="缓存" value={formatBytes(memory.cached_bytes)} color="#d97706" />
-          {memory.swap_total_bytes ? (
-            <LegendRow
-              label="Swap"
-              value={formatBytePair(memory.swap_used_bytes, memory.swap_total_bytes)}
-              color="#8b5cf6"
-            />
-          ) : null}
+          <LegendRow label="缓存/缓冲" value={formatBytes(memory.cached_bytes)} color="#d97706" />
         </div>
+      </div>
+      <div className="monitor-memory-facts">
+        <MemoryFactRow label="总内存" value={formatBytes(memory.total_bytes)} />
+        <MemoryFactRow
+          label="Swap"
+          value={formatBytePair(memory.swap_used_bytes, memory.swap_total_bytes)}
+        />
       </div>
     </MonitorCard>
   );
@@ -424,7 +429,7 @@ function DiskCard({
           <strong>{formatBytePair(summary.used, summary.total)}</strong>
           <span>{formatPercent(percentOf(summary.used, summary.total), 0)} 已使用</span>
         </div>
-        <span className="monitor-disk-count">{disks.devices.length.toString()} 块设备</span>
+        <span className="monitor-disk-count">{disks.devices.length.toString()} 个存储设备</span>
       </div>
       <div className="monitor-io-grid">
         <MetricTile
@@ -535,7 +540,7 @@ function MonitorHardwareView({ snapshot }: { snapshot: RemoteMonitorSnapshot }) 
       </MonitorCard>
 
       <MonitorCard
-        badge={`${(snapshot.cpu.logical_cores || snapshot.cpu.cores.length).toString()} 线程`}
+        badge={formatLogicalCpuCount(snapshot.cpu)}
         errors={snapshot.cpu.errors}
         icon={<Cpu className="ui-icon" aria-hidden="true" />}
         title="处理器"
@@ -858,8 +863,17 @@ function Donut({ label, percent }: { label: string; percent: number }) {
       </svg>
       <span className="monitor-donut-label">
         <strong>{label}</strong>
-        <small>used</small>
+        <small>占用</small>
       </span>
+    </div>
+  );
+}
+
+function MemoryFactRow({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="monitor-memory-fact-row">
+      <span>{label}</span>
+      <strong>{value}</strong>
     </div>
   );
 }
@@ -1072,13 +1086,6 @@ function processConfirmDescription(target: ProcessActionTarget | null) {
   }
   const signalLabel = target.signal === "kill" ? "SIGKILL" : target.signal === "hup" ? "SIGHUP" : "SIGTERM";
   return `将向 ${target.command} · PID ${target.pid.toString()} 发送 ${signalLabel}。失败时进程行会保留并显示错误。`;
-}
-
-function formatCoreShape(cpu: RemoteCpuSummary) {
-  const physical = cpu.physical_cores || cpu.cores.length || cpu.logical_cores || 0;
-  const logical = cpu.logical_cores || cpu.cores.length || physical;
-  const sockets = cpu.sockets || 1;
-  return `${sockets.toString()} 路 · ${physical.toString()} 核 · ${logical.toString()} 线程`;
 }
 
 function percentOf(used?: number | null, total?: number | null) {

@@ -161,6 +161,7 @@ export type RemoteHostSummary = {
 export type RemoteCpuSummary = {
   model?: string;
   sockets?: number;
+  is_virtualized?: boolean;
   physical_cores?: number;
   logical_cores?: number;
   usage_percent?: number | null;
@@ -321,6 +322,7 @@ MXEND<TAB>cpu_stat
 - `/proc/stat`：总 CPU 与每个 `cpuN` 原始计数。
 - `/proc/loadavg`：1/5/15 分钟负载。
 - `lscpu`：型号、插槽、物理核心、逻辑核心；没有时回退 `/proc/cpuinfo`。
+- `lscpu` 的 `Hypervisor vendor` / `Virtualization type`：判断当前 CPU 拓扑是否来自虚拟化环境。
 - `/sys/devices/system/cpu/cpu*/cpufreq/scaling_cur_freq`：每个核心当前频率，单位 kHz；没有 cpufreq 时回退 `/proc/cpuinfo` 的 `cpu MHz`。
 - `/sys/devices/system/cpu/cpu*/cpufreq/base_frequency`、`cpuinfo_min_freq`、`cpuinfo_max_freq`：基准/最大频率，单位 kHz；没有时回退 `lscpu` 的 `CPU max MHz` / `CPU min MHz`。
 - `/sys/class/thermal/thermal_zone*/temp`、`/sys/class/hwmon/hwmon*/temp*_input`：温度，读取不到则 `temperature_celsius: null`。
@@ -329,6 +331,9 @@ MXEND<TAB>cpu_stat
 
 - CPU 使用率由 Rust 使用前后两次 `/proc/stat` 计数器 delta 计算。
 - `cores` 返回所有逻辑核心；UI 在核心数很多时使用卡片内部轻滚动。
+- UI 展示 CPU 拓扑时必须区分物理核心和逻辑线程；`physical_cores` 缺失时不要把 `logical_cores` 或 `cores.length` 标成物理核心。
+- 虚拟机环境下 `lscpu` 的 socket/core/thread 是虚拟拓扑，不代表真实物理核心；后端设置 `is_virtualized: true`，不返回 `physical_cores`，UI 使用 `vCPU` 口径展示。
+- 对旧 payload 或虚拟化未识别时出现的异常拓扑，例如 `physical_cores: 1` 且 `logical_cores: 8`，UI 不展示 `1 核 / 8 线程`，直接展示 `8 线程`。
 - `current_frequency_mhz` 返回可读核心频率的平均值；每个核心可读时也填入 core item。读取不到时返回 `null`，UI 显示 `N/A` 或隐藏频率子行。
 - `base_frequency_mhz` 与 `max_frequency_mhz` 属于硬件/能力信息；远端不支持 cpufreq 或虚拟机环境缺失时保持 `null`。
 - `temperature_celsius: null` 时 UI 不展示 CPU 温度卡片或 N/A 占位；CPU 卡片只保留使用率、频率和核心列表。
@@ -343,8 +348,9 @@ MXEND<TAB>cpu_stat
 处理：
 
 - `total_bytes = MemTotal`
-- `available_bytes = MemAvailable`，缺失时用 `MemFree + Buffers + Cached` 估算。
-- `used_bytes = total_bytes - available_bytes`
+- `available_bytes = MemAvailable`，缺失时用 `MemFree + buff/cache` 估算。
+- `used_bytes = total_bytes - available_bytes`，对应面板里的“已占用/不可用”口径，不等同于 `free` 的 `used` 列。
+- `cached_bytes` 按 Linux `free` 的 `buff/cache` 语义尽量计算为 `Buffers + Cached + SReclaimable - Shmem`。
 - swap 来自 `SwapTotal` / `SwapFree`。
 
 ### GPU
@@ -371,7 +377,8 @@ MXEND<TAB>cpu_stat
 处理：
 
 - 状态页按 mount point 展示容量，默认展示前 3 个，很多磁盘时 UI 展开/收起。
-- 硬件页按 physical device 展示磁盘。
+- `disks.devices` 不是 `lsblk` 原始行数；后端只保留用于 UI 统计和硬件页展示的真实存储设备，排除分区、loop、rom、LVM 子卷以及 ram/zram 伪磁盘。
+- 硬件页按 physical storage device 展示磁盘；状态页设备数使用同一份 `disks.devices`，文案标为“存储设备”。
 - `io` 的 `read_bytes_per_sec` / `write_bytes_per_sec` 由 Rust 基于 `/proc/diskstats` delta 计算，默认扇区大小按 512 bytes。
 - 过滤明显的伪挂载和临时挂载，例如 `tmpfs`、`devtmpfs`、`overlay`、`squashfs`、`proc`、`sysfs`、`cgroup*`，但不要在 UI 层用隐藏掩盖解析错误。
 
@@ -445,7 +452,7 @@ MXEND<TAB>cpu_stat
 
 ## UI 映射
 
-- `状态`：host、CPU 型号/总占用/当前频率/所有核心、GPU 多卡、内存圆环、磁盘容量 + 实时读写、物理主网卡 + IP + 上下行。
+- `状态`：host、CPU 型号/总占用/当前频率/所有核心、GPU 多卡、内存圆环 + 总内存/Swap 文本、磁盘容量 + 实时读写、物理主网卡 + IP + 上下行。
 - `硬件`：OS/kernel/arch、CPU 型号与核心数/基准频率/最大频率、GPU 设备列表、物理磁盘列表、主网卡。隐藏序列号、MAC、UUID。
 - `网络`：`network.primary` 作为顶部身份，`traffic` 作为图表和实时速率，虚拟网卡默认不进入主身份。
 - `进程`：`processes.items` 列表、搜索/筛选、详情、结束/强制结束操作；危险操作需要显式确认。

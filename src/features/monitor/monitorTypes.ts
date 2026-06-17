@@ -48,6 +48,7 @@ export interface RemoteHostOsSummary {
 export interface RemoteCpuSummary {
   model?: string | null;
   sockets?: number | null;
+  is_virtualized?: boolean | null;
   physical_cores?: number | null;
   logical_cores?: number | null;
   usage_percent?: number | null;
