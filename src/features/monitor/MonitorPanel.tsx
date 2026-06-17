@@ -66,6 +66,8 @@ interface ProcessActionTarget {
   signal: RemoteProcessSignal;
 }
 
+const pendingMetricValue = "—";
+
 const monitorViews: Array<{
   icon: LucideIcon;
   label: string;
@@ -304,12 +306,14 @@ function CpuCard({ cpu }: { cpu: RemoteCpuSummary }) {
         <MetricTile
           icon={<Gauge className="ui-icon" aria-hidden="true" />}
           label="占用"
+          status={pendingStatus(cpu.usage_percent)}
           value={formatPercent(cpu.usage_percent, 1)}
           sub={formatLoadAvg(cpu.load_avg)}
         />
         <MetricTile
           icon={<Zap className="ui-icon" aria-hidden="true" />}
           label="当前频率"
+          status={pendingPositiveStatus(cpu.current_frequency_mhz, "未获取")}
           value={formatFrequency(cpu.current_frequency_mhz)}
           sub={`基准 ${formatFrequency(cpu.base_frequency_mhz)} · 最大 ${formatFrequency(cpu.max_frequency_mhz)}`}
         />
@@ -328,13 +332,18 @@ function CpuCard({ cpu }: { cpu: RemoteCpuSummary }) {
       </div>
       <div className="monitor-core-list-scroll">
         <div className="monitor-core-list">
-          {cpu.cores.map((core) => (
-            <div className="monitor-core-row" key={core.id}>
-              <span>{core.label || `Core ${core.id.toString()}`}</span>
-              <ProgressBar value={core.usage_percent} />
-              <strong>{formatPercent(core.usage_percent, 1)}</strong>
-            </div>
-          ))}
+          {cpu.cores.map((core) => {
+            const status = pendingStatus(core.usage_percent);
+            return (
+              <div className="monitor-core-row" key={core.id}>
+                <span>{core.label || `Core ${core.id.toString()}`}</span>
+                <ProgressBar value={core.usage_percent} />
+                <strong className={status ? "is-pending" : ""} title={status}>
+                  {formatPercent(core.usage_percent, 1)}
+                </strong>
+              </div>
+            );
+          })}
         </div>
       </div>
     </MonitorCard>
@@ -435,11 +444,13 @@ function DiskCard({
         <MetricTile
           icon={<HardDriveDownload className="ui-icon" aria-hidden="true" />}
           label="读取"
+          status={pendingStatus(summary.read)}
           value={formatByteRate(summary.read)}
         />
         <MetricTile
           icon={<HardDriveUpload className="ui-icon" aria-hidden="true" />}
           label="写入"
+          status={pendingStatus(summary.write)}
           value={formatByteRate(summary.write)}
         />
       </div>
@@ -496,12 +507,14 @@ function NetworkCard({
         <MetricTile
           icon={<Download className="ui-icon" aria-hidden="true" />}
           label="下行"
+          status={pendingStatus(traffic?.rx_bytes_per_sec)}
           value={formatByteRate(traffic?.rx_bytes_per_sec)}
           sub={traffic?.rx_total_bytes != null ? `Total ${formatBytes(traffic.rx_total_bytes)}` : undefined}
         />
         <MetricTile
           icon={<Upload className="ui-icon" aria-hidden="true" />}
           label="上行"
+          status={pendingStatus(traffic?.tx_bytes_per_sec)}
           value={formatByteRate(traffic?.tx_bytes_per_sec)}
           sub={traffic?.tx_total_bytes != null ? `Total ${formatBytes(traffic.tx_total_bytes)}` : undefined}
         />
@@ -734,58 +747,70 @@ function MonitorProcessView({
       </div>
       <div className="monitor-process-list">
         {processes.length ? (
-          processes.map((process) => (
-            <div
-              className={`monitor-process-row ${selectedProcess?.pid === process.pid ? "is-focused" : ""}`}
-              key={process.pid}
-            >
-              <span className="monitor-process-main">
-                <strong className="monitor-process-name">{process.command}</strong>
-                <span className="monitor-process-pid">{formatProcessMeta(process)}</span>
-              </span>
-              <span className={`monitor-process-metric ${(process.cpu_percent || 0) >= 80 ? "hot" : ""}`}>
-                {formatPercent(process.cpu_percent, 1)}
-              </span>
-              <span className="monitor-process-metric">{formatPercent(process.memory_percent, 1)}</span>
-              <span className="monitor-process-actions">
-                <Tooltip label="查看详情">
-                  <button
-                    className="monitor-process-action-button"
-                    type="button"
-                    aria-label={`查看 ${process.command} 详情`}
-                    onClick={() => onProcessSelect(process.pid)}
-                  >
-                    <Info className="ui-icon" aria-hidden="true" />
-                  </button>
-                </Tooltip>
-                <Tooltip label="结束进程">
-                  <button
-                    className="monitor-process-action-button danger"
-                    type="button"
-                    aria-label={`结束 ${process.command}`}
-                    disabled={!snapshot.processes.can_signal || process.pid <= 1}
-                    onClick={() => onProcessSignal(process, "term")}
-                  >
-                    <CircleStop className="ui-icon" aria-hidden="true" />
-                  </button>
-                </Tooltip>
-                <Tooltip label="强制结束">
-                  <button
-                    className="monitor-process-action-button danger"
-                    type="button"
-                    aria-label={`强制结束 ${process.command}`}
-                    disabled={!snapshot.processes.can_signal || process.pid <= 1}
-                    onClick={() => onProcessSignal(process, "kill")}
-                  >
-                    <ShieldAlert className="ui-icon" aria-hidden="true" />
-                  </button>
-                </Tooltip>
-              </span>
-              {processErrors[process.pid] ? (
-                <p className="monitor-process-error">{processErrors[process.pid]}</p>
-              ) : null}
-            </div>
-          ))
+          processes.map((process) => {
+            const cpuStatus = pendingStatus(process.cpu_percent);
+            const memoryStatus = pendingStatus(process.memory_percent);
+            return (
+              <div
+                className={`monitor-process-row ${selectedProcess?.pid === process.pid ? "is-focused" : ""}`}
+                key={process.pid}
+              >
+                <span className="monitor-process-main">
+                  <strong className="monitor-process-name">{process.command}</strong>
+                  <span className="monitor-process-pid">{formatProcessMeta(process)}</span>
+                </span>
+                <span
+                  className={`monitor-process-metric ${cpuStatus ? "is-pending" : (process.cpu_percent || 0) >= 80 ? "hot" : ""}`}
+                  title={cpuStatus}
+                >
+                  {formatPercent(process.cpu_percent, 1)}
+                </span>
+                <span
+                  className={`monitor-process-metric ${memoryStatus ? "is-pending" : ""}`}
+                  title={memoryStatus}
+                >
+                  {formatPercent(process.memory_percent, 1)}
+                </span>
+                <span className="monitor-process-actions">
+                  <Tooltip label="查看详情">
+                    <button
+                      className="monitor-process-action-button"
+                      type="button"
+                      aria-label={`查看 ${process.command} 详情`}
+                      onClick={() => onProcessSelect(process.pid)}
+                    >
+                      <Info className="ui-icon" aria-hidden="true" />
+                    </button>
+                  </Tooltip>
+                  <Tooltip label="结束进程">
+                    <button
+                      className="monitor-process-action-button danger"
+                      type="button"
+                      aria-label={`结束 ${process.command}`}
+                      disabled={!snapshot.processes.can_signal || process.pid <= 1}
+                      onClick={() => onProcessSignal(process, "term")}
+                    >
+                      <CircleStop className="ui-icon" aria-hidden="true" />
+                    </button>
+                  </Tooltip>
+                  <Tooltip label="强制结束">
+                    <button
+                      className="monitor-process-action-button danger"
+                      type="button"
+                      aria-label={`强制结束 ${process.command}`}
+                      disabled={!snapshot.processes.can_signal || process.pid <= 1}
+                      onClick={() => onProcessSignal(process, "kill")}
+                    >
+                      <ShieldAlert className="ui-icon" aria-hidden="true" />
+                    </button>
+                  </Tooltip>
+                </span>
+                {processErrors[process.pid] ? (
+                  <p className="monitor-process-error">{processErrors[process.pid]}</p>
+                ) : null}
+              </div>
+            );
+          })
         ) : (
           <p className="monitor-muted-copy">
             {busyOnly ? "没有匹配的热点进程，可关闭筛选查看全部。" : "没有匹配的进程。"}
@@ -828,13 +853,18 @@ function MetricTile({
   icon,
   label,
   sub,
+  status,
   value,
 }: {
   icon?: ReactNode;
   label: string;
   sub?: string;
+  status?: string;
   value: string;
 }) {
+  const isPending = Boolean(status);
+  const detail = status || sub;
+
   return (
     <div className="monitor-metric-tile">
       <div className="monitor-metric-head">
@@ -843,8 +873,10 @@ function MetricTile({
           <span>{label}</span>
         </span>
       </div>
-      <strong className="monitor-metric-value">{value}</strong>
-      {sub ? <span className="monitor-metric-sub">{sub}</span> : null}
+      <strong className={`monitor-metric-value ${isPending ? "is-pending" : ""}`}>{value}</strong>
+      {detail ? (
+        <span className={`monitor-metric-sub ${isPending ? "is-pending" : ""}`}>{detail}</span>
+      ) : null}
     </div>
   );
 }
@@ -1132,14 +1164,14 @@ function barStyle(value?: number | null) {
 
 function formatPercent(value?: number | null, digits = 0) {
   if (value == null || !Number.isFinite(value)) {
-    return "采样中";
+    return pendingMetricValue;
   }
   return `${value.toFixed(digits)}%`;
 }
 
 function formatFrequency(value?: number | null) {
   if (value == null || !Number.isFinite(value) || value <= 0) {
-    return "未获取";
+    return pendingMetricValue;
   }
   if (value >= 1000) {
     return `${(value / 1000).toFixed(2)} GHz`;
@@ -1149,7 +1181,7 @@ function formatFrequency(value?: number | null) {
 
 function formatBytes(value?: number | null) {
   if (value == null || !Number.isFinite(value)) {
-    return "采样中";
+    return pendingMetricValue;
   }
   const units = ["B", "KB", "MB", "GB", "TB", "PB"];
   let next = Math.max(0, value);
@@ -1164,19 +1196,27 @@ function formatBytes(value?: number | null) {
 
 function formatByteRate(value?: number | null) {
   if (value == null || !Number.isFinite(value)) {
-    return "采样中";
+    return pendingMetricValue;
   }
   return `${formatBytes(value)}/s`;
 }
 
 function formatBytePair(used?: number | null, total?: number | null) {
   if (used == null && total == null) {
-    return "采样中";
+    return pendingMetricValue;
   }
   if (total == null) {
     return formatBytes(used);
   }
   return `${formatBytes(used || 0)} / ${formatBytes(total)}`;
+}
+
+function pendingStatus(value?: number | null, label = "采样中") {
+  return value == null || !Number.isFinite(value) ? label : undefined;
+}
+
+function pendingPositiveStatus(value?: number | null, label = "采样中") {
+  return value == null || !Number.isFinite(value) || value <= 0 ? label : undefined;
 }
 
 function formatNetworkSpeed(value?: number | null) {

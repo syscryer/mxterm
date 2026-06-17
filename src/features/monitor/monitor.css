@@ -49,7 +49,7 @@
 .monitor-host-name {
   color: var(--mx-text);
   font-size: 13px;
-  font-weight: 680;
+  font-weight: 600;
 }
 
 .monitor-status-pill,
@@ -63,7 +63,7 @@
   color: color-mix(in srgb, var(--mx-muted) 86%, var(--mx-text) 14%);
   background: var(--mx-panel-muted);
   font-size: 11px;
-  font-weight: 620;
+  font-weight: 540;
   white-space: nowrap;
 }
 
@@ -178,7 +178,7 @@
   color: var(--mx-muted);
   background: transparent;
   font-size: 12px;
-  font-weight: 620;
+  font-weight: 560;
   white-space: nowrap;
 }
 
@@ -221,7 +221,7 @@
   gap: 7px;
   color: var(--mx-text);
   font-size: 13px;
-  font-weight: 700;
+  font-weight: 600;
 }
 
 .monitor-card-title .ui-icon {
@@ -246,7 +246,7 @@
   margin: 0;
   color: var(--mx-subtle);
   font-size: 11px;
-  font-weight: 620;
+  font-weight: 500;
 }
 
 .monitor-metric-grid,
@@ -276,7 +276,7 @@
   gap: 8px;
   color: var(--mx-muted);
   font-size: 11px;
-  font-weight: 620;
+  font-weight: 540;
 }
 
 .monitor-metric-name {
@@ -295,15 +295,26 @@
 .monitor-metric-value {
   color: var(--mx-text);
   font-family: var(--font-mono);
-  font-size: 17px;
-  font-weight: 680;
+  font-size: 16px;
+  font-weight: 600;
   line-height: 1;
   font-variant-numeric: tabular-nums;
+}
+
+.monitor-metric-value.is-pending {
+  color: var(--mx-subtle);
+  font-family: var(--font-ui);
+  font-weight: 500;
 }
 
 .monitor-metric-sub {
   color: var(--mx-subtle);
   font-size: 11px;
+}
+
+.monitor-metric-sub.is-pending {
+  font-family: var(--font-ui);
+  font-weight: 500;
 }
 
 .monitor-bar {
@@ -330,7 +341,7 @@
   gap: 8px;
   color: var(--mx-subtle);
   font-size: 11px;
-  font-weight: 620;
+  font-weight: 540;
 }
 
 .monitor-core-list-scroll {
@@ -366,8 +377,15 @@
   color: var(--mx-text);
   font-family: var(--font-mono);
   font-size: 12px;
+  font-weight: 560;
   text-align: right;
   font-variant-numeric: tabular-nums;
+}
+
+.monitor-core-row strong.is-pending {
+  color: var(--mx-subtle);
+  font-family: var(--font-ui);
+  font-weight: 500;
 }
 
 .monitor-device-row,
@@ -395,14 +413,14 @@
   gap: 8px;
   color: var(--mx-text);
   font-size: 12px;
-  font-weight: 660;
+  font-weight: 580;
 }
 
 .monitor-device-row p {
   margin: 0;
   color: var(--mx-subtle);
   font-size: 11px;
-  font-weight: 620;
+  font-weight: 500;
 }
 
 .monitor-device-meta,
@@ -464,8 +482,8 @@
   transform: translate(-50%, -50%);
   color: var(--mx-text);
   font-family: var(--font-mono);
-  font-size: 17px;
-  font-weight: 720;
+  font-size: 16px;
+  font-weight: 600;
   line-height: 1.05;
   text-align: center;
   font-variant-numeric: tabular-nums;
@@ -483,7 +501,7 @@
   color: var(--mx-subtle);
   font-family: var(--font-ui);
   font-size: 10px;
-  font-weight: 620;
+  font-weight: 500;
 }
 
 .monitor-legend {
@@ -513,7 +531,7 @@
   color: var(--mx-text);
   font-family: var(--font-mono);
   font-size: 12px;
-  font-weight: 650;
+  font-weight: 560;
 }
 
 .monitor-memory-facts {
@@ -540,7 +558,7 @@
   color: var(--mx-text);
   font-family: var(--font-mono);
   font-size: 12px;
-  font-weight: 650;
+  font-weight: 560;
   line-height: 1.15;
   white-space: nowrap;
 }
@@ -562,8 +580,8 @@
 .monitor-disk-total strong {
   color: var(--mx-text);
   font-family: var(--font-mono);
-  font-size: 18px;
-  font-weight: 680;
+  font-size: 17px;
+  font-weight: 600;
   line-height: 1;
 }
 
@@ -582,7 +600,7 @@
   color: var(--mx-muted);
   background: var(--mx-panel-muted);
   font-size: 11px;
-  font-weight: 620;
+  font-weight: 540;
   white-space: nowrap;
 }
 
@@ -606,7 +624,7 @@
   color: var(--mx-muted);
   background: var(--mx-panel);
   font-size: 12px;
-  font-weight: 620;
+  font-weight: 540;
 }
 
 .monitor-section-foot-button:hover {
@@ -657,7 +675,7 @@
 .monitor-network-main strong {
   color: var(--mx-text);
   font-size: 12px;
-  font-weight: 680;
+  font-weight: 600;
 }
 
 .monitor-network-main span {
@@ -732,7 +750,7 @@
 .monitor-hardware-title strong {
   color: var(--mx-text);
   font-size: 14px;
-  font-weight: 720;
+  font-weight: 600;
 }
 
 .monitor-hardware-title span {
@@ -759,7 +777,7 @@
 
 .monitor-hardware-kv-row strong {
   color: var(--mx-text);
-  font-weight: 620;
+  font-weight: 540;
 }
 
 .monitor-hardware-part {
@@ -792,7 +810,7 @@
 .monitor-hardware-part-main strong {
   color: var(--mx-text);
   font-size: 12px;
-  font-weight: 660;
+  font-weight: 580;
 }
 
 .monitor-hardware-part-main span {
@@ -824,7 +842,7 @@
 .monitor-interface-row strong {
   color: var(--mx-text);
   font-size: 12px;
-  font-weight: 660;
+  font-weight: 580;
 }
 
 .monitor-interface-row small {
@@ -839,7 +857,7 @@
   background: color-mix(in srgb, var(--mx-primary) 9%, var(--mx-panel));
   font-size: 11px;
   font-style: normal;
-  font-weight: 620;
+  font-weight: 540;
 }
 
 .monitor-interface-row em.virtual {
@@ -941,7 +959,7 @@
   border-bottom: 1px solid var(--mx-line-soft);
   color: var(--mx-subtle);
   font-size: 11px;
-  font-weight: 620;
+  font-weight: 540;
 }
 
 .monitor-process-head span {
@@ -984,7 +1002,7 @@
 .monitor-process-name {
   color: var(--mx-text);
   font-size: 12px;
-  font-weight: 650;
+  font-weight: 580;
 }
 
 .monitor-process-pid {
@@ -996,9 +1014,15 @@
   color: var(--mx-text);
   font-family: var(--font-mono);
   font-size: 12px;
-  font-weight: 650;
+  font-weight: 560;
   text-align: right;
   font-variant-numeric: tabular-nums;
+}
+
+.monitor-process-metric.is-pending {
+  color: var(--mx-subtle);
+  font-family: var(--font-ui);
+  font-weight: 500;
 }
 
 .monitor-process-metric.hot {
@@ -1081,7 +1105,7 @@
 .monitor-activity-text strong {
   color: var(--mx-text);
   font-size: 12px;
-  font-weight: 650;
+  font-weight: 580;
 }
 
 .monitor-activity-text span {
