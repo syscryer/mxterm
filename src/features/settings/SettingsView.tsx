@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type FormEvent } from "react";
 import {
+  Archive,
   ArrowLeft,
   Check,
   Clock3,
@@ -821,6 +822,15 @@ function BasicSettingsSection({
             checked={fileTransferSettings.keepArchives}
             label="保留压缩包"
             onChange={(keepArchives) => onUpdateFileTransfer({ keepArchives })}
+          />
+        </SettingsRow>
+        <SettingsRow icon={Archive} title="压缩目录传输" description="上传/下载目录时打包成 tar.gz 传输，节省带宽。服务器或本机缺少 tar 时自动降级为逐文件传输。">
+          <SettingsToggle
+            checked={fileTransferSettings.compressDirectories}
+            label="压缩目录传输"
+            onChange={(compressDirectories) =>
+              onUpdateFileTransfer({ compressDirectories })
+            }
           />
         </SettingsRow>
         <SettingsRow icon={Rows3} title="同名冲突" description="上传/下载遇到同名目标时的默认策略。">

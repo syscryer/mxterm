@@ -100,6 +100,7 @@ export interface RemoteFileArchiveUploadInput {
 
 export interface RemoteFileArchiveUploadLocalInput {
   connectionId: string;
+  compress?: boolean;
   conflictPolicy?: RemoteFileTransferConflictPolicy;
   keepArchive?: boolean;
   localPath: string;
@@ -123,6 +124,7 @@ export interface RemoteFileDownloadResult {
 
 export interface RemoteFileDownloadToLocalInput {
   connectionId: string;
+  compress?: boolean;
   conflictPolicy?: RemoteFileTransferConflictPolicy;
   directory?: boolean;
   downloadRoot?: string;

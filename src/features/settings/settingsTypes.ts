@@ -62,6 +62,7 @@ export interface TerminalThemeSettings {
 }
 
 export interface FileTransferSettings {
+  compressDirectories: boolean;
   conflictPolicyDefault: FileTransferConflictPolicy;
   downloadRoot: string;
   groupBySession: boolean;
@@ -175,6 +176,7 @@ export const defaultSettings: MxtermSettings = {
     downloadRoot: "",
     groupBySession: true,
     keepArchives: false,
+    compressDirectories: true,
     timestampDirectory: true,
     timestampFormat: "yyyyMMddHHmm",
   },
@@ -239,6 +241,10 @@ export function normalizeSettings(value: unknown): MxtermSettings {
       groupBySession: normalizeBoolean(
         fileTransfer.groupBySession,
         defaultSettings.fileTransfer.groupBySession,
+      ),
+      compressDirectories: normalizeBoolean(
+        fileTransfer.compressDirectories,
+        defaultSettings.fileTransfer.compressDirectories,
       ),
       keepArchives: normalizeBoolean(
         fileTransfer.keepArchives,

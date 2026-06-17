@@ -718,13 +718,18 @@ export function WorkspaceShell() {
       cancelTransfer(transferId);
       return;
     }
+    const code = extractTransferErrorCode(error);
+    const mappedStage = code ? transferErrorStage(code) : null;
+    const suggestion = code ? transferErrorSuggestion(code) : null;
+    const baseError = formatError(error);
+    const errorText = suggestion ? `${baseError}\n建议：${suggestion}` : baseError;
     updateRemoteFileTransfer(transferId, {
-      error: formatError(error),
+      error: errorText,
       progress: 100,
       progressDetail: null,
       progressIndeterminate: false,
       speedText: null,
-      stage,
+      stage: mappedStage ?? stage,
       status: "error",
     });
   }
@@ -1481,6 +1486,7 @@ export function WorkspaceShell() {
         stage: "扫描目录",
       });
       const result = await remoteFileUploadLocalArchive({
+        compress: settings.fileTransfer.compressDirectories,
         connectionId: activeConnection.id,
         conflictPolicy,
         keepArchive: settings.fileTransfer.keepArchives,
@@ -1650,6 +1656,7 @@ export function WorkspaceShell() {
         stage: "上传归档并远程解压",
       });
       const result = await remoteFileUploadLocalArchive({
+        compress: true,
         connectionId: activeConnection.id,
         conflictPolicy,
         keepArchive: settings.fileTransfer.keepArchives,
@@ -1739,6 +1746,7 @@ export function WorkspaceShell() {
         });
         result = await remoteFileDownloadToLocal({
           ...downloadOptions,
+          compress: settings.fileTransfer.compressDirectories,
           conflictPolicy,
           keepArchives: settings.fileTransfer.keepArchives,
           transferId,
@@ -3404,15 +3412,15 @@ function RemoteFileTransferPanel({
                     <Clipboard className="ui-icon" aria-hidden="true" />
                     复制路径
                   </button>
+                  {item.localPath && item.kind !== "directory" ? (
+                    <button type="button" onClick={() => onOpenLocalPath(item.localPath || "")}>
+                      打开
+                    </button>
+                  ) : null}
                   {item.localPath ? (
-                    <>
-                      <button type="button" onClick={() => onOpenLocalPath(item.localPath || "")}>
-                        打开
-                      </button>
-                      <button type="button" onClick={() => onRevealLocalPath(item.localPath || "")}>
-                        定位
-                      </button>
-                    </>
+                    <button type="button" onClick={() => onRevealLocalPath(item.localPath || "")}>
+                      定位
+                    </button>
                   ) : null}
                   {item.status === "queued" || item.status === "running" ? (
                     <button type="button" onClick={() => onCancel(item.id)}>
@@ -4535,6 +4543,69 @@ function isTransferCanceledError(error: unknown) {
     "code" in error &&
     String((error as { code: unknown }).code) === "remote_file_transfer_canceled"
   );
+}
+
+function extractTransferErrorCode(error: unknown): string | null {
+  if (
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error
+  ) {
+    return String((error as { code: unknown }).code);
+  }
+  return null;
+}
+
+function transferErrorStage(code: string): string | null {
+  if (
+    code === "remote_sftp_subsystem_failed" ||
+    code === "remote_sftp_subsystem_timeout"
+  ) {
+    return "SFTP 子系统不可用";
+  }
+  if (
+    code === "remote_sftp_connect_failed" ||
+    code === "remote_sftp_connect_timeout"
+  ) {
+    return "SFTP 连接失败";
+  }
+  if (
+    code === "remote_sftp_channel_failed" ||
+    code === "remote_sftp_init_failed" ||
+    code === "remote_sftp_channel_timeout"
+  ) {
+    return "SFTP 通道建立失败";
+  }
+  if (code === "remote_sftp_auth_timeout") {
+    return "SFTP 认证超时";
+  }
+  return null;
+}
+
+function transferErrorSuggestion(code: string): string | null {
+  if (
+    code === "remote_sftp_subsystem_failed" ||
+    code === "remote_sftp_subsystem_timeout"
+  ) {
+    return "该服务器可能未启用 SFTP 子系统，请联系管理员检查 sshd_config 中的 'Subsystem sftp' 配置，或在设置中关闭相关压缩选项。";
+  }
+  if (
+    code === "remote_sftp_connect_failed" ||
+    code === "remote_sftp_connect_timeout"
+  ) {
+    return "SFTP 连接无法建立，请检查网络连通性、防火墙规则或代理设置。";
+  }
+  if (
+    code === "remote_sftp_channel_failed" ||
+    code === "remote_sftp_init_failed" ||
+    code === "remote_sftp_channel_timeout"
+  ) {
+    return "SFTP 通道无法建立，服务器可能限制了 SFTP 会话数或子系统异常，请稍后重试或联系管理员。";
+  }
+  if (code === "remote_sftp_auth_timeout") {
+    return "SFTP 认证超时，请确认凭据有效或检查网络延迟。";
+  }
+  return null;
 }
 
 function appendUniqueLogs(logs: string[], nextLines: string[]) {
