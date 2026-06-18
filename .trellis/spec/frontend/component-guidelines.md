@@ -168,6 +168,13 @@ Ant Design, Mantine, or similar libraries just to fix one modal or button.
   icon-only chevron opens a profile menu. Do not put a wide profile select or
   "default profile" text in the terminal subtab strip; default profile changes
   belong in Settings.
+- Built-in Windows PowerShell local terminal profiles should default to
+  `-NoLogo -NoProfile` so the first prompt is not delayed by user profile
+  scripts, prompt themes, module discovery, or network-backed initialization.
+  Users who need their profile scripts can create a custom local terminal
+  profile without `-NoProfile`. Keep backend discovery, workspace preview data,
+  and Settings preview data aligned; `scripts/check-local-terminal-launcher-source.mjs`
+  guards this contract.
 - Mutually exclusive terminal workbench panes, such as SSH and local terminal
   panes, must not keep layout height while hidden. Use a pane-level hidden class
   that removes the inactive pane from layout, while keeping the actual terminal

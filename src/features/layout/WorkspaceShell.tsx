@@ -5559,7 +5559,7 @@ function previewLocalTerminalProfiles(platform: string): LocalTerminalProfile[] 
   if (platform === "windows") {
     return [
       buildPreviewLocalTerminalProfile({
-        args: ["-NoLogo"],
+        args: ["-NoLogo", "-NoProfile"],
         command: "pwsh.exe",
         icon: "terminal-powershell",
         id: "pwsh",
@@ -5568,7 +5568,7 @@ function previewLocalTerminalProfiles(platform: string): LocalTerminalProfile[] 
         platform,
       }),
       buildPreviewLocalTerminalProfile({
-        args: ["-NoLogo"],
+        args: ["-NoLogo", "-NoProfile"],
         command: "powershell.exe",
         icon: "terminal-powershell",
         id: "powershell",

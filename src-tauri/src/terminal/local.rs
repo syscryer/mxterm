@@ -250,7 +250,7 @@ mod tests {
             platform: "windows".to_string(),
             source: "builtin".to_string(),
             command: "pwsh.exe".to_string(),
-            args: vec!["-NoLogo".to_string()],
+            args: vec!["-NoLogo".to_string(), "-NoProfile".to_string()],
             cwd: None,
             env: BTreeMap::new(),
             icon: "siPowershell".to_string(),

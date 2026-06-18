@@ -1489,7 +1489,7 @@ function LocalTerminalSettingsSection({
               <input
                 className="settings-input"
                 value={form.args.join(" ")}
-                placeholder='例如 -NoLogo -NoExit'
+                placeholder='例如 -NoLogo -NoProfile'
                 onChange={(event) =>
                   setForm({
                     ...form,
@@ -1549,7 +1549,7 @@ function emptyLocalTerminalProfile(): LocalTerminalProfileInput {
 function previewSettingsLocalTerminalProfiles(): LocalTerminalProfile[] {
   return [
     {
-      args: ["-NoLogo"],
+      args: ["-NoLogo", "-NoProfile"],
       command: "pwsh.exe",
       cwd: null,
       detected: true,
