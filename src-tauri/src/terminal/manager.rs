@@ -6,11 +6,20 @@ use tauri::{AppHandle, Emitter};
 use tokio::sync::Mutex;
 
 use crate::app_error::AppError;
-use crate::commands::{TerminalConnectRequest, TerminalResizeRequest, TerminalWriteRequest};
+use crate::commands::{
+    LocalTerminalOpenRequest, TerminalConnectRequest, TerminalResizeRequest, TerminalWriteRequest,
+};
 use crate::events::{TerminalConnectProgressEvent, TerminalOutputEvent, TerminalStateChangedEvent};
+use crate::terminal::local::{LocalTerminalSession, OpenLocalSession};
 use crate::terminal::session::{OpenProgress, TerminalOutputDecoder, TerminalSession};
 
-type SessionStore = Arc<Mutex<HashMap<String, Arc<TerminalSession>>>>;
+#[derive(Clone)]
+enum ManagedTerminalSession {
+    Ssh(Arc<TerminalSession>),
+    Local(Arc<LocalTerminalSession>),
+}
+
+type SessionStore = Arc<Mutex<HashMap<String, ManagedTerminalSession>>>;
 
 #[derive(Clone, Default)]
 pub struct TerminalManager {
@@ -46,10 +55,10 @@ impl TerminalManager {
         let (session, reader) = TerminalSession::open(app.clone(), request, progress).await?;
         let session_id = session.id.clone();
         let terminal_encoding = session.terminal_encoding().to_string();
-        self.sessions
-            .lock()
-            .await
-            .insert(session_id.clone(), Arc::new(session));
+        self.sessions.lock().await.insert(
+            session_id.clone(),
+            ManagedTerminalSession::Ssh(Arc::new(session)),
+        );
         spawn_reader(
             app,
             session_id.clone(),
@@ -62,17 +71,51 @@ impl TerminalManager {
         Ok(session_id)
     }
 
+    pub async fn connect_local(
+        &self,
+        app: AppHandle,
+        request: LocalTerminalOpenRequest,
+    ) -> Result<String, AppError> {
+        let OpenLocalSession {
+            session,
+            reader,
+            request_id,
+        } = LocalTerminalSession::open(request)?;
+        let session_id = session.id.clone();
+        self.sessions.lock().await.insert(
+            session_id.clone(),
+            ManagedTerminalSession::Local(session.clone()),
+        );
+        spawn_local_reader(
+            app,
+            session_id.clone(),
+            request_id,
+            reader,
+            session,
+            self.sessions.clone(),
+        );
+        Ok(session_id)
+    }
+
     pub async fn write(&self, request: TerminalWriteRequest) -> Result<(), AppError> {
-        let session = self.session(&request.session_id).await?;
-        session.write(request.data).await
+        match self.session(&request.session_id).await? {
+            ManagedTerminalSession::Ssh(session) => session.write(request.data).await,
+            ManagedTerminalSession::Local(session) => session.write(request.data).await,
+        }
     }
 
     pub async fn resize(&self, request: TerminalResizeRequest) -> Result<(), AppError> {
         validate_session_id(&request.session_id)?;
         crate::terminal::pty::validate_size(request.cols, request.rows)?;
 
-        let session = self.session(&request.session_id).await?;
-        session.resize(request.cols, request.rows).await
+        match self.session(&request.session_id).await? {
+            ManagedTerminalSession::Ssh(session) => {
+                session.resize(request.cols, request.rows).await
+            }
+            ManagedTerminalSession::Local(session) => {
+                session.resize(request.cols, request.rows).await
+            }
+        }
     }
 
     pub async fn close(&self, session_id: String) -> Result<(), AppError> {
@@ -92,10 +135,13 @@ impl TerminalManager {
                 )
             })?;
 
-        session.close().await
+        match session {
+            ManagedTerminalSession::Ssh(session) => session.close().await,
+            ManagedTerminalSession::Local(session) => session.close().await,
+        }
     }
 
-    async fn session(&self, session_id: &str) -> Result<Arc<TerminalSession>, AppError> {
+    async fn session(&self, session_id: &str) -> Result<ManagedTerminalSession, AppError> {
         validate_session_id(session_id)?;
         self.sessions
             .lock()
@@ -247,6 +293,58 @@ fn spawn_reader(
                 exit_status,
             },
         );
+    });
+}
+
+fn spawn_local_reader(
+    app: AppHandle,
+    session_id: String,
+    request_id: Option<String>,
+    reader: Box<dyn std::io::Read + Send>,
+    session: Arc<LocalTerminalSession>,
+    sessions: SessionStore,
+) {
+    let app_for_thread = app.clone();
+    let session_id_for_thread = session_id.clone();
+    let request_id_for_thread = request_id.clone();
+
+    std::thread::spawn(move || {
+        let mut reader = reader;
+        let mut buffer = vec![0_u8; 8192];
+        loop {
+            match reader.read(&mut buffer) {
+                Ok(0) => break,
+                Ok(read) => emit_terminal_output(
+                    &app_for_thread,
+                    &session_id_for_thread,
+                    &request_id_for_thread,
+                    buffer[..read].to_vec(),
+                ),
+                Err(error) => {
+                    emit_terminal_output(
+                        &app_for_thread,
+                        &session_id_for_thread,
+                        &request_id_for_thread,
+                        format!("\r\n{}\r\n", error).into_bytes(),
+                    );
+                    break;
+                }
+            }
+        }
+
+        let exit_status = session.wait_exit_status();
+        tauri::async_runtime::spawn(async move {
+            sessions.lock().await.remove(&session_id);
+            let _ = app.emit(
+                crate::events::TERMINAL_STATE_CHANGED,
+                TerminalStateChangedEvent {
+                    session_id,
+                    request_id,
+                    state: "closed".to_string(),
+                    exit_status,
+                },
+            );
+        });
     });
 }
 

@@ -493,6 +493,177 @@ button {
   font-size: 12px;
 }
 
+.settings-local-terminal-default {
+  min-width: 0;
+  display: grid;
+  gap: 6px;
+}
+
+.settings-local-terminal-default .settings-select {
+  width: min(320px, 100%);
+}
+
+.settings-local-terminal-default .settings-note-inline {
+  color: var(--mx-muted);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.local-terminal-settings-grid {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr);
+  align-items: start;
+  gap: 16px;
+}
+
+.local-terminal-custom-list,
+.local-terminal-custom-form,
+.local-terminal-detected-panel {
+  min-width: 0;
+}
+
+.local-terminal-panel-head {
+  min-width: 0;
+  min-height: 54px;
+  border-bottom: 1px solid var(--mx-line-soft);
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 14px;
+}
+
+.local-terminal-panel-head > span {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+
+.local-terminal-panel-head strong {
+  color: var(--mx-text);
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.local-terminal-panel-head small {
+  color: var(--mx-muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.local-terminal-profile-list {
+  min-width: 0;
+  min-height: 0;
+  display: grid;
+  gap: 8px;
+  padding: 12px;
+}
+
+.local-terminal-profile-card {
+  min-width: 0;
+  min-height: 58px;
+  border: 1px solid var(--mx-line-soft);
+  border-radius: 8px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  background: var(--mx-panel);
+}
+
+.local-terminal-profile-card.is-hidden-profile {
+  border-style: dashed;
+  color: var(--mx-muted);
+  background: color-mix(in srgb, var(--mx-panel-soft) 76%, transparent);
+}
+
+.local-terminal-profile-main {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 30px minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+}
+
+.local-terminal-profile-icon {
+  width: 30px;
+  height: 30px;
+  border: 1px solid var(--mx-line-soft);
+  border-radius: 8px;
+  display: grid;
+  place-items: center;
+  color: var(--mx-muted);
+  background: var(--mx-panel-soft);
+}
+
+.local-terminal-profile-icon .ui-icon {
+  width: 15px;
+  height: 15px;
+}
+
+.local-terminal-profile-main > span:last-child,
+.local-terminal-profile-main > span {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.local-terminal-profile-main strong,
+.local-terminal-profile-main small {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.local-terminal-profile-main strong {
+  color: var(--mx-text);
+  font-size: 13px;
+  font-weight: 560;
+}
+
+.local-terminal-profile-main small {
+  color: var(--mx-muted);
+  font-size: 12px;
+}
+
+.local-terminal-profile-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.local-terminal-form-grid {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  padding: 12px 14px 14px;
+}
+
+.local-terminal-form-grid label {
+  min-width: 0;
+  display: grid;
+  gap: 5px;
+  color: var(--mx-muted);
+  font-size: 12px;
+}
+
+.local-terminal-form-grid label > span {
+  min-width: 0;
+}
+
+.local-terminal-form-grid .settings-input {
+  min-width: 0;
+  width: 100%;
+}
+
+.local-terminal-form-span {
+  grid-column: 1 / -1;
+}
+
 .credential-settings-layout {
   min-height: 0;
   display: grid;
@@ -963,6 +1134,15 @@ button {
 .credential-danger-button:hover:not(:disabled) {
   border-color: rgb(220 38 38 / 42%) !important;
   background: #feecec !important;
+}
+
+.settings-action-button.danger-button {
+  color: #9f1d1d;
+}
+
+.settings-action-button.danger-button:hover:not(:disabled) {
+  color: #8f1717;
+  background: #fff1f1;
 }
 
 .settings-row {
@@ -3994,6 +4174,10 @@ button {
     grid-template-columns: minmax(0, 1fr);
   }
 
+  .local-terminal-settings-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
   .side-summary {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
@@ -4042,6 +4226,10 @@ button {
 .terminal-workbench-pane {
   background: var(--mx-terminal);
   row-gap: 6px;
+}
+
+.terminal-workbench-pane.is-hidden {
+  display: none;
 }
 
 .remote-editor-tabs,
@@ -4315,6 +4503,114 @@ button {
   justify-content: center;
 }
 
+.local-terminal-launcher {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 0;
+  margin-left: -2px;
+}
+
+.local-terminal-launch-button {
+  flex: 0 0 auto;
+}
+
+.local-terminal-launch-button[aria-expanded="true"] {
+  color: var(--mx-text);
+  background: rgb(148 163 184 / 12%);
+}
+
+.local-terminal-profile-menu {
+  position: fixed;
+  left: var(--local-terminal-menu-left);
+  top: var(--local-terminal-menu-top);
+  width: var(--local-terminal-menu-width);
+  max-height: var(--local-terminal-menu-max-height);
+  overflow-y: auto;
+  padding: 6px;
+  z-index: 80;
+}
+
+.local-terminal-profile-menu-item {
+  width: 100%;
+  min-width: 0;
+  min-height: 34px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  border: 0;
+  border-radius: 7px;
+  padding: 0 10px;
+  color: var(--mx-text);
+  background: transparent;
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+}
+
+.local-terminal-profile-menu-item:hover,
+.local-terminal-profile-menu-item:focus-visible {
+  background: var(--mx-glass-hover);
+  outline: none;
+}
+
+.local-terminal-menu-label {
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.local-terminal-menu-label .ui-icon {
+  flex: 0 0 auto;
+  width: 14px;
+  height: 14px;
+}
+
+.local-terminal-menu-label span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.local-terminal-menu-shortcut {
+  flex: 0 0 auto;
+  color: var(--mx-muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.local-terminal-subtabs-meta {
+  min-width: 0;
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--mx-muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.local-terminal-inline-action {
+  height: 24px;
+  border: 0;
+  border-radius: 6px;
+  padding: 0 8px;
+  color: var(--mx-muted);
+  background: transparent;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 520;
+}
+
+.local-terminal-inline-action:hover,
+.local-terminal-inline-action:focus-visible {
+  color: var(--mx-text);
+  background: rgb(148 163 184 / 12%);
+}
+
 .file-tab.active,
 .terminal-tabs .active,
 .tool-tabs .active {
@@ -4515,6 +4811,70 @@ button {
 
 .terminal-direct-status small {
   color: #9f1d1d;
+  white-space: pre-wrap;
+}
+
+.local-terminal-empty,
+.local-terminal-status {
+  background:
+    radial-gradient(
+      circle at 50% 12%,
+      color-mix(in srgb, var(--mx-primary) 7%, transparent),
+      transparent 32%
+    ),
+    linear-gradient(180deg, #ffffff, var(--mx-panel) 48%, var(--mx-panel-soft));
+}
+
+.local-terminal-empty > div,
+.local-terminal-status > div {
+  width: min(480px, 100%);
+}
+
+.local-terminal-status-actions {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding-top: 4px;
+}
+
+.local-terminal-status-actions button {
+  height: 30px;
+  border: 1px solid var(--mx-line);
+  border-radius: 7px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 10px;
+  color: var(--mx-text);
+  background: var(--mx-panel);
+  font-size: 12px;
+  font-weight: 520;
+}
+
+.local-terminal-status-actions button:hover:not(:disabled) {
+  border-color: var(--mx-line-strong);
+  background: #f7f9fc;
+}
+
+.local-terminal-status .local-terminal-status-actions button.primary-button,
+.local-terminal-empty .local-terminal-status-actions button.primary-button {
+  border-color: color-mix(in srgb, var(--mx-primary) 82%, #1e40af);
+  color: #ffffff;
+  background: var(--mx-primary);
+}
+
+.local-terminal-status .local-terminal-status-actions button.primary-button:hover:not(:disabled),
+.local-terminal-empty .local-terminal-status-actions button.primary-button:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--mx-primary) 88%, #1e3a8a);
+  color: #ffffff;
+  background: color-mix(in srgb, var(--mx-primary) 90%, #111827);
+}
+
+.local-terminal-status .ui-icon,
+.local-terminal-empty .ui-icon {
+  width: 22px;
+  height: 22px;
 }
 
 .remote-file-editor {
@@ -4631,7 +4991,6 @@ button {
 }
 
 .terminal-host {
-  --mx-terminal-content-inset-x: 3px;
   min-height: 0;
   overflow: hidden;
   background: var(--mx-terminal);
@@ -4642,14 +5001,22 @@ button {
 }
 
 .terminal-host .xterm,
+.terminal-host .xterm * {
+  box-sizing: content-box;
+}
+
+.terminal-host .xterm,
 .terminal-host .xterm-viewport,
 .terminal-host .xterm-screen {
   background-color: var(--mx-terminal) !important;
 }
 
-.terminal-host .xterm-screen {
-  box-sizing: border-box;
-  padding-left: var(--mx-terminal-content-inset-x);
+.terminal-host .xterm-helper-textarea {
+  border: 0 !important;
+  outline: none !important;
+  box-shadow: none !important;
+  background: transparent !important;
+  transition: none !important;
 }
 
 .terminal-host .xterm-viewport {
@@ -5547,7 +5914,7 @@ button {
   line-height: 1.35;
 }
 
-/* ===== 协议 chip 选择�?===== */
+/* ===== 协议 chip 选择 ===== */
 .protocol-switch {
   display: flex;
   gap: 4px;
@@ -5613,7 +5980,7 @@ button {
   gap: 8px;
 }
 
-/* ===== 错误反馈区（重做�?===== */
+/* ===== 错误反馈区（重做） ===== */
 .conn-feedback {
   margin: 0 16px 10px;
   border-radius: 8px;
@@ -6153,6 +6520,7 @@ button {
   .settings-action-button,
   .settings-path-button,
   .credential-form-actions button,
+  .local-terminal-status-actions button,
   .connection-step-actions button,
   .connection-step-error button,
   .connection-prompt-form button,
@@ -6170,6 +6538,7 @@ button {
   .settings-stepper button:hover:not(:disabled),
   .settings-action-button:hover:not(:disabled),
   .credential-form-actions button:hover:not(:disabled),
+  .local-terminal-status-actions button:hover:not(:disabled),
   .connection-step-actions button:hover,
   .connection-step-error button:hover,
   .connection-prompt-form button:hover,
@@ -6213,6 +6582,7 @@ button {
 .app-shell :is(
   .dialog-actions .primary-button,
   .credential-form-actions .primary-button,
+  .local-terminal-status-actions .primary-button,
   .connection-prompt-form .primary-button,
   .host-key-confirm .primary-button,
   .repository-primary-button
@@ -6225,6 +6595,7 @@ button {
 .app-shell :is(
   .dialog-actions .primary-button:hover,
   .credential-form-actions .primary-button:hover:not(:disabled),
+  .local-terminal-status-actions .primary-button:hover:not(:disabled),
   .connection-prompt-form .primary-button:hover,
   .host-key-confirm .primary-button:hover,
   .repository-primary-button:hover
@@ -6251,6 +6622,7 @@ button {
 .app-shell :is(
   .dialog-actions .danger-button,
   .confirm-dialog-actions .danger-button,
+  .settings-action-button.danger-button,
   .credential-danger-button
 ) {
   border-color: color-mix(in srgb, var(--mx-danger) 32%, var(--mx-line)) !important;

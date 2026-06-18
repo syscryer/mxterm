@@ -30,6 +30,8 @@ use crate::ssh_config::{
     resolve_saved_connection, resolve_transient_connection, ResolvedSshConfig,
     RuntimeCredentialInput,
 };
+use crate::terminal::local::list_profiles as list_local_profiles;
+pub use crate::terminal::local_profiles::{LocalTerminalProfile, LocalTerminalProfileInput};
 use crate::terminal::manager::TerminalManager;
 use crate::terminal::session::ExecProgressCallback;
 
@@ -86,6 +88,12 @@ pub struct WindowMaterial {
     pub name: &'static str,
 }
 
+#[derive(Debug, Serialize)]
+pub struct WindowsPtyInfo {
+    pub backend: &'static str,
+    pub build_number: Option<u32>,
+}
+
 #[derive(Debug, Deserialize)]
 pub struct TerminalWriteRequest {
     pub session_id: String,
@@ -97,6 +105,26 @@ pub struct TerminalResizeRequest {
     pub session_id: String,
     pub cols: u16,
     pub rows: u16,
+}
+
+#[derive(Debug, Default, Deserialize)]
+pub struct LocalTerminalListProfilesRequest {
+    #[serde(default)]
+    pub platform: Option<String>,
+    #[serde(default)]
+    pub hidden_profile_ids: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct LocalTerminalOpenRequest {
+    #[serde(default)]
+    pub request_id: Option<String>,
+    #[serde(default)]
+    pub profile: Option<LocalTerminalProfileInput>,
+    pub cols: u16,
+    pub rows: u16,
+    #[serde(default)]
+    pub cwd: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -400,6 +428,27 @@ pub async fn terminal_close(
     session_id: String,
 ) -> Result<(), AppError> {
     manager.close(session_id).await
+}
+
+#[tauri::command]
+pub fn local_terminal_list_profiles(
+    request: LocalTerminalListProfilesRequest,
+) -> Result<Vec<LocalTerminalProfile>, AppError> {
+    list_local_profiles(request.hidden_profile_ids, request.platform)
+}
+
+#[tauri::command]
+pub async fn local_terminal_open(
+    app: AppHandle,
+    manager: State<'_, TerminalManager>,
+    request: LocalTerminalOpenRequest,
+) -> Result<String, AppError> {
+    manager.connect_local(app, request).await
+}
+
+#[tauri::command]
+pub fn get_windows_pty_info() -> Option<WindowsPtyInfo> {
+    windows_pty_info::current()
 }
 
 #[tauri::command]
@@ -1959,6 +2008,27 @@ fn window_material_info(id: i32) -> WindowMaterial {
     };
 
     WindowMaterial { id, name }
+}
+
+#[cfg(windows)]
+mod windows_pty_info {
+    use super::WindowsPtyInfo;
+
+    pub fn current() -> Option<WindowsPtyInfo> {
+        Some(WindowsPtyInfo {
+            backend: "conpty",
+            build_number: Some(windows_version::OsVersion::current().build),
+        })
+    }
+}
+
+#[cfg(not(windows))]
+mod windows_pty_info {
+    use super::WindowsPtyInfo;
+
+    pub fn current() -> Option<WindowsPtyInfo> {
+        None
+    }
 }
 
 #[cfg(windows)]

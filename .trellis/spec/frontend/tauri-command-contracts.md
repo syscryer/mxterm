@@ -28,6 +28,7 @@ terminalConnect(request: TerminalConnectRequest): Promise<string>
 terminalWrite(sessionId: string, data: string): Promise<void>
 terminalResize(sessionId: string, cols: number, rows: number): Promise<void>
 terminalClose(sessionId: string): Promise<void>
+getWindowsPtyInfo(): Promise<WindowsPtyInfo | null>
 ```
 
 `ConnectionProfileInput` mirrors the Rust payload:
@@ -133,6 +134,7 @@ type HostKeyInfo = {
 - During terminal handoff, match terminal output/state events by `request_id` as well as by `session_id`; shell prompts can arrive before the frontend receives the returned session id.
 - Keep the terminal handoff warmup listener alive briefly after replacing the connecting tab, and make `TerminalPanel` consume appended `initialOutput` bytes. Otherwise the remote prompt can land between `terminalConnect` resolving and the xterm listener mounting, leaving a connected but visually blank terminal while remote file browsing works.
 - `TerminalPanel` should buffer startup handoff output briefly and write it as one ordered batch with early live events. If the combined startup batch contains a duplicated leading shell prompt before a login banner / motd and the same prompt appears again at the end, remove only that leading duplicate before writing to xterm. If the prompt is joined to the first banner line, such as `root@host:~# Welcome to ...`, strip only the prompt prefix and keep the banner text. If warmup and live capture the same leading login banner block before the first prompt, keep one copy of that startup banner. If warmup and live capture produce adjacent duplicate prompts such as `[root@host ~]# [root@host ~]#`, collapse them to a single prompt before writing.
+- Local Windows terminals must call `getWindowsPtyInfo()` and pass the mapped `{ backend, buildNumber }` object to `TerminalPanel`. xterm uses the build number to decide ConPTY reflow behavior; a bare `{ backend: "conpty" }` can keep older wrapping heuristics enabled on modern Windows builds.
 - Do not store terminal session runtime state inside a `ConnectionProfile`. Connection profiles are persistent data; terminal tabs and session ids are runtime state.
 - Do not log passwords, private-key passphrases, or full command payloads.
 
@@ -177,6 +179,8 @@ type HostKeyInfo = {
 - Run `node scripts/check-connection-terminal-encoding-source.mjs` after changing terminal encoding profile fields, advanced-tab UI, connection normalization, or backend terminal encoding behavior.
 - Run `node scripts/check-connection-dialog-host-key-feedback.mjs` after changing `ConnectionDialog`, host-key error parsing, or connection-test feedback styles.
 - Run `node scripts/check-terminal-startup-output-source.mjs` after changing `TerminalPanel` startup output buffering or prompt deduplication.
+- Run `node scripts/check-terminal-interactive-pty-source.mjs` after changing `TerminalPanel` xterm options or local Windows terminal creation props.
+- Run `node scripts/check-terminal-resize-debounce-source.mjs` after changing `TerminalPanel` fit / resize observer / backend resize synchronization.
 - Run `node scripts/check-remote-file-editor-source.mjs` after changing `ConnectionDialog`, `WorkspaceShell` dialog test handlers, or connection command wrappers so the no-save dialog-test guard is checked.
 - Run `node scripts/check-remote-file-editor-source.mjs` after changing workspace terminal tab creation, so the same-connection new terminal path stays separate from the connection-preparation page.
 - Add focused tests once the frontend test runner exists for credential-mode field clearing, credential delete handling, host-key recoverable states, fallback behavior, and error display.

@@ -38,6 +38,7 @@ import { AppSelect } from "../../shared/ui/AppSelect";
 import { Tooltip } from "../../shared/ui/Tooltip";
 import { ConfirmDialog } from "../../shared/ui/ConfirmDialog";
 import { selectLocalDownloadDirectory } from "../../shared/tauri/dialog";
+import { localTerminalListProfiles } from "../../shared/tauri/commands";
 import { hasTauriRuntime } from "../../shared/tauri/runtime";
 import type {
   ConnectionAuthKind,
@@ -59,6 +60,7 @@ import {
   type FileTransferTimestampFormat,
   normalizeFontFamilyInput,
   normalizeHexColor,
+  normalizeLocalTerminalProfileInput,
   terminalFontPresets,
   type AccentColor,
   type AppearanceSettings,
@@ -79,6 +81,12 @@ import {
   SettingsToggle,
   Stepper,
 } from "./SettingsControls";
+import type {
+  LocalTerminalProfile,
+  LocalTerminalProfileInput,
+  LocalTerminalSettings,
+} from "../terminal/localTerminalTypes";
+import { LocalTerminalIcon } from "../terminal/LocalTerminalIcons";
 
 interface SettingsViewProps {
   credentials: CredentialProfile[];
@@ -96,6 +104,7 @@ interface SettingsViewProps {
   onUpdateAppearance: (update: Partial<AppearanceSettings>) => void;
   onUpdateBasic: (update: Partial<BasicSettings>) => void;
   onUpdateFileTransfer: (update: Partial<FileTransferSettings>) => void;
+  onUpdateLocalTerminal: (update: Partial<LocalTerminalSettings>) => void;
   onUpdateTerminalTheme: (update: Partial<TerminalThemeSettings>) => void;
 }
 
@@ -108,6 +117,7 @@ const settingsSections: Array<{
   { id: "basic", label: "基础设置", description: "启动、连接与面板行为", icon: Settings },
   { id: "credentials", label: "账号管理", description: "复用登录账号（用户名+密码/私钥）", icon: Shield },
   { id: "appearance", label: "外观", description: "字号、密度与强调色", icon: Palette },
+  { id: "localTerminal", label: "本地终端", description: "默认 Shell 与 profile 管理", icon: Terminal },
   { id: "terminalTheme", label: "终端配色", description: "终端 ANSI 主题方案", icon: Terminal },
 ];
 
@@ -135,6 +145,7 @@ export function SettingsView({
   onUpdateAppearance,
   onUpdateBasic,
   onUpdateFileTransfer,
+  onUpdateLocalTerminal,
   onUpdateTerminalTheme,
 }: SettingsViewProps) {
   const [activeSection, setActiveSection] = useState<SettingsSectionId>("basic");
@@ -206,6 +217,12 @@ export function SettingsView({
             onAccentDraftChange={setAccentDraft}
             onReset={onReset}
             onUpdate={onUpdateAppearance}
+          />
+        ) : null}
+        {activeSection === "localTerminal" ? (
+          <LocalTerminalSettingsSection
+            settings={settings.localTerminal}
+            onUpdate={onUpdateLocalTerminal}
           />
         ) : null}
         {activeSection === "credentials" ? (
@@ -1183,6 +1200,383 @@ function FontFamilyControl<TPreset extends string>({
       </div>
     </div>
   );
+}
+
+function LocalTerminalSettingsSection({
+  settings,
+  onUpdate,
+}: {
+  settings: LocalTerminalSettings;
+  onUpdate: (update: Partial<LocalTerminalSettings>) => void;
+}) {
+  const [detectedProfiles, setDetectedProfiles] = useState<LocalTerminalProfile[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [editingProfile, setEditingProfile] = useState<LocalTerminalProfileInput | null>(null);
+  const [form, setForm] = useState<LocalTerminalProfileInput>(emptyLocalTerminalProfile());
+  const [formError, setFormError] = useState<string | null>(null);
+  const customProfiles = settings.customProfiles
+    .map((profile) => normalizeLocalTerminalProfileInput(profile))
+    .filter((profile): profile is LocalTerminalProfileInput => Boolean(profile));
+  const profileOptions = [...detectedProfiles, ...customProfiles];
+  const visibleDetectedProfiles = detectedProfiles.filter(
+    (profile) => !settings.hiddenProfileIds.includes(profile.id),
+  );
+
+  useEffect(() => {
+    let disposed = false;
+
+    async function loadProfiles() {
+      setLoading(true);
+      setError(null);
+      try {
+        const profiles = hasTauriRuntime()
+          ? await localTerminalListProfiles()
+          : previewSettingsLocalTerminalProfiles();
+        if (!disposed) {
+          setDetectedProfiles(profiles);
+        }
+      } catch (nextError) {
+        if (!disposed) {
+          setError(formatError(nextError));
+          setDetectedProfiles(previewSettingsLocalTerminalProfiles());
+        }
+      } finally {
+        if (!disposed) {
+          setLoading(false);
+        }
+      }
+    }
+
+    void loadProfiles();
+    return () => {
+      disposed = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (editingProfile) {
+      setForm(editingProfile);
+    }
+  }, [editingProfile]);
+
+  const currentDefaultOption = profileOptions.find(
+    (profile) => profile.id === settings.defaultProfileId,
+  );
+  const effectiveDefaultOption = currentDefaultOption || profileOptions[0] || null;
+
+  function toggleHiddenProfile(profileId: string, hidden: boolean) {
+    const nextHiddenIds = hidden
+      ? [...new Set([...settings.hiddenProfileIds, profileId])]
+      : settings.hiddenProfileIds.filter((id) => id !== profileId);
+    onUpdate({ hiddenProfileIds: nextHiddenIds });
+  }
+
+  function resetForm() {
+    setEditingProfile(null);
+    setForm(emptyLocalTerminalProfile());
+    setFormError(null);
+  }
+
+  function saveCustomProfile() {
+    const normalized = normalizeLocalTerminalProfileInput(form);
+    if (!normalized || !normalized.name || !normalized.command) {
+      setFormError("名称、类型和命令不能为空。");
+      return;
+    }
+
+    const nextCustomProfiles = [...settings.customProfiles];
+    const nextId = normalized.id || editingProfile?.id || `custom-${Date.now().toString()}`;
+    const nextProfile = { ...normalized, id: nextId };
+    const existingIndex = nextCustomProfiles.findIndex((item) => item.id === nextProfile.id);
+    if (existingIndex >= 0) {
+      nextCustomProfiles[existingIndex] = nextProfile;
+    } else {
+      nextCustomProfiles.push(nextProfile);
+    }
+
+    onUpdate({ customProfiles: nextCustomProfiles });
+    resetForm();
+  }
+
+  function deleteCustomProfile(profileId?: string) {
+    if (!profileId) {
+      return;
+    }
+    onUpdate({
+      customProfiles: settings.customProfiles.filter((item) => item.id !== profileId),
+      defaultProfileId:
+        settings.defaultProfileId === profileId ? visibleDetectedProfiles[0]?.id || null : settings.defaultProfileId,
+    });
+    if (editingProfile?.id === profileId) {
+      resetForm();
+    }
+  }
+
+  return (
+    <section className="settings-page-section">
+      <header className="settings-section-head settings-section-head-row">
+        <span>
+          <h1>本地终端</h1>
+          <p>管理默认本地 Shell、探测结果显示和自定义 profile。</p>
+        </span>
+        <button className="repository-primary-button" type="button" onClick={resetForm}>
+          <Plus className="ui-icon" aria-hidden="true" />
+          <span>新增自定义终端</span>
+        </button>
+      </header>
+
+      <div className="settings-panel">
+        <SettingsRow
+          icon={Terminal}
+          title="默认终端"
+          description="点击顶栏“本地终端”或 + 时默认打开的 profile。"
+          stack
+        >
+          <div className="settings-local-terminal-default">
+            <AppSelect
+              ariaLabel="默认本地终端"
+              className="settings-select"
+              options={profileOptions.map((profile) => ({
+                label: (
+                  <span className="local-terminal-menu-label">
+                    <LocalTerminalIcon className="ui-icon" kind={profile.kind} title={profile.name} />
+                    <span>{profile.name}</span>
+                  </span>
+                ),
+                value: profile.id || `custom-fallback-${profile.name}`,
+              }))}
+              placeholder={loading ? "探测中" : "选择默认终端"}
+              value={effectiveDefaultOption?.id || ""}
+              onChange={(defaultProfileId) => onUpdate({ defaultProfileId })}
+            />
+            <small className="settings-note-inline">
+              {effectiveDefaultOption
+                ? `当前默认：${effectiveDefaultOption.name}${currentDefaultOption ? "" : "（按可见列表第一项）"}`
+                : "未选择默认 profile，将按可见列表第一项打开。"}
+            </small>
+          </div>
+        </SettingsRow>
+        <SettingsRow
+          icon={RotateCcw}
+          title="恢复本地工作区"
+          description="后续预留：启动时恢复上次本地终端工作区。"
+        >
+          <SettingsToggle
+            checked={settings.reopenLastLocalWorkspace}
+            label="恢复本地工作区"
+            onChange={(reopenLastLocalWorkspace) => onUpdate({ reopenLastLocalWorkspace })}
+          />
+        </SettingsRow>
+      </div>
+
+      <div className="settings-panel local-terminal-detected-panel">
+        <header className="local-terminal-panel-head">
+          <span>
+            <strong>自动探测</strong>
+            <small>{loading ? "探测中..." : `${detectedProfiles.length.toString()} 项`}</small>
+          </span>
+          {error ? <small className="form-error">{error}</small> : null}
+        </header>
+        <div className="local-terminal-profile-list">
+          {detectedProfiles.map((profile) => {
+            const hidden = settings.hiddenProfileIds.includes(profile.id);
+            return (
+              <div className={`local-terminal-profile-card ${hidden ? "is-hidden-profile" : ""}`} key={profile.id}>
+                <div className="local-terminal-profile-main">
+                  <span className="local-terminal-profile-icon">
+                    <LocalTerminalIcon className="ui-icon" kind={profile.kind} title={profile.name} />
+                  </span>
+                  <span>
+                    <strong>{profile.name}</strong>
+                    <small>{profile.command}</small>
+                  </span>
+                </div>
+                <button
+                  className="settings-action-button"
+                  type="button"
+                  onClick={() => toggleHiddenProfile(profile.id, !hidden)}
+                >
+                  {hidden ? "显示" : "隐藏"}
+                </button>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
+      <div className="local-terminal-settings-grid">
+        <section className="settings-panel local-terminal-custom-list">
+          <header className="local-terminal-panel-head">
+            <span>
+              <strong>自定义 profile</strong>
+              <small>{customProfiles.length.toString()} 项</small>
+            </span>
+          </header>
+          <div className="local-terminal-profile-list">
+            {customProfiles.length === 0 ? (
+              <p className="settings-note">还没有自定义 profile。</p>
+            ) : (
+              customProfiles.map((profile, index) => (
+                <div className="local-terminal-profile-card" key={profile.id || `custom-${index.toString()}`}>
+                  <div className="local-terminal-profile-main">
+                    <span className="local-terminal-profile-icon">
+                      <LocalTerminalIcon className="ui-icon" kind={profile.kind} title={profile.name} />
+                    </span>
+                    <span>
+                      <strong>{profile.name}</strong>
+                      <small>{profile.command}</small>
+                    </span>
+                  </div>
+                  <div className="local-terminal-profile-actions">
+                    <button
+                      className="settings-action-button"
+                      type="button"
+                      onClick={() => setEditingProfile(profile)}
+                    >
+                      编辑
+                    </button>
+                    <button
+                      className="settings-action-button danger-button"
+                      type="button"
+                      onClick={() => deleteCustomProfile(profile.id)}
+                    >
+                      删除
+                    </button>
+                  </div>
+                </div>
+              ))
+            )}
+          </div>
+        </section>
+
+        <section className="settings-panel local-terminal-custom-form">
+          <header className="local-terminal-panel-head">
+            <span>
+              <strong>{editingProfile ? "编辑自定义 profile" : "新增自定义 profile"}</strong>
+              <small>用于补充 Git Bash、WSL 包装脚本或团队约定命令。</small>
+            </span>
+          </header>
+          <div className="local-terminal-form-grid">
+            <label>
+              <span>名称</span>
+              <input
+                className="settings-input"
+                value={form.name}
+                onChange={(event) => setForm({ ...form, name: event.currentTarget.value })}
+              />
+            </label>
+            <label>
+              <span>类型</span>
+              <input
+                className="settings-input"
+                value={form.kind}
+                placeholder="例如 powershell、wsl、custom"
+                onChange={(event) => setForm({ ...form, kind: event.currentTarget.value })}
+              />
+            </label>
+            <label className="local-terminal-form-span">
+              <span>命令</span>
+              <input
+                className="settings-input"
+                value={form.command}
+                placeholder="例如 C:\\Program Files\\PowerShell\\7\\pwsh.exe"
+                onChange={(event) => setForm({ ...form, command: event.currentTarget.value })}
+              />
+            </label>
+            <label className="local-terminal-form-span">
+              <span>参数</span>
+              <input
+                className="settings-input"
+                value={form.args.join(" ")}
+                placeholder='例如 -NoLogo -NoExit'
+                onChange={(event) =>
+                  setForm({
+                    ...form,
+                    args: event.currentTarget.value
+                      .split(/\s+/)
+                      .map((item) => item.trim())
+                      .filter(Boolean),
+                  })
+                }
+              />
+            </label>
+            <label className="local-terminal-form-span">
+              <span>启动目录</span>
+              <input
+                className="settings-input"
+                value={form.cwd || ""}
+                placeholder="可选"
+                onChange={(event) => setForm({ ...form, cwd: event.currentTarget.value })}
+              />
+            </label>
+          </div>
+          {formError ? <p className="form-error">{formError}</p> : null}
+          <footer className="credential-form-actions">
+            <div />
+            <div>
+              <button type="button" onClick={resetForm}>
+                清空
+              </button>
+              <button className="primary-button" type="button" onClick={saveCustomProfile}>
+                保存 profile
+              </button>
+            </div>
+          </footer>
+        </section>
+      </div>
+    </section>
+  );
+}
+
+function emptyLocalTerminalProfile(): LocalTerminalProfileInput {
+  return {
+    args: [],
+    command: "",
+    cwd: "",
+    detected: false,
+    env: {},
+    hidden: false,
+    icon: "terminal-shell",
+    id: undefined,
+    kind: "custom",
+    name: "",
+    platform: "all",
+    source: "custom",
+  };
+}
+
+function previewSettingsLocalTerminalProfiles(): LocalTerminalProfile[] {
+  return [
+    {
+      args: ["-NoLogo"],
+      command: "pwsh.exe",
+      cwd: null,
+      detected: true,
+      env: {},
+      hidden: false,
+      icon: "terminal-powershell",
+      id: "pwsh",
+      kind: "powershell_core",
+      name: "PowerShell 7",
+      platform: "windows",
+      source: "detected",
+    },
+    {
+      args: [],
+      command: "cmd.exe",
+      cwd: null,
+      detected: true,
+      env: {},
+      hidden: false,
+      icon: "terminal-cmd",
+      id: "cmd",
+      kind: "cmd",
+      name: "命令提示符",
+      platform: "windows",
+      source: "detected",
+    },
+  ];
 }
 
 function TerminalThemeSettingsSection({

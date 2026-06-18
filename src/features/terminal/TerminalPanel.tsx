@@ -1,6 +1,6 @@
 import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
-import { Terminal, type ITheme } from "@xterm/xterm";
+import { Terminal, type ITheme, type IWindowsPty } from "@xterm/xterm";
 import { useEffect, useRef, useState } from "react";
 import "@xterm/xterm/css/xterm.css";
 
@@ -32,10 +32,18 @@ import { normalizeStartupOutput } from "./terminalStartupOutput";
 
 const TERMINAL_SCROLLBAR_WIDTH = 6;
 const STARTUP_OUTPUT_BUFFER_MS = 250;
+const TERMINAL_RESIZE_SYNC_DEBOUNCE_MS = 240;
+
+interface PendingResizeSync {
+  cols: number;
+  rows: number;
+  sessionId: string;
+}
 
 interface TerminalPanelProps {
   active: boolean;
   connection: ConnectionProfile | null;
+  autoConnect?: boolean;
   fontFamily: string;
   fontSize: number;
   initialOutput?: number[];
@@ -45,6 +53,7 @@ interface TerminalPanelProps {
   tabId: string;
   theme: ITheme;
   title: string;
+  windowsPty?: IWindowsPty;
   onCurrentDirectoryChange?: (tabId: string, path: string) => void;
   onStatusChange: (tabId: string, status: string) => void;
 }
@@ -52,6 +61,7 @@ interface TerminalPanelProps {
 export function TerminalPanel({
   active,
   connection,
+  autoConnect = true,
   fontFamily,
   fontSize,
   initialOutput = [],
@@ -63,6 +73,7 @@ export function TerminalPanel({
   tabId,
   theme,
   title,
+  windowsPty,
 }: TerminalPanelProps) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const terminalRef = useRef<Terminal | null>(null);
@@ -79,6 +90,11 @@ export function TerminalPanel({
   const startupOutputBufferingRef = useRef(false);
   const startupOutputFlushTimerRef = useRef<number | null>(null);
   const terminalOutputWriterRef = useRef<((decoded: string) => void) | null>(null);
+  const lastSyncedSizeRef = useRef<string | null>(null);
+  const pendingResizeSyncRef = useRef<PendingResizeSync | null>(null);
+  const resizeSyncTimerRef = useRef<number | null>(null);
+  const activeRef = useRef(active);
+  const initialWindowsPtyRef = useRef(windowsPty);
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [listenersReady, setListenersReady] = useState(!hasTauriRuntime());
   const [status, setStatus] = useState(connection ? "待连接" : "空闲");
@@ -110,7 +126,6 @@ export function TerminalPanel({
     const terminal = new Terminal({
       allowProposedApi: true,
       cursorBlink: true,
-      convertEol: true,
       fontFamily,
       fontSize,
       overviewRuler: {
@@ -118,6 +133,7 @@ export function TerminalPanel({
       },
       scrollback: 8000,
       theme: withTerminalChromeTheme(theme),
+      windowsPty: resolveWindowsPtyOption(initialWindowsPtyRef.current),
     });
     const fitAddon = new FitAddon();
     terminalRef.current = terminal;
@@ -129,7 +145,7 @@ export function TerminalPanel({
       palette: getTerminalSemanticHighlightPalette(theme),
     });
     semanticHighlighterRef.current = semanticHighlighter;
-    fitAddon.fit();
+    fitAndSyncTerminalSize(terminal, fitAddon, sessionIdRef.current, lastSyncedSizeRef);
     startedRef.current = false;
     initialOutputWrittenLengthRef.current = 0;
     startupOutputBufferRef.current = "";
@@ -181,6 +197,7 @@ export function TerminalPanel({
         writeDecodedOutput(decoderRef.current.decode(Uint8Array.from(initialOutput), { stream: true }));
         initialOutputWrittenLengthRef.current = initialOutput.length;
       }
+      fitAndSyncTerminalSize(terminal, fitAddon, sessionIdRef.current, lastSyncedSizeRef);
     }
 
     const dataDisposable = terminal.onData((data) => {
@@ -202,17 +219,36 @@ export function TerminalPanel({
     });
 
     const resizeDisposable = terminal.onResize(({ cols, rows }) => {
+      if (!activeRef.current) {
+        return;
+      }
       const activeSessionId = sessionIdRef.current;
       if (!activeSessionId) {
         return;
       }
-      void terminalResize(activeSessionId, cols, rows).catch((error) => {
-        terminal.writeln(`\r\n尺寸同步失败: ${formatError(error)}`);
-      });
+      scheduleTerminalSizeSync(
+        terminal,
+        activeSessionId,
+        cols,
+        rows,
+        lastSyncedSizeRef,
+        pendingResizeSyncRef,
+        resizeSyncTimerRef,
+      );
     });
 
     const resizeObserver = new ResizeObserver(() => {
-      fitAddon.fit();
+      if (!activeRef.current) {
+        return;
+      }
+      fitAndScheduleTerminalSize(
+        terminal,
+        fitAddon,
+        sessionIdRef.current,
+        lastSyncedSizeRef,
+        pendingResizeSyncRef,
+        resizeSyncTimerRef,
+      );
     });
     resizeObserver.observe(hostRef.current);
 
@@ -287,6 +323,7 @@ export function TerminalPanel({
       startupOutputBufferRef.current = "";
       startupOutputBufferingRef.current = false;
       terminalOutputWriterRef.current = null;
+      clearPendingTerminalResizeSync(pendingResizeSyncRef, resizeSyncTimerRef);
       resizeObserver.disconnect();
       resizeDisposable.dispose();
       dataDisposable.dispose();
@@ -337,7 +374,7 @@ export function TerminalPanel({
     }
 
     terminal.options.fontFamily = fontFamily;
-    fitAddonRef.current?.fit();
+    fitAndSyncTerminalSize(terminal, fitAddonRef.current, sessionIdRef.current, lastSyncedSizeRef);
   }, [fontFamily]);
 
   useEffect(() => {
@@ -347,7 +384,7 @@ export function TerminalPanel({
     }
 
     terminal.options.fontSize = fontSize;
-    fitAddonRef.current?.fit();
+    fitAndSyncTerminalSize(terminal, fitAddonRef.current, sessionIdRef.current, lastSyncedSizeRef);
   }, [fontSize]);
 
   useEffect(() => {
@@ -357,6 +394,7 @@ export function TerminalPanel({
       !terminal ||
       !fitAddon ||
       !connection ||
+      !autoConnect ||
       !listenersReady ||
       startedRef.current ||
       initialSessionId
@@ -371,7 +409,7 @@ export function TerminalPanel({
       return;
     }
 
-    fitAddon.fit();
+    fitAndSyncTerminalSize(terminal, fitAddon, sessionIdRef.current, lastSyncedSizeRef);
     terminal.clear();
     terminal.writeln(`连接 ${connection.username}@${connection.host}:${connection.port} ...`);
     setStatus("连接中");
@@ -399,12 +437,18 @@ export function TerminalPanel({
         setStatus("连接失败");
         terminal.writeln(`\r\n连接失败: ${formatError(error)}`);
       });
-  }, [connection, listenersReady, tabId]);
+  }, [autoConnect, connection, listenersReady, tabId]);
 
   useEffect(() => {
+    activeRef.current = active;
     if (active) {
-      fitAddonRef.current?.fit();
-      terminalRef.current?.focus();
+      const terminal = terminalRef.current;
+      if (terminal) {
+        fitAndSyncTerminalSize(terminal, fitAddonRef.current, sessionIdRef.current, lastSyncedSizeRef);
+        terminal.focus();
+      }
+    } else {
+      clearPendingTerminalResizeSync(pendingResizeSyncRef, resizeSyncTimerRef);
     }
   }, [active]);
 
@@ -426,6 +470,106 @@ function withTerminalChromeTheme(theme: ITheme): ITheme {
     scrollbarSliderBackground: "transparent",
     scrollbarSliderHoverBackground: "rgba(148, 163, 184, 0.28)",
   };
+}
+
+function resolveWindowsPtyOption(windowsPty: IWindowsPty | undefined): IWindowsPty | undefined {
+  return windowsPty ? { ...windowsPty } : undefined;
+}
+
+function fitAndSyncTerminalSize(
+  terminal: Terminal,
+  fitAddon: FitAddon | null,
+  sessionId: string | null,
+  lastSyncedSizeRef: { current: string | null },
+) {
+  fitAddon?.fit();
+  const activeSessionId = sessionId;
+  if (!activeSessionId) {
+    return;
+  }
+  syncTerminalSize(terminal, activeSessionId, terminal.cols, terminal.rows, lastSyncedSizeRef);
+}
+
+function fitAndScheduleTerminalSize(
+  terminal: Terminal,
+  fitAddon: FitAddon | null,
+  sessionId: string | null,
+  lastSyncedSizeRef: { current: string | null },
+  pendingResizeSyncRef: { current: PendingResizeSync | null },
+  resizeSyncTimerRef: { current: number | null },
+) {
+  fitAddon?.fit();
+  const activeSessionId = sessionId;
+  if (!activeSessionId) {
+    return;
+  }
+  scheduleTerminalSizeSync(
+    terminal,
+    activeSessionId,
+    terminal.cols,
+    terminal.rows,
+    lastSyncedSizeRef,
+    pendingResizeSyncRef,
+    resizeSyncTimerRef,
+  );
+}
+
+function syncTerminalSize(
+  terminal: Terminal,
+  activeSessionId: string,
+  cols: number,
+  rows: number,
+  lastSyncedSizeRef: { current: string | null },
+) {
+  const sizeKey = `${activeSessionId}:${cols.toString()}x${rows.toString()}`;
+  if (lastSyncedSizeRef.current === sizeKey) {
+    return;
+  }
+  lastSyncedSizeRef.current = sizeKey;
+  void terminalResize(activeSessionId, cols, rows).catch((error) => {
+    terminal.writeln(`\r\n尺寸同步失败: ${formatError(error)}`);
+  });
+}
+
+function scheduleTerminalSizeSync(
+  terminal: Terminal,
+  activeSessionId: string,
+  cols: number,
+  rows: number,
+  lastSyncedSizeRef: { current: string | null },
+  pendingResizeSyncRef: { current: PendingResizeSync | null },
+  resizeSyncTimerRef: { current: number | null },
+) {
+  pendingResizeSyncRef.current = { cols, rows, sessionId: activeSessionId };
+  if (resizeSyncTimerRef.current !== null) {
+    window.clearTimeout(resizeSyncTimerRef.current);
+  }
+  resizeSyncTimerRef.current = window.setTimeout(() => {
+    resizeSyncTimerRef.current = null;
+    const pendingResize = pendingResizeSyncRef.current;
+    pendingResizeSyncRef.current = null;
+    if (!pendingResize) {
+      return;
+    }
+    syncTerminalSize(
+      terminal,
+      pendingResize.sessionId,
+      pendingResize.cols,
+      pendingResize.rows,
+      lastSyncedSizeRef,
+    );
+  }, TERMINAL_RESIZE_SYNC_DEBOUNCE_MS);
+}
+
+function clearPendingTerminalResizeSync(
+  pendingResizeSyncRef: { current: PendingResizeSync | null },
+  resizeSyncTimerRef: { current: number | null },
+) {
+  pendingResizeSyncRef.current = null;
+  if (resizeSyncTimerRef.current !== null) {
+    window.clearTimeout(resizeSyncTimerRef.current);
+    resizeSyncTimerRef.current = null;
+  }
 }
 
 function formatError(error: unknown) {

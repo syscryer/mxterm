@@ -33,6 +33,11 @@ import type {
   RemoteFileWriteResult,
 } from "../../features/files/remoteFileTypes";
 import type {
+  LocalTerminalOpenRequest,
+  LocalTerminalProfile,
+  WindowsPtyInfo,
+} from "../../features/terminal/localTerminalTypes";
+import type {
   RemoteMonitorProcessSignalInput,
   RemoteMonitorSnapshot,
   RemoteMonitorSnapshotOptions,
@@ -139,6 +144,26 @@ export function terminalResize(sessionId: string, cols: number, rows: number) {
 
 export function terminalClose(sessionId: string) {
   return invoke<void>("terminal_close", { sessionId });
+}
+
+export function localTerminalListProfiles(input?: {
+  platform?: string;
+  hiddenProfileIds?: string[];
+}) {
+  return invoke<LocalTerminalProfile[]>("local_terminal_list_profiles", {
+    request: {
+      hidden_profile_ids: input?.hiddenProfileIds || [],
+      platform: input?.platform,
+    },
+  });
+}
+
+export function localTerminalOpen(request: LocalTerminalOpenRequest) {
+  return invoke<string>("local_terminal_open", { request });
+}
+
+export function getWindowsPtyInfo() {
+  return invoke<WindowsPtyInfo | null>("get_windows_pty_info");
 }
 
 export function getSupportedWindowMaterialsCommand() {

@@ -3,6 +3,7 @@ import type { MouseEvent, PointerEvent, ReactNode } from "react";
 import { Tooltip } from "../../shared/ui/Tooltip";
 import { hasTauriRuntime } from "../../shared/tauri/runtime";
 import type { ConnectionProfile } from "../connections/connectionTypes";
+import { LocalTerminalWorkspaceIcon } from "../terminal/LocalTerminalIcons";
 
 const windowDragThresholdPx = 4;
 
@@ -20,9 +21,11 @@ interface AppTitlebarProps {
   connectionById: Map<string, ConnectionProfile>;
   connectionSessions: TitlebarConnectionSession[];
   homeActive: boolean;
+  localTerminalActive: boolean;
   leftPaneCollapsed: boolean;
   onCloseConnectionSession: (connectionId: string) => void;
   onOpenHome: () => void;
+  onOpenLocalTerminal: () => void;
   onSelectConnectionSession: (connectionId: string) => void;
   onToggleLeftPane: () => void;
 }
@@ -32,9 +35,11 @@ export function AppTitlebar({
   connectionById,
   connectionSessions,
   homeActive,
+  localTerminalActive,
   leftPaneCollapsed,
   onCloseConnectionSession,
   onOpenHome,
+  onOpenLocalTerminal,
   onSelectConnectionSession,
   onToggleLeftPane,
 }: AppTitlebarProps) {
@@ -68,6 +73,18 @@ export function AppTitlebar({
             >
               <HomeGlyph />
               <span>首页</span>
+            </button>
+          </Tooltip>
+          <Tooltip label="终端">
+            <button
+              className={`title-sidebar-home ${localTerminalActive ? "active" : ""}`}
+              type="button"
+              aria-label="终端"
+              aria-current={localTerminalActive ? "page" : undefined}
+              onClick={onOpenLocalTerminal}
+            >
+              <LocalTerminalWorkspaceIcon className="title-tool-icon" />
+              <span>终端</span>
             </button>
           </Tooltip>
         </div>

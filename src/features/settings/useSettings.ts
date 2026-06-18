@@ -9,6 +9,7 @@ import {
   type MxtermSettings,
   type TerminalThemeSettings,
 } from "./settingsTypes";
+import type { LocalTerminalSettings } from "../terminal/localTerminalTypes";
 
 const settingsStorageKey = "mxterm.settings.v1";
 
@@ -67,6 +68,18 @@ export function useSettings() {
     );
   }, []);
 
+  const updateLocalTerminal = useCallback((update: Partial<LocalTerminalSettings>) => {
+    setSettings((current) =>
+      normalizeSettings({
+        ...current,
+        localTerminal: {
+          ...current.localTerminal,
+          ...update,
+        },
+      }),
+    );
+  }, []);
+
   const reset = useCallback(() => setSettings(defaultSettings), []);
 
   return {
@@ -74,6 +87,7 @@ export function useSettings() {
     updateAppearance,
     updateBasic,
     updateFileTransfer,
+    updateLocalTerminal,
     updateTerminalTheme,
     reset,
   };

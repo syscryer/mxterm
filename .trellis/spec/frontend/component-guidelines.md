@@ -130,6 +130,25 @@ Ant Design, Mantine, or similar libraries just to fix one modal or button.
   capture as soon as the mounted `TerminalPanel` reports that its output
   listener is ready; otherwise the same late bytes can be written once through
   the live listener and again through `warmupOutput`.
+- SSH and local terminals may share `terminal:output` events, but their runtime
+  tab stores are separate. Late handoff output for a local terminal must append
+  to `localTerminalTabs`, not the SSH `terminalTabs` store; otherwise the shell
+  prompt or first echoed input can be dropped before `TerminalPanel` is ready,
+  making the local terminal appear blank even though the PTY session exists.
+- When `TerminalPanel` receives a pre-created `initialSessionId`, call FitAddon
+  and immediately send the fitted `cols` / `rows` through `terminalResize`.
+  Local ConPTY sessions are especially sensitive to this: if the backend stays
+  at the open-time fallback size such as `80x24`, PowerShell can wrap or scroll
+  output as a 24-row terminal while xterm renders a much taller viewport, making
+  the cursor appear in the middle after commands such as `ls`.
+- Window/container resize events should fit only the active xterm panel and
+  debounce the backend `terminalResize` call. Dragging a desktop window can
+  produce many intermediate sizes; forwarding every size to a ConPTY-backed
+  full-screen or TUI command can make the child redraw repeatedly and pollute
+  scrollback with duplicate screens. Hidden terminal panels must ignore
+  ResizeObserver / xterm `onResize` callbacks and clear pending resize timers
+  when deactivated. Initial session handoff, tab activation, and font changes
+  may still use immediate sync because they are discrete events.
 - `TerminalPanel` should briefly buffer startup handoff output before first
   paint so `initialOutput` and early live events are written to xterm in one
   ordered batch. If the batch contains a duplicated leading shell prompt before
@@ -144,6 +163,16 @@ Ant Design, Mantine, or similar libraries just to fix one modal or button.
   as a grid row gap between `.terminal-subtabs` and `.terminal-stack`. Do not
   add decorative padding directly to `.terminal-host` or `.terminal-panel`
   unless the FitAddon measurement is explicitly adjusted for it.
+- Local terminal creation controls in the subtab strip should use a compact
+  split control: `+` opens the configured default profile, and the adjacent
+  icon-only chevron opens a profile menu. Do not put a wide profile select or
+  "default profile" text in the terminal subtab strip; default profile changes
+  belong in Settings.
+- Mutually exclusive terminal workbench panes, such as SSH and local terminal
+  panes, must not keep layout height while hidden. Use a pane-level hidden class
+  that removes the inactive pane from layout, while keeping the actual terminal
+  panels mounted inside the active/inactive pane model so xterm state is not
+  recreated during workspace switches.
 - Connection flow step indicators should be driven by explicit connection
   phase state, not by the length of diagnostic logs. Retry actions must clear
   transient error details, host-key prompts, stale session IDs, and old
@@ -164,6 +193,19 @@ Ant Design, Mantine, or similar libraries just to fix one modal or button.
   the same background as the terminal host. Their upstream CSS defaults to pure
   black, which creates visible right/bottom bands when FitAddon rounds the
   terminal to whole character cells.
+- xterm internals must be isolated from broad app resets. Keep `.xterm` and
+  descendants on `box-sizing: content-box`, and explicitly clear global
+  input/textarea focus styling from `.xterm-helper-textarea`. Global
+  `border-box`, focus rings, transitions, or parent-only xterm screen padding
+  can desynchronize xterm's canvas, cursor, helper textarea, and IME
+  composition coordinates.
+- Interactive PTY sessions should let the shell own carriage return / line feed
+  behavior. Do not enable xterm `convertEol` for SSH or local terminals; it is
+  intended for plain text streams and can cause transient cursor jumps in real
+  shells such as Git Bash. For local Windows terminals backed by ConPTY, pass
+  xterm's `windowsPty` compatibility option explicitly from the workspace layer,
+  including the Windows build number from Tauri when available, instead of
+  applying Windows heuristics to SSH terminals blindly.
 - Terminal semantic highlighting should use xterm's parsed-write and decoration
   APIs (`onWriteParsed`, `registerDecoration`) against the normal buffer after
   output is written. Do not inject ANSI color sequences into `terminal.write`
