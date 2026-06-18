@@ -183,6 +183,7 @@ type HostKeyInfo = {
 - Run `node scripts/check-terminal-resize-debounce-source.mjs` after changing `TerminalPanel` fit / resize observer / backend resize synchronization.
 - Run `node scripts/check-remote-file-editor-source.mjs` after changing `ConnectionDialog`, `WorkspaceShell` dialog test handlers, or connection command wrappers so the no-save dialog-test guard is checked.
 - Run `node scripts/check-remote-file-editor-source.mjs` after changing workspace terminal tab creation, so the same-connection new terminal path stays separate from the connection-preparation page.
+- Run `node scripts/check-workspace-ssh-activation-source.mjs` after changing workspace terminal tab creation or top-level workspace switching, so opening SSH from the local terminal workspace still reveals the SSH session.
 - Add focused tests once the frontend test runner exists for credential-mode field clearing, credential delete handling, host-key recoverable states, fallback behavior, and error display.
 - Cross-check changed TypeScript payload fields against `src-tauri/src/commands.rs` and `src-tauri/src/connections/mod.rs` in the same task.
 - Run `node scripts/check-connection-system-icon.mjs` after changing connection system icon inference, remote OS profile fields, or the system probe wrapper.

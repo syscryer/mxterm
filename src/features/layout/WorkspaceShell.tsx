@@ -2670,6 +2670,7 @@ export function WorkspaceShell() {
       terminalTabsRef.current = nextTabs;
       return nextTabs;
     });
+    setActiveWorkspaceMode("ssh");
     setHomeActive(false);
     setActiveConnectionId(connection.id);
     setActiveTabId(tab.id);
