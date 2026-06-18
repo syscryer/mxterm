@@ -314,12 +314,14 @@ fn spawn_local_reader(
         loop {
             match reader.read(&mut buffer) {
                 Ok(0) => break,
-                Ok(read) => emit_terminal_output(
-                    &app_for_thread,
-                    &session_id_for_thread,
-                    &request_id_for_thread,
-                    buffer[..read].to_vec(),
-                ),
+                Ok(read) => {
+                    emit_terminal_output(
+                        &app_for_thread,
+                        &session_id_for_thread,
+                        &request_id_for_thread,
+                        buffer[..read].to_vec(),
+                    );
+                }
                 Err(error) => {
                     emit_terminal_output(
                         &app_for_thread,
