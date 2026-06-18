@@ -1,6 +1,7 @@
 # mXterm Agent 规则
 
 - 所有回答使用中文。
+- **动手前先对齐**：遇到需求不明确、有多种合理实现方案、或涉及 UI 布局/交互入口/数据模型归属的决策时，必须先和用户对齐（列选项、给推荐、说明取舍），不要一上来就开干。只有需求明确、实现唯一的情况才直接做。涉及写代码的实现类任务，按下方 Trellis 流程登记任务后再动手。
 - 后续项目开发使用 trytrellis.app 的 Trellis 管理。
 - 进入仓库后先查看 `.trellis/workflow.md`、`.trellis/config.yaml` 和当前任务上下文。
 - 使用 `trellis` CLI，不使用 `trellis-ctl`。
