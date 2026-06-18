@@ -46,6 +46,7 @@ export interface BasicSettings {
   keepFailedTerminalTabs: boolean;
   reopenLastTerminal: boolean;
   restoreWorkspaceOnLaunch: boolean;
+  recentConnectionLimit: 5 | 10 | 15 | 20 | 30 | 50;
 }
 
 export interface AppearanceSettings {
@@ -180,6 +181,7 @@ export const defaultSettings: MxtermSettings = {
     keepFailedTerminalTabs: true,
     reopenLastTerminal: false,
     restoreWorkspaceOnLaunch: true,
+    recentConnectionLimit: 5,
   },
   fileTransfer: {
     conflictPolicyDefault: "ask",
@@ -243,6 +245,11 @@ export function normalizeSettings(value: unknown): MxtermSettings {
       restoreWorkspaceOnLaunch: normalizeBoolean(
         basic.restoreWorkspaceOnLaunch,
         defaultSettings.basic.restoreWorkspaceOnLaunch,
+      ),
+      recentConnectionLimit: normalizeNumber(
+        basic.recentConnectionLimit,
+        [5, 10, 15, 20, 30, 50],
+        defaultSettings.basic.recentConnectionLimit,
       ),
     },
     fileTransfer: {

@@ -1,4 +1,5 @@
 import type { MouseEvent, PointerEvent, ReactNode } from "react";
+import { House } from "lucide-react";
 
 import { Tooltip } from "../../shared/ui/Tooltip";
 import { hasTauriRuntime } from "../../shared/tauri/runtime";
@@ -263,13 +264,7 @@ function SidebarToggleGlyph({ collapsed }: { collapsed: boolean }) {
 }
 
 function HomeGlyph() {
-  return (
-    <GlyphShell>
-      <path d="m3 8 5-4.3L13 8" />
-      <path d="M4.4 7.3v5h7.2v-5" />
-      <path d="M6.8 12.3V9.5h2.4v2.8" />
-    </GlyphShell>
-  );
+  return <House className="title-tool-icon" aria-hidden="true" />;
 }
 
 function MinimizeGlyph() {

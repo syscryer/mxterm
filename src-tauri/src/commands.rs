@@ -982,6 +982,7 @@ pub async fn remote_file_check_download_target(
         request.group_by_session,
         request.timestamp_directory,
     )?;
+    ensure_local_download_directory_ready(&local_directory)?;
     let target = local_directory.join(sanitize_local_path_segment(&name));
 
     Ok(RemoteFileDownloadTargetCheckResult {
@@ -1510,6 +1511,35 @@ fn resolve_download_directory_parts(
     Ok(directory)
 }
 
+fn ensure_local_download_directory_ready(directory: &Path) -> Result<(), AppError> {
+    fs::create_dir_all(directory).map_err(|error| {
+        AppError::new(
+            "remote_file_download_create_dir_failed",
+            "本地下载目录创建失败。",
+            format!("path={}: {error}", directory.display()),
+            true,
+        )
+    })?;
+
+    let probe_path = directory.join(format!(".mxterm-write-test-{}", now_millis()));
+    match fs::OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(&probe_path)
+    {
+        Ok(_) => {
+            let _ = fs::remove_file(&probe_path);
+            Ok(())
+        }
+        Err(error) => Err(AppError::new(
+            "remote_file_download_directory_not_writable",
+            "本地下载目录不可写。",
+            format!("path={}: {error}", directory.display()),
+            true,
+        )),
+    }
+}
+
 fn resolve_local_conflict(
     target: &Path,
     policy: TransferConflictPolicy,
@@ -1980,8 +2010,9 @@ fn remote_sftp_transfer_progress_callback(
 
 #[cfg(test)]
 mod tests {
-    use super::local_tar_extract_args;
+    use super::{ensure_local_download_directory_ready, local_tar_extract_args};
     use std::ffi::OsString;
+    use std::fs;
     use std::path::Path;
 
     #[test]
@@ -1996,6 +2027,18 @@ mod tests {
         assert_eq!(args[xzf_index + 1], OsString::from("archive.tar.gz"));
         assert_eq!(args[xzf_index + 2], OsString::from("-C"));
         assert_eq!(args[xzf_index + 3], OsString::from("target"));
+    }
+
+    #[test]
+    fn local_download_directory_ready_creates_missing_directory() {
+        let root = std::env::temp_dir().join(format!("mxterm-download-ready-{}", crate::commands::now_millis()));
+        let nested = root.join("group").join("time");
+
+        ensure_local_download_directory_ready(&nested).expect("directory should be prepared");
+
+        assert!(nested.exists());
+
+        let _ = fs::remove_dir_all(&root);
     }
 }
 

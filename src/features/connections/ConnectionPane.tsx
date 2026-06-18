@@ -49,6 +49,7 @@ interface ConnectionPaneProps {
   onRefresh: () => void;
   onSelect: (connection: ConnectionProfile) => void;
   onToggleFavorite: (connection: ConnectionProfile) => void | Promise<void>;
+  recentConnectionLimit: number;
   selectedId: string | null;
 }
 
@@ -93,6 +94,7 @@ const systemFolders: SystemFolder[] = [
 ];
 
 const customGroupStorageKey = "mxterm.connectionGroups.v2";
+const expandedFolderStorageKey = "mxterm.connectionExpandedFolders.v1";
 const groupPalette = ["#64748b", "#2563eb", "#4f7d63", "#c47c2c", "#8b5cf6", "#d14d72"];
 const connectionDragDataType = "application/x-mxterm-connection-id";
 
@@ -111,6 +113,7 @@ export function ConnectionPane({
   onRefresh,
   onSelect,
   onToggleFavorite,
+  recentConnectionLimit,
   selectedId,
 }: ConnectionPaneProps) {
   const [customGroups, setCustomGroups] = useState<CustomGroup[]>(readStoredGroups);
@@ -125,12 +128,14 @@ export function ConnectionPane({
   const [dropTargetId, setDropTargetId] = useState<DropTargetId | null>(null);
   const [mouseDrag, setMouseDrag] = useState<MouseDragState | null>(null);
   const [quickSelectedId, setQuickSelectedId] = useState<string | null>(null);
-  const [expandedFolders, setExpandedFolders] = useState<Record<FolderId, boolean>>({
-    favorites: true,
-    recent: true,
-  });
+  const [expandedFolders, setExpandedFolders] = useState<Record<FolderId, boolean>>(
+    readStoredExpandedFolders,
+  );
 
-  const catalog = useMemo(() => buildCatalog(connections), [connections]);
+  const catalog = useMemo(
+    () => buildCatalog(connections, recentConnectionLimit),
+    [connections, recentConnectionLimit],
+  );
   const customGroupIds = useMemo(
     () => new Set(customGroups.map((group) => group.id)),
     [customGroups],
@@ -154,6 +159,10 @@ export function ConnectionPane({
   useEffect(() => {
     writeStoredGroups(customGroups);
   }, [customGroups]);
+
+  useEffect(() => {
+    writeStoredExpandedFolders(expandedFolders);
+  }, [expandedFolders]);
 
   useEffect(() => {
     setCustomGroups((groups) => mergeProfileGroups(groups, connections));
@@ -1001,11 +1010,15 @@ function deleteRequestDescription(request: DeleteRequest | null) {
   return `确认删除连接“${request.connection.name}”吗？这个操作无法撤销。`;
 }
 
-function buildCatalog(connections: ConnectionProfile[]) {
-  const recent = [...connections].sort(sortByRecent);
+function buildCatalog(connections: ConnectionProfile[], recentConnectionLimit: number) {
+  const sorted = [...connections].sort(sortByRecent);
+  const recent = sorted
+    .filter((connection) => timestampOf(connection.last_connected_at) > 0)
+    .sort(sortByRecent)
+    .slice(0, recentConnectionLimit);
 
   return {
-    favorites: recent.filter((connection) => connection.is_favorite),
+    favorites: sorted.filter((connection) => connection.is_favorite),
     recent,
   } satisfies Record<SystemFolderId, ConnectionProfile[]>;
 }
@@ -1027,11 +1040,26 @@ function sortByRecent(left: ConnectionProfile, right: ConnectionProfile) {
 }
 
 function timestampOf(value?: string | null) {
-  if (!value) {
+  const trimmed = value?.trim();
+  if (!trimmed) {
     return 0;
   }
 
-  const parsed = Date.parse(value);
+  const normalized = trimmed.toLowerCase();
+
+  if (normalized === "demo" || normalized === "preview") {
+    return Date.now();
+  }
+
+  if (/^\d+$/.test(normalized)) {
+    const numeric = Number(normalized);
+    if (!Number.isFinite(numeric)) {
+      return 0;
+    }
+    return numeric < 1_000_000_000_000 ? numeric * 1000 : numeric;
+  }
+
+  const parsed = Date.parse(trimmed);
   return Number.isNaN(parsed) ? 0 : parsed;
 }
 
@@ -1108,6 +1136,51 @@ function readStoredGroups() {
   }
 }
 
+function readStoredExpandedFolders(): Record<FolderId, boolean> {
+  const defaults = {
+    favorites: true,
+    recent: true,
+  } as Record<FolderId, boolean>;
+
+  if (typeof window === "undefined") {
+    return defaults;
+  }
+
+  try {
+    const raw = window.localStorage.getItem(expandedFolderStorageKey);
+    const parsed: unknown = raw ? JSON.parse(raw) : {};
+    if (!isRecord(parsed)) {
+      return defaults;
+    }
+
+    return Object.entries(parsed).reduce<Record<FolderId, boolean>>((folders, [id, expanded]) => {
+      if (isFolderId(id) && typeof expanded === "boolean") {
+        folders[id] = expanded;
+      }
+      return folders;
+    }, { ...defaults });
+  } catch {
+    return defaults;
+  }
+}
+
+function writeStoredExpandedFolders(folders: Record<FolderId, boolean>) {
+  try {
+    const serializable = Object.fromEntries(
+      Object.entries(folders).filter(
+        ([id, expanded]) => isFolderId(id) && typeof expanded === "boolean",
+      ),
+    );
+    window.localStorage.setItem(expandedFolderStorageKey, JSON.stringify(serializable));
+  } catch {
+    // localStorage can be unavailable in restricted preview contexts.
+  }
+}
+
+function isFolderId(value: string): value is FolderId {
+  return value === "favorites" || value === "recent" || value.startsWith("group-");
+}
+
 function isStoredGroup(value: unknown): value is CustomGroup {
   if (typeof value !== "object" || value === null) {
     return false;
@@ -1115,6 +1188,10 @@ function isStoredGroup(value: unknown): value is CustomGroup {
 
   const group = value as Partial<CustomGroup>;
   return Boolean(group.id && group.name && group.color);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function writeStoredGroups(groups: CustomGroup[]) {
