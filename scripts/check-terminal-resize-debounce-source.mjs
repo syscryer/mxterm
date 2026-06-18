@@ -16,17 +16,26 @@ function assertExcludes(value, message) {
 
 assertIncludes(
   "const TERMINAL_RESIZE_SYNC_DEBOUNCE_MS",
-  "TerminalPanel must debounce backend PTY resize synchronization.",
+  "TerminalPanel must debounce terminal resize handling.",
+);
+
+// fit() must be coalesced inside the debounce timer together with the backend
+// sync, NOT called synchronously on every ResizeObserver frame. Synchronous
+// per-frame fit() desyncs xterm's canvas from its logical buffer and causes the
+// ghosting / duplicated-glyph artifacts seen while dragging the window.
+assertIncludes(
+  "function scheduleFitAndSyncTerminalSize",
+  "ResizeObserver must debounce fit() and backend resize through one shared timer.",
 );
 
 assertIncludes(
-  "function scheduleTerminalSizeSync",
-  "TerminalPanel must centralize debounced backend resize synchronization.",
+  "fitAddon.fit();",
+  "Debounced resize must still call fit() to recompute xterm cols/rows.",
 );
 
-assertIncludes(
+assertExcludes(
   "function fitAndScheduleTerminalSize",
-  "ResizeObserver should fit xterm immediately but debounce backend resize.",
+  "The old half-debounced helper (synchronous fit + deferred sync) must be removed.",
 );
 
 assertIncludes(
@@ -44,9 +53,12 @@ assertIncludes(
   "TerminalPanel must clear pending resize timers during cleanup.",
 );
 
-assertExcludes(
-  "const resizeObserver = new ResizeObserver(() => {\n      fitAndSyncTerminalSize(terminal, fitAddon, sessionIdRef.current, lastSyncedSizeRef);\n    });",
-  "ResizeObserver must not synchronously send every intermediate window size to the PTY.",
+// onResize fires from fit(). The drag path already syncs the backend inside the
+// same debounce tick, so onResize must call syncTerminalSize directly only for
+// imperative fits (font/active/init) to keep xterm and the PTY on one size.
+assertIncludes(
+  "syncTerminalSize(terminal, activeSessionId, cols, rows, lastSyncedSizeRef);",
+  "onResize must synchronously sync imperative fits to the backend PTY.",
 );
 
 console.log("terminal resize debounce source check passed");
