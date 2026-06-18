@@ -153,7 +153,7 @@ fn detect_windows_profiles() -> Result<Vec<LocalTerminalProfile>, AppError> {
             "powershell_core",
             "windows",
             command,
-            vec!["-NoLogo".to_string()],
+            vec!["-NoLogo".to_string(), "-NoProfile".to_string()],
             "terminal-powershell",
         ));
     }
@@ -165,7 +165,7 @@ fn detect_windows_profiles() -> Result<Vec<LocalTerminalProfile>, AppError> {
             "powershell",
             "windows",
             command,
-            vec!["-NoLogo".to_string()],
+            vec!["-NoLogo".to_string(), "-NoProfile".to_string()],
             "terminal-powershell",
         ));
     }
@@ -585,7 +585,7 @@ mod tests {
             platform: "windows".into(),
             source: "detected".into(),
             command: "pwsh.exe".into(),
-            args: vec!["-NoLogo".into()],
+            args: vec!["-NoLogo".into(), "-NoProfile".into()],
             cwd: Some("C:\\Users\\demo".into()),
             env: BTreeMap::new(),
             icon: "terminal-powershell".into(),
