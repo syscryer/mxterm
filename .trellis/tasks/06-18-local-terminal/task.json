@@ -18,7 +18,10 @@
   "commit": null,
   "pr_url": null,
   "subtasks": [],
-  "children": [],
+  "children": [
+    "06-18-fix-terminal-resize-debounce",
+    "06-18-fix-terminal-ime-unicode11"
+  ],
   "parent": null,
   "relatedFiles": [],
   "notes": "",
