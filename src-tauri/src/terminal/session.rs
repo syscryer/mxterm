@@ -18,13 +18,13 @@ use uuid::Uuid;
 use crate::app_error::AppError;
 use crate::commands::TerminalConnectRequest;
 use crate::connections::{
-    normalize_terminal_encoding, ConnectionAdvancedConfig, ConnectionProxyConfig,
-    ConnectionProxyKind,
+    normalize_terminal_encoding, ConnectionAdvancedConfig, ConnectionJumpConfig,
+    ConnectionJumpKind, ConnectionProxyConfig, ConnectionProxyKind,
 };
 use crate::known_hosts::{host_key_info, KnownHostCheck, KnownHostStore};
 use crate::ssh_config::{
     app_error_for_host_key_changed, app_error_for_host_key_unknown, known_host_store_path,
-    ResolvedSshConfig,
+    resolve_saved_connection, ResolvedSshConfig,
 };
 
 const REMOTE_EXEC_TRANSFER_CHUNK_BYTES: usize = 256 * 1024;
@@ -93,6 +93,7 @@ pub struct TerminalSession {
     pub username: String,
     terminal_encoding: String,
     client: SshHandle,
+    jump_client: Option<SshHandle>,
     writer: Mutex<ChannelWriter>,
 }
 
@@ -111,10 +112,12 @@ enum ExecStdin<'a> {
 
 pub struct ReusableExecSession {
     client: SshHandle,
+    jump_client: Option<SshHandle>,
 }
 
 pub struct ReusableSftpSession {
     client: SshHandle,
+    jump_client: Option<SshHandle>,
     sftp: SftpSession,
 }
 
@@ -150,11 +153,11 @@ impl TerminalSession {
         };
 
         emit_progress(&progress, "tcp_connecting", "正在建立 SSH TCP 连接...");
-        let mut client = run_with_timeout(
+        let (mut client, jump_client) = run_with_timeout(
             "terminal_connect_timeout",
             "SSH 连接超时。",
             duration_from_ms(config.advanced.connect_timeout_ms),
-            connect_ssh_client(ssh_config, &config, host_key_handler),
+            connect_target_client(&app, ssh_config, &config, host_key_handler),
         )
         .await?
         .map_err(|error| {
@@ -239,6 +242,7 @@ impl TerminalSession {
                 username,
                 terminal_encoding,
                 client,
+                jump_client,
                 writer: Mutex::new(writer),
             },
             reader,
@@ -275,7 +279,13 @@ impl TerminalSession {
             .await
             .map_err(|error| {
                 AppError::new("terminal_close_failed", "终端连接关闭失败。", error, true)
-            })
+            })?;
+        if let Some(jump_client) = self.jump_client.as_ref() {
+            let _ = jump_client
+                .disconnect(Disconnect::ByApplication, "", "English")
+                .await;
+        }
+        Ok(())
     }
 }
 
@@ -314,11 +324,11 @@ impl ReusableExecSession {
             store_path: known_host_store_path(app)?,
         };
 
-        let mut client = run_with_timeout(
+        let (mut client, jump_client) = run_with_timeout(
             "remote_exec_connect_timeout",
             "SSH 命令连接超时。",
             duration_from_ms(config.advanced.connect_timeout_ms),
-            connect_ssh_client(ssh_config, config, host_key_handler),
+            connect_target_client(app, ssh_config, config, host_key_handler),
         )
         .await?
         .map_err(|error| {
@@ -333,7 +343,10 @@ impl ReusableExecSession {
         )
         .await??;
 
-        Ok(Self { client })
+        Ok(Self {
+            client,
+            jump_client,
+        })
     }
 
     pub async fn exec(&self, command: &str) -> Result<ExecOutput, AppError> {
@@ -503,6 +516,11 @@ impl ReusableExecSession {
             .client
             .disconnect(Disconnect::ByApplication, "", "English")
             .await;
+        if let Some(jump_client) = self.jump_client.as_ref() {
+            let _ = jump_client
+                .disconnect(Disconnect::ByApplication, "", "English")
+                .await;
+        }
     }
 }
 
@@ -525,11 +543,11 @@ impl ReusableSftpSession {
             store_path: known_host_store_path(app)?,
         };
 
-        let mut client = run_with_timeout(
+        let (mut client, jump_client) = run_with_timeout(
             "remote_sftp_connect_timeout",
             "SFTP 连接超时。",
             duration_from_ms(config.advanced.connect_timeout_ms),
-            connect_ssh_client(ssh_config, config, host_key_handler),
+            connect_target_client(app, ssh_config, config, host_key_handler),
         )
         .await?
         .map_err(|error| {
@@ -587,7 +605,11 @@ impl ReusableSftpSession {
                 )
             })?;
 
-        Ok(Self { client, sftp })
+        Ok(Self {
+            client,
+            jump_client,
+            sftp,
+        })
     }
 
     pub fn sftp(&self) -> &SftpSession {
@@ -600,6 +622,11 @@ impl ReusableSftpSession {
             .client
             .disconnect(Disconnect::ByApplication, "", "English")
             .await;
+        if let Some(jump_client) = self.jump_client.as_ref() {
+            let _ = jump_client
+                .disconnect(Disconnect::ByApplication, "", "English")
+                .await;
+        }
     }
 }
 
@@ -704,6 +731,165 @@ async fn connect_ssh_client(
         _ => {
             let stream = open_proxy_stream(request).await.map_err(to_russh_error)?;
             client::connect_stream(config, stream, handler).await
+        }
+    }
+}
+
+async fn connect_target_client(
+    app: &AppHandle,
+    config: Arc<client::Config>,
+    request: &ResolvedSshConfig,
+    handler: KnownHostClient,
+) -> Result<(SshHandle, Option<SshHandle>), russh::Error> {
+    match request.jump.kind {
+        ConnectionJumpKind::None => connect_ssh_client(config, request, handler)
+            .await
+            .map(|client| (client, None)),
+        ConnectionJumpKind::SshJump => {
+            let jump = resolve_jump_config(app, request).map_err(to_russh_error)?;
+            let jump_auth_method = auth_method(&jump).map_err(to_russh_error)?;
+            let jump_ssh_config = Arc::new(client::Config {
+                keepalive_interval: Some(duration_from_ms(jump.advanced.keepalive_interval_ms)),
+                keepalive_max: 1,
+                nodelay: true,
+                ..<_>::default()
+            });
+            let jump_host_key_handler = KnownHostClient {
+                host: jump.host.clone(),
+                port: jump.port,
+                store_path: known_host_store_path(app).map_err(to_russh_error)?,
+            };
+
+            let mut jump_client = run_with_timeout(
+                "jump_connect_timeout",
+                "跳板机连接超时。",
+                duration_from_ms(jump.advanced.connect_timeout_ms),
+                connect_ssh_client(jump_ssh_config, &jump, jump_host_key_handler),
+            )
+            .await
+            .map_err(to_russh_error)?
+            .map_err(|error| {
+                to_russh_error(app_error_from_russh(
+                    error,
+                    "jump_connect_failed",
+                    "跳板机连接失败。",
+                ))
+            })?;
+
+            run_with_timeout(
+                "jump_auth_timeout",
+                "跳板机认证超时。",
+                duration_from_ms(jump.advanced.auth_timeout_ms),
+                authenticate(&mut jump_client, &jump.username, jump_auth_method),
+            )
+            .await
+            .map_err(to_russh_error)?
+            .map_err(|error| to_russh_error(map_jump_auth_error(error)))?;
+
+            let channel = run_with_timeout(
+                "jump_direct_tcpip_timeout",
+                "跳板机通道打开超时。",
+                duration_from_ms(request.advanced.connect_timeout_ms),
+                jump_client.channel_open_direct_tcpip(
+                    request.host.clone(),
+                    u32::from(request.port),
+                    "127.0.0.1",
+                    0,
+                ),
+            )
+            .await
+            .map_err(to_russh_error)?
+            .map_err(|error| {
+                to_russh_error(AppError::new(
+                    "jump_direct_tcpip_failed",
+                    "跳板机通道打开失败。",
+                    error,
+                    true,
+                ))
+            })?;
+
+            let client = client::connect_stream(config, channel.into_stream(), handler).await?;
+            Ok((client, Some(jump_client)))
+        }
+    }
+}
+
+fn resolve_jump_config(
+    app: &AppHandle,
+    request: &ResolvedSshConfig,
+) -> Result<ResolvedSshConfig, AppError> {
+    let jump_connection_id = request
+        .jump
+        .jump_connection_id
+        .as_ref()
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            AppError::new(
+                "connection_jump_missing",
+                "请选择 SSH 跳板机连接。",
+                "jump_connection_id is empty",
+                true,
+            )
+        })?;
+
+    if jump_connection_id == request.connection_id {
+        return Err(AppError::new(
+            "connection_jump_self_reference",
+            "跳板机不能引用自身连接。",
+            format!("connection_id={jump_connection_id}"),
+            true,
+        ));
+    }
+
+    let jump = resolve_saved_connection(app, jump_connection_id, None)?;
+    validate_jump_runtime(&request.connection_id, &request.jump, Some(&jump.jump))?;
+    Ok(jump)
+}
+
+fn validate_jump_runtime(
+    target_connection_id: &str,
+    jump: &ConnectionJumpConfig,
+    jump_target_jump: Option<&ConnectionJumpConfig>,
+) -> Result<(), AppError> {
+    match jump.kind {
+        ConnectionJumpKind::None => Ok(()),
+        ConnectionJumpKind::SshJump => {
+            let jump_connection_id = jump
+                .jump_connection_id
+                .as_ref()
+                .map(|value| value.trim())
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| {
+                    AppError::new(
+                        "connection_jump_missing",
+                        "请选择 SSH 跳板机连接。",
+                        "jump_connection_id is empty",
+                        true,
+                    )
+                })?;
+
+            if jump_connection_id == target_connection_id {
+                return Err(AppError::new(
+                    "connection_jump_self_reference",
+                    "跳板机不能引用自身连接。",
+                    format!("connection_id={jump_connection_id}"),
+                    true,
+                ));
+            }
+
+            if jump_target_jump
+                .is_some_and(|target_jump| target_jump.kind == ConnectionJumpKind::SshJump)
+            {
+                return Err(AppError::new(
+                    "connection_jump_nested_unsupported",
+                    "跳板机暂不支持多级链路。",
+                    format!("jump_connection_id={jump_connection_id}"),
+                    true,
+                ));
+            }
+
+            Ok(())
         }
     }
 }
@@ -1063,6 +1249,30 @@ fn app_error_from_russh(
     AppError::new(fallback_code, fallback_message, error, true)
 }
 
+fn map_jump_auth_error(error: AppError) -> AppError {
+    match error.code.as_str() {
+        "terminal_auth_failed" => AppError::new(
+            "jump_auth_failed",
+            "跳板机认证失败。",
+            error.raw_message,
+            error.recoverable,
+        ),
+        "terminal_auth_rejected" => AppError::new(
+            "jump_auth_rejected",
+            "跳板机认证未通过。",
+            error.raw_message,
+            error.recoverable,
+        ),
+        "terminal_private_key_invalid" => AppError::new(
+            "jump_private_key_invalid",
+            "跳板机私钥读取失败。",
+            error.raw_message,
+            error.recoverable,
+        ),
+        _ => error,
+    }
+}
+
 fn base64_simple(value: &str) -> String {
     const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let bytes = value.as_bytes();
@@ -1146,7 +1356,119 @@ async fn authenticate(
 mod tests {
     use std::time::Duration;
 
+    use crate::connections::{
+        ConnectionAdvancedConfig, ConnectionAuthKind, ConnectionCredentialMode,
+        ConnectionJumpConfig, ConnectionJumpKind, ConnectionProfile, ConnectionProxyConfig,
+    };
+
     use super::*;
+
+    fn jump_profile(jump: ConnectionJumpConfig) -> ConnectionProfile {
+        ConnectionProfile {
+            id: "jump-001".to_string(),
+            name: "jump".to_string(),
+            group: None,
+            host: "jump.example.com".to_string(),
+            port: 22,
+            username: "root".to_string(),
+            credential_mode: ConnectionCredentialMode::Inline,
+            credential_id: None,
+            inline_auth_kind: Some(ConnectionAuthKind::Password),
+            inline_password: Some("secret".to_string()),
+            inline_private_key_path: None,
+            inline_private_key_passphrase: None,
+            prompt_auth_kind: None,
+            proxy: ConnectionProxyConfig::default(),
+            jump,
+            advanced: ConnectionAdvancedConfig::default(),
+            notes: None,
+            is_favorite: false,
+            last_connected_at: None,
+            remote_os_id: None,
+            remote_os_name: None,
+            remote_os_version: None,
+            created_at: "2026-06-18T00:00:00+08:00".to_string(),
+            updated_at: "2026-06-18T00:00:00+08:00".to_string(),
+            auth_kind: None,
+            password: None,
+            private_key_path: None,
+            private_key_passphrase: None,
+        }
+    }
+
+    #[test]
+    fn jump_runtime_rejects_self_reference() {
+        let jump = ConnectionJumpConfig {
+            kind: ConnectionJumpKind::SshJump,
+            jump_connection_id: Some("target-001".to_string()),
+        };
+
+        let error = validate_jump_runtime("target-001", &jump, None).unwrap_err();
+
+        assert_eq!(error.code, "connection_jump_self_reference");
+    }
+
+    #[test]
+    fn jump_runtime_rejects_nested_jump() {
+        let jump = ConnectionJumpConfig {
+            kind: ConnectionJumpKind::SshJump,
+            jump_connection_id: Some("jump-001".to_string()),
+        };
+
+        let error = validate_jump_runtime(
+            "target-001",
+            &jump,
+            Some(
+                &jump_profile(ConnectionJumpConfig {
+                    kind: ConnectionJumpKind::SshJump,
+                    jump_connection_id: Some("jump-002".to_string()),
+                })
+                .jump,
+            ),
+        )
+        .unwrap_err();
+
+        assert_eq!(error.code, "connection_jump_nested_unsupported");
+    }
+
+    #[test]
+    fn jump_runtime_rejects_missing_jump_connection() {
+        let jump = ConnectionJumpConfig {
+            kind: ConnectionJumpKind::SshJump,
+            jump_connection_id: None,
+        };
+
+        let error = validate_jump_runtime("target-001", &jump, None).unwrap_err();
+
+        assert_eq!(error.code, "connection_jump_missing");
+    }
+
+    #[test]
+    fn jump_auth_mapping_uses_jump_specific_codes() {
+        let failed = map_jump_auth_error(AppError::new(
+            "terminal_auth_failed",
+            "SSH 认证失败。",
+            "network error",
+            true,
+        ));
+        let rejected = map_jump_auth_error(AppError::new(
+            "terminal_auth_rejected",
+            "SSH 认证未通过。",
+            "auth result",
+            true,
+        ));
+        let key_invalid = map_jump_auth_error(AppError::new(
+            "terminal_private_key_invalid",
+            "私钥读取失败。",
+            "bad key",
+            true,
+        ));
+
+        assert_eq!(failed.code, "jump_auth_failed");
+        assert_eq!(failed.raw_message, "network error");
+        assert_eq!(rejected.code, "jump_auth_rejected");
+        assert_eq!(key_invalid.code, "jump_private_key_invalid");
+    }
 
     #[test]
     fn ssh_step_timeout_returns_stage_error() {

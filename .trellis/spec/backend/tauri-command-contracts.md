@@ -167,7 +167,8 @@ reachable: bool
 - Password auth clears private-key fields; private-key auth clears password fields.
 - HTTP CONNECT and SOCKS5 proxy modes require proxy host and port. `none` clears proxy auth and proxy target fields.
 - SSH jump config is stored as `jump: ConnectionJumpConfig`. `jump.kind = "ssh_jump"` requires a non-empty `jump_connection_id`; `jump.kind = "none"` clears `jump_connection_id`.
-- SSH jump is currently persisted and carried through `ResolvedSshConfig` only. This contract does not mean the active terminal, test, or remote-file path already opens a bastion `direct-tcpip` channel; that transport behavior must be implemented as a later explicit change.
+- SSH jump must resolve the saved jump connection, authenticate to the bastion first, then open a `direct-tcpip` channel to the target host for terminal, test, remote-file, and remote-monitor flows. Failures must not silently fall back to direct connection.
+- SSH jump runtime validation must reject self-reference (`connection_jump_self_reference`) and nested jump chains (`connection_jump_nested_unsupported`). Bastion authentication failures must use `jump_*` error codes so callers can distinguish jump failures from target-host failures.
 - Advanced timeouts are milliseconds. Keep validation ranges in Rust; React may edit numbers as strings but Rust is authoritative.
 - Advanced terminal encoding is stored in `advanced.terminal_encoding`. Rust must normalize and validate the encoding, then carry it through `ResolvedSshConfig` into interactive terminal sessions.
 - Interactive terminal output is decoded in Rust from the configured terminal encoding into UTF-8 bytes before emitting `terminal:output`. Interactive terminal input is encoded in Rust from the frontend Unicode string into the configured terminal encoding before writing to the SSH channel.
@@ -201,6 +202,13 @@ reachable: bool
 | Proxy mode requires proxy target but host is blank | `connection_proxy_host_missing` | true |
 | Proxy mode requires proxy target but port is blank / invalid | `connection_proxy_port_invalid` | true |
 | SSH jump mode has no saved jump connection id | `connection_jump_missing` | true |
+| SSH jump references the same target connection id | `connection_jump_self_reference` | true |
+| SSH jump target is itself configured with SSH jump | `connection_jump_nested_unsupported` | true |
+| SSH jump TCP/SSH connection fails | `jump_connect_failed` | true |
+| SSH jump authentication transport fails | `jump_auth_failed` | true |
+| SSH jump authentication is rejected | `jump_auth_rejected` | true |
+| SSH jump private key cannot load | `jump_private_key_invalid` | true |
+| SSH jump cannot open target direct-tcpip channel | `jump_direct_tcpip_failed` | true |
 | Advanced connect timeout outside allowed range | `connection_connect_timeout_invalid` | true |
 | Advanced auth timeout outside allowed range | `connection_auth_timeout_invalid` | true |
 | Advanced keepalive interval outside allowed range | `connection_keepalive_invalid` | true |
@@ -239,6 +247,7 @@ reachable: bool
 ### 6. Tests Required
 
 - Unit-test connection validation for blank host, blank username, zero port, credential modes, proxy validation, SSH jump validation, advanced validation, and legacy migration.
+- Unit-test SSH jump runtime validation and jump-auth error mapping in the shared terminal session connection path.
 - Unit-test terminal encoding validation plus SSH terminal output decode and input encode helpers.
 - Unit-test credential validation for blank name, missing password, missing private key, auth-field clearing, and JSON store round-trip/delete.
 - Unit-test known-host store behavior for unknown, trusted, and changed fingerprints.

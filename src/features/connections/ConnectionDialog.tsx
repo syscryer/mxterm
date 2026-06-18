@@ -940,7 +940,7 @@ export function ConnectionDialog({
               />
             </label>
             <p className="connection-dialog-note">
-              当前仅保存跳板机连接引用。
+              当前连接会先登录跳板机，再通过 SSH 通道访问目标主机。
             </p>
           </>
         ) : null}
