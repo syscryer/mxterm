@@ -101,6 +101,10 @@ Ant Design, Mantine, or similar libraries just to fix one modal or button.
   should hide terminal and remote-file surfaces with stateful visibility
   classes or layout variables instead of unmounting them, so SSH sessions,
   xterm state, and remote tree state are not recreated.
+- When a workspace switch should suppress visual selection in another surface,
+  derive the active styling from the current workspace mode as well as the
+  stored selection id. Do not let persistent "last selected" state paint
+  inactive chrome as active in home/local-terminal views.
 - Side panes with expandable trees must keep their own scroll container inside
   a `min-height: 0` flex/grid boundary. Expanded file trees must not grow the
   workspace grid row or change the terminal panel's measured height. Keep pane
@@ -117,6 +121,11 @@ Ant Design, Mantine, or similar libraries just to fix one modal or button.
   owns the path input, toolbar actions, blank-area context menu, and blank-area
   drag/drop upload target. Expanding or locating a directory should update the
   active directory without forcing the tree root to navigate into that child.
+- Remote file icons must be local UI, not network-loaded assets. Keep file and
+  folder type mapping in `src/features/files/remoteFileIcons.ts`, render icons
+  as local SVG/component markup in `RemoteFilePanel`, and run
+  `node scripts/check-remote-file-local-icons-source.mjs` after changing the
+  icon resolver or file tree icon styles.
 - Terminal surfaces should not add decorative padding by default. If xterm
   spacing is ever needed, it must be accounted for by FitAddon; parent-only
   padding can make FitAddon over-count rows and clip the bottom terminal line at
@@ -262,6 +271,13 @@ Ant Design, Mantine, or similar libraries just to fix one modal or button.
   already present in a tab, do not repeat it as a large title inside the editor;
   keep path, save state, and toolbar actions in a single compact row and let long
   paths truncate before controls are squeezed.
+- Remote editor path chrome should show the remote absolute path only, not
+  `<connectionName>:<path>`. Connection ownership belongs in tab/session state;
+  the compact editor bar should prioritize the actionable path. Keep language
+  mapping in `src/features/editor/remoteFileLanguages.ts`, register lightweight
+  Monaco tokenizers there for common config formats, and run
+  `node scripts/check-remote-editor-language-source.mjs` after changing editor
+  path display or remote language detection.
 
 ---
 
