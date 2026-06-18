@@ -30,6 +30,29 @@ for (const section of ["basic", "appearance", "terminalTheme"]) {
   }
 }
 
+if (!settingsTypes.includes("recentConnectionLimit")) {
+  throw new Error("Basic settings should include recentConnectionLimit");
+}
+
+if (!settingsTypes.includes("recentConnectionLimit: 5")) {
+  throw new Error("Left sidebar recent connection limit should default to 5");
+}
+
+if (
+  !settingsView.includes("左侧最近连接") ||
+  !settingsView.includes("recentConnectionLimit")
+) {
+  throw new Error("SettingsView should expose the left sidebar recent connection limit");
+}
+
+if (!workspace.includes("recentConnectionLimit={settings.basic.recentConnectionLimit}")) {
+  throw new Error("WorkspaceShell should pass the configured recent connection limit to ConnectionPane");
+}
+
+if (!connectionPane.includes("recentConnectionLimit") || !connectionPane.includes(".slice(0, recentConnectionLimit)")) {
+  throw new Error("ConnectionPane should cap the recent system folder by recentConnectionLimit");
+}
+
 const iTermSchemeCount = [...terminalSchemes.matchAll(/source: "iTerm2-Color-Schemes"/g)].length;
 if (iTermSchemeCount < 100) {
   throw new Error(`terminalColorSchemes should include the upstream iTerm2 schemes, found ${iTermSchemeCount}`);

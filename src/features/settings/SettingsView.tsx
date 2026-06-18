@@ -10,6 +10,7 @@ import {
   FileKey,
   Folder,
   FolderOpen,
+  HardDrive,
   KeyRound,
   Layers,
   LockKeyhole,
@@ -117,7 +118,7 @@ const settingsSections: Array<{
   { id: "basic", label: "基础设置", description: "启动、连接与面板行为", icon: Settings },
   { id: "credentials", label: "账号管理", description: "复用登录账号（用户名+密码/私钥）", icon: Shield },
   { id: "appearance", label: "外观", description: "字号、密度与强调色", icon: Palette },
-  { id: "localTerminal", label: "本地终端", description: "默认 Shell 与 profile 管理", icon: Terminal },
+  { id: "localTerminal", label: "本地终端", description: "默认 Shell 与 profile 管理", icon: HardDrive },
   { id: "terminalTheme", label: "终端配色", description: "终端 ANSI 主题方案", icon: Terminal },
 ];
 
@@ -749,6 +750,17 @@ function BasicSettingsSection({
             }
           />
         </SettingsRow>
+        <SettingsRow
+          icon={Clock3}
+          title="左侧最近连接"
+          description="限制左侧连接树“最近”分组展示数量。"
+        >
+          <Stepper
+            value={settings.recentConnectionLimit}
+            values={[5, 10, 15, 20, 30, 50] as const}
+            onChange={(recentConnectionLimit) => onUpdate({ recentConnectionLimit })}
+          />
+        </SettingsRow>
       </div>
 
       <div className="settings-panel">
@@ -1328,10 +1340,9 @@ function LocalTerminalSettingsSection({
 
       <div className="settings-panel">
         <SettingsRow
-          icon={Terminal}
+          className="settings-row-compact settings-local-terminal-default-row"
+          icon={HardDrive}
           title="默认终端"
-          description="点击顶栏“本地终端”或 + 时默认打开的 profile。"
-          stack
         >
           <div className="settings-local-terminal-default">
             <AppSelect
@@ -1350,11 +1361,6 @@ function LocalTerminalSettingsSection({
               value={effectiveDefaultOption?.id || ""}
               onChange={(defaultProfileId) => onUpdate({ defaultProfileId })}
             />
-            <small className="settings-note-inline">
-              {effectiveDefaultOption
-                ? `当前默认：${effectiveDefaultOption.name}${currentDefaultOption ? "" : "（按可见列表第一项）"}`
-                : "未选择默认 profile，将按可见列表第一项打开。"}
-            </small>
           </div>
         </SettingsRow>
         <SettingsRow

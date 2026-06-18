@@ -193,6 +193,10 @@ button {
   --right-pane-width: 0px;
 }
 
+.app-shell[data-local-terminal-active="true"] {
+  --right-pane-width: 0px;
+}
+
 .workspace-shell {
   position: relative;
   min-height: 0;
@@ -501,12 +505,6 @@ button {
 
 .settings-local-terminal-default .settings-select {
   width: min(320px, 100%);
-}
-
-.settings-local-terminal-default .settings-note-inline {
-  color: var(--mx-muted);
-  font-size: 11px;
-  line-height: 1.45;
 }
 
 .local-terminal-settings-grid {
@@ -1158,6 +1156,23 @@ button {
 
 .settings-row:last-child {
   border-bottom: 0;
+}
+
+.settings-row-compact {
+  min-height: 48px;
+  padding-block: 10px;
+}
+
+.settings-row-compact .settings-row-label {
+  align-items: center;
+}
+
+.settings-row-compact .settings-row-label > .ui-icon {
+  margin-top: 0;
+}
+
+.settings-row-compact .settings-row-control {
+  align-self: center;
 }
 
 .settings-row-stack {
@@ -3766,10 +3781,6 @@ button {
   background: rgb(0 0 0 / 4.5%);
 }
 
-.connection-row:last-child {
-  border-bottom: 0;
-}
-
 .connection-board-note,
 .connection-board-error {
   margin: 12px;
@@ -4526,6 +4537,9 @@ button {
   top: var(--local-terminal-menu-top);
   width: var(--local-terminal-menu-width);
   max-height: var(--local-terminal-menu-max-height);
+  border-radius: 10px;
+  background-clip: padding-box;
+  overflow-x: hidden;
   overflow-y: auto;
   padding: 6px;
   z-index: 80;
@@ -5429,6 +5443,14 @@ button {
   align-items: center;
   justify-content: space-between;
   gap: 6px;
+}
+
+.transfer-head-main {
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
 }
 
 .transfer-item footer {

@@ -3,7 +3,8 @@ import { Minus, Plus, type LucideIcon } from "lucide-react";
 
 interface SettingsRowProps {
   children?: ReactNode;
-  description: ReactNode;
+  className?: string;
+  description?: ReactNode;
   icon: LucideIcon;
   stack?: boolean;
   title: ReactNode;
@@ -17,18 +18,23 @@ interface SegmentedControlOption<T extends string> {
 
 export function SettingsRow({
   children,
+  className,
   description,
   icon: Icon,
   stack = false,
   title,
 }: SettingsRowProps) {
+  const rowClassName = ["settings-row", stack ? "settings-row-stack" : "", className || ""]
+    .filter(Boolean)
+    .join(" ");
+
   return (
-    <div className={`settings-row${stack ? " settings-row-stack" : ""}`}>
+    <div className={rowClassName}>
       <div className="settings-row-label">
         <Icon className="ui-icon" aria-hidden="true" />
         <span>
           <strong>{title}</strong>
-          <small>{description}</small>
+          {description ? <small>{description}</small> : null}
         </span>
       </div>
       {children ? <div className="settings-row-control">{children}</div> : null}

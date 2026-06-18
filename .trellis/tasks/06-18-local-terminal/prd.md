@@ -19,6 +19,7 @@
 - WindTerm 官方 README 明确把 Shell 作为 SSH/Telnet/Serial/SFTP 同级协议，并列出 Windows Cmd、PowerShell、管理员 PowerShell，以及 Linux/macOS bash、zsh、PowerShell Core；这支持 mXterm 将本地终端设计成完整 profile 体系，而不是单个默认 Shell 快捷入口。
 - 用户确认首版普通 Shell 覆盖做完整，管理员 Cmd / PowerShell 只保留设计口子，后续单独设计提权启动和安全提示。
 - 用户确认入口放在顶栏。本地终端应像首页一样是一个顶栏标签，打开后默认创建一个 PowerShell 终端子 tab，默认 profile 可在设置中修改；本地终端工作区内部可通过 `+` 号创建默认终端，也可通过下拉选择具体 Shell 类型。
+- 用户确认本地终端首版不展示右侧边栏，SSH 现有的文件、传输、监控工具继续只绑定远程会话；本地终端优先给命令输入输出保留完整宽度。
 
 ## Requirements Draft
 
@@ -34,6 +35,7 @@
 - 本地终端顶栏标签应与首页、SSH 会话标签处在同一层级；左侧 SSH 连接树不混入本地 profile。
 - 点击顶栏“本地终端”标签时，如果当前没有本地终端会话，自动创建一个默认 profile 的子 tab；如果已有本地终端会话，则恢复最近激活的本地终端子 tab。
 - 本地终端工作区内部使用子 tab 管理多个本地终端实例。`+` 按钮直接创建默认 profile；`+` 旁下拉菜单列出可用 profile 供用户选择。
+- 本地终端首版不展示右侧边栏，也不复用 SSH 的文件、传输、监控工具；本地终端区域默认给终端本身占满。
 - 设置中需要新增本地终端默认 profile 配置，并允许后续扩展 profile 管理。
 - 不同类型会话需要有稳定的小图标体系，至少覆盖顶栏本地终端入口、SSH 顶栏标签、本地终端子 tab 以及 profile 下拉菜单中的类型识别。
 - 本地终端首版范围、入口、profile 管理、默认 Shell、工作目录和设置项需要进一步对齐。

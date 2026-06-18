@@ -139,6 +139,7 @@ import {
   resolveDesktopPlatform,
   setWindowMaterial,
 } from "../../shared/tauri/windowMaterial";
+import { initializeWindowStatePersistence } from "../../shared/tauri/windowState";
 import { Tooltip } from "../../shared/ui/Tooltip";
 import { AppTitlebar } from "./AppTitlebar";
 import {
@@ -386,6 +387,8 @@ export function WorkspaceShell() {
   useEffect(() => {
     terminalTabsRef.current = terminalTabs;
   }, [terminalTabs]);
+
+  useEffect(() => initializeWindowStatePersistence(), []);
 
   useEffect(() => {
     localTerminalTabsRef.current = localTerminalTabs;
@@ -819,6 +822,10 @@ export function WorkspaceShell() {
     );
   }
 
+  function removeRemoteFileTransfer(transferId: string) {
+    setRemoteFileTransfers((items) => items.filter((item) => item.id !== transferId));
+  }
+
   function cancelTransfer(transferId: string) {
     updateRemoteFileTransfer(transferId, {
       progress: 0,
@@ -853,7 +860,7 @@ export function WorkspaceShell() {
     const code = extractTransferErrorCode(error);
     const mappedStage = code ? transferErrorStage(code) : null;
     const suggestion = code ? transferErrorSuggestion(code) : null;
-    const baseError = formatError(error);
+    const baseError = formatDetailedError(error);
     const errorText = suggestion ? `${baseError}\n建议：${suggestion}` : baseError;
     updateRemoteFileTransfer(transferId, {
       error: errorText,
@@ -3052,6 +3059,7 @@ export function WorkspaceShell() {
     <div
       className="app-shell"
       data-home-active={showingHome}
+      data-local-terminal-active={showingLocalTerminal}
       data-density={settings.appearance.density}
       data-left-collapsed={leftPaneCollapsed}
       data-pane-resizing={resizingPane || undefined}
@@ -3096,6 +3104,7 @@ export function WorkspaceShell() {
           onRefresh={reload}
           onSelect={selectConnection}
           onToggleFavorite={toggleConnectionFavorite}
+          recentConnectionLimit={settings.basic.recentConnectionLimit}
           selectedId={selectedConnectionId}
         />
 
@@ -3456,7 +3465,7 @@ export function WorkspaceShell() {
           />
         ) : null}
 
-        {hasSessionWorkspace ? (
+        {showSessionWorkspace ? (
           <RemoteFilePanel
             activeTool={rightTool}
             connection={remoteFileConnection}
@@ -3477,6 +3486,7 @@ export function WorkspaceShell() {
                 onCancel={requestCancelTransfer}
                 onClearFinished={clearFinishedTransfers}
                 onCopyPath={copyRemotePath}
+                onRemove={removeRemoteFileTransfer}
                 onOpenLocalPath={openLocalTransferPath}
                 onRevealLocalPath={revealLocalTransferPath}
               />
@@ -3808,6 +3818,7 @@ function RemoteFileTransferPanel({
   onCancel,
   onClearFinished,
   onCopyPath,
+  onRemove,
   onOpenLocalPath,
   onRevealLocalPath,
 }: {
@@ -3815,6 +3826,7 @@ function RemoteFileTransferPanel({
   onCancel: (transferId: string) => void;
   onClearFinished: () => void;
   onCopyPath: (path: string) => void;
+  onRemove: (transferId: string) => void;
   onOpenLocalPath: (path: string) => void;
   onRevealLocalPath: (path: string) => void;
 }) {
@@ -3842,16 +3854,31 @@ function RemoteFileTransferPanel({
             const progressValue = clampTransferProgress(item.progress);
             const progressLabel = `${Math.round(progressValue).toString()}%`;
             const progressText = item.progressDetail || progressLabel;
+            const canRemove = item.status !== "queued" && item.status !== "running";
 
             return (
               <article className={`transfer-item ${item.status}`} key={item.id}>
                 <header>
-                  <span className="transfer-kind">
-                    {item.direction === "upload" ? "上传" : "下载"}
-                    {" / "}
-                    {item.kind === "directory" ? "目录" : "文件"}
-                  </span>
-                  <span className="transfer-status">{transferStatusLabel(item.status)}</span>
+                  <div className="transfer-head-main">
+                    <span className="transfer-kind">
+                      {item.direction === "upload" ? "上传" : "下载"}
+                      {" / "}
+                      {item.kind === "directory" ? "目录" : "文件"}
+                    </span>
+                    <span className="transfer-status">{transferStatusLabel(item.status)}</span>
+                  </div>
+                  {canRemove ? (
+                    <Tooltip label="删除任务">
+                      <button
+                        className="transfer-dismiss"
+                        type="button"
+                        aria-label={`删除任务 ${item.name}`}
+                        onClick={() => onRemove(item.id)}
+                      >
+                        <X className="ui-icon" aria-hidden="true" />
+                      </button>
+                    </Tooltip>
+                  ) : null}
                 </header>
                 <strong title={item.name}>{item.name}</strong>
                 <div className="transfer-progress-summary">
@@ -4754,7 +4781,7 @@ function ConnectionHome({
         return connection.is_favorite;
       }
 
-      return true;
+      return timestampOf(connection.last_connected_at) > 0;
     });
 
     return filteredByTab.filter((connection) => {
@@ -4779,7 +4806,11 @@ function ConnectionHome({
   );
   const weekCount = useMemo(() => countConnectedWithinWeek(connections), [connections]);
   const activityConnections = useMemo(
-    () => [...connections].sort(sortConnectionsByRecent).slice(0, 2),
+    () =>
+      [...connections]
+        .filter((connection) => timestampOf(connection.last_connected_at) > 0)
+        .sort(sortConnectionsByRecent)
+        .slice(0, 2),
     [connections],
   );
   const isProbingLatency = useMemo(
@@ -4935,7 +4966,6 @@ function ConnectionHome({
                 </span>
                 <span className="remark-cell">
                   <span className="remark-main">{primaryNote(connection)}</span>
-                  <span className="remark-sub">{credentialLabel(connection)}</span>
                 </span>
                 <span className="action-cell">
                   <button
@@ -5010,24 +5040,24 @@ function ConnectionHome({
           <section className="summary-block">
             <p className="summary-title">最近活动</p>
             <div className="activity-list">
-              {activityConnections.map((connection) => (
-                <button
-                  className="activity-row"
-                  key={connection.id}
-                  type="button"
-                  onClick={() => onConnect(connection)}
-                >
-                  <span className="latency-dot" />
-                  <span>
-                    <strong>{connection.name}</strong>
+              {activityConnections.length > 0 ? (
+                activityConnections.map((connection) => (
+                  <button
+                    className="activity-row"
+                    key={connection.id}
+                    type="button"
+                    onClick={() => onConnect(connection)}
+                  >
+                    <span className="latency-dot" />
                     <span>
-                      {connection.last_connected_at
-                        ? formatRelativeTime(connection.last_connected_at)
-                        : "未连接"}
+                      <strong>{connection.name}</strong>
+                      <span>{formatRelativeTime(connection.last_connected_at)}</span>
                     </span>
-                  </span>
-                </button>
-              ))}
+                  </button>
+                ))
+              ) : (
+                <p className="connection-board-note">暂无最近活动</p>
+              )}
             </div>
           </section>
         </aside>
@@ -5131,32 +5161,36 @@ function sortConnectionsByRecent(left: ConnectionProfile, right: ConnectionProfi
 }
 
 function timestampOf(value?: string | null) {
-  if (!value) {
+  const trimmed = value?.trim();
+  if (!trimmed) {
     return 0;
   }
 
-  const parsed = Date.parse(value);
+  const normalized = trimmed.toLowerCase();
+
+  if (normalized === "demo" || normalized === "preview") {
+    return Date.now();
+  }
+
+  if (/^\d+$/.test(normalized)) {
+    const numeric = Number(normalized);
+    if (!Number.isFinite(numeric)) {
+      return 0;
+    }
+    return numeric < 1_000_000_000_000 ? numeric * 1000 : numeric;
+  }
+
+  const parsed = Date.parse(trimmed);
   return Number.isNaN(parsed) ? 0 : parsed;
 }
 
 function primaryNote(connection: ConnectionProfile) {
   const note = connection.notes?.trim();
   if (!note) {
-    return "无备注";
+    return "";
   }
 
   return note.split(/[;；,，]/)[0]?.trim() || note;
-}
-
-function credentialLabel(connection: ConnectionProfile) {
-  if (connection.credential_mode === "saved") {
-    return "保存凭据";
-  }
-  if (connection.credential_mode === "prompt") {
-    return "每次询问";
-  }
-  const authKind = connection.inline_auth_kind || connection.auth_kind;
-  return authKind === "private_key" ? "密钥登录" : "密码登录";
 }
 
 function estimateLatency(connection: ConnectionProfile) {
@@ -5175,6 +5209,12 @@ function wait(ms: number) {
 }
 
 function formatRelativeTime(value?: string | null) {
+  const normalized = value?.trim().toLowerCase();
+
+  if (normalized === "demo" || normalized === "preview") {
+    return "最近";
+  }
+
   const timestamp = timestampOf(value);
 
   if (!timestamp) {
