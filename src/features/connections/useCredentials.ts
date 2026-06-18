@@ -11,20 +11,22 @@ import type { CredentialProfile, CredentialProfileInput } from "./connectionType
 const demoCredentials: CredentialProfile[] = [
   {
     id: "demo-credential-root-password",
-    name: "root 密码",
+    name: "root 密码账号",
+    username: "root",
     kind: "password",
     password: "",
-    notes: "预览凭据",
+    notes: "预览账号",
     created_at: "demo",
     updated_at: "demo",
   },
   {
     id: "demo-credential-cloud-key",
-    name: "云主机私钥",
+    name: "云主机私钥账号",
+    username: "deploy",
     kind: "private_key",
     private_key_path: "~/.ssh/cloud.pem",
     private_key_passphrase: "",
-    notes: "预览凭据",
+    notes: "预览账号",
     created_at: "demo",
     updated_at: "demo",
   },
@@ -111,6 +113,7 @@ function normalizeCredentialInput(input: CredentialProfileInput): CredentialProf
     id: trim(input.id),
     kind: input.kind,
     name: trim(input.name),
+    username: trim(input.username),
     notes: trim(input.notes),
     password: input.kind === "password" ? trim(input.password) : undefined,
     private_key_path:
@@ -121,7 +124,7 @@ function normalizeCredentialInput(input: CredentialProfileInput): CredentialProf
 }
 
 function defaultCredentialName(input: CredentialProfileInput) {
-  return input.kind === "private_key" ? "SSH 私钥" : "SSH 密码";
+  return input.kind === "private_key" ? "SSH 私钥账号" : "SSH 密码账号";
 }
 
 function upsertLocal(items: CredentialProfile[], profile: CredentialProfile) {

@@ -38,7 +38,10 @@ import {
 import { AppSelect } from "../../shared/ui/AppSelect";
 import { Tooltip } from "../../shared/ui/Tooltip";
 import { ConfirmDialog } from "../../shared/ui/ConfirmDialog";
-import { selectLocalDownloadDirectory } from "../../shared/tauri/dialog";
+import {
+  selectLocalDownloadDirectory,
+  selectLocalPrivateKeyFile,
+} from "../../shared/tauri/dialog";
 import { localTerminalListProfiles } from "../../shared/tauri/commands";
 import { hasTauriRuntime } from "../../shared/tauri/runtime";
 import type {
@@ -126,8 +129,8 @@ const credentialKindOptions: Array<{
   label: string;
   value: ConnectionAuthKind;
 }> = [
-  { label: "密码", value: "password" },
-  { label: "私钥", value: "private_key" },
+  { label: "密码账号", value: "password" },
+  { label: "私钥账号", value: "private_key" },
 ];
 
 export function SettingsView({
@@ -279,6 +282,7 @@ function CredentialSettingsSection({
         const matchesQuery =
           !keyword ||
           credential.name.toLowerCase().includes(keyword) ||
+          (credential.username || "").toLowerCase().includes(keyword) ||
           (credential.notes || "").toLowerCase().includes(keyword);
         return matchesKind && matchesQuery;
       }),
@@ -344,6 +348,21 @@ function CredentialSettingsSection({
     }
   }
 
+  async function choosePrivateKeyPath() {
+    if (!hasTauriRuntime()) {
+      return;
+    }
+    setFormError(null);
+    try {
+      const selectedPath = await selectLocalPrivateKeyFile();
+      if (selectedPath) {
+        setForm((current) => ({ ...current, private_key_path: selectedPath }));
+      }
+    } catch (error) {
+      setFormError(error instanceof Error ? error.message : "无法打开私钥文件选择器");
+    }
+  }
+
   return (
     <section className="settings-page-section credential-page-section">
       <header className="settings-section-head settings-section-head-row">
@@ -392,8 +411,8 @@ function CredentialSettingsSection({
               value={kindFilter}
               options={[
                 { value: "all", label: "全部" },
-                { value: "password", label: "密码" },
-                { value: "private_key", label: "私钥" },
+                { value: "password", label: "密码账号" },
+                { value: "private_key", label: "私钥账号" },
               ]}
               onChange={setKindFilter}
             />
@@ -438,12 +457,12 @@ function CredentialSettingsSection({
                     <strong>{credential.name}</strong>
                     <small>
                       {credential.username || "未设置用户名"}
-                      {` · ${credential.kind === "private_key" ? "私钥" : "密码"}`}
+                      {` · ${credential.kind === "private_key" ? "私钥账号" : "密码账号"}`}
                       {credential.notes ? ` · ${credential.notes}` : ""}
                     </small>
                   </span>
                   <span className="credential-list-kind">
-                    {credential.kind === "private_key" ? "私钥" : "密码"}
+                    {credential.kind === "private_key" ? "私钥账号" : "密码账号"}
                   </span>
                 </button>
               );
@@ -505,14 +524,14 @@ function CredentialSettingsSection({
 
             {form.kind === "password" ? (
               <label className="credential-field credential-field-full">
-                <span>密码</span>
+                <span>账号密码</span>
                 <div className="credential-secret-field">
                   <LockKeyhole className="ui-icon" aria-hidden="true" />
                   <input
                     type={showSecret ? "text" : "password"}
                     value={form.password || ""}
-                    placeholder="输入密码"
-                    aria-label="密码"
+                    placeholder="输入账号密码"
+                    aria-label="账号密码"
                     onChange={(event) => setForm({ ...form, password: event.currentTarget.value })}
                   />
                   <button
@@ -531,26 +550,37 @@ function CredentialSettingsSection({
             ) : (
               <>
                 <label className="credential-field credential-field-full">
-                  <span>私钥路径</span>
-                  <input
-                    className="settings-input settings-path-input"
-                    value={form.private_key_path || ""}
-                    placeholder="~/.ssh/id_ed25519"
-                    aria-label="私钥路径"
-                    onChange={(event) =>
-                      setForm({ ...form, private_key_path: event.currentTarget.value })
-                    }
-                  />
+                  <span>账号私钥路径</span>
+                  <div className="settings-path-picker credential-private-key-picker">
+                    <input
+                      className="settings-input settings-path-input"
+                      value={form.private_key_path || ""}
+                      placeholder="~/.ssh/id_ed25519"
+                      aria-label="账号私钥路径"
+                      onChange={(event) =>
+                        setForm({ ...form, private_key_path: event.currentTarget.value })
+                      }
+                    />
+                    <button
+                      className="settings-action-button settings-path-button"
+                      type="button"
+                      aria-label="选择账号私钥文件"
+                      onClick={choosePrivateKeyPath}
+                    >
+                      <FolderOpen className="ui-icon" aria-hidden="true" />
+                      <span>选择</span>
+                    </button>
+                  </div>
                 </label>
                 <label className="credential-field credential-field-full">
-                  <span>私钥口令</span>
+                  <span>账号私钥口令</span>
                   <div className="credential-secret-field">
                     <LockKeyhole className="ui-icon" aria-hidden="true" />
                     <input
                       type={showPassphrase ? "text" : "password"}
                       value={form.private_key_passphrase || ""}
                       placeholder="可选"
-                      aria-label="私钥口令"
+                      aria-label="账号私钥口令"
                       onChange={(event) =>
                         setForm({
                           ...form,
@@ -580,7 +610,7 @@ function CredentialSettingsSection({
                 className="settings-input credential-notes-input"
                 value={form.notes || ""}
                 placeholder="可选，用于本机识别和检索。"
-                aria-label="凭据备注"
+                aria-label="账号备注"
                 onChange={(event) => setForm({ ...form, notes: event.currentTarget.value })}
               />
             </label>

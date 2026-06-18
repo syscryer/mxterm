@@ -98,6 +98,7 @@ import { TerminalPanel } from "../terminal/TerminalPanel";
 import type { TerminalOutputEvent } from "../terminal/terminalTypes";
 import { ConfirmDialog } from "../../shared/ui/ConfirmDialog";
 import { AppSelect } from "../../shared/ui/AppSelect";
+import { TabContextMenu } from "../../shared/ui/TabContextMenu";
 import {
   connectionTest,
   connectionTestProfile,
@@ -1011,19 +1012,6 @@ export function WorkspaceShell() {
     }
   }
 
-  function nextRemoteFileTabAfterClose(closedTabId: string) {
-    const closedTab = remoteFileTabs.find((tab) => tab.id === closedTabId) || null;
-
-    return (
-      (closedTab
-        ? remoteFileTabs.find((tab) => tab.id !== closedTabId && tab.connectionId === closedTab.connectionId)
-        : null) ||
-      activeRemoteFileTabs.find((tab) => tab.id !== closedTabId) ||
-      remoteFileTabs.find((tab) => tab.id !== closedTabId) ||
-      null
-    );
-  }
-
   function activateRemoteFileFallbackAfterRemoval(
     nextRemoteFileTabs: RemoteFileEditorTab[],
     preferredConnectionId: string,
@@ -1235,17 +1223,77 @@ export function WorkspaceShell() {
     closeRemoteFileTabNow(tabId);
   }
 
-  function closeRemoteFileTabNow(tabId: string) {
-    setRemoteFileTabs((tabs) => tabs.filter((tab) => tab.id !== tabId));
-    if (activeRemoteFileTabId === tabId) {
-      const nextTab = nextRemoteFileTabAfterClose(tabId);
-      if (nextTab) {
-        activateRemoteFileTab(nextTab);
-      } else {
-        setActiveRemoteFileTabId(null);
-        activateTerminalFallbackAfterFilesClose();
-      }
+  function closeRemoteFileTabs(tabIds: string[]) {
+    const closingIds = new Set(tabIds);
+    const dirtyTab = remoteFileTabs.find((tab) => closingIds.has(tab.id) && tab.dirty);
+    const cleanTabIds = remoteFileTabs
+      .filter((tab) => closingIds.has(tab.id) && !tab.dirty)
+      .map((tab) => tab.id);
+
+    if (cleanTabIds.length > 0) {
+      closeRemoteFileTabsNow(cleanTabIds);
     }
+    if (dirtyTab) {
+      setPendingRemoteFileCloseId(dirtyTab.id);
+    }
+  }
+
+  function closeRemoteFileTabNow(tabId: string) {
+    closeRemoteFileTabsNow([tabId]);
+  }
+
+  function closeRemoteFileTabsNow(tabIds: string[]) {
+    const closingIds = new Set(tabIds);
+    const closingActiveTab = activeRemoteFileTabId
+      ? remoteFileTabs.find((tab) => tab.id === activeRemoteFileTabId && closingIds.has(tab.id)) || null
+      : null;
+    const nextTabs = remoteFileTabs.filter((tab) => !closingIds.has(tab.id));
+
+    setRemoteFileTabs(nextTabs);
+    if (closingActiveTab) {
+      activateRemoteFileFallbackAfterRemoval(nextTabs, closingActiveTab.connectionId);
+    }
+  }
+
+  function closeOtherRemoteFileTabs(tabId: string) {
+    const tab = remoteFileTabs.find((item) => item.id === tabId);
+    if (!tab) {
+      return;
+    }
+    closeRemoteFileTabs(
+      remoteFileTabs
+        .filter((item) => item.connectionId === tab.connectionId && item.id !== tabId)
+        .map((item) => item.id),
+    );
+  }
+
+  function closeRemoteFileTabsToRight(tabId: string) {
+    const tab = remoteFileTabs.find((item) => item.id === tabId);
+    if (!tab) {
+      return;
+    }
+    const sameConnectionTabs = remoteFileTabs.filter((item) => item.connectionId === tab.connectionId);
+    const index = sameConnectionTabs.findIndex((item) => item.id === tabId);
+    if (index < 0) {
+      return;
+    }
+    closeRemoteFileTabs(sameConnectionTabs.slice(index + 1).map((item) => item.id));
+  }
+
+  function closeAllRemoteFileTabsForConnection(connectionId: string) {
+    closeRemoteFileTabs(
+      remoteFileTabs
+        .filter((tab) => tab.connectionId === connectionId)
+        .map((tab) => tab.id),
+    );
+  }
+
+  function closeSavedRemoteFileTabsForConnection(connectionId: string) {
+    closeRemoteFileTabsNow(
+      remoteFileTabs
+        .filter((tab) => tab.connectionId === connectionId && isClosableSavedRemoteFileTab(tab))
+        .map((tab) => tab.id),
+    );
   }
 
   function requestCreateRemoteFile(parentPath: string) {
@@ -2251,10 +2299,16 @@ export function WorkspaceShell() {
   }
 
   function closeLocalTerminal(tabId: string) {
+    closeLocalTerminalTabs([tabId]);
+  }
+
+  function closeLocalTerminalTabs(tabIds: string[]) {
+    const closingIds = new Set(tabIds);
+    tabIds.forEach(stopTerminalWarmupCapture);
     setLocalTerminalTabs((tabs) => {
-      const nextTabs = tabs.filter((tab) => tab.id !== tabId);
+      const nextTabs = tabs.filter((tab) => !closingIds.has(tab.id));
       localTerminalTabsRef.current = nextTabs;
-      if (activeLocalTerminalTabId === tabId) {
+      if (activeLocalTerminalTabId && closingIds.has(activeLocalTerminalTabId)) {
         const nextActive = nextTabs[0] || null;
         setActiveLocalTerminalTabId(nextActive?.id || null);
         if (!nextActive && terminalTabsRef.current.length === 0 && remoteFileTabs.length === 0) {
@@ -2266,6 +2320,18 @@ export function WorkspaceShell() {
       }
       return nextTabs;
     });
+  }
+
+  function closeOtherLocalTerminalTabs(tabId: string) {
+    closeLocalTerminalTabs(localTerminalTabs.filter((tab) => tab.id !== tabId).map((tab) => tab.id));
+  }
+
+  function closeLocalTerminalTabsToRight(tabId: string) {
+    const index = localTerminalTabs.findIndex((tab) => tab.id === tabId);
+    if (index < 0) {
+      return;
+    }
+    closeLocalTerminalTabs(localTerminalTabs.slice(index + 1).map((tab) => tab.id));
   }
 
   function openLocalTerminalWorkspace() {
@@ -2419,25 +2485,39 @@ export function WorkspaceShell() {
   }
 
   function closeTerminal(tabId: string) {
-    stopTerminalWarmupCapture(tabId);
-    setTerminalDirectories((directories) => removeDirectoryState(directories, [tabId]));
+    closeTerminalTabs([tabId]);
+  }
+
+  function closeTerminalTabs(tabIds: string[]) {
+    const closingIds = new Set(tabIds);
+    const closingTabIds = terminalTabs.filter((tab) => closingIds.has(tab.id)).map((tab) => tab.id);
+    closingTabIds.forEach(stopTerminalWarmupCapture);
+    setTerminalDirectories((directories) => removeDirectoryState(directories, closingTabIds));
     setTerminalTabs((tabs) => {
-      const closingTab = tabs.find((tab) => tab.id === tabId);
-      const nextTabs = tabs.filter((tab) => tab.id !== tabId);
+      const activeClosingTab = activeTabId
+        ? tabs.find((tab) => tab.id === activeTabId && closingIds.has(tab.id)) || null
+        : null;
+      const closingActiveConnectionTab =
+        activeClosingTab ||
+        (activeConnectionId
+          ? tabs.find((tab) => tab.connectionId === activeConnectionId && closingIds.has(tab.id)) || null
+          : null);
+      const nextTabs = tabs.filter((tab) => !closingIds.has(tab.id));
       terminalTabsRef.current = nextTabs;
       if (nextTabs.length === 0 && remoteFileTabs.length === 0 && localTerminalTabsRef.current.length === 0) {
         setHomeActive(true);
       }
-      if (activeTabId === tabId) {
+
+      if (activeClosingTab) {
         const nextActiveTab =
-          (closingTab
-            ? nextTabs.find((tab) => tab.connectionId === closingTab.connectionId)
+          (activeClosingTab
+            ? nextTabs.find((tab) => tab.connectionId === activeClosingTab.connectionId)
             : null) ||
           nextTabs[0] ||
           null;
         const nextActiveFile =
-          (closingTab
-            ? remoteFileTabs.find((tab) => tab.connectionId === closingTab.connectionId)
+          (activeClosingTab
+            ? remoteFileTabs.find((tab) => tab.connectionId === activeClosingTab.connectionId)
             : null) ||
           remoteFileTabs[0] ||
           null;
@@ -2449,41 +2529,77 @@ export function WorkspaceShell() {
         }
         if (nextActiveTab) {
           rememberActiveTab(nextActiveTab);
-        } else if (closingTab) {
-          forgetActiveConnectionTabs([closingTab.connectionId]);
+        } else if (activeClosingTab) {
+          forgetActiveConnectionTabs([activeClosingTab.connectionId]);
         }
       } else if (
-        closingTab &&
-        activeConnectionId === closingTab.connectionId &&
-        !nextTabs.some((tab) => tab.connectionId === closingTab.connectionId)
+        closingActiveConnectionTab &&
+        activeConnectionId === closingActiveConnectionTab.connectionId &&
+        !nextTabs.some((tab) => tab.connectionId === closingActiveConnectionTab.connectionId)
       ) {
         const nextActiveFile =
-          remoteFileTabs.find((tab) => tab.connectionId === closingTab.connectionId) ||
+          remoteFileTabs.find((tab) => tab.connectionId === closingActiveConnectionTab.connectionId) ||
           remoteFileTabs[0] ||
           null;
         setActiveConnectionId(nextTabs[0]?.connectionId || nextActiveFile?.connectionId || null);
-        forgetActiveConnectionTabs([closingTab.connectionId]);
+        forgetActiveConnectionTabs([closingActiveConnectionTab.connectionId]);
       }
       return nextTabs;
     });
   }
 
+  function closeOtherTerminalTabs(tabId: string) {
+    const tab = terminalTabs.find((item) => item.id === tabId);
+    if (!tab) {
+      return;
+    }
+    closeTerminalTabs(
+      terminalTabs
+        .filter((item) => item.connectionId === tab.connectionId && item.id !== tabId)
+        .map((item) => item.id),
+    );
+  }
+
+  function closeTerminalTabsToRight(tabId: string) {
+    const tab = terminalTabs.find((item) => item.id === tabId);
+    if (!tab) {
+      return;
+    }
+    const sameConnectionTabs = terminalTabs.filter((item) => item.connectionId === tab.connectionId);
+    const index = sameConnectionTabs.findIndex((item) => item.id === tabId);
+    if (index < 0) {
+      return;
+    }
+    closeTerminalTabs(sameConnectionTabs.slice(index + 1).map((item) => item.id));
+  }
+
+  function closeAllTerminalTabsForConnection(connectionId: string) {
+    closeTerminalTabs(terminalTabs.filter((tab) => tab.connectionId === connectionId).map((tab) => tab.id));
+  }
+
   function closeConnectionSession(connectionId: string) {
-    const closingTabIds = terminalTabs.filter((tab) => tab.connectionId === connectionId).map((tab) => tab.id);
+    closeConnectionSessions([connectionId]);
+  }
+
+  function closeConnectionSessions(connectionIds: string[]) {
+    const closingConnectionIds = new Set(connectionIds);
+    const closingTabIds = terminalTabs
+      .filter((tab) => closingConnectionIds.has(tab.connectionId))
+      .map((tab) => tab.id);
     closingTabIds.forEach(stopTerminalWarmupCapture);
     setTerminalDirectories((directories) => removeDirectoryState(directories, closingTabIds));
-    forgetActiveConnectionTabs([connectionId]);
+    forgetActiveConnectionTabs(connectionIds);
     setTerminalTabs((tabs) => {
-      const nextTabs = tabs.filter((tab) => tab.connectionId !== connectionId);
+      const nextTabs = tabs.filter((tab) => !closingConnectionIds.has(tab.connectionId));
       terminalTabsRef.current = nextTabs;
       if (nextTabs.length === 0 && remoteFileTabs.length === 0 && localTerminalTabsRef.current.length === 0) {
         setHomeActive(true);
       }
 
-      if (activeConnectionId === connectionId) {
+      if (activeConnectionId && closingConnectionIds.has(activeConnectionId)) {
         const nextActiveTab = nextTabs[0] || null;
         const nextActiveFile =
-          remoteFileTabs.find((tab) => tab.connectionId === connectionId) ||
+          remoteFileTabs.find((tab) => !closingConnectionIds.has(tab.connectionId)) ||
           remoteFileTabs[0] ||
           null;
         setActiveTabId(nextActiveTab?.id || null);
@@ -2495,6 +2611,22 @@ export function WorkspaceShell() {
 
       return nextTabs;
     });
+  }
+
+  function closeOtherConnectionSessions(connectionId: string) {
+    closeConnectionSessions(
+      connectionSessions
+        .filter((session) => session.connectionId !== connectionId)
+        .map((session) => session.connectionId),
+    );
+  }
+
+  function closeConnectionSessionsToRight(connectionId: string) {
+    const index = connectionSessions.findIndex((session) => session.connectionId === connectionId);
+    if (index < 0) {
+      return;
+    }
+    closeConnectionSessions(connectionSessions.slice(index + 1).map((session) => session.connectionId));
   }
 
   function openTerminalInActiveConnection() {    if (activeConnection) {
@@ -3078,7 +3210,12 @@ export function WorkspaceShell() {
         homeActive={showingHome}
         localTerminalActive={showingLocalTerminal}
         leftPaneCollapsed={leftPaneCollapsed}
+        onCloseAllConnectionSessions={() =>
+          closeConnectionSessions(connectionSessions.map((session) => session.connectionId))
+        }
         onCloseConnectionSession={closeConnectionSession}
+        onCloseConnectionSessionsToRight={closeConnectionSessionsToRight}
+        onCloseOtherConnectionSessions={closeOtherConnectionSessions}
         onOpenHome={openHome}
         onOpenLocalTerminal={openLocalTerminalWorkspace}
         onSelectConnectionSession={(connectionId) => {
@@ -3150,30 +3287,71 @@ export function WorkspaceShell() {
               {activeRemoteFileTabs.length > 0 ? (
                 <section className="remote-editor-pane" aria-label="远程文件编辑区">
                   <nav className="remote-editor-tabs" aria-label="远程文件标签">
-                    {activeRemoteFileTabs.map((tab) => (
-                      <div
-                        className={`subtab-shell file-tab ${tab.id === activeRemoteFileTab?.id ? "active" : ""}`}
-                        key={tab.id}
-                      >
-                        <button
-                          className="subtab"
-                          type="button"
-                          title={tab.path}
-                          onClick={() => activateRemoteFileTab(tab)}
+                    {activeRemoteFileTabs.map((tab, index) => {
+                      const savedTabs = activeRemoteFileTabs.filter(isClosableSavedRemoteFileTab);
+                      return (
+                        <TabContextMenu
+                          key={tab.id}
+                          actions={[
+                            {
+                              hint: "Ctrl+F4",
+                              label: "关闭",
+                              onSelect: () => closeRemoteFileTab(tab.id),
+                            },
+                            {
+                              disabled: activeRemoteFileTabs.length <= 1,
+                              label: "关闭其他",
+                              onSelect: () => closeOtherRemoteFileTabs(tab.id),
+                            },
+                            {
+                              disabled: index >= activeRemoteFileTabs.length - 1,
+                              label: "关闭右侧标签页",
+                              onSelect: () => closeRemoteFileTabsToRight(tab.id),
+                            },
+                            {
+                              disabled: savedTabs.length === 0,
+                              hint: "Ctrl+K U",
+                              label: "关闭已保存",
+                              onSelect: () => closeSavedRemoteFileTabsForConnection(tab.connectionId),
+                            },
+                            {
+                              disabled: activeRemoteFileTabs.length === 0,
+                              hint: "Ctrl+K W",
+                              label: "全部关闭",
+                              onSelect: () => closeAllRemoteFileTabsForConnection(tab.connectionId),
+                            },
+                            {
+                              hint: "Shift+Alt+C",
+                              label: "复制路径",
+                              onSelect: () => copyRemotePath(tab.path),
+                              separatorBefore: true,
+                            },
+                          ]}
                         >
-                          <span>{tab.name}</span>
-                          {tab.dirty ? <span className="dirty-dot" aria-label="已修改" /> : null}
-                        </button>
-                        <button
-                          className="subtab-close"
-                          type="button"
-                          aria-label={`关闭 ${tab.name}`}
-                          onClick={() => closeRemoteFileTab(tab.id)}
-                        >
-                          <X className="ui-icon" aria-hidden="true" />
-                        </button>
-                      </div>
-                    ))}
+                          <div
+                            className={`subtab-shell file-tab ${tab.id === activeRemoteFileTab?.id ? "active" : ""}`}
+                          >
+                            <button
+                              className="subtab"
+                              type="button"
+                              title={tab.path}
+                              onClick={() => activateRemoteFileTab(tab)}
+                            >
+                              <span>{tab.name}</span>
+                              {tab.dirty ? <span className="dirty-dot" aria-label="已修改" /> : null}
+                            </button>
+                            <button
+                              className="subtab-close"
+                              type="button"
+                              aria-label={`关闭 ${tab.name}`}
+                              onClick={() => closeRemoteFileTab(tab.id)}
+                            >
+                              <X className="ui-icon" aria-hidden="true" />
+                            </button>
+                          </div>
+                        </TabContextMenu>
+                      );
+                    })}
                   </nav>
 
                   <section className="remote-editor-stack" aria-label="文件编辑器">
@@ -3218,27 +3396,53 @@ export function WorkspaceShell() {
                 aria-hidden={showingLocalTerminal}
               >
                 <nav className="terminal-subtabs" aria-label="当前连接终端标签">
-                  {activeConnectionTabs.map((tab) => (
-                    <div
-                      className={`subtab-shell ${tab.id === activeTabId ? "active" : ""}`}
+                  {activeConnectionTabs.map((tab, index) => (
+                    <TabContextMenu
                       key={tab.id}
+                      actions={[
+                        {
+                          hint: "Ctrl+F4",
+                          label: "关闭",
+                          onSelect: () => closeTerminal(tab.id),
+                        },
+                        {
+                          disabled: activeConnectionTabs.length <= 1,
+                          label: "关闭其他",
+                          onSelect: () => closeOtherTerminalTabs(tab.id),
+                        },
+                        {
+                          disabled: index >= activeConnectionTabs.length - 1,
+                          label: "关闭右侧标签页",
+                          onSelect: () => closeTerminalTabsToRight(tab.id),
+                        },
+                        {
+                          disabled: activeConnectionTabs.length === 0,
+                          hint: "Ctrl+K W",
+                          label: "全部关闭",
+                          onSelect: () => closeAllTerminalTabsForConnection(tab.connectionId),
+                        },
+                      ]}
                     >
-                      <button
-                        className="subtab"
-                        type="button"
-                        onClick={() => activateTerminalTab(tab)}
+                      <div
+                        className={`subtab-shell ${tab.id === activeTabId ? "active" : ""}`}
                       >
-                        <span>{tab.title}</span>
-                      </button>
-                      <button
-                        className="subtab-close"
-                        type="button"
-                        aria-label={`关闭 ${tab.title}`}
-                        onClick={() => closeTerminal(tab.id)}
-                      >
-                        <X className="ui-icon" aria-hidden="true" />
-                      </button>
-                    </div>
+                        <button
+                          className="subtab"
+                          type="button"
+                          onClick={() => activateTerminalTab(tab)}
+                        >
+                          <span>{tab.title}</span>
+                        </button>
+                        <button
+                          className="subtab-close"
+                          type="button"
+                          aria-label={`关闭 ${tab.title}`}
+                          onClick={() => closeTerminal(tab.id)}
+                        >
+                          <X className="ui-icon" aria-hidden="true" />
+                        </button>
+                      </div>
+                    </TabContextMenu>
                   ))}
                   {activeConnectedTerminalTab ? (
                     <Tooltip label="新建同连接终端">
@@ -3329,29 +3533,55 @@ export function WorkspaceShell() {
                 aria-hidden={!showingLocalTerminal}
               >
                 <nav className="terminal-subtabs" aria-label="本地终端标签">
-                  {localTerminalTabs.map((tab) => (
-                    <div
-                      className={`subtab-shell ${tab.id === activeLocalTerminalTabId ? "active" : ""}`}
+                  {localTerminalTabs.map((tab, index) => (
+                    <TabContextMenu
                       key={tab.id}
+                      actions={[
+                        {
+                          hint: "Ctrl+F4",
+                          label: "关闭",
+                          onSelect: () => closeLocalTerminalSession(tab),
+                        },
+                        {
+                          disabled: localTerminalTabs.length <= 1,
+                          label: "关闭其他",
+                          onSelect: () => closeOtherLocalTerminalTabs(tab.id),
+                        },
+                        {
+                          disabled: index >= localTerminalTabs.length - 1,
+                          label: "关闭右侧标签页",
+                          onSelect: () => closeLocalTerminalTabsToRight(tab.id),
+                        },
+                        {
+                          disabled: localTerminalTabs.length === 0,
+                          hint: "Ctrl+K W",
+                          label: "全部关闭",
+                          onSelect: () => closeLocalTerminalTabs(localTerminalTabs.map((item) => item.id)),
+                        },
+                      ]}
                     >
-                      <button
-                        className="subtab local-terminal-subtab"
-                        type="button"
-                        title={`${tab.title} · ${tab.status}`}
-                        onClick={() => activateLocalTerminalTab(tab)}
+                      <div
+                        className={`subtab-shell ${tab.id === activeLocalTerminalTabId ? "active" : ""}`}
                       >
-                        <LocalTerminalIcon className="ui-icon" kind={tab.profileKind} title={tab.title} />
-                        <span>{tab.title}</span>
-                      </button>
-                      <button
-                        className="subtab-close"
-                        type="button"
-                        aria-label={`关闭 ${tab.title}`}
-                        onClick={() => closeLocalTerminalSession(tab)}
-                      >
-                        <X className="ui-icon" aria-hidden="true" />
-                      </button>
-                    </div>
+                        <button
+                          className="subtab local-terminal-subtab"
+                          type="button"
+                          title={`${tab.title} · ${tab.status}`}
+                          onClick={() => activateLocalTerminalTab(tab)}
+                        >
+                          <LocalTerminalIcon className="ui-icon" kind={tab.profileKind} title={tab.title} />
+                          <span>{tab.title}</span>
+                        </button>
+                        <button
+                          className="subtab-close"
+                          type="button"
+                          aria-label={`关闭 ${tab.title}`}
+                          onClick={() => closeLocalTerminalSession(tab)}
+                        >
+                          <X className="ui-icon" aria-hidden="true" />
+                        </button>
+                      </div>
+                    </TabContextMenu>
                   ))}
                   <Tooltip label="新建默认终端">
                     <button
@@ -5921,6 +6151,10 @@ function toRemoteFileConflictPolicy(
   policy: RemoteFileTransferConflictPolicy,
 ): RemoteFileTransferConflictPolicy {
   return policy === "ask" ? "rename" : policy;
+}
+
+function isClosableSavedRemoteFileTab(tab: RemoteFileEditorTab) {
+  return !tab.dirty && (tab.saveState === "ready" || tab.saveState === "saved");
 }
 
 async function copyText(text: string) {

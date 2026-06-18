@@ -31,6 +31,13 @@ if (!/compose\.ya?ml/.test(languageSource) || !/docker-compose\.ya?ml/.test(lang
   failures.push("remoteFileLanguages.ts must map compose and docker-compose YAML files");
 }
 
+const tomlLanguageMatch = languageSource.match(
+  /function tomlLanguage\(\)[\s\S]*?function iniLanguage\(\)/,
+);
+if (!tomlLanguageMatch || !/tokenizer:\s*\{[\s\S]*stringDouble:\s*\[/.test(tomlLanguageMatch[0])) {
+  failures.push("tomlLanguage must define stringDouble inside tokenizer so Monaco can resolve @stringDouble");
+}
+
 if (failures.length > 0) {
   console.error(failures.join("\n"));
   process.exit(1);

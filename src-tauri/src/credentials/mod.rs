@@ -228,7 +228,7 @@ pub fn validate_credential_input(
         ConnectionAuthKind::Password if password.is_none() => {
             return Err(AppError::new(
                 "credential_password_missing",
-                "请填写凭据密码。",
+                "请填写账号密码。",
                 "credential password is empty",
                 true,
             ));
@@ -236,7 +236,7 @@ pub fn validate_credential_input(
         ConnectionAuthKind::PrivateKey if private_key_path.is_none() => {
             return Err(AppError::new(
                 "credential_private_key_missing",
-                "请选择凭据私钥。",
+                "请填写账号私钥路径。",
                 "credential private key path is empty",
                 true,
             ));

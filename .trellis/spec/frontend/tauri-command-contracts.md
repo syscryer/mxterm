@@ -75,11 +75,12 @@ private_key_path?: string
 private_key_passphrase?: string
 ```
 
-`CredentialProfileInput` mirrors the credential-only Rust payload:
+`CredentialProfileInput` mirrors the saved login account Rust payload:
 
 ```ts
 id?: string
 name?: string
+username?: string
 kind: "password" | "private_key"
 password?: string
 private_key_path?: string
@@ -116,7 +117,7 @@ type HostKeyInfo = {
 - Connection profiles own target and behavior fields: group, host, port, username, credential mode, proxy, SSH jump reference, advanced settings, and notes.
 - Connection profiles also own repository UI metadata: `is_favorite` is the explicit favorite flag and `last_connected_at` is the last successful terminal connection timestamp. Do not infer favorites from notes or recent activity from `updated_at`.
 - Connection profiles also persist detected remote system metadata: `remote_os_id`, `remote_os_name`, and `remote_os_version`. UI system icons must prefer these fields before falling back to local name/notes/group text inference.
-- Credential profiles own only authentication material: password or private key path/passphrase plus local notes. They must not store host, port, or username.
+- Credential profiles own reusable login account material: username plus password or private key path/passphrase plus local notes. They must not store host or port.
 - When opening a saved connection, the connection-preparation flow should pass `connection_id` plus prompt credentials only when `credential_mode === "prompt"`; Rust treats the saved profile as authoritative.
 - After a terminal connection succeeds, trigger `connectionProbeSystem(...)` in the background with the same runtime prompt credential payload when needed, then call `connectionMarkConnected(connection.id)` so the repository's recent views sort by real connection activity. Probe failures must not close or fail an already connected terminal. Favorite toggles must call `connectionSetFavorite(...)` and preserve repository metadata when editing or moving a connection.
 - `ConnectionDialog` must test the current form with `connectionTestProfile(input)`. It must not call `connectionUpsert`, `saveConnection`, or `connectionTest({ connection_id })` for unsaved dialog tests, because testing must not persist a profile or create a connection id. It must show validation and connection errors as dialog feedback instead of writing them into a terminal.
@@ -168,7 +169,7 @@ type HostKeyInfo = {
 
 - Good: `ConnectionDialog` holds editable strings, clears fields when credential or auth mode changes, and delegates normalization to `useConnections` before saving.
 - Good: `ConnectionDialog` tests the current unsaved form through `connectionTestProfile(input)`, leaving the connection repository unchanged until the user clicks save.
-- Good: `SettingsView` edits credential-only records through `useCredentials`; it never asks for host, port, or username in credential management.
+- Good: `SettingsView` edits saved login-account records through `useCredentials`; it asks for username plus password or private key material, and never asks for host or port in account management.
 - Base: `ConnectionPane` displays `username@host:port`, calls `onOpen(connection)`, and does not know about Tauri details.
 - Bad: A component calls `invoke("connection_upsert", ...)` directly, tests an unsaved dialog form by saving/upserting it first, stores runtime session ids inside `ConnectionProfile`, or sends raw passwords to remote-file commands.
 
