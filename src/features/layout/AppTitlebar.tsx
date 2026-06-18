@@ -94,7 +94,11 @@ export function AppTitlebar({
       <nav className="title-session-tabs" aria-label="工作区标签">
         {connectionSessions.map((session) => (
           <div
-            className={`tab-shell ${!homeActive && session.connectionId === activeConnectionId ? "active" : ""}`}
+            className={`tab-shell ${
+              !homeActive && !localTerminalActive && session.connectionId === activeConnectionId
+                ? "active"
+                : ""
+            }`}
             key={session.connectionId}
           >
             <button

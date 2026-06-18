@@ -8,7 +8,10 @@ import JsonWorker from "monaco-editor/esm/vs/language/json/json.worker?worker";
 import TsWorker from "monaco-editor/esm/vs/language/typescript/ts.worker?worker";
 
 import { Tooltip } from "../../shared/ui/Tooltip";
-import { remoteFileLanguageForPath } from "./remoteFileLanguages";
+import {
+  registerRemoteFileEditorLanguages,
+  remoteFileLanguageForPath,
+} from "./remoteFileLanguages";
 import type { RemoteFileEditorTab } from "./remoteFileEditorTypes";
 
 const monacoGlobal = self as unknown as {
@@ -32,6 +35,8 @@ monacoGlobal.MonacoEnvironment = {
     return new EditorWorker();
   },
 };
+
+registerRemoteFileEditorLanguages(monaco);
 
 interface RemoteFileEditorProps {
   active: boolean;
@@ -189,8 +194,8 @@ export function RemoteFileEditor({
       aria-label={`${tab.name} 文件编辑器`}
     >
       <header className="remote-file-editor-compactbar" data-state={tab.saveState}>
-        <div className="remote-file-editor-path" title={`${tab.connectionName}:${tab.path}`}>
-          <span className="remote-file-editor-path-text">{tab.connectionName}:{tab.path}</span>
+        <div className="remote-file-editor-path" title={tab.path}>
+          <span className="remote-file-editor-path-text">{tab.path}</span>
           <span className="remote-file-editor-status" data-state={tab.saveState} aria-live="polite">
             {tab.saveState === "loading" || tab.saveState === "saving" ? (
               <Loader2 className="ui-icon spin" aria-hidden="true" />

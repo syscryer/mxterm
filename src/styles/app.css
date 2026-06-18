@@ -5605,9 +5605,8 @@ button {
 }
 
 .remote-file-icon {
-  width: 16px;
-  height: 16px;
-  object-fit: contain;
+  width: 20px;
+  height: 20px;
 }
 
 .remote-file-spacer {
@@ -5615,32 +5614,50 @@ button {
   height: 14px;
 }
 
-.remote-file-fallback.folder {
-  color: #b7791f;
-}
-
-.remote-file-badge {
-  width: 16px;
-  height: 16px;
-  border-radius: 4px;
+.remote-file-icon-svg {
+  position: relative;
+  width: 20px;
+  height: 20px;
+  flex: 0 0 20px;
   display: inline-grid;
   place-items: center;
-  color: #2563eb;
-  background: #eef2ff;
-  font-size: 8px;
-  font-weight: 650;
-  line-height: 1;
 }
 
-.remote-file-badge.react { color: #0891b2; background: #e0f7ff; }
-.remote-file-badge.html { color: #ea580c; background: #ffedd5; }
-.remote-file-badge.style { color: #9333ea; background: #f3e8ff; }
-.remote-file-badge.md { color: #16a34a; background: transparent; }
-.remote-file-badge.json,
-.remote-file-badge.config { color: #d97706; background: #fff7ed; }
-.remote-file-badge.log { color: #475569; background: #f1f5f9; }
-.remote-file-badge.script { color: #0284c7; background: #e0f2fe; }
-.remote-file-badge.link { color: #4f46e5; background: #eef2ff; }
+.remote-file-icon-svg svg {
+  width: 20px;
+  height: 20px;
+  display: block;
+}
+
+.remote-file-icon-svg.folder svg {
+  width: 21px;
+  height: 21px;
+}
+
+.remote-file-icon-label {
+  position: absolute;
+  inset: auto 2px 3px 2px;
+  overflow: hidden;
+  color: var(--remote-file-icon-accent);
+  font-size: 5.5px;
+  font-weight: 750;
+  letter-spacing: 0;
+  line-height: 1;
+  text-align: center;
+  white-space: nowrap;
+}
+
+.remote-file-icon-svg.file.docker .remote-file-icon-label,
+.remote-file-icon-svg.file.archive .remote-file-icon-label,
+.remote-file-icon-svg.file.key .remote-file-icon-label,
+.remote-file-icon-svg.file.certificate .remote-file-icon-label,
+.remote-file-icon-svg.file.image .remote-file-icon-label,
+.remote-file-icon-svg.file.symlink .remote-file-icon-label,
+.remote-file-icon-svg.file.script .remote-file-icon-label,
+.remote-file-icon-svg.file.code .remote-file-icon-label,
+.remote-file-icon-svg.file.database .remote-file-icon-label {
+  display: none;
+}
 
 .remote-file-empty-row,
 .file-panel-empty,
@@ -6721,21 +6738,6 @@ button {
 }
 
 .app-shell[data-theme-mode="dark"] :where(
-  .remote-file-badge,
-  .remote-file-badge.react,
-  .remote-file-badge.html,
-  .remote-file-badge.style,
-  .remote-file-badge.json,
-  .remote-file-badge.config,
-  .remote-file-badge.log,
-  .remote-file-badge.script,
-  .remote-file-badge.link
-) {
-  color: color-mix(in srgb, var(--mx-primary) 78%, var(--mx-text));
-  background: color-mix(in srgb, var(--mx-primary) 14%, var(--mx-panel));
-}
-
-.app-shell[data-theme-mode="dark"] :where(
   .transfer-item.error,
   .connection-step-list li.error,
   .connection-step-list li.error > span
@@ -6810,21 +6812,6 @@ button {
     .file-list.is-drop-target
   ) {
     background: color-mix(in srgb, var(--mx-primary) 12%, var(--mx-panel));
-  }
-
-  .app-shell[data-theme-mode="system"] :where(
-    .remote-file-badge,
-    .remote-file-badge.react,
-    .remote-file-badge.html,
-    .remote-file-badge.style,
-    .remote-file-badge.json,
-    .remote-file-badge.config,
-    .remote-file-badge.log,
-    .remote-file-badge.script,
-    .remote-file-badge.link
-  ) {
-    color: color-mix(in srgb, var(--mx-primary) 78%, var(--mx-text));
-    background: color-mix(in srgb, var(--mx-primary) 14%, var(--mx-panel));
   }
 
   .app-shell[data-theme-mode="system"] :where(

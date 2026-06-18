@@ -500,6 +500,8 @@ export function WorkspaceShell() {
   const showingHome = activeWorkspaceMode === "home" || (!hasSessionWorkspace && homeActive);
   const showingLocalTerminal = activeWorkspaceMode === "local";
   const showSessionWorkspace = !showingHome && activeWorkspaceMode === "ssh" && hasSessionWorkspace;
+  const activeConnectionSelectionId =
+    activeWorkspaceMode === "ssh" ? activeConnectionId : null;
   const activeTerminalDirectory = activeConnectedTerminalTab
     ? terminalDirectories[activeConnectedTerminalTab.id] || null
     : null;
@@ -3105,7 +3107,7 @@ export function WorkspaceShell() {
           onSelect={selectConnection}
           onToggleFavorite={toggleConnectionFavorite}
           recentConnectionLimit={settings.basic.recentConnectionLimit}
-          selectedId={selectedConnectionId}
+          selectedId={activeConnectionSelectionId}
         />
 
         {!leftPaneCollapsed ? (
