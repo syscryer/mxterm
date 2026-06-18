@@ -1,6 +1,7 @@
 import type { MouseEvent, PointerEvent, ReactNode } from "react";
 import { House } from "lucide-react";
 
+import { TabContextMenu } from "../../shared/ui/TabContextMenu";
 import { Tooltip } from "../../shared/ui/Tooltip";
 import { hasTauriRuntime } from "../../shared/tauri/runtime";
 import type { ConnectionProfile } from "../connections/connectionTypes";
@@ -24,7 +25,10 @@ interface AppTitlebarProps {
   homeActive: boolean;
   localTerminalActive: boolean;
   leftPaneCollapsed: boolean;
+  onCloseAllConnectionSessions: () => void;
   onCloseConnectionSession: (connectionId: string) => void;
+  onCloseConnectionSessionsToRight: (connectionId: string) => void;
+  onCloseOtherConnectionSessions: (connectionId: string) => void;
   onOpenHome: () => void;
   onOpenLocalTerminal: () => void;
   onSelectConnectionSession: (connectionId: string) => void;
@@ -38,7 +42,10 @@ export function AppTitlebar({
   homeActive,
   localTerminalActive,
   leftPaneCollapsed,
+  onCloseAllConnectionSessions,
   onCloseConnectionSession,
+  onCloseConnectionSessionsToRight,
+  onCloseOtherConnectionSessions,
   onOpenHome,
   onOpenLocalTerminal,
   onSelectConnectionSession,
@@ -92,34 +99,64 @@ export function AppTitlebar({
       </div>
 
       <nav className="title-session-tabs" aria-label="工作区标签">
-        {connectionSessions.map((session) => (
-          <div
-            className={`tab-shell ${
-              !homeActive && !localTerminalActive && session.connectionId === activeConnectionId
-                ? "active"
-                : ""
-            }`}
-            key={session.connectionId}
-          >
-            <button
-              className="tab"
-              type="button"
-              onClick={() => onSelectConnectionSession(session.connectionId)}
+        {connectionSessions.map((session, index) => {
+          const hasOtherSessions = connectionSessions.length > 1;
+          const hasRightSessions = index < connectionSessions.length - 1;
+          return (
+            <TabContextMenu
+              key={session.connectionId}
+              actions={[
+                {
+                  hint: "Ctrl+F4",
+                  label: "关闭",
+                  onSelect: () => onCloseConnectionSession(session.connectionId),
+                },
+                {
+                  disabled: !hasOtherSessions,
+                  label: "关闭其他",
+                  onSelect: () => onCloseOtherConnectionSessions(session.connectionId),
+                },
+                {
+                  disabled: !hasRightSessions,
+                  label: "关闭右侧标签页",
+                  onSelect: () => onCloseConnectionSessionsToRight(session.connectionId),
+                },
+                {
+                  disabled: connectionSessions.length === 0,
+                  hint: "Ctrl+K W",
+                  label: "全部关闭",
+                  onSelect: onCloseAllConnectionSessions,
+                },
+              ]}
             >
-              <span className="tab-label">
-                {connectionName(session.connectionId, connectionById)}
-              </span>
-            </button>
-            <button
-              className="tab-close"
-              type="button"
-              aria-label={`关闭 ${connectionName(session.connectionId, connectionById)}`}
-              onClick={() => onCloseConnectionSession(session.connectionId)}
-            >
-              <CloseGlyph />
-            </button>
-          </div>
-        ))}
+              <div
+                className={`tab-shell ${
+                  !homeActive && !localTerminalActive && session.connectionId === activeConnectionId
+                    ? "active"
+                    : ""
+                }`}
+              >
+                <button
+                  className="tab"
+                  type="button"
+                  onClick={() => onSelectConnectionSession(session.connectionId)}
+                >
+                  <span className="tab-label">
+                    {connectionName(session.connectionId, connectionById)}
+                  </span>
+                </button>
+                <button
+                  className="tab-close"
+                  type="button"
+                  aria-label={`关闭 ${connectionName(session.connectionId, connectionById)}`}
+                  onClick={() => onCloseConnectionSession(session.connectionId)}
+                >
+                  <CloseGlyph />
+                </button>
+              </div>
+            </TabContextMenu>
+          );
+        })}
       </nav>
 
       <div className="window-controls" aria-label="窗口控制">

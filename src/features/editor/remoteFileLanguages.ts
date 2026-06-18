@@ -161,12 +161,12 @@ function tomlLanguage(): monaco.languages.IMonarchLanguage {
         [/\b(true|false)\b/, "keyword"],
         [/\b\d+(\.\d+)?\b/, "number"],
       ],
+      stringDouble: [
+        [/[^\\"]+/, "string"],
+        [/\\./, "string.escape"],
+        [/"/, "string", "@pop"],
+      ],
     },
-    stringDouble: [
-      [/[^\\"]+/, "string"],
-      [/\\./, "string.escape"],
-      [/"/, "string", "@pop"],
-    ],
   };
 }
 

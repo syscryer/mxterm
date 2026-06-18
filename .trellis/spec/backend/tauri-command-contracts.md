@@ -97,6 +97,7 @@ connection_id: String
 ```rust
 id: Option<String>
 name: Option<String>
+username: Option<String>
 kind: ConnectionAuthKind // "password" | "private_key"
 password: Option<String>
 private_key_path: Option<String>
@@ -156,6 +157,7 @@ reachable: bool
 - `ConnectionProxyKind` uses `none`, `http_connect`, or `socks5`.
 - `ConnectionJumpKind` uses `none` or `ssh_jump`.
 - Empty optional strings are normalized to `None`; non-empty target, credential, proxy, and note fields are trimmed.
+- Credential profiles represent reusable login accounts: username plus password or private-key material. They must not store host or port.
 - Blank `name` defaults to `{username}@{host}`.
 - `is_favorite` is the explicit favorite flag. `last_connected_at` stores the last successful terminal connection timestamp. Upserting an existing connection must preserve both values unless the input explicitly supplies them.
 - `remote_os_id`, `remote_os_name`, and `remote_os_version` store detected remote system metadata from `connection_probe_system`. Upserting an existing connection must preserve these fields when `host`, `port`, and `username` are unchanged; changing that target identity clears the old detected system fields unless the input explicitly supplies new values.
@@ -218,6 +220,8 @@ reachable: bool
 | Delete/open unknown connection id | `connection_missing` | false |
 | Transient dialog test has invalid profile input | same validation code as `connection_upsert` | true |
 | Credential name is blank | `credential_name_missing` | true |
+| Credential password auth has blank username | `credential_username_missing` | true |
+| Credential private-key auth has blank username | `credential_username_missing` | true |
 | Credential password auth has blank password | `credential_password_missing` | true |
 | Credential private-key auth has blank key path | `credential_private_key_missing` | true |
 | Delete unknown credential id | `credential_missing` | false |

@@ -33,3 +33,11 @@ export async function selectLocalDownloadDirectory() {
   });
   return normalizeSelectedPaths(selected)[0] || null;
 }
+
+export async function selectLocalPrivateKeyFile() {
+  const selected = await open({
+    multiple: false,
+    title: "选择私钥文件",
+  });
+  return normalizeSelectedPaths(selected)[0] || null;
+}
