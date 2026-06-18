@@ -27,6 +27,7 @@
 - `terminal_write(manager: State<TerminalManager>, request: TerminalWriteRequest) -> Result<(), AppError>`
 - `terminal_resize(manager: State<TerminalManager>, request: TerminalResizeRequest) -> Result<(), AppError>`
 - `terminal_close(manager: State<TerminalManager>, session_id: String) -> Result<(), AppError>`
+- `get_windows_pty_info() -> Option<WindowsPtyInfo>`
 
 `ConnectionProfileInput` fields:
 
@@ -182,6 +183,8 @@ reachable: bool
 - Terminal output and state events include both `session_id` and the optional frontend `request_id`. Keep `request_id` on early connection events so React can display shell output that arrives before the `terminal_connect` promise resolves.
 - The interactive terminal reader must not stop on `ChannelMsg::Eof`; continue reading until `ChannelMsg::Close` or channel end so a shell prompt or late startup output cannot be lost during frontend handoff.
 - Tauri event names must use allowed characters only. Use colon-separated names such as `terminal:output`, `terminal:state_changed`, and `terminal:connect_progress`; do not use dot-separated names.
+- On Windows, local terminal profile discovery must treat external command output as a platform boundary. `wsl.exe -l -q` may return UTF-16LE without a BOM, so WSL distribution parsing must decode UTF-16 when the byte shape indicates it and must strip NUL separators before building `wsl.exe -d <distro>` args.
+- On Windows, `get_windows_pty_info` returns ConPTY metadata including `windows_version::OsVersion::current().build`; on non-Windows it returns `None`. The frontend maps this to xterm's `windowsPty.buildNumber` so ConPTY wrapping and reflow heuristics match the host OS.
 
 ### 4. Validation & Error Matrix
 
@@ -243,6 +246,7 @@ reachable: bool
 - Unit-test remote system parsing for Ubuntu/CentOS-style `/etc/os-release` payloads and connection-store round trip/preservation of `remote_os_*` fields.
 - Source-check that `connection_test_profile`, `resolve_transient_connection`, and the frontend `connectionTestProfile` wrapper are registered together, and that dialog testing does not call `saveConnection` / `connectionUpsert`.
 - Source-check that terminal encoding is present in frontend types, advanced-tab UI, connection normalization, Rust profile validation, `ResolvedSshConfig`, and terminal session read/write paths.
+- Run `cargo test --manifest-path src-tauri/Cargo.toml parse_wsl_distributions --lib` and `node scripts/check-local-terminal-wsl-source.mjs` after changing Windows local terminal WSL profile discovery.
 - Run `cargo test --manifest-path src-tauri/Cargo.toml` and `cargo check --manifest-path src-tauri/Cargo.toml` after changing command payloads or storage behavior.
 
 ### 7. Wrong vs Correct

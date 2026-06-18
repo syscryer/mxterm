@@ -1,6 +1,7 @@
 import {
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -10,10 +11,14 @@ import {
   type PointerEvent as ReactPointerEvent,
 } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
+import { DismissableLayerBranch } from "@radix-ui/react-dismissable-layer";
 import { openPath, revealItemInDir } from "@tauri-apps/plugin-opener";
 import { getCurrentWebview, type DragDropEvent } from "@tauri-apps/api/webview";
+import type { IWindowsPty } from "@xterm/xterm";
+import { createPortal } from "react-dom";
 import {
   AlertTriangle,
+  ChevronDown,
   ChevronLeft,
   Clock3,
   Clipboard,
@@ -96,8 +101,11 @@ import { AppSelect } from "../../shared/ui/AppSelect";
 import {
   connectionTest,
   connectionTestProfile,
+  getWindowsPtyInfo,
   knownHostTrust,
   connectionProbeLatency,
+  localTerminalListProfiles,
+  localTerminalOpen,
   remoteFileCheckPath,
   localPathMetadata,
   remoteFileCancelTransfer,
@@ -133,6 +141,16 @@ import {
 } from "../../shared/tauri/windowMaterial";
 import { Tooltip } from "../../shared/ui/Tooltip";
 import { AppTitlebar } from "./AppTitlebar";
+import {
+  LocalTerminalIcon,
+  localTerminalTitle,
+} from "../terminal/LocalTerminalIcons";
+import type {
+  LocalTerminalProfile,
+  LocalTerminalProfileInput,
+  LocalTerminalTab,
+  WindowsPtyInfo,
+} from "../terminal/localTerminalTypes";
 
 interface TerminalTab {
   connectionStep?: ConnectionStepState | null;
@@ -212,6 +230,7 @@ type ResizingPane = ResizablePaneSide | "editor-terminal";
 type TransferDirection = "upload" | "download";
 type TransferKind = "file" | "directory";
 type TransferStatus = "queued" | "running" | "success" | "error" | "skipped" | "canceled";
+type WorkspaceMode = "home" | "ssh" | "local";
 
 interface RemoteFileTransferItem {
   id: string;
@@ -301,6 +320,7 @@ export function WorkspaceShell() {
     updateAppearance,
     updateBasic,
     updateFileTransfer,
+    updateLocalTerminal,
     updateTerminalTheme,
   } = useSettings();
   const [activeConnectionId, setActiveConnectionId] = useState<string | null>(null);
@@ -308,13 +328,21 @@ export function WorkspaceShell() {
   const [activeTabByConnectionId, setActiveTabByConnectionId] = useState<Record<string, string>>({});
   const [activeView, setActiveView] = useState<"workspace" | "settings">("workspace");
   const [settingsSectionRequest, setSettingsSectionRequest] =
-    useState<"basic" | "credentials" | "appearance" | "terminalTheme" | undefined>();
+    useState<"basic" | "credentials" | "appearance" | "localTerminal" | "terminalTheme" | undefined>();
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editingConnection, setEditingConnection] = useState<ConnectionProfile | null>(null);
   const [selectedConnectionId, setSelectedConnectionId] = useState<string | null>(null);
   const [terminalTabs, setTerminalTabs] = useState<TerminalTab[]>([]);
   const terminalTabsRef = useRef<TerminalTab[]>([]);
   const terminalWarmupCaptureStopsRef = useRef(new Map<string, () => void>());
+  const [localTerminalTabs, setLocalTerminalTabs] = useState<LocalTerminalTab[]>([]);
+  const localTerminalTabsRef = useRef<LocalTerminalTab[]>([]);
+  const [localTerminalProfiles, setLocalTerminalProfiles] = useState<LocalTerminalProfile[]>([]);
+  const localTerminalProfilesRef = useRef<LocalTerminalProfile[]>([]);
+  const [localTerminalProfilesLoading, setLocalTerminalProfilesLoading] = useState(false);
+  const [localTerminalProfilesError, setLocalTerminalProfilesError] = useState<string | null>(null);
+  const [activeWorkspaceMode, setActiveWorkspaceMode] = useState<WorkspaceMode>("home");
+  const [activeLocalTerminalTabId, setActiveLocalTerminalTabId] = useState<string | null>(null);
   const [terminalDirectories, setTerminalDirectories] = useState<Record<string, string>>({});
   const [remoteFileTabs, setRemoteFileTabs] = useState<RemoteFileEditorTab[]>([]);
   const [activeRemoteFileTabId, setActiveRemoteFileTabId] = useState<string | null>(null);
@@ -347,6 +375,9 @@ export function WorkspaceShell() {
   const [connectionGroupCatalog, setConnectionGroupCatalog] =
     useState<ConnectionGroupCatalog>({ assignments: {}, groups: [] });
   const desktopPlatform = useMemo(() => resolveDesktopPlatform(), []);
+  const [windowsPtyInfo, setWindowsPtyInfo] = useState<IWindowsPty | undefined>(() =>
+    toWindowsPtyOption(null, desktopPlatform),
+  );
   const [supportedWindowMaterials, setSupportedWindowMaterials] = useState<WindowMaterialMode[]>(
     () => getPlatformWindowMaterials(desktopPlatform),
   );
@@ -355,6 +386,66 @@ export function WorkspaceShell() {
   useEffect(() => {
     terminalTabsRef.current = terminalTabs;
   }, [terminalTabs]);
+
+  useEffect(() => {
+    localTerminalTabsRef.current = localTerminalTabs;
+  }, [localTerminalTabs]);
+
+  useEffect(() => {
+    localTerminalProfilesRef.current = localTerminalProfiles;
+  }, [localTerminalProfiles]);
+
+  useEffect(() => {
+    let disposed = false;
+
+    async function loadProfiles() {
+      setLocalTerminalProfilesLoading(true);
+      setLocalTerminalProfilesError(null);
+      try {
+        const detected = hasTauriRuntime()
+          ? await localTerminalListProfiles({
+              hiddenProfileIds: settings.localTerminal.hiddenProfileIds,
+              platform: desktopPlatform,
+            })
+          : previewLocalTerminalProfiles(desktopPlatform);
+        if (disposed) {
+          return;
+        }
+        setLocalTerminalProfiles(
+          mergeLocalTerminalProfiles(
+            detected,
+            settings.localTerminal.customProfiles,
+            settings.localTerminal.hiddenProfileIds,
+          ),
+        );
+      } catch (error) {
+        if (!disposed) {
+          setLocalTerminalProfilesError(formatError(error));
+          setLocalTerminalProfiles(
+            mergeLocalTerminalProfiles(
+              previewLocalTerminalProfiles(desktopPlatform),
+              settings.localTerminal.customProfiles,
+              settings.localTerminal.hiddenProfileIds,
+            ),
+          );
+        }
+      } finally {
+        if (!disposed) {
+          setLocalTerminalProfilesLoading(false);
+        }
+      }
+    }
+
+    void loadProfiles();
+
+    return () => {
+      disposed = true;
+    };
+  }, [
+    desktopPlatform,
+    settings.localTerminal.customProfiles,
+    settings.localTerminal.hiddenProfileIds,
+  ]);
 
   const connectionById = useMemo(() => {
     return new Map(connections.map((connection) => [connection.id, connection]));
@@ -392,7 +483,7 @@ export function WorkspaceShell() {
     activeTerminalTab?.type === "terminal" && activeTerminalTab.sessionId
       ? activeTerminalTab
       : null;
-  const activeRemoteFileTabs = activeConnectionId && activeConnectedTerminalTab
+  const activeRemoteFileTabs = activeWorkspaceMode === "ssh" && activeConnectionId && activeConnectedTerminalTab
     ? remoteFileTabs.filter((tab) => tab.connectionId === activeConnectionId)
     : [];
   const activeRemoteFileTab =
@@ -401,9 +492,11 @@ export function WorkspaceShell() {
       : null) ||
     activeRemoteFileTabs[0] ||
     null;
-  const hasSessionWorkspace = terminalTabs.length > 0 || remoteFileTabs.length > 0;
-  const showingHome = homeActive || !hasSessionWorkspace;
-  const showSessionWorkspace = !showingHome && hasSessionWorkspace;
+  const hasSessionWorkspace =
+    terminalTabs.length > 0 || remoteFileTabs.length > 0 || localTerminalTabs.length > 0;
+  const showingHome = activeWorkspaceMode === "home" || (!hasSessionWorkspace && homeActive);
+  const showingLocalTerminal = activeWorkspaceMode === "local";
+  const showSessionWorkspace = !showingHome && activeWorkspaceMode === "ssh" && hasSessionWorkspace;
   const activeTerminalDirectory = activeConnectedTerminalTab
     ? terminalDirectories[activeConnectedTerminalTab.id] || null
     : null;
@@ -412,6 +505,10 @@ export function WorkspaceShell() {
   const terminalColorScheme = getTerminalColorScheme(settings.terminalTheme.scheme);
   const terminalTone = getTerminalColorSchemeTone(terminalColorScheme);
   const terminalFontFamily = resolveTerminalFontFamily(settings.appearance);
+  const defaultLocalTerminalProfile = useMemo(
+    () => localTerminalProfiles[0] || null,
+    [localTerminalProfiles],
+  );
   const pendingRemoteFileCloseTab = pendingRemoteFileCloseId
     ? remoteFileTabs.find((tab) => tab.id === pendingRemoteFileCloseId) || null
     : null;
@@ -438,6 +535,35 @@ export function WorkspaceShell() {
     "--left-pane-custom-width": `${leftPaneWidth.toString()}px`,
     "--right-pane-custom-width": `${rightPaneWidth.toString()}px`,
   } as CSSProperties;
+
+  useEffect(() => {
+    if (desktopPlatform !== "windows") {
+      setWindowsPtyInfo(undefined);
+      return;
+    }
+
+    if (!hasTauriRuntime()) {
+      setWindowsPtyInfo(toWindowsPtyOption(null, desktopPlatform));
+      return;
+    }
+
+    let disposed = false;
+    void getWindowsPtyInfo()
+      .then((info) => {
+        if (!disposed) {
+          setWindowsPtyInfo(toWindowsPtyOption(info, desktopPlatform));
+        }
+      })
+      .catch(() => {
+        if (!disposed) {
+          setWindowsPtyInfo(toWindowsPtyOption(null, desktopPlatform));
+        }
+      });
+
+    return () => {
+      disposed = true;
+    };
+  }, [desktopPlatform]);
 
   useEffect(() => {
     let disposed = false;
@@ -522,6 +648,12 @@ export function WorkspaceShell() {
 
   const updateTabStatus = useCallback((tabId: string, status: string) => {
     setTerminalTabs((tabs) =>
+      tabs.map((tab) => (tab.id === tabId && tab.status !== status ? { ...tab, status } : tab)),
+    );
+  }, []);
+
+  const updateLocalTerminalTabStatus = useCallback((tabId: string, status: string) => {
+    setLocalTerminalTabs((tabs) =>
       tabs.map((tab) => (tab.id === tabId && tab.status !== status ? { ...tab, status } : tab)),
     );
   }, []);
@@ -1812,6 +1944,9 @@ export function WorkspaceShell() {
   }
 
   function openHome() {
+    setActiveView("workspace");
+    setSettingsSectionRequest(undefined);
+    setActiveWorkspaceMode("home");
     setHomeActive(true);
   }
 
@@ -1840,7 +1975,7 @@ export function WorkspaceShell() {
     setTerminalTabs((tabs) => {
       const nextTabs = tabs.filter((tab) => tab.connectionId !== connection.id);
       terminalTabsRef.current = nextTabs;
-      if (nextTabs.length === 0) {
+      if (nextTabs.length === 0 && remoteFileTabs.length === 0 && localTerminalTabsRef.current.length === 0) {
         setHomeActive(true);
       }
       if (!nextTabs.some((tab) => tab.id === activeTabId)) {
@@ -1981,6 +2116,31 @@ export function WorkspaceShell() {
     });
   }
 
+  function appendLocalTerminalWarmupOutput(tabId: string, data: number[]) {
+    if (data.length === 0) {
+      return;
+    }
+
+    setLocalTerminalTabs((tabs) => {
+      let changed = false;
+      const nextTabs = tabs.map((tab) => {
+        if (tab.id !== tabId || !tab.sessionId) {
+          return tab;
+        }
+        changed = true;
+        return {
+          ...tab,
+          warmupOutput: [...tab.warmupOutput, ...data],
+        };
+      });
+      if (!changed) {
+        return tabs;
+      }
+      localTerminalTabsRef.current = nextTabs;
+      return nextTabs;
+    });
+  }
+
   function setTerminalWarmupCaptureStop(tabId: string, stop: () => void) {
     stopTerminalWarmupCapture(tabId);
     terminalWarmupCaptureStopsRef.current.set(tabId, stop);
@@ -2035,10 +2195,200 @@ export function WorkspaceShell() {
   }
 
   function activateTerminalTab(tab: TerminalTab) {
+    setActiveView("workspace");
+    setSettingsSectionRequest(undefined);
+    setActiveWorkspaceMode("ssh");
     setHomeActive(false);
     setActiveConnectionId(tab.connectionId);
     setActiveTabId(tab.id);
     rememberActiveTab(tab);
+  }
+
+  function activateLocalTerminalTab(tab: LocalTerminalTab) {
+    setActiveView("workspace");
+    setSettingsSectionRequest(undefined);
+    setActiveWorkspaceMode("local");
+    setHomeActive(false);
+    setActiveLocalTerminalTabId(tab.id);
+  }
+
+  function resolveDefaultLocalTerminalProfile() {
+    const defaultProfileId = settings.localTerminal.defaultProfileId;
+    return (
+      localTerminalProfilesRef.current.find((profile) => profile.id === defaultProfileId) ||
+      localTerminalProfilesRef.current[0] ||
+      null
+    );
+  }
+
+  function buildLocalTerminalTab(
+    tabs: LocalTerminalTab[],
+    profile: LocalTerminalProfile,
+  ): LocalTerminalTab {
+    const nextIndex =
+      tabs.filter((tab) => tab.profileId === profile.id).length + 1;
+    const now = Date.now();
+
+    return {
+      id: `local-terminal-${now.toString()}-${Math.random().toString(36).slice(2, 8)}`,
+      profileId: profile.id,
+      profileKind: profile.kind,
+      requestId: `local-terminal-${now.toString()}`,
+      sessionId: undefined,
+      status: "正在打开",
+      title: localTerminalTitle(profile, nextIndex),
+      warmupOutput: [],
+    };
+  }
+
+  function closeLocalTerminal(tabId: string) {
+    setLocalTerminalTabs((tabs) => {
+      const nextTabs = tabs.filter((tab) => tab.id !== tabId);
+      localTerminalTabsRef.current = nextTabs;
+      if (activeLocalTerminalTabId === tabId) {
+        const nextActive = nextTabs[0] || null;
+        setActiveLocalTerminalTabId(nextActive?.id || null);
+        if (!nextActive && terminalTabsRef.current.length === 0 && remoteFileTabs.length === 0) {
+          setHomeActive(true);
+          setActiveWorkspaceMode("home");
+        } else if (!nextActive && terminalTabsRef.current.length > 0) {
+          setActiveWorkspaceMode("ssh");
+        }
+      }
+      return nextTabs;
+    });
+  }
+
+  function openLocalTerminalWorkspace() {
+    setActiveView("workspace");
+    setActiveWorkspaceMode("local");
+    setHomeActive(false);
+    setSettingsSectionRequest(undefined);
+    if (localTerminalTabsRef.current.length > 0) {
+      if (!activeLocalTerminalTabId) {
+        setActiveLocalTerminalTabId(localTerminalTabsRef.current[0]?.id || null);
+      }
+      return;
+    }
+    void openLocalTerminalByProfile(resolveDefaultLocalTerminalProfile());
+  }
+
+  async function openLocalTerminalByProfile(profile: LocalTerminalProfile | null) {
+    if (!profile) {
+      setLocalTerminalProfilesError("没有可用的本地终端类型。");
+      return;
+    }
+
+    const tab = buildLocalTerminalTab(localTerminalTabsRef.current, profile);
+    setLocalTerminalTabs((tabs) => {
+      const nextTabs = [...tabs, tab];
+      localTerminalTabsRef.current = nextTabs;
+      return nextTabs;
+    });
+    activateLocalTerminalTab(tab);
+
+    if (!hasTauriRuntime()) {
+      await wait(120);
+      setLocalTerminalTabs((tabs) => {
+        const nextTabs = tabs.map((item) =>
+          item.id === tab.id
+            ? {
+                ...item,
+                error: null,
+                sessionId: `local-preview-${Date.now().toString()}`,
+                status: "预览",
+              }
+            : item,
+        );
+        localTerminalTabsRef.current = nextTabs;
+        return nextTabs;
+      });
+      return;
+    }
+
+    try {
+      const warmupOutput: number[] = [];
+      let stopWarmupCapture: (() => void) | null = null;
+      let handoffComplete = false;
+
+      stopWarmupCapture = await listenTerminalOutput((event: TerminalOutputEvent) => {
+        if (event.request_id !== tab.requestId) {
+          return;
+        }
+        if (handoffComplete) {
+          appendLocalTerminalWarmupOutput(tab.id, event.data);
+          return;
+        }
+        warmupOutput.push(...event.data);
+      });
+      setTerminalWarmupCaptureStop(tab.id, () => {
+        stopWarmupCapture?.();
+        stopWarmupCapture = null;
+      });
+
+      const sessionId = await localTerminalOpen({
+        cols: 80,
+        cwd: profile.cwd || undefined,
+        profile: toLocalTerminalProfileInput(profile),
+        request_id: tab.requestId,
+        rows: 24,
+      });
+      if (!localTerminalTabExists(tab.id)) {
+        stopTerminalWarmupCapture(tab.id);
+        await terminalClose(sessionId).catch(() => undefined);
+        return;
+      }
+      handoffComplete = true;
+      setLocalTerminalTabs((tabs) => {
+        const nextTabs = tabs.map((item) =>
+          item.id === tab.id
+            ? {
+                ...item,
+                error: null,
+                sessionId,
+                status: "已连接",
+                warmupOutput: [...warmupOutput],
+              }
+            : item,
+        );
+        localTerminalTabsRef.current = nextTabs;
+        return nextTabs;
+      });
+      window.setTimeout(() => {
+        stopTerminalWarmupCapture(tab.id);
+      }, 3000);
+    } catch (error) {
+      stopTerminalWarmupCapture(tab.id);
+      setLocalTerminalTabs((tabs) => {
+        const nextTabs = tabs.map((item) =>
+          item.id === tab.id
+            ? {
+                ...item,
+                error: formatDetailedError(error),
+                sessionId: undefined,
+                status: "连接失败",
+              }
+            : item,
+        );
+        localTerminalTabsRef.current = nextTabs;
+        return nextTabs;
+      });
+    }
+  }
+
+  function closeLocalTerminalSession(tab: LocalTerminalTab) {
+    const { id } = tab;
+    stopTerminalWarmupCapture(id);
+    closeLocalTerminal(id);
+  }
+
+  function localTerminalTabExists(tabId: string) {
+    return localTerminalTabsRef.current.some((tab) => tab.id === tabId);
+  }
+
+  function openLocalTerminalSettings() {
+    setSettingsSectionRequest("localTerminal");
+    setActiveView("settings");
   }
 
   function selectConnection(connection: ConnectionProfile) {
@@ -2066,7 +2416,7 @@ export function WorkspaceShell() {
       const closingTab = tabs.find((tab) => tab.id === tabId);
       const nextTabs = tabs.filter((tab) => tab.id !== tabId);
       terminalTabsRef.current = nextTabs;
-      if (nextTabs.length === 0 && remoteFileTabs.length === 0) {
+      if (nextTabs.length === 0 && remoteFileTabs.length === 0 && localTerminalTabsRef.current.length === 0) {
         setHomeActive(true);
       }
       if (activeTabId === tabId) {
@@ -2117,7 +2467,7 @@ export function WorkspaceShell() {
     setTerminalTabs((tabs) => {
       const nextTabs = tabs.filter((tab) => tab.connectionId !== connectionId);
       terminalTabsRef.current = nextTabs;
-      if (nextTabs.length === 0 && remoteFileTabs.length === 0) {
+      if (nextTabs.length === 0 && remoteFileTabs.length === 0 && localTerminalTabsRef.current.length === 0) {
         setHomeActive(true);
       }
 
@@ -2715,9 +3065,11 @@ export function WorkspaceShell() {
         connectionById={connectionById}
         connectionSessions={connectionSessions}
         homeActive={showingHome}
+        localTerminalActive={showingLocalTerminal}
         leftPaneCollapsed={leftPaneCollapsed}
         onCloseConnectionSession={closeConnectionSession}
         onOpenHome={openHome}
+        onOpenLocalTerminal={openLocalTerminalWorkspace}
         onSelectConnectionSession={(connectionId) => {
           const nextTab = preferredTabForConnection(connectionId);
           if (nextTab) {
@@ -2848,9 +3200,10 @@ export function WorkspaceShell() {
               ) : null}
 
               <section
-                className="terminal-workbench-pane"
+                className={`terminal-workbench-pane ${showingLocalTerminal ? "is-hidden" : ""}`}
                 data-terminal-tone={terminalTone}
                 aria-label="终端区"
+                aria-hidden={showingLocalTerminal}
               >
                 <nav className="terminal-subtabs" aria-label="当前连接终端标签">
                   {activeConnectionTabs.map((tab) => (
@@ -2954,6 +3307,118 @@ export function WorkspaceShell() {
                       />
                     ) : null;
                   })}
+                </section>
+              </section>
+
+              <section
+                className={`terminal-workbench-pane ${showingLocalTerminal ? "" : "is-hidden"}`}
+                data-terminal-tone={terminalTone}
+                aria-label="本地终端区"
+                aria-hidden={!showingLocalTerminal}
+              >
+                <nav className="terminal-subtabs" aria-label="本地终端标签">
+                  {localTerminalTabs.map((tab) => (
+                    <div
+                      className={`subtab-shell ${tab.id === activeLocalTerminalTabId ? "active" : ""}`}
+                      key={tab.id}
+                    >
+                      <button
+                        className="subtab local-terminal-subtab"
+                        type="button"
+                        title={`${tab.title} · ${tab.status}`}
+                        onClick={() => activateLocalTerminalTab(tab)}
+                      >
+                        <LocalTerminalIcon className="ui-icon" kind={tab.profileKind} title={tab.title} />
+                        <span>{tab.title}</span>
+                      </button>
+                      <button
+                        className="subtab-close"
+                        type="button"
+                        aria-label={`关闭 ${tab.title}`}
+                        onClick={() => closeLocalTerminalSession(tab)}
+                      >
+                        <X className="ui-icon" aria-hidden="true" />
+                      </button>
+                    </div>
+                  ))}
+                  <Tooltip label="新建默认终端">
+                    <button
+                      className="add-subtab"
+                      type="button"
+                      aria-label="新建默认终端"
+                      disabled={!defaultLocalTerminalProfile}
+                      onClick={() => void openLocalTerminalByProfile(resolveDefaultLocalTerminalProfile())}
+                    >
+                      <Plus className="ui-icon" aria-hidden="true" />
+                    </button>
+                  </Tooltip>
+                  <LocalTerminalLauncher
+                    disabled={localTerminalProfiles.length === 0}
+                    loading={localTerminalProfilesLoading}
+                    profiles={localTerminalProfiles}
+                    onOpenProfile={(profile) => void openLocalTerminalByProfile(profile)}
+                  />
+                  {localTerminalProfilesError ? (
+                    <div className="local-terminal-subtabs-meta">
+                      <button
+                        className="local-terminal-inline-action"
+                        type="button"
+                        onClick={openLocalTerminalSettings}
+                      >
+                        {localTerminalProfilesError}
+                      </button>
+                    </div>
+                  ) : null}
+                </nav>
+
+                <section className="terminal-stack" aria-label="本地终端">
+                  {localTerminalTabs.length === 0 ? (
+                    <LocalTerminalEmptyPanel
+                      active={showingLocalTerminal}
+                      error={localTerminalProfilesError}
+                      loading={localTerminalProfilesLoading}
+                      profileName={defaultLocalTerminalProfile?.name || null}
+                      onOpenDefault={() => void openLocalTerminalByProfile(resolveDefaultLocalTerminalProfile())}
+                      onOpenSettings={openLocalTerminalSettings}
+                    />
+                  ) : (
+                    localTerminalTabs.map((tab) =>
+                      tab.sessionId ? (
+                        <TerminalPanel
+                          active={showingLocalTerminal && tab.id === activeLocalTerminalTabId}
+                          autoConnect={false}
+                          connection={null}
+                          fontFamily={terminalFontFamily}
+                          fontSize={settings.appearance.terminalFontSize}
+                          initialSessionId={tab.sessionId}
+                          initialOutput={tab.warmupOutput}
+                          initialRequestId={tab.requestId}
+                          key={tab.id}
+                          onStatusChange={updateLocalTerminalTabStatus}
+                          onWarmupCaptureReady={stopTerminalWarmupCapture}
+                          tabId={tab.id}
+                          theme={terminalColorScheme.theme}
+                          title={tab.title}
+                          windowsPty={windowsPtyInfo}
+                        />
+                      ) : (
+                        <LocalTerminalStatusPanel
+                          active={showingLocalTerminal && tab.id === activeLocalTerminalTabId}
+                          error={tab.error || null}
+                          profile={localTerminalProfiles.find((profile) => profile.id === tab.profileId) || null}
+                          status={tab.status}
+                          title={tab.title}
+                          key={tab.id}
+                          onOpenSettings={openLocalTerminalSettings}
+                          onRetry={() =>
+                            void openLocalTerminalByProfile(
+                              localTerminalProfiles.find((profile) => profile.id === tab.profileId) || null,
+                            )
+                          }
+                        />
+                      ),
+                    )
+                  )}
                 </section>
               </section>
             </section>
@@ -3309,11 +3774,11 @@ export function WorkspaceShell() {
         </Dialog.Portal>
       </Dialog.Root>
 
-      <SettingsView
-        activeSection={settingsSectionRequest}
-        credentials={credentials}
-        credentialError={credentialError}
-        credentialLoading={credentialLoading}
+        <SettingsView
+          activeSection={settingsSectionRequest}
+          credentials={credentials}
+          credentialError={credentialError}
+          credentialLoading={credentialLoading}
         effectiveWindowMaterial={effectiveWindowMaterial}
         hidden={activeView !== "settings"}
         settings={settings}
@@ -3321,12 +3786,13 @@ export function WorkspaceShell() {
         onDeleteCredential={deleteCredentialFromSettings}
         onReset={reset}
         onReturnWorkspace={() => setActiveView("workspace")}
-        onSaveCredential={saveCredentialFromSettings}
-        onUpdateAppearance={updateAppearance}
-        onUpdateBasic={updateBasic}
-        onUpdateFileTransfer={updateFileTransfer}
-        onUpdateTerminalTheme={updateTerminalTheme}
-      />
+          onSaveCredential={saveCredentialFromSettings}
+          onUpdateAppearance={updateAppearance}
+          onUpdateBasic={updateBasic}
+          onUpdateFileTransfer={updateFileTransfer}
+          onUpdateLocalTerminal={updateLocalTerminal}
+          onUpdateTerminalTheme={updateTerminalTheme}
+        />
     </div>
   );
 
@@ -3436,6 +3902,274 @@ function RemoteFileTransferPanel({
       </div>
     </section>
   );
+}
+
+function LocalTerminalEmptyPanel({
+  active,
+  error,
+  loading,
+  profileName,
+  onOpenDefault,
+  onOpenSettings,
+}: {
+  active: boolean;
+  error: string | null;
+  loading: boolean;
+  profileName: string | null;
+  onOpenDefault: () => void;
+  onOpenSettings: () => void;
+}) {
+  return (
+    <section
+      className={`terminal-direct-status local-terminal-empty ${active ? "" : "is-hidden"}`}
+      aria-label="本地终端空状态"
+      aria-hidden={!active}
+    >
+      <div>
+        {loading ? (
+          <Loader2 className="ui-icon spin" aria-hidden="true" />
+        ) : error ? (
+          <CircleAlert className="ui-icon" aria-hidden="true" />
+        ) : (
+          <LocalTerminalIcon className="ui-icon" kind={profileName ? "powershell_core" : "custom"} />
+        )}
+        <strong>{loading ? "探测本地终端中" : "打开本地终端"}</strong>
+        <span>
+          {error
+            ? error
+            : profileName
+              ? `默认会打开 ${profileName}，也可以在上方下拉中切换其他类型。`
+              : "还没有可用的本地终端类型，请先检查设置或补充自定义 profile。"}
+        </span>
+        <div className="local-terminal-status-actions">
+          <button className="primary-button" type="button" disabled={!profileName || loading} onClick={onOpenDefault}>
+            <Play className="ui-icon" aria-hidden="true" />
+            打开默认终端
+          </button>
+          <button type="button" onClick={onOpenSettings}>
+            打开设置
+          </button>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function LocalTerminalStatusPanel({
+  active,
+  error,
+  profile,
+  status,
+  title,
+  onOpenSettings,
+  onRetry,
+}: {
+  active: boolean;
+  error: string | null;
+  profile: LocalTerminalProfile | null;
+  status: string;
+  title: string;
+  onOpenSettings: () => void;
+  onRetry: () => void;
+}) {
+  const failed = status === "连接失败";
+
+  return (
+    <section
+      className={`terminal-direct-status local-terminal-status ${failed ? "is-error" : "is-loading"} ${
+        active ? "" : "is-hidden"
+      }`}
+      aria-label={`${title} 状态`}
+      aria-hidden={!active}
+    >
+      <div>
+        {failed ? (
+          <CircleAlert className="ui-icon" aria-hidden="true" />
+        ) : (
+          <Loader2 className="ui-icon spin" aria-hidden="true" />
+        )}
+        <strong>{failed ? "本地终端启动失败" : status}</strong>
+        <span>{profile ? `${profile.name} · ${profile.command}` : title}</span>
+        {error ? <small>{error}</small> : null}
+        {failed ? (
+          <div className="local-terminal-status-actions">
+            <button className="primary-button" type="button" onClick={onRetry}>
+              <RefreshCw className="ui-icon" aria-hidden="true" />
+              重试
+            </button>
+            <button type="button" onClick={onOpenSettings}>
+              打开设置
+            </button>
+          </div>
+        ) : null}
+      </div>
+    </section>
+  );
+}
+
+function LocalTerminalLauncher({
+  disabled,
+  loading,
+  profiles,
+  onOpenProfile,
+}: {
+  disabled: boolean;
+  loading: boolean;
+  profiles: LocalTerminalProfile[];
+  onOpenProfile: (profile: LocalTerminalProfile) => void;
+}) {
+  const triggerRef = useRef<HTMLButtonElement | null>(null);
+  const menuRef = useRef<HTMLDivElement | null>(null);
+  const [open, setOpen] = useState(false);
+  const [position, setPosition] = useState<LocalTerminalMenuPosition | null>(null);
+  const menuDisabled = disabled || loading;
+
+  useLayoutEffect(() => {
+    if (!open) {
+      return;
+    }
+    setPosition(readLocalTerminalMenuPosition(triggerRef.current));
+  }, [open]);
+
+  useEffect(() => {
+    if (!open) {
+      return;
+    }
+
+    function closeOnPointerDown(event: PointerEvent) {
+      const target = event.target as Node | null;
+      if (
+        target &&
+        (triggerRef.current?.contains(target) || menuRef.current?.contains(target))
+      ) {
+        return;
+      }
+      setOpen(false);
+    }
+
+    function updatePosition() {
+      setPosition(readLocalTerminalMenuPosition(triggerRef.current));
+    }
+
+    document.addEventListener("pointerdown", closeOnPointerDown);
+    window.addEventListener("resize", updatePosition);
+    window.addEventListener("scroll", updatePosition, true);
+
+    return () => {
+      document.removeEventListener("pointerdown", closeOnPointerDown);
+      window.removeEventListener("resize", updatePosition);
+      window.removeEventListener("scroll", updatePosition, true);
+    };
+  }, [open]);
+
+  function chooseProfile(profile: LocalTerminalProfile) {
+    setOpen(false);
+    onOpenProfile(profile);
+    window.requestAnimationFrame(() => triggerRef.current?.focus());
+  }
+
+  return (
+    <div className="local-terminal-launcher">
+      <Tooltip label={loading ? "正在探测终端类型" : "选择终端类型"}>
+        <button
+          ref={triggerRef}
+          className="add-subtab local-terminal-launch-button"
+          type="button"
+          aria-label={loading ? "正在探测终端类型" : "选择终端类型"}
+          aria-expanded={open}
+          aria-haspopup="menu"
+          disabled={menuDisabled}
+          onClick={() => setOpen((value) => !value)}
+          onKeyDown={(event) => {
+            if (event.key === "Escape") {
+              setOpen(false);
+            }
+          }}
+        >
+          <ChevronDown className="ui-icon" aria-hidden="true" />
+        </button>
+      </Tooltip>
+      {open && position
+        ? createPortal(
+            <DismissableLayerBranch asChild>
+              <div
+                ref={menuRef}
+                className="local-terminal-profile-menu dropdown-menu-content"
+                style={
+                  {
+                    "--local-terminal-menu-left": `${position.left}px`,
+                    "--local-terminal-menu-top": `${position.top}px`,
+                    "--local-terminal-menu-max-height": `${position.maxHeight}px`,
+                    "--local-terminal-menu-width": `${position.width}px`,
+                  } as CSSProperties
+                }
+                role="menu"
+                aria-label="选择终端类型"
+              >
+                {profiles.map((profile, index) => (
+                  <button
+                    className="local-terminal-profile-menu-item dropdown-menu-item"
+                    key={profile.id}
+                    type="button"
+                    role="menuitem"
+                    onClick={() => chooseProfile(profile)}
+                  >
+                    <span className="local-terminal-menu-label">
+                      <LocalTerminalIcon className="ui-icon" kind={profile.kind} title={profile.name} />
+                      <span>{profile.name}</span>
+                    </span>
+                    {index < 9 ? (
+                      <span className="local-terminal-menu-shortcut">
+                        Ctrl+Shift+{(index + 1).toString()}
+                      </span>
+                    ) : null}
+                  </button>
+                ))}
+              </div>
+            </DismissableLayerBranch>,
+            document.body,
+          )
+        : null}
+    </div>
+  );
+}
+
+interface LocalTerminalMenuPosition {
+  left: number;
+  maxHeight: number;
+  top: number;
+  width: number;
+}
+
+function readLocalTerminalMenuPosition(
+  trigger: HTMLButtonElement | null,
+): LocalTerminalMenuPosition | null {
+  if (!trigger) {
+    return null;
+  }
+
+  const rect = trigger.getBoundingClientRect();
+  const viewportPadding = 12;
+  const gap = 5;
+  const width = 320;
+  const spaceBelow = window.innerHeight - rect.bottom - viewportPadding;
+  const spaceAbove = rect.top - viewportPadding;
+  const openAbove = spaceBelow < 220 && spaceAbove > spaceBelow;
+  const maxHeight = Math.max(
+    180,
+    Math.min(420, openAbove ? spaceAbove - gap : spaceBelow - gap),
+  );
+  const preferredLeft = rect.left;
+
+  return {
+    left: Math.min(
+      Math.max(viewportPadding, preferredLeft),
+      Math.max(viewportPadding, window.innerWidth - width - viewportPadding),
+    ),
+    maxHeight,
+    top: openAbove ? rect.top - gap - maxHeight : rect.bottom + gap,
+    width,
+  };
 }
 
 function DirectTerminalStatusPanel({
@@ -4536,6 +5270,18 @@ function formatError(error: unknown) {
   return String(error);
 }
 
+function formatDetailedError(error: unknown) {
+  const message = formatError(error);
+  const rawMessage =
+    typeof error === "object" && error !== null && "raw_message" in error
+      ? normalizeErrorText((error as { raw_message: unknown }).raw_message)
+      : "";
+  if (rawMessage && rawMessage !== normalizeErrorText(message)) {
+    return `${message}\n${rawMessage}`;
+  }
+  return message;
+}
+
 function isTransferCanceledError(error: unknown) {
   return (
     typeof error === "object" &&
@@ -4790,6 +5536,209 @@ function runtimeCredentialRequest(step: ConnectionStepState): ConnectionRuntimeC
     private_key_passphrase:
       step.authKind === "private_key" ? step.privateKeyPassphrase || undefined : undefined,
     private_key_path: step.authKind === "private_key" ? step.privateKeyPath || undefined : undefined,
+  };
+}
+
+function toWindowsPtyOption(
+  info: WindowsPtyInfo | null,
+  platform: string,
+): IWindowsPty | undefined {
+  if (platform !== "windows") {
+    return undefined;
+  }
+
+  return {
+    backend: info?.backend || "conpty",
+    buildNumber:
+      typeof info?.build_number === "number" ? info.build_number : undefined,
+  };
+}
+
+function previewLocalTerminalProfiles(platform: string): LocalTerminalProfile[] {
+  if (platform === "windows") {
+    return [
+      buildPreviewLocalTerminalProfile({
+        args: ["-NoLogo"],
+        command: "pwsh.exe",
+        icon: "terminal-powershell",
+        id: "pwsh",
+        kind: "powershell_core",
+        name: "PowerShell 7",
+        platform,
+      }),
+      buildPreviewLocalTerminalProfile({
+        args: ["-NoLogo"],
+        command: "powershell.exe",
+        icon: "terminal-powershell",
+        id: "powershell",
+        kind: "powershell",
+        name: "Windows PowerShell",
+        platform,
+      }),
+      buildPreviewLocalTerminalProfile({
+        args: [],
+        command: "cmd.exe",
+        icon: "terminal-cmd",
+        id: "cmd",
+        kind: "cmd",
+        name: "命令提示符",
+        platform,
+      }),
+      buildPreviewLocalTerminalProfile({
+        args: ["--login", "-i"],
+        command: "bash.exe",
+        icon: "terminal-git-bash",
+        id: "git-bash",
+        kind: "git_bash",
+        name: "Git Bash",
+        platform,
+      }),
+    ];
+  }
+
+  const unixPlatform = platform === "macos" ? "macos" : "linux";
+  return [
+    buildPreviewLocalTerminalProfile({
+      args: [],
+      command: "zsh",
+      icon: "terminal-zsh",
+      id: "zsh",
+      kind: "zsh",
+      name: "zsh",
+      platform: unixPlatform,
+    }),
+    buildPreviewLocalTerminalProfile({
+      args: [],
+      command: "bash",
+      icon: "terminal-bash",
+      id: "bash",
+      kind: "bash",
+      name: "bash",
+      platform: unixPlatform,
+    }),
+    buildPreviewLocalTerminalProfile({
+      args: [],
+      command: "pwsh",
+      icon: "terminal-powershell",
+      id: "pwsh",
+      kind: "pwsh",
+      name: "PowerShell 7",
+      platform: unixPlatform,
+    }),
+  ];
+}
+
+function buildPreviewLocalTerminalProfile(
+  input: Omit<LocalTerminalProfile, "cwd" | "detected" | "env" | "hidden" | "source">,
+): LocalTerminalProfile {
+  return {
+    ...input,
+    cwd: null,
+    detected: true,
+    env: {},
+    hidden: false,
+    source: "detected",
+  };
+}
+
+function mergeLocalTerminalProfiles(
+  detectedProfiles: LocalTerminalProfile[],
+  customProfiles: LocalTerminalProfileInput[],
+  hiddenProfileIds: string[],
+) {
+  const hiddenIdSet = new Set(hiddenProfileIds);
+  const byId = new Map<string, LocalTerminalProfile>();
+
+  detectedProfiles.forEach((profile) => {
+    if (!hiddenIdSet.has(profile.id) && !profile.hidden) {
+      byId.set(profile.id, profile);
+    }
+  });
+
+  customProfiles.forEach((profile, index) => {
+    const normalized = normalizeLocalTerminalProfileInput(profile, index);
+    if (normalized && !normalized.hidden && !hiddenIdSet.has(normalized.id)) {
+      byId.set(normalized.id, normalized);
+    }
+  });
+
+  return Array.from(byId.values()).sort((left, right) =>
+    localTerminalProfileSortKey(left).localeCompare(localTerminalProfileSortKey(right), "zh-Hans"),
+  );
+}
+
+function normalizeLocalTerminalProfileInput(
+  profile: LocalTerminalProfileInput,
+  index = 0,
+): LocalTerminalProfile | null {
+  const id = (profile.id || "").trim() || `custom-${index.toString()}`;
+  const name = profile.name.trim();
+  const kind = profile.kind.trim();
+  const command = profile.command.trim();
+  if (!name || !kind || !command) {
+    return null;
+  }
+
+  return {
+    args: profile.args.filter((item) => item.trim().length > 0),
+    command,
+    cwd: profile.cwd?.trim() || null,
+    detected: profile.detected,
+    env: Object.fromEntries(
+      Object.entries(profile.env).map(([key, value]) => [key.trim(), value.trim()]),
+    ),
+    hidden: profile.hidden,
+    icon: profile.icon || `terminal-${kind}`,
+    id,
+    kind,
+    name,
+    platform: profile.platform || "all",
+    source: profile.source || "custom",
+  };
+}
+
+function localTerminalProfileSortKey(profile: LocalTerminalProfile) {
+  return `${localTerminalProfileRank(profile.kind).toString().padStart(2, "0")}:${profile.name}:${profile.id}`;
+}
+
+function localTerminalProfileRank(kind: string) {
+  switch (kind) {
+    case "powershell_core":
+    case "pwsh":
+      return 0;
+    case "powershell":
+      return 1;
+    case "cmd":
+      return 2;
+    case "wsl":
+      return 3;
+    case "git_bash":
+      return 4;
+    case "bash":
+      return 5;
+    case "zsh":
+      return 6;
+    case "fish":
+      return 7;
+    default:
+      return 20;
+  }
+}
+
+function toLocalTerminalProfileInput(profile: LocalTerminalProfile): LocalTerminalProfileInput {
+  return {
+    args: [...profile.args],
+    command: profile.command,
+    cwd: profile.cwd || null,
+    detected: profile.detected,
+    env: { ...profile.env },
+    hidden: profile.hidden,
+    icon: profile.icon,
+    id: profile.id,
+    kind: profile.kind,
+    name: profile.name,
+    platform: profile.platform,
+    source: profile.source,
   };
 }
 

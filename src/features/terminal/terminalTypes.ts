@@ -1,4 +1,5 @@
 import type { ConnectionAuthKind } from "../connections/connectionTypes";
+export type { LocalTerminalOpenRequest } from "./localTerminalTypes";
 
 export interface TerminalConnectRequest {
   request_id?: string;

@@ -1,4 +1,8 @@
 import type { CSSProperties } from "react";
+import type {
+  LocalTerminalProfileInput,
+  LocalTerminalSettings,
+} from "../terminal/localTerminalTypes";
 
 import {
   defaultTerminalColorSchemeId,
@@ -6,7 +10,12 @@ import {
   type TerminalColorSchemeId,
 } from "./terminalColorSchemes";
 
-export type SettingsSectionId = "basic" | "credentials" | "appearance" | "terminalTheme";
+export type SettingsSectionId =
+  | "basic"
+  | "credentials"
+  | "appearance"
+  | "terminalTheme"
+  | "localTerminal";
 export type ThemeMode = "system" | "light" | "dark";
 export type AccentColor = "blue" | "slate" | "emerald" | "amber" | "rose" | "violet" | "custom";
 export type FontSettingMode = "preset" | "custom";
@@ -75,6 +84,7 @@ export interface MxtermSettings {
   appearance: AppearanceSettings;
   basic: BasicSettings;
   fileTransfer: FileTransferSettings;
+  localTerminal: LocalTerminalSettings;
   terminalTheme: TerminalThemeSettings;
 }
 
@@ -180,6 +190,12 @@ export const defaultSettings: MxtermSettings = {
     timestampDirectory: true,
     timestampFormat: "yyyyMMddHHmm",
   },
+  localTerminal: {
+    defaultProfileId: null,
+    hiddenProfileIds: [],
+    customProfiles: [],
+    reopenLastLocalWorkspace: true,
+  },
   appearance: {
     accentColor: "blue",
     accentColorCustom: "#2374C6",
@@ -206,6 +222,7 @@ export function normalizeSettings(value: unknown): MxtermSettings {
   const record = isRecord(value) ? value : {};
   const basic = isRecord(record.basic) ? record.basic : {};
   const fileTransfer = isRecord(record.fileTransfer) ? record.fileTransfer : {};
+  const localTerminal = isRecord(record.localTerminal) ? record.localTerminal : {};
   const appearance = isRecord(record.appearance) ? record.appearance : {};
   const terminalTheme = isRecord(record.terminalTheme) ? record.terminalTheme : {};
 
@@ -258,6 +275,18 @@ export function normalizeSettings(value: unknown): MxtermSettings {
         fileTransfer.timestampFormat,
         ["yyyyMMddHHmm", "yyyyMMdd-HHmm", "yyyy-MM-dd-HHmm"],
         defaultSettings.fileTransfer.timestampFormat,
+      ),
+    },
+    localTerminal: {
+      defaultProfileId: normalizeOptionalString(
+        localTerminal.defaultProfileId,
+        defaultSettings.localTerminal.defaultProfileId,
+      ),
+      hiddenProfileIds: normalizeStringArray(localTerminal.hiddenProfileIds),
+      customProfiles: normalizeLocalTerminalProfiles(localTerminal.customProfiles),
+      reopenLastLocalWorkspace: normalizeBoolean(
+        localTerminal.reopenLastLocalWorkspace,
+        defaultSettings.localTerminal.reopenLastLocalWorkspace,
       ),
     },
     appearance: {
@@ -475,6 +504,78 @@ function normalizePathInput(value: unknown, fallback: string) {
 
   const trimmed = value.trim().replace(/[<>"|?*\n\r\t]/g, "");
   return trimmed.length <= 260 ? trimmed : fallback;
+}
+
+function normalizeOptionalString(value: unknown, fallback: string | null) {
+  if (typeof value !== "string") {
+    return fallback;
+  }
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : fallback;
+}
+
+function normalizeStringArray(value: unknown) {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value
+    .filter((item): item is string => typeof item === "string")
+    .map((item) => item.trim())
+    .filter((item) => item.length > 0);
+}
+
+function normalizeLocalTerminalProfiles(value: unknown) {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value
+    .map((item) => normalizeLocalTerminalProfile(item))
+    .filter((item): item is NonNullable<typeof item> => Boolean(item));
+}
+
+export function normalizeLocalTerminalProfileInput(
+  value: unknown,
+): LocalTerminalProfileInput | null {
+  return normalizeLocalTerminalProfile(value);
+}
+
+function normalizeLocalTerminalProfile(value: unknown) {
+  if (!isRecord(value)) {
+    return null;
+  }
+
+  const name = typeof value.name === "string" ? value.name.trim() : "";
+  const kind = typeof value.kind === "string" ? value.kind.trim() : "";
+  const command = typeof value.command === "string" ? value.command.trim() : "";
+  if (!name || !kind || !command) {
+    return null;
+  }
+
+  const env = isRecord(value.env)
+    ? Object.fromEntries(
+        Object.entries(value.env)
+          .filter(([, item]) => typeof item === "string")
+          .map(([key, item]) => [key, (item as string).trim()]),
+      )
+    : {};
+
+  return {
+    id: typeof value.id === "string" ? value.id.trim() || undefined : undefined,
+    name,
+    kind,
+    platform: typeof value.platform === "string" ? value.platform.trim() || "all" : "all",
+    source: typeof value.source === "string" ? value.source.trim() || "custom" : "custom",
+    command,
+    args: Array.isArray(value.args)
+      ? value.args.filter((item): item is string => typeof item === "string")
+      : [],
+    cwd: typeof value.cwd === "string" ? value.cwd.trim() || null : null,
+    env,
+    icon: typeof value.icon === "string" ? value.icon.trim() || "terminal-shell" : "terminal-shell",
+    hidden: typeof value.hidden === "boolean" ? value.hidden : false,
+    detected: typeof value.detected === "boolean" ? value.detected : false,
+  };
 }
 
 function normalizeNumber<T extends number>(value: unknown, allowed: readonly T[], fallback: T): T {
