@@ -173,6 +173,11 @@ Ant Design, Mantine, or similar libraries just to fix one modal or button.
   that removes the inactive pane from layout, while keeping the actual terminal
   panels mounted inside the active/inactive pane model so xterm state is not
   recreated during workspace switches.
+- SSH terminal activation must set the workspace mode to `ssh` at the same time
+  it activates the connection id and terminal tab. Creating a connection step
+  from the local terminal workspace cannot rely on `homeActive=false`; otherwise
+  the SSH tab exists but the main workbench keeps rendering the local terminal
+  pane.
 - Connection flow step indicators should be driven by explicit connection
   phase state, not by the length of diagnostic logs. Retry actions must clear
   transient error details, host-key prompts, stale session IDs, and old
@@ -199,6 +204,12 @@ Ant Design, Mantine, or similar libraries just to fix one modal or button.
   `border-box`, focus rings, transitions, or parent-only xterm screen padding
   can desynchronize xterm's canvas, cursor, helper textarea, and IME
   composition coordinates.
+- xterm must load `@xterm/addon-unicode11` and set `terminal.unicode.activeVersion`
+  to `"11"` (with `allowProposedApi` enabled). xterm's default Unicode 6 width
+  table disagrees with modern ConPTY (Windows 10+) on CJK/fullwidth/emoji
+  widths; the mismatch desyncs the IME composition cursor and pushes TUI input
+  (e.g. Claude Code, vim) to the wrong column. This is guarded by
+  `scripts/check-terminal-unicode11-source.mjs`.
 - Interactive PTY sessions should let the shell own carriage return / line feed
   behavior. Do not enable xterm `convertEol` for SSH or local terminals; it is
   intended for plain text streams and can cause transient cursor jumps in real

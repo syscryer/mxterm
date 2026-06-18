@@ -1,4 +1,5 @@
 import { FitAddon } from "@xterm/addon-fit";
+import { Unicode11Addon } from "@xterm/addon-unicode11";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import { Terminal, type ITheme, type IWindowsPty } from "@xterm/xterm";
 import { useEffect, useRef, useState } from "react";
@@ -32,13 +33,10 @@ import { normalizeStartupOutput } from "./terminalStartupOutput";
 
 const TERMINAL_SCROLLBAR_WIDTH = 6;
 const STARTUP_OUTPUT_BUFFER_MS = 250;
-const TERMINAL_RESIZE_SYNC_DEBOUNCE_MS = 240;
-
-interface PendingResizeSync {
-  cols: number;
-  rows: number;
-  sessionId: string;
-}
+// Debounce window for fit() + backend PTY sync during drag. Both must share one
+// beat: fitting xterm immediately while deferring the PTY resize leaves a window
+// where xterm and the shell disagree on cols/rows and output reflows wrongly.
+const TERMINAL_RESIZE_SYNC_DEBOUNCE_MS = 120;
 
 interface TerminalPanelProps {
   active: boolean;
@@ -91,8 +89,7 @@ export function TerminalPanel({
   const startupOutputFlushTimerRef = useRef<number | null>(null);
   const terminalOutputWriterRef = useRef<((decoded: string) => void) | null>(null);
   const lastSyncedSizeRef = useRef<string | null>(null);
-  const pendingResizeSyncRef = useRef<PendingResizeSync | null>(null);
-  const resizeSyncTimerRef = useRef<number | null>(null);
+  const pendingResizeTimerRef = useRef<number | null>(null);
   const activeRef = useRef(active);
   const initialWindowsPtyRef = useRef(windowsPty);
   const [sessionId, setSessionId] = useState<string | null>(null);
@@ -140,6 +137,14 @@ export function TerminalPanel({
     fitAddonRef.current = fitAddon;
     terminal.loadAddon(fitAddon);
     terminal.loadAddon(new WebLinksAddon());
+    // Activate Unicode 11 width rules so xterm's CJK/fullwidth/emoji width
+    // calculation matches modern ConPTY (Windows 10+). Without this, xterm
+    // falls back to the legacy Unicode 6 table, which disagrees with ConPTY on
+    // wide-glyph widths and pushes the IME composition cursor / TUI input to
+    // the wrong column. Requires allowProposedApi (already enabled above).
+    const unicode11Addon = new Unicode11Addon();
+    terminal.loadAddon(unicode11Addon);
+    terminal.unicode.activeVersion = "11";
     terminal.open(hostRef.current);
     const semanticHighlighter = createTerminalSemanticHighlighter(terminal, {
       palette: getTerminalSemanticHighlightPalette(theme),
@@ -226,28 +231,30 @@ export function TerminalPanel({
       if (!activeSessionId) {
         return;
       }
-      scheduleTerminalSizeSync(
-        terminal,
-        activeSessionId,
-        cols,
-        rows,
-        lastSyncedSizeRef,
-        pendingResizeSyncRef,
-        resizeSyncTimerRef,
-      );
+      // onResize is fired by fit(). fit() itself is debounced on the
+      // ResizeObserver path, so any onResize reaching here is either from a
+      // debounced fit (backend sync is handled by the same timer) or from a
+      // synchronous imperative fit (font/active/init), which must sync to the
+      // backend immediately to keep xterm and the PTY on the same size.
+      syncTerminalSize(terminal, activeSessionId, cols, rows, lastSyncedSizeRef);
     });
 
     const resizeObserver = new ResizeObserver(() => {
       if (!activeRef.current) {
         return;
       }
-      fitAndScheduleTerminalSize(
+      // Window/pane dragging fires ResizeObserver every frame. We must NOT call
+      // fitAddon.fit() on every frame: high-frequency fit() calls desync xterm's
+      // canvas (cell width) from its logical buffer, producing the ghosting /
+      // duplicated-glyph artifacts seen during drag. Debounce fit() together
+      // with the backend sync so xterm and the PTY stay on the same size and
+      // only update once after dragging settles.
+      scheduleFitAndSyncTerminalSize(
         terminal,
         fitAddon,
         sessionIdRef.current,
         lastSyncedSizeRef,
-        pendingResizeSyncRef,
-        resizeSyncTimerRef,
+        pendingResizeTimerRef,
       );
     });
     resizeObserver.observe(hostRef.current);
@@ -323,7 +330,7 @@ export function TerminalPanel({
       startupOutputBufferRef.current = "";
       startupOutputBufferingRef.current = false;
       terminalOutputWriterRef.current = null;
-      clearPendingTerminalResizeSync(pendingResizeSyncRef, resizeSyncTimerRef);
+      clearPendingTerminalResizeSync(pendingResizeTimerRef);
       resizeObserver.disconnect();
       resizeDisposable.dispose();
       dataDisposable.dispose();
@@ -448,7 +455,7 @@ export function TerminalPanel({
         terminal.focus();
       }
     } else {
-      clearPendingTerminalResizeSync(pendingResizeSyncRef, resizeSyncTimerRef);
+      clearPendingTerminalResizeSync(pendingResizeTimerRef);
     }
   }, [active]);
 
@@ -490,28 +497,32 @@ function fitAndSyncTerminalSize(
   syncTerminalSize(terminal, activeSessionId, terminal.cols, terminal.rows, lastSyncedSizeRef);
 }
 
-function fitAndScheduleTerminalSize(
+// Debounced fit() + backend sync used by the ResizeObserver (drag) path. fit()
+// and the PTY resize run in the same timer tick so xterm and the shell never
+// disagree on cols/rows. Coalescing fit() calls also stops per-frame canvas
+// resizes that desync xterm's glyph grid (ghosting / duplicated glyphs).
+function scheduleFitAndSyncTerminalSize(
   terminal: Terminal,
   fitAddon: FitAddon | null,
   sessionId: string | null,
   lastSyncedSizeRef: { current: string | null },
-  pendingResizeSyncRef: { current: PendingResizeSync | null },
-  resizeSyncTimerRef: { current: number | null },
+  pendingResizeTimerRef: { current: number | null },
 ) {
-  fitAddon?.fit();
-  const activeSessionId = sessionId;
-  if (!activeSessionId) {
-    return;
+  if (pendingResizeTimerRef.current !== null) {
+    window.clearTimeout(pendingResizeTimerRef.current);
   }
-  scheduleTerminalSizeSync(
-    terminal,
-    activeSessionId,
-    terminal.cols,
-    terminal.rows,
-    lastSyncedSizeRef,
-    pendingResizeSyncRef,
-    resizeSyncTimerRef,
-  );
+  pendingResizeTimerRef.current = window.setTimeout(() => {
+    pendingResizeTimerRef.current = null;
+    if (!fitAddon) {
+      return;
+    }
+    fitAddon.fit();
+    const activeSessionId = sessionId;
+    if (!activeSessionId) {
+      return;
+    }
+    syncTerminalSize(terminal, activeSessionId, terminal.cols, terminal.rows, lastSyncedSizeRef);
+  }, TERMINAL_RESIZE_SYNC_DEBOUNCE_MS);
 }
 
 function syncTerminalSize(
@@ -531,44 +542,12 @@ function syncTerminalSize(
   });
 }
 
-function scheduleTerminalSizeSync(
-  terminal: Terminal,
-  activeSessionId: string,
-  cols: number,
-  rows: number,
-  lastSyncedSizeRef: { current: string | null },
-  pendingResizeSyncRef: { current: PendingResizeSync | null },
-  resizeSyncTimerRef: { current: number | null },
-) {
-  pendingResizeSyncRef.current = { cols, rows, sessionId: activeSessionId };
-  if (resizeSyncTimerRef.current !== null) {
-    window.clearTimeout(resizeSyncTimerRef.current);
-  }
-  resizeSyncTimerRef.current = window.setTimeout(() => {
-    resizeSyncTimerRef.current = null;
-    const pendingResize = pendingResizeSyncRef.current;
-    pendingResizeSyncRef.current = null;
-    if (!pendingResize) {
-      return;
-    }
-    syncTerminalSize(
-      terminal,
-      pendingResize.sessionId,
-      pendingResize.cols,
-      pendingResize.rows,
-      lastSyncedSizeRef,
-    );
-  }, TERMINAL_RESIZE_SYNC_DEBOUNCE_MS);
-}
-
 function clearPendingTerminalResizeSync(
-  pendingResizeSyncRef: { current: PendingResizeSync | null },
-  resizeSyncTimerRef: { current: number | null },
+  pendingResizeTimerRef: { current: number | null },
 ) {
-  pendingResizeSyncRef.current = null;
-  if (resizeSyncTimerRef.current !== null) {
-    window.clearTimeout(resizeSyncTimerRef.current);
-    resizeSyncTimerRef.current = null;
+  if (pendingResizeTimerRef.current !== null) {
+    window.clearTimeout(pendingResizeTimerRef.current);
+    pendingResizeTimerRef.current = null;
   }
 }
 
