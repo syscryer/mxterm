@@ -195,6 +195,12 @@ interface CommandSenderTarget {
   tabTitle: string;
 }
 
+interface TerminalSearchState {
+  caseSensitive: boolean;
+  open: boolean;
+  query: string;
+}
+
 type ConnectedTerminalTab = TerminalTab & { sessionId: string; type: "terminal" };
 
 type ConnectionStepMode = "test" | "terminal";
@@ -376,6 +382,8 @@ export function WorkspaceShell() {
     useState<Record<string, string>>({});
   const [commandSenderDeliveryByKey, setCommandSenderDeliveryByKey] =
     useState<Record<string, { message?: string; status: CommandSenderDeliveryStatus }>>({});
+  const [terminalSearchByTabId, setTerminalSearchByTabId] =
+    useState<Record<string, TerminalSearchState>>({});
   const [localTerminalTabs, setLocalTerminalTabs] = useState<LocalTerminalTab[]>([]);
   const localTerminalTabsRef = useRef<LocalTerminalTab[]>([]);
   const [localTerminalProfiles, setLocalTerminalProfiles] = useState<LocalTerminalProfile[]>([]);
@@ -526,6 +534,15 @@ export function WorkspaceShell() {
     activeTerminalTab?.type === "terminal" && activeTerminalTab.sessionId
       ? activeTerminalTab
       : null;
+  const activeLocalTerminalTab = activeLocalTerminalTabId
+    ? localTerminalTabs.find((tab) => tab.id === activeLocalTerminalTabId) || null
+    : null;
+  const activeTerminalSearch = activeConnectedTerminalTab
+    ? terminalSearchByTabId[activeConnectedTerminalTab.id]
+    : null;
+  const activeLocalTerminalSearch = activeLocalTerminalTab
+    ? terminalSearchByTabId[activeLocalTerminalTab.id]
+    : null;
   const commandSenderTargets = useMemo(
     () =>
       buildCommandSenderTargets({
@@ -578,6 +595,18 @@ export function WorkspaceShell() {
         : Object.fromEntries(entries);
     });
   }, [commandSenderTargets]);
+
+  useEffect(() => {
+    const availableTabIds = new Set([
+      ...terminalTabs.map((tab) => tab.id),
+      ...localTerminalTabs.map((tab) => tab.id),
+    ]);
+
+    setTerminalSearchByTabId((states) => {
+      const entries = Object.entries(states).filter(([tabId]) => availableTabIds.has(tabId));
+      return entries.length === Object.keys(states).length ? states : Object.fromEntries(entries);
+    });
+  }, [localTerminalTabs, terminalTabs]);
 
   const activeRemoteFileTabs = activeWorkspaceMode === "ssh" && activeConnectionId && activeConnectedTerminalTab
     ? remoteFileTabs.filter((tab) => tab.connectionId === activeConnectionId)
@@ -2353,6 +2382,66 @@ export function WorkspaceShell() {
     rememberActiveTab(tab);
   }
 
+  function toggleTerminalSearch(tabId: string | null | undefined) {
+    if (!tabId) {
+      return;
+    }
+    setTerminalSearchByTabId((states) => {
+      const current = states[tabId] || { caseSensitive: false, open: false, query: "" };
+      return {
+        ...states,
+        [tabId]: {
+          ...current,
+          open: !current.open,
+        },
+      };
+    });
+  }
+
+  function closeTerminalSearch(tabId: string) {
+    setTerminalSearchByTabId((states) => {
+      const current = states[tabId];
+      if (!current?.open) {
+        return states;
+      }
+      return {
+        ...states,
+        [tabId]: {
+          ...current,
+          open: false,
+        },
+      };
+    });
+  }
+
+  function updateTerminalSearchQuery(tabId: string, query: string) {
+    setTerminalSearchByTabId((states) => {
+      const current = states[tabId] || { caseSensitive: false, open: true, query: "" };
+      return {
+        ...states,
+        [tabId]: {
+          ...current,
+          open: true,
+          query,
+        },
+      };
+    });
+  }
+
+  function toggleTerminalSearchCaseSensitive(tabId: string) {
+    setTerminalSearchByTabId((states) => {
+      const current = states[tabId] || { caseSensitive: false, open: true, query: "" };
+      return {
+        ...states,
+        [tabId]: {
+          ...current,
+          caseSensitive: !current.caseSensitive,
+          open: true,
+        },
+      };
+    });
+  }
+
   function openCommandSender() {
     setCommandSenderOpen((open) => {
       const nextOpen = !open;
@@ -3669,6 +3758,21 @@ export function WorkspaceShell() {
                     </Tooltip>
                   ) : null}
                   <div className="terminal-subtab-actions">
+                    {activeConnectedTerminalTab ? (
+                      <Tooltip label={activeTerminalSearch?.open ? "关闭终端搜索" : "搜索终端输出"}>
+                        <button
+                          className={`add-subtab terminal-search-toggle ${
+                            activeTerminalSearch?.open ? "active" : ""
+                          }`}
+                          type="button"
+                          aria-label="搜索终端输出"
+                          aria-expanded={Boolean(activeTerminalSearch?.open)}
+                          onClick={() => toggleTerminalSearch(activeConnectedTerminalTab.id)}
+                        >
+                          <Search className="ui-icon" aria-hidden="true" />
+                        </button>
+                      </Tooltip>
+                    ) : null}
                     {commandSenderTargets.length > 0 ? (
                       <Tooltip label="Command Sender">
                         <button
@@ -3749,8 +3853,14 @@ export function WorkspaceShell() {
                         initialRequestId={tab.requestId}
                         key={tab.id}
                         onCurrentDirectoryChange={updateTerminalDirectory}
+                        onSearchClose={closeTerminalSearch}
+                        onSearchCaseSensitiveToggle={toggleTerminalSearchCaseSensitive}
+                        onSearchQueryChange={updateTerminalSearchQuery}
                         onStatusChange={updateTabStatus}
                         onWarmupCaptureReady={stopTerminalWarmupCapture}
+                        searchCaseSensitive={Boolean(terminalSearchByTabId[tab.id]?.caseSensitive)}
+                        searchOpen={Boolean(terminalSearchByTabId[tab.id]?.open)}
+                        searchQuery={terminalSearchByTabId[tab.id]?.query || ""}
                         tabId={tab.id}
                         theme={terminalColorScheme.theme}
                         title={tab.title}
@@ -4071,6 +4181,21 @@ export function WorkspaceShell() {
                     </div>
                   ) : null}
                   <div className="terminal-subtab-actions">
+                    {activeLocalTerminalTab?.sessionId ? (
+                      <Tooltip label={activeLocalTerminalSearch?.open ? "关闭终端搜索" : "搜索终端输出"}>
+                        <button
+                          className={`add-subtab terminal-search-toggle ${
+                            activeLocalTerminalSearch?.open ? "active" : ""
+                          }`}
+                          type="button"
+                          aria-label="搜索终端输出"
+                          aria-expanded={Boolean(activeLocalTerminalSearch?.open)}
+                          onClick={() => toggleTerminalSearch(activeLocalTerminalTab.id)}
+                        >
+                          <Search className="ui-icon" aria-hidden="true" />
+                        </button>
+                      </Tooltip>
+                    ) : null}
                     <Tooltip label={rightPaneCollapsed ? "展开右侧面板" : "收起右侧面板"}>
                       <button
                         className="add-subtab terminal-subtab-panel-toggle"
@@ -4112,8 +4237,14 @@ export function WorkspaceShell() {
                           initialOutput={tab.warmupOutput}
                           initialRequestId={tab.requestId}
                           key={tab.id}
+                          onSearchClose={closeTerminalSearch}
+                          onSearchCaseSensitiveToggle={toggleTerminalSearchCaseSensitive}
+                          onSearchQueryChange={updateTerminalSearchQuery}
                           onStatusChange={updateLocalTerminalTabStatus}
                           onWarmupCaptureReady={stopTerminalWarmupCapture}
+                          searchCaseSensitive={Boolean(terminalSearchByTabId[tab.id]?.caseSensitive)}
+                          searchOpen={Boolean(terminalSearchByTabId[tab.id]?.open)}
+                          searchQuery={terminalSearchByTabId[tab.id]?.query || ""}
                           tabId={tab.id}
                           theme={terminalColorScheme.theme}
                           title={tab.title}
