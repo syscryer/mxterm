@@ -19,6 +19,7 @@ import {
   Play,
   Plus,
   RefreshCw,
+  Search,
   Settings,
   Star,
   Trash2,
@@ -30,6 +31,7 @@ import { ConfirmDialog } from "../../shared/ui/ConfirmDialog";
 import { Tooltip } from "../../shared/ui/Tooltip";
 import { ConnectionSystemLogo } from "./ConnectionSystemLogo";
 import type { ConnectionProfile } from "./connectionTypes";
+import { connectionTimestampOf, sortConnectionsByRecent } from "./connectionSearch";
 
 interface ConnectionPaneProps {
   connections: ConnectionProfile[];
@@ -45,6 +47,7 @@ interface ConnectionPaneProps {
   }) => void;
   onMoveConnectionToGroup: (connection: ConnectionProfile, groupId: string | null) => void | Promise<void>;
   onOpen: (connection: ConnectionProfile) => void;
+  onOpenSearch: () => void;
   onOpenSettings: () => void;
   onRefresh: () => void;
   onSelect: (connection: ConnectionProfile) => void;
@@ -109,6 +112,7 @@ export function ConnectionPane({
   onGroupCatalogChange,
   onMoveConnectionToGroup,
   onOpen,
+  onOpenSearch,
   onOpenSettings,
   onRefresh,
   onSelect,
@@ -265,6 +269,11 @@ export function ConnectionPane({
           <div className="tree-section-head">
             <span>连接</span>
             <div className="toolbar-actions">
+              <Tooltip label="搜索连接">
+                <button className="mini-action" type="button" aria-label="搜索连接" onClick={onOpenSearch}>
+                  <Search className="ui-icon" aria-hidden="true" />
+                </button>
+              </Tooltip>
               <Tooltip label="刷新连接">
                 <button className="mini-action" type="button" aria-label="刷新连接" onClick={onRefresh}>
                   <RefreshCw className="ui-icon" aria-hidden="true" />
@@ -1011,56 +1020,16 @@ function deleteRequestDescription(request: DeleteRequest | null) {
 }
 
 function buildCatalog(connections: ConnectionProfile[], recentConnectionLimit: number) {
-  const sorted = [...connections].sort(sortByRecent);
+  const sorted = [...connections].sort(sortConnectionsByRecent);
   const recent = sorted
-    .filter((connection) => timestampOf(connection.last_connected_at) > 0)
-    .sort(sortByRecent)
+    .filter((connection) => connectionTimestampOf(connection.last_connected_at) > 0)
+    .sort(sortConnectionsByRecent)
     .slice(0, recentConnectionLimit);
 
   return {
     favorites: sorted.filter((connection) => connection.is_favorite),
     recent,
   } satisfies Record<SystemFolderId, ConnectionProfile[]>;
-}
-
-function sortByRecent(left: ConnectionProfile, right: ConnectionProfile) {
-  const rightConnectedAt = timestampOf(right.last_connected_at);
-  const leftConnectedAt = timestampOf(left.last_connected_at);
-
-  if (rightConnectedAt !== leftConnectedAt) {
-    return rightConnectedAt - leftConnectedAt;
-  }
-
-  const createdDiff = timestampOf(right.created_at) - timestampOf(left.created_at);
-  if (createdDiff !== 0) {
-    return createdDiff;
-  }
-
-  return left.name.localeCompare(right.name, "zh-Hans");
-}
-
-function timestampOf(value?: string | null) {
-  const trimmed = value?.trim();
-  if (!trimmed) {
-    return 0;
-  }
-
-  const normalized = trimmed.toLowerCase();
-
-  if (normalized === "demo" || normalized === "preview") {
-    return Date.now();
-  }
-
-  if (/^\d+$/.test(normalized)) {
-    const numeric = Number(normalized);
-    if (!Number.isFinite(numeric)) {
-      return 0;
-    }
-    return numeric < 1_000_000_000_000 ? numeric * 1000 : numeric;
-  }
-
-  const parsed = Date.parse(trimmed);
-  return Number.isNaN(parsed) ? 0 : parsed;
 }
 
 function collectGroupAndDescendantIds(groups: CustomGroup[], groupId: string) {

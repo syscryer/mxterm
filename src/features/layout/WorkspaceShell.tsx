@@ -46,6 +46,7 @@ import {
 
 import { ConnectionDialog } from "../connections/ConnectionDialog";
 import { ConnectionPane } from "../connections/ConnectionPane";
+import { ConnectionSearchDialog } from "../connections/ConnectionSearchDialog";
 import { ConnectionSystemLogo } from "../connections/ConnectionSystemLogo";
 import type {
   ConnectionAuthKind,
@@ -57,6 +58,7 @@ import type {
   HostKeyInfo,
 } from "../connections/connectionTypes";
 import { defaultJumpConfig } from "../connections/connectionTypes";
+import { connectionTimestampOf, sortConnectionsByRecent } from "../connections/connectionSearch";
 import { RemoteFileEditor } from "../editor/RemoteFileEditor";
 import type { RemoteFileEditorTab } from "../editor/remoteFileEditorTypes";
 import {
@@ -425,6 +427,8 @@ export function WorkspaceShell() {
   const [settingsSectionRequest, setSettingsSectionRequest] =
     useState<"basic" | "credentials" | "appearance" | "localTerminal" | "terminalTheme" | undefined>();
   const [dialogOpen, setDialogOpen] = useState(false);
+  const [connectionSearchOpen, setConnectionSearchOpen] = useState(false);
+  const [connectionSearchQuery, setConnectionSearchQuery] = useState("");
   const [editingConnection, setEditingConnection] = useState<ConnectionProfile | null>(null);
   const [selectedConnectionId, setSelectedConnectionId] = useState<string | null>(null);
   const [terminalTabs, setTerminalTabs] = useState<TerminalTab[]>([]);
@@ -3781,6 +3785,7 @@ export function WorkspaceShell() {
           onGroupCatalogChange={setConnectionGroupCatalog}
           onMoveConnectionToGroup={moveConnectionToGroup}
           onOpen={openTerminal}
+          onOpenSearch={() => setConnectionSearchOpen(true)}
           onOpenSettings={() => setActiveView("settings")}
           onRefresh={reload}
           onSelect={selectConnection}
@@ -4591,6 +4596,16 @@ export function WorkspaceShell() {
           open={dialogOpen}
         />
       </main>
+
+      <ConnectionSearchDialog
+        activeConnectionId={activeConnectionId}
+        connections={connections}
+        open={connectionSearchOpen}
+        query={connectionSearchQuery}
+        onOpenChange={setConnectionSearchOpen}
+        onQueryChange={setConnectionSearchQuery}
+        onSelectConnection={openConnectionSession}
+      />
 
       <ConfirmDialog
         confirmLabel="放弃"
@@ -5857,7 +5872,7 @@ function ConnectionHome({
         return connection.is_favorite;
       }
 
-      return timestampOf(connection.last_connected_at) > 0;
+      return connectionTimestampOf(connection.last_connected_at) > 0;
     });
 
     return filteredByTab.filter((connection) => {
@@ -5884,7 +5899,7 @@ function ConnectionHome({
   const activityConnections = useMemo(
     () =>
       [...connections]
-        .filter((connection) => timestampOf(connection.last_connected_at) > 0)
+        .filter((connection) => connectionTimestampOf(connection.last_connected_at) > 0)
         .sort(sortConnectionsByRecent)
         .slice(0, 2),
     [connections],
@@ -6220,46 +6235,6 @@ async function measureConnectionLatency(connection: ConnectionProfile): Promise<
   return { status: "failed" };
 }
 
-function sortConnectionsByRecent(left: ConnectionProfile, right: ConnectionProfile) {
-  const rightConnectedAt = timestampOf(right.last_connected_at);
-  const leftConnectedAt = timestampOf(left.last_connected_at);
-
-  if (rightConnectedAt !== leftConnectedAt) {
-    return rightConnectedAt - leftConnectedAt;
-  }
-
-  const createdDiff = timestampOf(right.created_at) - timestampOf(left.created_at);
-  if (createdDiff !== 0) {
-    return createdDiff;
-  }
-
-  return left.name.localeCompare(right.name, "zh-Hans");
-}
-
-function timestampOf(value?: string | null) {
-  const trimmed = value?.trim();
-  if (!trimmed) {
-    return 0;
-  }
-
-  const normalized = trimmed.toLowerCase();
-
-  if (normalized === "demo" || normalized === "preview") {
-    return Date.now();
-  }
-
-  if (/^\d+$/.test(normalized)) {
-    const numeric = Number(normalized);
-    if (!Number.isFinite(numeric)) {
-      return 0;
-    }
-    return numeric < 1_000_000_000_000 ? numeric * 1000 : numeric;
-  }
-
-  const parsed = Date.parse(trimmed);
-  return Number.isNaN(parsed) ? 0 : parsed;
-}
-
 function primaryNote(connection: ConnectionProfile) {
   const note = connection.notes?.trim();
   if (!note) {
@@ -6291,7 +6266,7 @@ function formatRelativeTime(value?: string | null) {
     return "最近";
   }
 
-  const timestamp = timestampOf(value);
+  const timestamp = connectionTimestampOf(value);
 
   if (!timestamp) {
     return "最近";
@@ -6312,9 +6287,9 @@ function formatRelativeTime(value?: string | null) {
 function countConnectedWithinWeek(connections: ConnectionProfile[]) {
   const now = Date.now();
   const week = 7 * 24 * 60 * 60 * 1000;
-  const dated = connections.filter((connection) => timestampOf(connection.last_connected_at) > 0);
+  const dated = connections.filter((connection) => connectionTimestampOf(connection.last_connected_at) > 0);
 
-  return dated.filter((connection) => now - timestampOf(connection.last_connected_at) <= week).length;
+  return dated.filter((connection) => now - connectionTimestampOf(connection.last_connected_at) <= week).length;
 }
 
 function getWorkspaceWidth(element: HTMLElement | null) {
