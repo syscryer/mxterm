@@ -36,6 +36,7 @@ import { Tooltip } from "../../shared/ui/Tooltip";
 
 const TERMINAL_SCROLLBAR_WIDTH = 6;
 const STARTUP_OUTPUT_BUFFER_MS = 250;
+const TERMINAL_OUTPUT_BATCH_MAX_WAIT_MS = 16;
 // Debounce window for fit() + backend PTY sync during drag. Both must share one
 // beat: fitting xterm immediately while deferring the PTY resize leaves a window
 // where xterm and the shell disagree on cols/rows and output reflows wrongly.
@@ -105,6 +106,9 @@ export function TerminalPanel({
   const startupOutputBufferingRef = useRef(false);
   const startupOutputFlushTimerRef = useRef<number | null>(null);
   const terminalOutputWriterRef = useRef<((decoded: string) => void) | null>(null);
+  const pendingOutputBufferRef = useRef("");
+  const pendingOutputFrameRef = useRef<number | null>(null);
+  const pendingOutputTimerRef = useRef<number | null>(null);
   const lastSyncedSizeRef = useRef<string | null>(null);
   const pendingResizeTimerRef = useRef<number | null>(null);
   const activeRef = useRef(active);
@@ -191,6 +195,38 @@ export function TerminalPanel({
       }
     };
 
+    const clearPendingOutputSchedule = () => {
+      if (pendingOutputFrameRef.current !== null) {
+        window.cancelAnimationFrame(pendingOutputFrameRef.current);
+        pendingOutputFrameRef.current = null;
+      }
+      if (pendingOutputTimerRef.current !== null) {
+        window.clearTimeout(pendingOutputTimerRef.current);
+        pendingOutputTimerRef.current = null;
+      }
+    };
+
+    const flushPendingOutput = () => {
+      clearPendingOutputSchedule();
+      const bufferedOutput = pendingOutputBufferRef.current;
+      pendingOutputBufferRef.current = "";
+      if (bufferedOutput) {
+        terminal.write(bufferedOutput);
+      }
+    };
+
+    const scheduleTerminalWrite = (decoded: string) => {
+      pendingOutputBufferRef.current += decoded;
+      if (pendingOutputFrameRef.current !== null) {
+        return;
+      }
+      pendingOutputFrameRef.current = window.requestAnimationFrame(flushPendingOutput);
+      pendingOutputTimerRef.current = window.setTimeout(
+        flushPendingOutput,
+        TERMINAL_OUTPUT_BATCH_MAX_WAIT_MS,
+      );
+    };
+
     const writeDecodedOutput = (decoded: string) => {
       const currentDirectory = extractOsc7Directories(`${osc7BufferRef.current}${decoded}`);
       osc7BufferRef.current = currentDirectory.buffer;
@@ -205,7 +241,7 @@ export function TerminalPanel({
         startupOutputBufferRef.current += decoded;
         return;
       }
-      terminal.write(decoded);
+      scheduleTerminalWrite(decoded);
     };
 
     terminalOutputWriterRef.current = writeDecodedOutput;
@@ -354,6 +390,8 @@ export function TerminalPanel({
       }
       startupOutputBufferRef.current = "";
       startupOutputBufferingRef.current = false;
+      pendingOutputBufferRef.current = "";
+      clearPendingOutputSchedule();
       terminalOutputWriterRef.current = null;
       clearPendingTerminalResizeSync(pendingResizeTimerRef);
       resizeObserver.disconnect();
