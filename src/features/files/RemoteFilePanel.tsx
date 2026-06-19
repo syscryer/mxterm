@@ -13,6 +13,7 @@ import {
   Folder,
   FolderPlus,
   Info,
+  PanelRightClose,
   Pencil,
   RefreshCw,
   Trash2,
@@ -753,7 +754,7 @@ function FilePanelTabs({
             aria-expanded
             onClick={onToggleRightPane}
           >
-            <ChevronRight className="ui-icon" aria-hidden="true" />
+            <PanelRightClose className="ui-icon" aria-hidden="true" />
           </button>
         </Tooltip>
       ) : null}

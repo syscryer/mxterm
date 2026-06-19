@@ -28,6 +28,10 @@ Ant Design, Mantine, or similar libraries just to fix one modal or button.
 - Cross-feature UI primitives live under `src/shared/ui/`.
 - If two feature components need the same UI behavior or styling, create or
   extend a shared component first instead of copying markup and CSS.
+- If the same UI component, control, or interaction appears two or more times in
+  the product, it must be promoted to `src/shared/ui/` or a shared global style
+  before additional feature code consumes it. Search for existing primitives
+  before adding a new feature-local implementation.
 - Keep business state in feature components, but keep reusable UI mechanics
   (dialog shell, confirm dialog, button variants, tooltip wrappers) in
   `src/shared/ui/`.
@@ -49,6 +53,12 @@ Ant Design, Mantine, or similar libraries just to fix one modal or button.
 
 - Global component styling currently lives in `src/styles/app.css`, using design
   tokens from `src/styles/tokens.css`.
+- Visual styling must be token-driven. Colors, backgrounds, borders, focus
+  rings, state fills, shadows, and material surfaces should use the global
+  `--mx-*` tokens from `src/styles/tokens.css` and shared selectors in
+  `src/styles/app.css`. Avoid hard-coded colors, isolated gradients, one-off
+  shadows, or feature-only state palettes unless the business semantics require
+  it and the reason is documented in the review notes.
 - Reuse existing dialog, action, field, icon, and tree styles before adding new
   selectors.
 - Avoid one-off feature selectors for common UI patterns such as dialogs,
@@ -71,6 +81,30 @@ Ant Design, Mantine, or similar libraries just to fix one modal or button.
   `DismissableLayerBranch asChild` and the menu surface must explicitly set
   `pointer-events: auto`. Without both, Radix can treat the portal as outside
   the dialog, so the menu may render but option clicks do not select.
+- Business dropdowns must use shared select/menu primitives such as
+  `src/shared/ui/AppSelect.tsx`, Radix menu primitives, and the global
+  `select-menu-content` / `select-menu-item` style pair. Do not use native
+  `<select>` for application dropdowns, and do not hand-roll feature-local menu
+  popovers when a shared primitive exists.
+- Compact `AppSelect` triggers that intentionally show shortened labels should
+  pass `menuMinWidth` when option labels need more room. Keep the trigger sized
+  for the toolbar/list row, but let the shared menu surface provide readable
+  option width instead of adding feature-local menu CSS.
+- Floating menu height calculations must include the menu chrome, especially
+  padding and border. Do not size a menu only from option row heights; otherwise
+  Windows/WebKit can show a fake scrollbar for one- or two-item menus.
+- Floating menus rendered through `document.body` portals must carry their own
+  light scrollbar treatment, including hidden WebKit scrollbar buttons. They do
+  not inherit `.app-shell *` scrollbar rules because they sit outside the app
+  shell subtree.
+- Floating menus rendered through `document.body` portals and used inside modal
+  scroll locks must also own wheel scrolling in the shared component. Do not
+  rely on `overflow-y: auto` alone when Radix or body scroll-lock layers can
+  prevent the browser's default scroll behavior.
+- UI structure, visual style, color, layout, state, modal, menu, or form changes
+  must be checked with the `ui-ux-pro-max` skill before implementation or final
+  review. Apply its guidance through the existing mXterm desktop-tool style and
+  global token system; do not introduce a separate visual system for one feature.
 - Window material styling is chrome-focused. Keep the material source on the
   root `.app-shell` layer and let `.custom-titlebar` plus every left navigation
   sidebar inherit from shared `--mx-chrome-*` and `--mx-sidebar-*` tokens. Main
@@ -233,6 +267,16 @@ Ant Design, Mantine, or similar libraries just to fix one modal or button.
   xterm's `windowsPty` compatibility option explicitly from the workspace layer,
   including the Windows build number from Tauri when available, instead of
   applying Windows heuristics to SSH terminals blindly.
+- Batch terminal input tools such as Command Sender must write through the
+  typed `terminalWrite(sessionId, data)` wrapper using runtime terminal tab
+  session ids. Delivery status may only mean that data was written into the
+  target terminal input stream; it must not claim remote command execution
+  success, inspect remote output as proof, store session ids on
+  `ConnectionProfile`, or log full command payloads.
+- Command Sender's terminal-subtab toolbar entry should live in the far-right
+  terminal action group alongside the right-pane open/close button. Keep future
+  terminal-level utility buttons in the same action group instead of using
+  one-off floating overlays.
 - Terminal semantic highlighting should use xterm's parsed-write and decoration
   APIs (`onWriteParsed`, `registerDecoration`) against the normal buffer after
   output is written. Do not inject ANSI color sequences into `terminal.write`

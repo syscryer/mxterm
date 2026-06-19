@@ -24,15 +24,20 @@ import {
   Clipboard,
   CheckCircle2,
   CircleAlert,
+  CornerDownLeft,
   KeyRound,
   List,
   Loader2,
   LockKeyhole,
+  PanelRightClose,
+  PanelRightOpen,
   Pencil,
   Play,
   Plus,
   RefreshCw,
   Search,
+  Send,
+  SquareTerminal,
   Star,
   Trash2,
   Upload,
@@ -126,6 +131,7 @@ import {
   remoteFileWrite,
   terminalClose,
   terminalConnect,
+  terminalWrite,
 } from "../../shared/tauri/commands";
 import { selectLocalUploadDirectories, selectLocalUploadFiles } from "../../shared/tauri/dialog";
 import {
@@ -167,6 +173,29 @@ interface TerminalTab {
   type: "connecting" | "terminal";
   warmupOutput: number[];
 }
+
+type CommandSenderDeliveryStatus = "idle" | "sent" | "failed";
+
+interface CommandSenderTargetTabOption {
+  label: string;
+  sessionId: string;
+  tabId: string;
+}
+
+interface CommandSenderTarget {
+  connectionId: string;
+  deliveryMessage?: string;
+  deliveryStatus: CommandSenderDeliveryStatus;
+  description: string;
+  key: string;
+  label: string;
+  sessionId: string;
+  tabId: string;
+  tabs: CommandSenderTargetTabOption[];
+  tabTitle: string;
+}
+
+type ConnectedTerminalTab = TerminalTab & { sessionId: string; type: "terminal" };
 
 type ConnectionStepMode = "test" | "terminal";
 type ConnectionStepStatus = "idle" | "running" | "waiting_host_key" | "prompt" | "success" | "error";
@@ -337,6 +366,16 @@ export function WorkspaceShell() {
   const [terminalTabs, setTerminalTabs] = useState<TerminalTab[]>([]);
   const terminalTabsRef = useRef<TerminalTab[]>([]);
   const terminalWarmupCaptureStopsRef = useRef(new Map<string, () => void>());
+  const [commandSenderOpen, setCommandSenderOpen] = useState(false);
+  const [commandSenderInput, setCommandSenderInput] = useState("");
+  const [commandSenderHistory, setCommandSenderHistory] = useState<string[]>([]);
+  const [commandSenderLastSentLabel, setCommandSenderLastSentLabel] =
+    useState("上次发送：尚未发送");
+  const [selectedCommandTargetKeys, setSelectedCommandTargetKeys] = useState<string[]>([]);
+  const [commandSenderTargetTabByConnectionId, setCommandSenderTargetTabByConnectionId] =
+    useState<Record<string, string>>({});
+  const [commandSenderDeliveryByKey, setCommandSenderDeliveryByKey] =
+    useState<Record<string, { message?: string; status: CommandSenderDeliveryStatus }>>({});
   const [localTerminalTabs, setLocalTerminalTabs] = useState<LocalTerminalTab[]>([]);
   const localTerminalTabsRef = useRef<LocalTerminalTab[]>([]);
   const [localTerminalProfiles, setLocalTerminalProfiles] = useState<LocalTerminalProfile[]>([]);
@@ -487,6 +526,59 @@ export function WorkspaceShell() {
     activeTerminalTab?.type === "terminal" && activeTerminalTab.sessionId
       ? activeTerminalTab
       : null;
+  const commandSenderTargets = useMemo(
+    () =>
+      buildCommandSenderTargets({
+        activeTabByConnectionId,
+        connectionById,
+        deliveryByKey: commandSenderDeliveryByKey,
+        selectedTabByConnectionId: commandSenderTargetTabByConnectionId,
+        terminalTabs,
+      }),
+    [
+      activeTabByConnectionId,
+      commandSenderDeliveryByKey,
+      commandSenderTargetTabByConnectionId,
+      connectionById,
+      terminalTabs,
+    ],
+  );
+  const selectedCommandTargetKeySet = useMemo(
+    () => new Set(selectedCommandTargetKeys),
+    [selectedCommandTargetKeys],
+  );
+  const selectedCommandTargets = commandSenderTargets.filter((target) =>
+    selectedCommandTargetKeySet.has(target.key),
+  );
+  const commandSenderSelectedCount = selectedCommandTargets.length;
+  const commandSenderAllSelected =
+    commandSenderTargets.length > 0 &&
+    commandSenderSelectedCount === commandSenderTargets.length;
+  const commandSenderPartiallySelected =
+    commandSenderSelectedCount > 0 && !commandSenderAllSelected;
+  const commandSenderCanSend =
+    commandSenderInput.trim().length > 0 && selectedCommandTargets.length > 0;
+  const commandSenderRisky = useMemo(
+    () => isCommandSenderRisky(commandSenderInput),
+    [commandSenderInput],
+  );
+
+  useEffect(() => {
+    const availableKeys = new Set(commandSenderTargets.map((target) => target.key));
+
+    setSelectedCommandTargetKeys((keys) => {
+      const nextKeys = keys.filter((key) => availableKeys.has(key));
+      return nextKeys.length === keys.length ? keys : nextKeys;
+    });
+
+    setCommandSenderDeliveryByKey((deliveryByKey) => {
+      const entries = Object.entries(deliveryByKey).filter(([key]) => availableKeys.has(key));
+      return entries.length === Object.keys(deliveryByKey).length
+        ? deliveryByKey
+        : Object.fromEntries(entries);
+    });
+  }, [commandSenderTargets]);
+
   const activeRemoteFileTabs = activeWorkspaceMode === "ssh" && activeConnectionId && activeConnectedTerminalTab
     ? remoteFileTabs.filter((tab) => tab.connectionId === activeConnectionId)
     : [];
@@ -2261,6 +2353,124 @@ export function WorkspaceShell() {
     rememberActiveTab(tab);
   }
 
+  function openCommandSender() {
+    setCommandSenderOpen((open) => {
+      const nextOpen = !open;
+      if (nextOpen) {
+        const availableKeys = commandSenderTargets.map((target) => target.key);
+        setSelectedCommandTargetKeys((keys) => {
+          if (keys.length > 0) {
+            const availableKeySet = new Set(availableKeys);
+            return keys.filter((key) => availableKeySet.has(key));
+          }
+          return availableKeys;
+        });
+      }
+      return nextOpen;
+    });
+  }
+
+  function toggleCommandSenderAllTargets() {
+    setSelectedCommandTargetKeys(
+      commandSenderAllSelected ? [] : commandSenderTargets.map((target) => target.key),
+    );
+  }
+
+  function toggleCommandSenderTarget(target: CommandSenderTarget) {
+    setSelectedCommandTargetKeys((keys) =>
+      keys.includes(target.key)
+        ? keys.filter((key) => key !== target.key)
+        : [...keys, target.key],
+    );
+  }
+
+  function selectCommandSenderTargetTab(target: CommandSenderTarget, tabId: string) {
+    const nextTab = target.tabs.find((tab) => tab.tabId === tabId);
+    if (!nextTab) {
+      return;
+    }
+
+    const nextKey = commandSenderTargetKey(target.connectionId, tabId);
+    setCommandSenderTargetTabByConnectionId((tabs) => ({
+      ...tabs,
+      [target.connectionId]: tabId,
+    }));
+    setSelectedCommandTargetKeys((keys) =>
+      keys.includes(target.key)
+        ? keys.map((key) => (key === target.key ? nextKey : key))
+        : keys,
+    );
+  }
+
+  function activateCommandSenderTarget(target: CommandSenderTarget) {
+    const tab = terminalTabs.find((item) => item.id === target.tabId);
+    if (tab) {
+      activateTerminalTab(tab);
+    }
+  }
+
+  async function sendCommandToTargets(appendEnter: boolean) {
+    if (!commandSenderCanSend) {
+      return;
+    }
+
+    const command = commandSenderInput;
+    const historyCommand = command.trim();
+    const payload = appendEnter ? `${command}\r` : command;
+    const targets = selectedCommandTargets;
+
+    setCommandSenderDeliveryByKey((deliveryByKey) => {
+      const nextDeliveryByKey = { ...deliveryByKey };
+      targets.forEach((target) => {
+        nextDeliveryByKey[target.key] = { status: "idle" };
+      });
+      return nextDeliveryByKey;
+    });
+
+    const results: boolean[] = [];
+    for (const target of targets) {
+      try {
+        if (!hasTauriRuntime()) {
+          throw new Error("当前环境无法写入终端输入流。");
+        }
+        await terminalWrite(target.sessionId, payload);
+        setCommandSenderDeliveryByKey((deliveryByKey) => ({
+          ...deliveryByKey,
+          [target.key]: { status: "sent" },
+        }));
+        results.push(true);
+      } catch (error) {
+        setCommandSenderDeliveryByKey((deliveryByKey) => ({
+          ...deliveryByKey,
+          [target.key]: { message: formatError(error), status: "failed" },
+        }));
+        results.push(false);
+      }
+    }
+    const successCount = results.filter(Boolean).length;
+    const failedCount = results.length - successCount;
+    setCommandSenderLastSentLabel(
+      failedCount > 0
+        ? `上次发送：写入 ${successCount.toString()}，失败 ${failedCount.toString()}`
+        : `上次发送：已写入 ${successCount.toString()} 个目标`,
+    );
+    setCommandSenderInput("");
+
+    if (historyCommand) {
+      setCommandSenderHistory((history) => [
+        historyCommand,
+        ...history.filter((item) => item !== historyCommand),
+      ].slice(0, 8));
+    }
+  }
+
+  function handleCommandSenderInputKeyDown(event: ReactKeyboardEvent<HTMLTextAreaElement>) {
+    if ((event.ctrlKey || event.metaKey) && event.key === "Enter") {
+      event.preventDefault();
+      void sendCommandToTargets(true);
+    }
+  }
+
   function activateLocalTerminalTab(tab: LocalTerminalTab) {
     setActiveView("workspace");
     setSettingsSectionRequest(undefined);
@@ -3390,7 +3600,9 @@ export function WorkspaceShell() {
               ) : null}
 
               <section
-                className={`terminal-workbench-pane ${showingLocalTerminal ? "is-hidden" : ""}`}
+                className={`terminal-workbench-pane ${commandSenderOpen ? "command-sender-open" : ""} ${
+                  showingLocalTerminal ? "is-hidden" : ""
+                }`}
                 data-terminal-tone={terminalTone}
                 aria-label="终端区"
                 aria-hidden={showingLocalTerminal}
@@ -3456,6 +3668,36 @@ export function WorkspaceShell() {
                       </button>
                     </Tooltip>
                   ) : null}
+                  <div className="terminal-subtab-actions">
+                    {commandSenderTargets.length > 0 ? (
+                      <Tooltip label="Command Sender">
+                        <button
+                          className={`add-subtab command-sender-toggle ${commandSenderOpen ? "active" : ""}`}
+                          type="button"
+                          aria-label="打开命令操作台 Command Sender"
+                          aria-expanded={commandSenderOpen}
+                          onClick={openCommandSender}
+                        >
+                          <Send className="ui-icon" aria-hidden="true" />
+                        </button>
+                      </Tooltip>
+                    ) : null}
+                    <Tooltip label={rightPaneCollapsed ? "展开右侧面板" : "收起右侧面板"}>
+                      <button
+                        className="add-subtab terminal-subtab-panel-toggle"
+                        type="button"
+                        aria-label={rightPaneCollapsed ? "展开右侧面板" : "收起右侧面板"}
+                        aria-expanded={!rightPaneCollapsed}
+                        onClick={() => setRightPaneCollapsed((collapsed) => !collapsed)}
+                      >
+                        {rightPaneCollapsed ? (
+                          <PanelRightOpen className="ui-icon" aria-hidden="true" />
+                        ) : (
+                          <PanelRightClose className="ui-icon" aria-hidden="true" />
+                        )}
+                      </button>
+                    </Tooltip>
+                  </div>
                 </nav>
 
                 <section className="terminal-stack" aria-label="终端">
@@ -3524,6 +3766,223 @@ export function WorkspaceShell() {
                     ) : null;
                   })}
                 </section>
+                {commandSenderOpen ? (
+                  <section className="command-sender-panel" aria-label="命令操作台">
+                    <div className="command-sender-console">
+                      <header className="command-sender-console-head">
+                        <div className="command-sender-title">
+                          <span>命令操作台</span>
+                          <small>Command Sender</small>
+                        </div>
+                        <div className="command-select-row">
+                          <AppSelect
+                            ariaLabel="发送模式"
+                            className="command-toolbar-app-select command-send-mode-select"
+                            value="sequential"
+                            options={[
+                              {
+                                label: (
+                                  <span className="command-select-label">
+                                    <Send className="ui-icon" aria-hidden="true" />
+                                    <span>逐条发送</span>
+                                  </span>
+                                ),
+                                value: "sequential",
+                              },
+                            ]}
+                            onChange={() => undefined}
+                          />
+                          <AppSelect
+                            ariaLabel="最近命令"
+                            className="command-toolbar-app-select command-history-select"
+                            disabled={commandSenderHistory.length === 0}
+                            value=""
+                            options={[
+                              {
+                                disabled: true,
+                                label: (
+                                  <span className="command-select-label">
+                                    <Clock3 className="ui-icon" aria-hidden="true" />
+                                    <span>最近命令</span>
+                                  </span>
+                                ),
+                                value: "",
+                              },
+                              ...commandSenderHistory.map((command) => ({
+                                label: command,
+                                value: command,
+                              })),
+                            ]}
+                            onChange={(command) => {
+                              if (command) {
+                                setCommandSenderInput(command);
+                              }
+                            }}
+                          />
+                        </div>
+                        <span />
+                        <div className="command-sender-head-actions">
+                          <span className="command-last-sent">{commandSenderLastSentLabel}</span>
+                          <button
+                            className="command-console-toggle command-sender-close"
+                            type="button"
+                            aria-label="关闭命令操作台"
+                            onClick={() => setCommandSenderOpen(false)}
+                          >
+                            <X className="ui-icon" aria-hidden="true" />
+                            <span className="command-close-text">关闭</span>
+                          </button>
+                        </div>
+                      </header>
+
+                      <div className="command-sender-console-body">
+                        <aside className="command-sender-block command-target-pane" aria-label="投递目标">
+                          <div className="command-sender-label">
+                            <span className="command-target-title">
+                              <span>目标</span>
+                              <span className="command-target-count">
+                                已选 {commandSenderSelectedCount.toString()} / {commandSenderTargets.length.toString()}
+                              </span>
+                            </span>
+                            <span className="command-target-tools">
+                              <label
+                                className="command-target-select-all"
+                                data-state={
+                                  commandSenderAllSelected
+                                    ? "checked"
+                                    : commandSenderPartiallySelected
+                                      ? "mixed"
+                                      : "unchecked"
+                                }
+                              >
+                                <input
+                                  type="checkbox"
+                                  checked={commandSenderAllSelected}
+                                  onChange={toggleCommandSenderAllTargets}
+                                />
+                                <span>{commandSenderAllSelected ? "取消全选" : "全选"}</span>
+                              </label>
+                            </span>
+                          </div>
+
+                          <div className="command-target-list">
+                            {commandSenderTargets.length === 0 ? (
+                              <p className="command-sender-empty">暂无可写入的 SSH 终端。</p>
+                            ) : (
+                              commandSenderTargets.map((target) => {
+                                const selected = selectedCommandTargetKeySet.has(target.key);
+                                const hasDelivery = target.deliveryStatus !== "idle";
+                                return (
+                                  <div
+                                    className={`command-target command-sender-target ${
+                                      selected ? "selected" : ""
+                                    } ${hasDelivery ? "has-delivery" : ""} ${
+                                      target.deliveryStatus === "failed" ? "has-failed-delivery" : ""
+                                    }`}
+                                    data-delivery={target.deliveryStatus}
+                                    key={target.connectionId}
+                                  >
+                                    <label className="command-target-select">
+                                      <input
+                                        className="command-target-checkbox"
+                                        type="checkbox"
+                                        checked={selected}
+                                        onChange={() => toggleCommandSenderTarget(target)}
+                                      />
+                                      <span className="command-target-copy">
+                                        <strong>{target.label}</strong>
+                                        <span>{target.description}</span>
+                                      </span>
+                                    </label>
+                                    <span className="command-target-meta">
+                                      <span className="command-target-terminal-shell">
+                                        <SquareTerminal className="ui-icon" aria-hidden="true" />
+                                        <AppSelect
+                                          ariaLabel={`${target.label} 子 tab`}
+                                          className="command-target-terminal-select"
+                                          menuMinWidth={176}
+                                          value={target.tabId}
+                                          options={target.tabs.map((tab) => ({
+                                            label: tab.label,
+                                            value: tab.tabId,
+                                          }))}
+                                          onChange={(tabId) => selectCommandSenderTargetTab(target, tabId)}
+                                        />
+                                      </span>
+                                      <span className="command-target-state">在线</span>
+                                      <button
+                                        className={`command-target-delivery command-sender-status ${target.deliveryStatus}`}
+                                        type="button"
+                                        title={target.deliveryMessage || "点击查看对应终端"}
+                                        onClick={() => activateCommandSenderTarget(target)}
+                                      >
+                                        {commandSenderDeliveryLabel(target.deliveryStatus)}
+                                      </button>
+                                    </span>
+                                  </div>
+                                );
+                              })
+                            )}
+                          </div>
+                        </aside>
+
+                        <section className="command-sender-block command-compose-pane" aria-label="命令编辑">
+                          <div className="command-compose-label">命令</div>
+                          <textarea
+                            className="command-input command-sender-input"
+                            value={commandSenderInput}
+                            placeholder="输入要投递到目标终端的命令"
+                            spellCheck={false}
+                            onChange={(event) => setCommandSenderInput(event.currentTarget.value)}
+                            onKeyDown={handleCommandSenderInputKeyDown}
+                          />
+                          {commandSenderRisky ? (
+                            <div className="command-risk-warning command-sender-risk-warning show" role="status">
+                              检测到高风险片段，请确认目标机器和命令内容。
+                            </div>
+                          ) : null}
+                          <div className="command-compose-footer command-sender-actions">
+                            <div className="command-send-result">
+                              {commandSenderInput.trim()
+                                ? commandSenderSelectedCount > 0
+                                  ? `${commandSenderSelectedCount.toString()} 个目标待发送。`
+                                  : "请选择至少一个目标。"
+                                : "等待输入命令。"}
+                            </div>
+                            <div className="command-actions">
+                              <button
+                                className="primary-button command-sender-primary"
+                                type="button"
+                                disabled={!commandSenderCanSend}
+                                onClick={() => void sendCommandToTargets(true)}
+                              >
+                                <CornerDownLeft className="ui-icon" aria-hidden="true" />
+                                <span>发送并回车</span>
+                              </button>
+                              <button
+                                className="secondary-button command-sender-secondary"
+                                type="button"
+                                disabled={!commandSenderCanSend}
+                                onClick={() => void sendCommandToTargets(false)}
+                              >
+                                发送不回车
+                              </button>
+                              <button
+                                className="secondary-button clear-command-button command-sender-secondary"
+                                type="button"
+                                disabled={!commandSenderInput}
+                                onClick={() => setCommandSenderInput("")}
+                              >
+                                <Trash2 className="ui-icon" aria-hidden="true" />
+                                <span>清空</span>
+                              </button>
+                            </div>
+                          </div>
+                        </section>
+                      </div>
+                    </div>
+                  </section>
+                ) : null}
               </section>
 
               <section
@@ -3611,6 +4070,23 @@ export function WorkspaceShell() {
                       </button>
                     </div>
                   ) : null}
+                  <div className="terminal-subtab-actions">
+                    <Tooltip label={rightPaneCollapsed ? "展开右侧面板" : "收起右侧面板"}>
+                      <button
+                        className="add-subtab terminal-subtab-panel-toggle"
+                        type="button"
+                        aria-label={rightPaneCollapsed ? "展开右侧面板" : "收起右侧面板"}
+                        aria-expanded={!rightPaneCollapsed}
+                        onClick={() => setRightPaneCollapsed((collapsed) => !collapsed)}
+                      >
+                        {rightPaneCollapsed ? (
+                          <PanelRightOpen className="ui-icon" aria-hidden="true" />
+                        ) : (
+                          <PanelRightClose className="ui-icon" aria-hidden="true" />
+                        )}
+                      </button>
+                    </Tooltip>
+                  </div>
                 </nav>
 
                 <section className="terminal-stack" aria-label="本地终端">
@@ -3667,20 +4143,6 @@ export function WorkspaceShell() {
           ) : null}
         </section>
 
-        {showSessionWorkspace && rightPaneCollapsed ? (
-          <Tooltip label="展开右侧面板">
-            <button
-              className="right-collapse-button right-collapse-button-floating"
-              type="button"
-              aria-label="展开右侧面板"
-              aria-expanded={false}
-              onClick={() => setRightPaneCollapsed((collapsed) => !collapsed)}
-            >
-              <ChevronLeft className="ui-icon" aria-hidden="true" />
-            </button>
-          </Tooltip>
-        ) : null}
-
         {showSessionWorkspace && !rightPaneCollapsed ? (
           <div
             className="pane-resizer right-pane-resizer"
@@ -3732,7 +4194,6 @@ export function WorkspaceShell() {
             onRenameEntry={requestRenameRemoteEntry}
             onShowProperties={showRemoteFileProperties}
             onToolChange={setRightTool}
-            onToggleRightPane={() => setRightPaneCollapsed((collapsed) => !collapsed)}
             onUploadDirectory={uploadRemoteDirectory}
             onUploadFile={uploadRemoteFile}
             onUploadItems={uploadRemoteItems}
@@ -6017,6 +6478,84 @@ function toLocalTerminalProfileInput(profile: LocalTerminalProfile): LocalTermin
 
 function formatConnectionAddress(connection: ConnectionProfile) {
   return `${connection.username}@${connection.host}:${connection.port.toString()}`;
+}
+
+function buildCommandSenderTargets({
+  activeTabByConnectionId,
+  connectionById,
+  deliveryByKey,
+  selectedTabByConnectionId,
+  terminalTabs,
+}: {
+  activeTabByConnectionId: Record<string, string>;
+  connectionById: Map<string, ConnectionProfile>;
+  deliveryByKey: Record<string, { message?: string; status: CommandSenderDeliveryStatus }>;
+  selectedTabByConnectionId: Record<string, string>;
+  terminalTabs: TerminalTab[];
+}): CommandSenderTarget[] {
+  const tabsByConnection = new Map<string, ConnectedTerminalTab[]>();
+
+  terminalTabs.forEach((tab) => {
+    if (tab.type !== "terminal" || !tab.sessionId) {
+      return;
+    }
+
+    const connectedTab = tab as ConnectedTerminalTab;
+    const tabs = tabsByConnection.get(tab.connectionId) || [];
+    tabs.push(connectedTab);
+    tabsByConnection.set(tab.connectionId, tabs);
+  });
+
+  return Array.from(tabsByConnection.entries()).map(([connectionId, tabs]) => {
+    const selectedTabId =
+      selectedTabByConnectionId[connectionId] || activeTabByConnectionId[connectionId];
+    const selectedTab = tabs.find((tab) => tab.id === selectedTabId) || tabs[0];
+    const connection = connectionById.get(connectionId) || null;
+    const key = commandSenderTargetKey(connectionId, selectedTab.id);
+    const delivery = deliveryByKey[key];
+    const tabCountText = tabs.length > 1 ? `${tabs.length.toString()} 个子 tab` : "1 个子 tab";
+
+    return {
+      connectionId,
+      deliveryMessage: delivery?.message,
+      deliveryStatus: delivery?.status || "idle",
+      description: connection
+        ? `${formatConnectionAddress(connection)} · ${tabCountText}`
+        : `当前连接 · ${tabCountText}`,
+      key,
+      label: connection?.name || selectedTab.title,
+      sessionId: selectedTab.sessionId,
+      tabId: selectedTab.id,
+      tabs: tabs.map((tab) => ({
+        label: tab.title,
+        sessionId: tab.sessionId,
+        tabId: tab.id,
+      })),
+      tabTitle: selectedTab.title,
+    };
+  });
+}
+
+function commandSenderTargetKey(connectionId: string, tabId: string) {
+  return `${connectionId}:${tabId}`;
+}
+
+function commandSenderDeliveryLabel(status: CommandSenderDeliveryStatus) {
+  if (status === "sent") {
+    return "已写入";
+  }
+  if (status === "failed") {
+    return "发送失败";
+  }
+  return "未发送";
+}
+
+function isCommandSenderRisky(command: string) {
+  return (
+    /\b(?:sudo|mkfs|shutdown|reboot)\b/i.test(command) ||
+    /\brm\s+-[^\n\r]*r[^\n\r]*f/i.test(command) ||
+    /\b(?:curl|wget)\b[^\n\r|]*\|\s*(?:sh|bash)\b/i.test(command)
+  );
 }
 
 function isRemoteFileConflict(error: unknown) {

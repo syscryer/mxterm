@@ -49,7 +49,9 @@
     }
 
     button,
-    input {
+    input,
+    select,
+    textarea {
       font: inherit;
     }
 
@@ -145,11 +147,12 @@
       min-width: 0;
       display: flex;
       align-items: center;
-      gap: 6px;
+      gap: 4px;
       padding: 0 10px;
       overflow: hidden;
     }
 
+    .title-session-tab,
     .title-session-placeholder {
       height: 26px;
       display: inline-flex;
@@ -158,8 +161,40 @@
       padding: 0 9px;
       border-radius: 8px;
       color: var(--mx-muted);
+      background: transparent;
       font-size: 12px;
       font-weight: 650;
+    }
+
+    .title-session-tab {
+      max-width: 190px;
+      border: 1px solid transparent;
+    }
+
+    .title-session-tab.active,
+    .title-session-tab:hover {
+      border-color: rgba(15, 23, 42, 0.06);
+      color: var(--mx-text);
+      background: rgba(15, 23, 42, 0.065);
+    }
+
+    .title-session-tab span {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .title-session-close {
+      width: 14px;
+      height: 14px;
+      border: 0;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      padding: 0;
+      color: var(--mx-subtle);
+      background: transparent;
     }
 
     .window-controls {
@@ -334,7 +369,7 @@
       min-width: 0;
       min-height: 0;
       display: grid;
-      grid-template-rows: 34px minmax(0, 1fr);
+      grid-template-rows: 34px minmax(0, 1fr) auto;
       overflow: hidden;
       background: var(--mx-panel);
     }
@@ -352,6 +387,14 @@
 
     .session-tabs {
       padding: 0 12px 0 18px;
+    }
+
+    .subtab-label {
+      flex: 0 0 auto;
+      margin-right: 2px;
+      color: var(--mx-subtle);
+      font-size: 11px;
+      font-weight: 700;
     }
 
     .session-tab,
@@ -401,6 +444,793 @@
       flex: 0 0 28px;
     }
 
+    .session-tabs-spacer {
+      flex: 1 1 auto;
+      min-width: 8px;
+    }
+
+    .terminal-mode-button {
+      height: 28px;
+      border: 1px solid transparent;
+      border-radius: 7px;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 0 9px;
+      color: var(--mx-muted);
+      background: transparent;
+      font-size: 12px;
+      font-weight: 650;
+    }
+
+    .terminal-mode-button.sync-input-trigger {
+      margin-right: 4px;
+      color: rgba(100, 116, 139, 0.76);
+      font-weight: 600;
+    }
+
+    .terminal-mode-button:hover,
+    .terminal-mode-button.active {
+      border-color: rgba(37, 99, 235, 0.16);
+      color: #1d4ed8;
+      background: rgba(37, 99, 235, 0.075);
+    }
+
+    .terminal-mode-button.sync-input-trigger:hover {
+      border-color: rgba(15, 23, 42, 0.08);
+      color: var(--mx-muted);
+      background: rgba(15, 23, 42, 0.045);
+    }
+
+    .terminal-mode-button.syncing {
+      border-color: rgba(21, 128, 61, 0.2);
+      color: #166534;
+      background: rgba(220, 252, 231, 0.52);
+    }
+
+    .terminal-mode-button .ui-icon {
+      width: 14px;
+      height: 14px;
+    }
+
+    .terminal-tool-button {
+      width: 28px;
+      height: 28px;
+      border: 1px solid transparent;
+      border-radius: 7px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      color: var(--mx-muted);
+      background: transparent;
+    }
+
+    .terminal-tool-button:hover,
+    .terminal-tool-button.active {
+      border-color: rgba(37, 99, 235, 0.16);
+      color: #1d4ed8;
+      background: rgba(37, 99, 235, 0.075);
+    }
+
+    .terminal-tool-button .ui-icon {
+      width: 14px;
+      height: 14px;
+    }
+
+    .command-sender-panel {
+      display: none;
+      min-width: 0;
+      border-top: 1px solid rgba(15, 23, 42, 0.12);
+      padding: 8px 12px 10px;
+      background:
+        linear-gradient(180deg, rgba(248, 250, 252, 0.97), #ffffff 56%);
+    }
+
+    .command-sender-panel.open {
+      display: block;
+    }
+
+    .command-sender-console {
+      container-type: inline-size;
+      min-width: 0;
+      display: grid;
+      grid-template-rows: auto minmax(0, 1fr);
+      overflow: hidden;
+      border: 1px solid rgba(15, 23, 42, 0.14);
+      border-radius: 12px;
+      background: #ffffff;
+      box-shadow: 0 10px 28px rgba(15, 23, 42, 0.08);
+    }
+
+    .command-sender-console-head {
+      min-width: 0;
+      display: grid;
+      grid-template-columns: auto auto minmax(0, 1fr) auto;
+      align-items: center;
+      gap: 10px;
+      min-height: 42px;
+      border-bottom: 1px solid rgba(15, 23, 42, 0.12);
+      padding: 0 10px 0 14px;
+      background: rgba(248, 248, 246, 0.96);
+    }
+
+    .command-sender-title {
+      min-width: 0;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      border-right: 1px solid rgba(15, 23, 42, 0.14);
+      padding-right: 10px;
+      color: var(--mx-text);
+      font-size: 12px;
+      font-weight: 700;
+      white-space: nowrap;
+    }
+
+    .command-sender-title::before {
+      content: "";
+      width: 8px;
+      height: 8px;
+      border-radius: 999px;
+      background: #22c55e;
+    }
+
+    .command-sender-title small {
+      color: var(--mx-subtle);
+      font-size: 12px;
+      font-weight: 600;
+    }
+
+    .command-target-count,
+    .command-last-sent {
+      color: var(--mx-subtle);
+      font-size: 12px;
+      font-weight: 600;
+    }
+
+    .command-sender-head-actions {
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      gap: 12px;
+      white-space: nowrap;
+    }
+
+    .command-console-toggle {
+      width: 30px;
+      height: 30px;
+      border: 1px solid rgba(15, 23, 42, 0.18);
+      border-radius: 8px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      padding: 0;
+      color: var(--mx-text);
+      background: #ffffff;
+    }
+
+    .command-console-toggle:hover {
+      color: var(--mx-text);
+      background: var(--mx-panel-soft);
+    }
+
+    .command-console-toggle .ui-icon {
+      width: 15px;
+      height: 15px;
+    }
+
+    .command-close-text {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      overflow: hidden;
+      clip: rect(0 0 0 0);
+      white-space: nowrap;
+    }
+
+    .command-sender-console-body {
+      min-width: 0;
+      display: grid;
+      grid-template-columns: minmax(320px, 360px) minmax(0, 1fr);
+      min-height: 330px;
+      gap: 0;
+      align-items: stretch;
+    }
+
+    .command-sender-block {
+      min-width: 0;
+      display: grid;
+      align-content: start;
+      gap: 12px;
+      border: 0;
+      border-radius: 0;
+      padding: 0;
+      background: transparent;
+    }
+
+    .command-target-pane {
+      border-right: 1px solid rgba(15, 23, 42, 0.11);
+      padding: 16px 12px 14px;
+      background: rgba(252, 252, 250, 0.65);
+    }
+
+    .command-compose-pane {
+      display: grid;
+      grid-template-rows: auto minmax(0, 1fr) auto auto;
+      align-content: stretch;
+      gap: 9px;
+      padding: 12px 14px 0;
+    }
+
+    .command-sender-label {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      color: var(--mx-text);
+      font-size: 12px;
+      font-weight: 680;
+    }
+
+    .command-target-title {
+      display: inline-flex;
+      align-items: baseline;
+      gap: 7px;
+    }
+
+    .command-target-tools {
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      gap: 8px;
+    }
+
+    .command-target-select-all {
+      position: relative;
+      min-width: 54px;
+      height: 32px;
+      border: 1px solid rgba(15, 23, 42, 0.18);
+      border-radius: 8px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      padding: 0 12px;
+      color: var(--mx-text);
+      background: #ffffff;
+      font-size: 12px;
+      font-weight: 500;
+      white-space: nowrap;
+    }
+
+    .command-target-select-all:hover {
+      color: var(--mx-text);
+      background: var(--mx-panel-soft);
+    }
+
+    .command-target-select-all input {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      opacity: 0;
+      margin: 0;
+    }
+
+    .command-target-list {
+      min-width: 0;
+      display: grid;
+      gap: 8px;
+    }
+
+    .command-target {
+      min-width: 0;
+      min-height: 74px;
+      border: 1px solid rgba(15, 23, 42, 0.08);
+      border-radius: 8px;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr);
+      align-items: start;
+      gap: 8px;
+      padding: 9px 10px;
+      background: rgba(255, 255, 255, 0.84);
+      transition: border-color 180ms ease, background 180ms ease, opacity 180ms ease;
+    }
+
+    .command-target:hover {
+      border-color: rgba(37, 99, 235, 0.28);
+      background: #ffffff;
+    }
+
+    .command-target:has(.command-target-checkbox:checked) {
+      border-color: rgba(37, 99, 235, 0.82);
+      background: #dbeafe;
+    }
+
+    .command-target:has(.command-target-checkbox:not(:checked)) {
+      opacity: 0.72;
+    }
+
+    .command-target.has-delivery {
+      border-color: rgba(37, 99, 235, 0.16);
+      background: rgba(37, 99, 235, 0.035);
+    }
+
+    .command-target:has(.command-target-checkbox:checked).has-delivery {
+      border-color: rgba(37, 99, 235, 0.82);
+      background: #dbeafe;
+    }
+
+    .command-target.has-failed-delivery {
+      border-color: rgba(220, 38, 38, 0.18);
+      background: rgba(254, 226, 226, 0.34);
+    }
+
+    .command-target input {
+      width: 15px;
+      height: 15px;
+      margin: 0;
+      accent-color: var(--mx-primary);
+    }
+
+    .command-target-select {
+      min-width: 0;
+      display: grid;
+      grid-template-columns: 18px minmax(0, 1fr);
+      align-items: start;
+      gap: 8px;
+    }
+
+    .command-target-copy {
+      min-width: 0;
+      display: grid;
+      gap: 1px;
+    }
+
+    .command-target-copy strong,
+    .command-target-copy span {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .command-target-copy strong {
+      display: block;
+      color: var(--mx-text);
+      font-size: 13px;
+      font-weight: 700;
+    }
+
+    .command-target-copy span {
+      display: block;
+      color: var(--mx-subtle);
+      font-family: var(--font-mono);
+      font-size: 11px;
+    }
+
+    .command-target-copy em {
+      margin-left: 5px;
+      color: #2563eb;
+      font-style: normal;
+      font-size: 12px;
+      font-weight: 700;
+    }
+
+    .command-target-state {
+      height: 22px;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      justify-content: center;
+      flex: 0 0 auto;
+      border: 0;
+      padding: 0;
+      color: var(--mx-success);
+      background: transparent;
+      font-size: 12px;
+      font-weight: 500;
+      line-height: 22px;
+    }
+
+    .command-target-state::before {
+      content: "";
+      width: 8px;
+      height: 8px;
+      border-radius: 999px;
+      background: currentColor;
+    }
+
+    .command-target-state.offline {
+      color: var(--mx-danger);
+    }
+
+    .command-target-meta {
+      display: flex;
+      align-items: center;
+      justify-content: flex-start;
+      gap: 6px;
+      min-width: 0;
+      padding-left: 23px;
+      overflow: visible;
+      white-space: nowrap;
+    }
+
+    .command-target-terminal-shell {
+      flex: 0 0 auto;
+      height: 26px;
+      border: 1px solid var(--mx-line-soft);
+      border-radius: 7px;
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      padding: 0 7px;
+      color: var(--mx-muted);
+      background: rgba(255, 255, 255, 0.76);
+    }
+
+    .command-target-terminal-shell .ui-icon {
+      width: 13px;
+      height: 13px;
+    }
+
+    .command-target-terminal {
+      width: 66px;
+      height: 24px;
+      border: 0;
+      padding: 0;
+      color: var(--mx-muted);
+      background: transparent;
+      font-size: 11px;
+      font-weight: 650;
+    }
+
+    .command-target-delivery {
+      min-width: 50px;
+      border: 0;
+      border-radius: 7px;
+      height: 24px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      flex: 0 0 auto;
+      padding: 0 7px;
+      color: var(--mx-subtle);
+      background: rgba(148, 163, 184, 0.12);
+      font-size: 11px;
+      font-weight: 650;
+      line-height: 24px;
+      white-space: nowrap;
+    }
+
+    .command-target-delivery.sent {
+      color: #166534;
+      background: rgba(220, 252, 231, 0.85);
+    }
+
+    .command-target-delivery.failed {
+      color: #991b1b;
+      background: rgba(254, 226, 226, 0.88);
+    }
+
+    .command-target-delivery:not(:disabled):hover {
+      color: var(--mx-text);
+      background: rgba(156, 163, 175, 0.18);
+    }
+
+    .command-select-row {
+      min-width: 0;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .command-toolbar-select {
+      position: relative;
+      height: 30px;
+      border: 1px solid rgba(15, 23, 42, 0.14);
+      border-radius: 8px;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 0 24px 0 9px;
+      color: var(--mx-muted);
+      background: #ffffff;
+      box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+    }
+
+    .command-toolbar-select::after {
+      content: "";
+      position: absolute;
+      right: 10px;
+      width: 6px;
+      height: 6px;
+      border-right: 1.6px solid currentColor;
+      border-bottom: 1.6px solid currentColor;
+      transform: translateY(-2px) rotate(45deg);
+      pointer-events: none;
+    }
+
+    .command-toolbar-select .ui-icon {
+      width: 14px;
+      height: 14px;
+    }
+
+    .command-select {
+      width: 100%;
+      min-width: 0;
+      height: 28px;
+      border: 0;
+      appearance: none;
+      padding: 0;
+      color: var(--mx-text);
+      background: transparent;
+      font-size: 12px;
+      font-weight: 500;
+    }
+
+    .command-compose-label {
+      color: var(--mx-muted);
+      font-size: 13px;
+      font-weight: 600;
+    }
+
+    .command-input {
+      width: 100%;
+      min-height: 150px;
+      resize: none;
+      border: 1px solid var(--mx-line);
+      border-radius: 8px;
+      padding: 12px 12px;
+      color: var(--mx-text);
+      background: #fbfcfe;
+      font-family: var(--font-mono);
+      font-size: 13px;
+      line-height: 1.55;
+    }
+
+    .command-input:focus {
+      outline: none;
+      border-color: rgba(37, 99, 235, 0.44);
+      box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.09);
+    }
+
+    .command-options,
+    .sync-input-row {
+      min-width: 0;
+      display: flex;
+      align-items: center;
+      gap: 9px;
+      color: var(--mx-muted);
+      font-size: 12px;
+    }
+
+    .command-options input,
+    .sync-input-row input {
+      width: 14px;
+      height: 14px;
+      margin: 0;
+      accent-color: var(--mx-primary);
+    }
+
+    .command-risk-warning,
+    .command-send-result {
+      min-width: 0;
+      border-radius: 8px;
+      padding: 8px 10px;
+      font-size: 12px;
+      line-height: 1.45;
+    }
+
+    .command-risk-warning {
+      display: none;
+      border: 1px solid rgba(220, 38, 38, 0.2);
+      color: #991b1b;
+      background: rgba(254, 226, 226, 0.72);
+    }
+
+    .command-risk-warning.show {
+      display: block;
+    }
+
+    .command-send-result {
+      min-height: 34px;
+      border: 1px solid var(--mx-line);
+      display: flex;
+      align-items: center;
+      color: var(--mx-subtle);
+      background: #ffffff;
+      font-size: 12px;
+    }
+
+
+    .command-compose-footer {
+      min-width: 0;
+      display: grid;
+      grid-template-columns: minmax(160px, 0.28fr) auto;
+      align-items: center;
+      gap: 8px;
+      margin: 0 -14px;
+      border-top: 1px solid rgba(15, 23, 42, 0.11);
+      padding: 9px 14px 10px;
+      background: rgba(248, 248, 246, 0.72);
+    }
+
+    .command-actions {
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      gap: 7px;
+      flex-wrap: wrap;
+    }
+
+    .command-actions .primary-button,
+    .command-actions .secondary-button {
+      min-width: 96px;
+      height: 30px;
+      border-radius: 7px;
+      font-size: 13px;
+      justify-content: center;
+    }
+
+    .command-actions .clear-command-button {
+      min-width: 76px;
+    }
+
+    .command-actions .ui-icon {
+      width: 14px;
+      height: 14px;
+    }
+
+    @container (max-width: 780px) {
+      .command-sender-console-head {
+        grid-template-columns: auto minmax(0, 1fr) auto;
+        gap: 10px;
+        padding-left: 14px;
+      }
+
+      .command-sender-title {
+        gap: 7px;
+        padding-right: 10px;
+      }
+
+      .command-sender-title small {
+        display: none;
+      }
+
+      .command-select-row {
+        overflow: hidden;
+      }
+
+      .command-toolbar-select {
+        min-width: 0;
+        max-width: 164px;
+        padding-left: 8px;
+        padding-right: 22px;
+      }
+
+      .command-sender-console-head > span {
+        display: none;
+      }
+
+      .command-sender-head-actions {
+        gap: 8px;
+      }
+
+      .command-sender-console-body {
+        grid-template-columns: minmax(286px, 300px) minmax(0, 1fr);
+      }
+
+      .command-target-pane {
+        padding: 16px 10px 12px;
+      }
+
+      .command-target {
+        min-height: 76px;
+        padding: 9px 10px;
+      }
+
+      .command-target-copy strong {
+        font-size: 13px;
+      }
+
+      .command-target-copy span {
+        font-size: 11px;
+      }
+
+      .command-target-copy em {
+        font-size: 12px;
+      }
+
+      .command-target-meta {
+        gap: 6px;
+        padding-left: 28px;
+      }
+
+      .command-target-terminal-shell {
+        padding: 0 6px;
+      }
+
+      .command-target-terminal {
+        width: 58px;
+        font-size: 11px;
+      }
+
+      .command-target-state,
+      .command-target-delivery {
+        font-size: 11px;
+      }
+
+      .command-target-delivery {
+        min-width: 48px;
+      }
+
+      .command-compose-pane {
+        padding: 12px 12px 0;
+      }
+
+      .command-input {
+        min-height: 142px;
+        padding: 11px 12px;
+        font-size: 13px;
+      }
+
+      .command-compose-footer {
+        grid-template-columns: 1fr;
+        align-items: start;
+        margin-right: -12px;
+        margin-left: -12px;
+        padding: 9px 12px 10px;
+      }
+
+      .command-send-result {
+        min-height: 34px;
+        font-size: 12px;
+      }
+
+      .command-actions {
+        justify-content: flex-start;
+        gap: 8px;
+      }
+
+      .command-actions .primary-button,
+      .command-actions .secondary-button {
+        min-width: 88px;
+        height: 30px;
+        border-radius: 8px;
+        font-size: 12px;
+      }
+
+      .command-actions .clear-command-button {
+        min-width: 72px;
+      }
+    }
+
+    .command-actions button:disabled {
+      cursor: default;
+      opacity: 0.48;
+    }
+
+    .sync-input-banner {
+      display: none;
+      align-items: center;
+      gap: 8px;
+      padding: 7px 14px;
+      border-bottom: 1px solid rgba(37, 99, 235, 0.16);
+      color: #1d4ed8;
+      background: rgba(37, 99, 235, 0.08);
+      font-family: var(--font-ui);
+      font-size: 12px;
+      font-weight: 650;
+    }
+
+    .sync-input-banner.show {
+      display: flex;
+    }
+
+    .sync-input-banner .ui-icon {
+      width: 14px;
+      height: 14px;
+    }
+
     .terminal-preview {
       min-width: 0;
       min-height: 0;
@@ -415,7 +1245,7 @@
 
     .terminal-preview pre {
       margin: 0;
-      padding: 0;
+      padding: 12px 14px;
       white-space: pre-wrap;
     }
 
@@ -497,6 +1327,10 @@
       display: grid;
       grid-template-rows: auto minmax(0, 1fr);
       background: var(--mx-panel);
+    }
+
+    .empty-workspace[hidden] {
+      display: none;
     }
 
     .repository-toolbar {
@@ -1025,10 +1859,27 @@
       </div>
 
       <nav class="title-session-tabs" aria-label="工作区标签">
-        <div class="title-session-placeholder">
+        <button class="title-session-tab muted" type="button">
           <svg class="ui-icon" viewBox="0 0 16 16"><path d="m3 8 5-4.2L13 8"/><path d="M4.4 7.2v5.1h7.2V7.2"/><path d="M6.8 12.3V9.4h2.4v2.9"/></svg>
           <span>首页</span>
-        </div>
+        </button>
+        <button class="title-session-tab muted" type="button">
+          <svg class="ui-icon" viewBox="0 0 16 16"><path d="M3.5 4.2h9v7.6h-9z"/><path d="m5.4 6.4 1.7 1.6-1.7 1.6"/><path d="M8.4 9.6h3.1"/></svg>
+          <span>终端</span>
+        </button>
+        <button class="title-session-tab" type="button">
+          <span>192.168.10.73[lulu]</span>
+        </button>
+        <button class="title-session-tab" type="button">
+          <span>192.168.10.70</span>
+        </button>
+        <button class="title-session-tab active" type="button">
+          <span>192.168.10.75[Harbor]</span>
+          <span class="title-session-close" aria-hidden="true">×</span>
+        </button>
+        <button class="add-session-tab" type="button" aria-label="新建工作区标签">
+          <svg class="ui-icon" viewBox="0 0 16 16"><path d="M8 3.5v9M3.5 8h9"/></svg>
+        </button>
       </nav>
 
       <div class="window-controls" aria-label="窗口操作">
@@ -1121,27 +1972,183 @@
       <section class="main-workbench" aria-label="会话工作区">
         <section class="session-workspace" aria-label="终端会话">
           <nav class="session-tabs" aria-label="当前连接的终端会话">
-            <button class="session-tab active" type="button">
+            <button class="session-tab active" type="button" data-session-target="192.168.10.75[Harbor] / 终端 2">
               <svg class="ui-icon" viewBox="0 0 16 16"><path d="M3.5 4.2h9v7.6h-9z"/><path d="m5.4 6.4 1.7 1.6-1.7 1.6"/><path d="M8.4 9.6h3.1"/></svg>
-              <span>终端</span>
+              <span>终端 2</span>
+              <span aria-hidden="true">×</span>
             </button>
-            <button class="session-tab" type="button">
+            <button class="session-tab" type="button" data-session-target="192.168.10.75[Harbor] / 终端">
               <svg class="ui-icon" viewBox="0 0 16 16"><path d="M3.5 4.2h9v7.6h-9z"/><path d="m5.4 6.4 1.7 1.6-1.7 1.6"/><path d="M8.4 9.6h3.1"/></svg>
               <span>终端 1</span>
+            </button>
+            <button class="session-tab" type="button" data-session-target="App-01 / shell">
+              <svg class="ui-icon" viewBox="0 0 16 16"><path d="M3.5 4.2h9v7.6h-9z"/><path d="m5.4 6.4 1.7 1.6-1.7 1.6"/><path d="M8.4 9.6h3.1"/></svg>
+              <span>App-01</span>
             </button>
             <button class="add-session-tab" type="button" aria-label="新建同连接终端">
               <svg class="ui-icon" viewBox="0 0 16 16"><path d="M8 3.5v9M3.5 8h9"/></svg>
             </button>
+            <span class="session-tabs-spacer"></span>
+            <button class="terminal-mode-button sync-input-trigger" id="syncInputToggleButton" type="button" aria-pressed="false" title="同步输入会把当前终端键盘输入实时镜像到其他目标，后续真实实现">
+              <svg class="ui-icon" viewBox="0 0 16 16"><path d="M3 5.2h4.2v5.6H3z"/><path d="M8.8 5.2H13v5.6H8.8z"/><path d="M7.2 8h1.6"/></svg>
+              <span id="syncInputToggleLabel">同步输入: 关</span>
+            </button>
+            <button class="terminal-tool-button" id="commandSenderToggle" type="button" aria-label="命令发送器" title="命令发送器" aria-pressed="false" aria-controls="commandSenderPanel">
+              <svg class="ui-icon" viewBox="0 0 16 16"><path d="M2.8 4.2h10.4v7.6H2.8z"/><path d="m5 6.5 1.7 1.5L5 9.5"/><path d="M8.4 9.5h2.8"/></svg>
+            </button>
           </nav>
 
           <section class="terminal-preview" aria-label="终端预览">
-            <pre>连接 root@101.34.85.216:22 ...
+            <div class="sync-input-banner" id="syncInputBanner">
+              <svg class="ui-icon" viewBox="0 0 16 16"><path d="M3 5.2h4.2v5.6H3z"/><path d="M8.8 5.2H13v5.6H8.8z"/><path d="M7.2 8h1.6"/></svg>
+              <span id="syncInputBannerText">同步输入中</span>
+            </div>
+            <pre id="terminalOutput">连接 root@192.168.10.75:22 ...
 
 正在建立 SSH TCP 连接...
 
 SSH TCP 已连接。
 
 SSH 认证中...</pre>
+          </section>
+
+          <section class="command-sender-panel" id="commandSenderPanel" aria-label="Command Sender">
+            <div class="command-sender-console">
+              <header class="command-sender-console-head">
+                <div class="command-sender-title">
+                  <span>命令操作台</span>
+                  <small>Command Sender</small>
+                </div>
+                <div class="command-select-row">
+                  <label class="command-toolbar-select">
+                    <svg class="ui-icon" viewBox="0 0 16 16"><path d="m2.5 8.4 10.8-5.2-3.8 10.7-2-4.1z"/><path d="m7.5 9.8 2 4.1"/></svg>
+                    <select class="command-select" id="commandSendMode" aria-label="发送模式">
+                      <option>逐条发送</option>
+                      <option>发送到全部目标</option>
+                      <option>仅预览不发送</option>
+                    </select>
+                  </label>
+                  <label class="command-toolbar-select">
+                    <svg class="ui-icon" viewBox="0 0 16 16"><path d="M8 3.2a4.8 4.8 0 1 1-4.1 2.3"/><path d="M3.2 3.2v2.7h2.7"/><path d="M8 5.6v2.8l1.8 1"/></svg>
+                    <select class="command-select" id="commandHistorySelect" aria-label="最近命令">
+                      <option value="">最近命令</option>
+                      <option value="uptime && df -h">uptime && df -h</option>
+                      <option value="systemctl status nginx">systemctl status nginx</option>
+                      <option value="tail -n 80 /var/log/syslog">tail -n 80 /var/log/syslog</option>
+                    </select>
+                  </label>
+                </div>
+                <span></span>
+                <div class="command-sender-head-actions">
+                  <span class="command-last-sent" id="commandLastSent">上次发送：尚未发送</span>
+                  <button class="command-console-toggle" id="commandSenderPanelToggle" type="button" aria-label="关闭命令操作台">
+                    <svg class="ui-icon" viewBox="0 0 16 16"><path d="m5 5 6 6M11 5l-6 6"/></svg>
+                    <span class="command-close-text" id="commandSenderPanelToggleLabel">关闭</span>
+                  </button>
+                </div>
+              </header>
+
+              <div class="command-sender-console-body" id="commandSenderBody">
+                <div class="command-sender-block command-target-pane">
+                  <div class="command-sender-label">
+                    <span class="command-target-title">
+                      <span>目标</span>
+                      <span class="command-target-count" id="commandTargetCount">已选 2 / 3</span>
+                    </span>
+                    <span class="command-target-tools">
+                      <label class="command-target-select-all">
+                        <input id="commandSelectAllTargets" type="checkbox">
+                        <span>全选</span>
+                      </label>
+                    </span>
+                  </div>
+                  <div class="command-target-list">
+                    <div class="command-target">
+                      <label class="command-target-select">
+                        <input class="command-target-checkbox" data-command-target="192.168.10.75[Harbor] / 终端 2" type="checkbox" checked>
+                        <span class="command-target-copy">
+                          <strong>192.168.10.75 <em>Harbor</em></strong>
+                          <span>root@192.168.10.75</span>
+                        </span>
+                      </label>
+                      <span class="command-target-meta">
+                        <label class="command-target-terminal-shell">
+                          <svg class="ui-icon" viewBox="0 0 16 16"><path d="M2.8 4.2h10.4v7.6H2.8z"/><path d="m5 6.5 1.6 1.5L5 9.5"/><path d="M8.3 9.5h2.8"/></svg>
+                          <select class="command-target-terminal" aria-label="选择 192.168.10.75[Harbor] 子 tab">
+                            <option value="192.168.10.75[Harbor] / 终端 2" selected>终端 2</option>
+                            <option value="192.168.10.75[Harbor] / 终端">终端</option>
+                          </select>
+                        </label>
+                        <span class="command-target-state">在线</span>
+                        <button class="command-target-delivery" data-delivery-jump="192.168.10.75[Harbor] / 终端 2" type="button" aria-label="投递状态：192.168.10.75[Harbor] / 终端 2">未发送</button>
+                      </span>
+                    </div>
+                    <div class="command-target">
+                      <label class="command-target-select">
+                        <input class="command-target-checkbox" data-command-target="192.168.10.70 / 终端" type="checkbox" checked>
+                        <span class="command-target-copy">
+                          <strong>192.168.10.70</strong>
+                          <span>root@192.168.10.70</span>
+                        </span>
+                      </label>
+                      <span class="command-target-meta">
+                        <label class="command-target-terminal-shell">
+                          <svg class="ui-icon" viewBox="0 0 16 16"><path d="M2.8 4.2h10.4v7.6H2.8z"/><path d="m5 6.5 1.6 1.5L5 9.5"/><path d="M8.3 9.5h2.8"/></svg>
+                          <select class="command-target-terminal" aria-label="选择 192.168.10.70 子 tab">
+                            <option value="192.168.10.70 / 终端" selected>终端</option>
+                          </select>
+                        </label>
+                        <span class="command-target-state">在线</span>
+                        <button class="command-target-delivery" data-delivery-jump="192.168.10.70 / 终端" type="button" aria-label="投递状态：192.168.10.70 / 终端">未发送</button>
+                      </span>
+                    </div>
+                    <div class="command-target">
+                      <label class="command-target-select">
+                        <input class="command-target-checkbox" data-command-target="App-01 / shell" type="checkbox">
+                        <span class="command-target-copy">
+                          <strong>App-01 / shell</strong>
+                          <span>deploy@203.0.113.70</span>
+                        </span>
+                      </label>
+                      <span class="command-target-meta">
+                        <label class="command-target-terminal-shell">
+                          <svg class="ui-icon" viewBox="0 0 16 16"><path d="M2.8 4.2h10.4v7.6H2.8z"/><path d="m5 6.5 1.6 1.5L5 9.5"/><path d="M8.3 9.5h2.8"/></svg>
+                          <select class="command-target-terminal" aria-label="选择 App-01 子 tab">
+                            <option value="App-01 / shell" selected>shell</option>
+                          </select>
+                        </label>
+                        <span class="command-target-state offline">断开</span>
+                        <button class="command-target-delivery" data-delivery-jump="App-01 / shell" type="button" aria-label="投递状态：App-01 / shell">未发送</button>
+                      </span>
+                    </div>
+                  </div>
+                </div>
+
+                <div class="command-sender-block command-compose-pane">
+                  <div class="command-compose-label">命令</div>
+                  <textarea class="command-input" id="commandInput" spellcheck="false">uptime && df -h</textarea>
+                  <label class="command-options">
+                    <input id="appendEnterToggle" type="checkbox" checked>
+                    <span>发送时追加回车</span>
+                  </label>
+                  <div class="command-risk-warning" id="commandRiskWarning">检测到高风险片段，请确认目标机器和命令内容。</div>
+                  <div class="command-compose-footer">
+                    <div class="command-send-result" id="commandSendResult">等待输入命令。</div>
+                    <div class="command-actions">
+                      <button class="primary-button" id="sendCommandButton" type="button">
+                        <svg class="ui-icon" viewBox="0 0 16 16"><path d="M6 5.2 3.2 8 6 10.8"/><path d="M3.2 8h7.1a2.5 2.5 0 0 0 0-5H9"/></svg>
+                        <span>发送并回车</span>
+                      </button>
+                      <button class="secondary-button" id="sendNoEnterButton" type="button">发送不回车</button>
+                      <button class="secondary-button clear-command-button" id="clearCommandButton" type="button">
+                        <svg class="ui-icon" viewBox="0 0 16 16"><path d="M3.5 4.5h9"/><path d="M6 4.5V3.2h4v1.3"/><path d="m5 6 0.4 6.3h5.2L11 6"/><path d="M7.1 7.2v3.6M8.9 7.2v3.6"/></svg>
+                        <span>清空</span>
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
           </section>
         </section>
 
@@ -1451,5 +2458,230 @@ SSH 认证中...</pre>
       </aside>
     </main>
   </div>
+  <script>
+    const commandSenderToggle = document.getElementById("commandSenderToggle");
+    const commandSenderPanelToggle = document.getElementById("commandSenderPanelToggle");
+    const commandSenderPanel = document.getElementById("commandSenderPanel");
+    const sessionTabs = Array.from(document.querySelectorAll(".session-tab[data-session-target]"));
+    const terminalOutput = document.getElementById("terminalOutput");
+    const commandTargetCheckboxes = Array.from(document.querySelectorAll(".command-target-checkbox"));
+    const commandTargetTerminalSelects = Array.from(document.querySelectorAll(".command-target-terminal"));
+    const commandTargetCount = document.getElementById("commandTargetCount");
+    const commandSelectAllTargets = document.getElementById("commandSelectAllTargets");
+    const commandInput = document.getElementById("commandInput");
+    const appendEnterToggle = document.getElementById("appendEnterToggle");
+    const commandRiskWarning = document.getElementById("commandRiskWarning");
+    const commandSendResult = document.getElementById("commandSendResult");
+    const commandLastSent = document.getElementById("commandLastSent");
+    const commandHistorySelect = document.getElementById("commandHistorySelect");
+    const clearCommandButton = document.getElementById("clearCommandButton");
+    const sendCommandButton = document.getElementById("sendCommandButton");
+    const sendNoEnterButton = document.getElementById("sendNoEnterButton");
+    const syncInputToggleButton = document.getElementById("syncInputToggleButton");
+    const syncInputToggleLabel = document.getElementById("syncInputToggleLabel");
+    const syncInputBanner = document.getElementById("syncInputBanner");
+    const syncInputBannerText = document.getElementById("syncInputBannerText");
+    let syncInputEnabled = false;
+    let sendCount = 0;
+    let activeSessionTarget = "192.168.10.75[Harbor] / 终端 2";
+
+    const terminalOutputByTarget = {
+      "192.168.10.75[Harbor] / 终端 2": "连接 root@192.168.10.75:22 ...\n\n正在建立 SSH TCP 连接...\n\nSSH TCP 已连接。\n\nSSH 认证中...",
+      "192.168.10.75[Harbor] / 终端": "root@192.168.10.75:~#\n最近输出：systemctl status nginx\n服务状态等待刷新...",
+      "192.168.10.70 / 终端": "root@192.168.10.70:~#\n最近输出：uptime && df -h\n等待新的批量命令...",
+      "App-01 / shell": "deploy@203.0.113.70:~#\n会话已断开，命令无法写入。\n请重新连接后再发送。",
+    };
+
+    function commandTargetForCheckbox(checkbox) {
+      const row = checkbox.closest(".command-target");
+      const terminalSelect = row?.querySelector(".command-target-terminal");
+      return terminalSelect?.value || checkbox.dataset.commandTarget || "未命名终端";
+    }
+
+    function selectedCommandTargets() {
+      return commandTargetCheckboxes
+        .filter((checkbox) => checkbox.checked)
+        .map(commandTargetForCheckbox);
+    }
+
+    function commandLooksRisky(command) {
+      return /\b(rm\s+-rf|sudo|mkfs|shutdown|reboot|curl\s+[^|]+\|\s*sh|wget\s+[^|]+\|\s*sh)\b/i.test(command);
+    }
+
+    function activateSession(target) {
+      activeSessionTarget = target;
+      sessionTabs.forEach((tab) => {
+        tab.classList.toggle("active", tab.dataset.sessionTarget === target);
+      });
+      terminalOutput.textContent = terminalOutputByTarget[target] || `${target}\n等待终端输出...`;
+    }
+
+    function deliveryResultForTarget(target) {
+      if (target.includes("App-01")) {
+        return { icon: "x", status: "发送失败", detail: "会话已断开", failed: true };
+      }
+      return { icon: "✓", status: "已写入", detail: "输入已投递", failed: false };
+    }
+
+    function deliveryBadgeForCheckbox(checkbox) {
+      return checkbox.closest(".command-target")?.querySelector(".command-target-delivery");
+    }
+
+    function updateDeliveryBadgeForCheckbox(checkbox, result) {
+      const badge = deliveryBadgeForCheckbox(checkbox);
+      const row = checkbox.closest(".command-target");
+      const target = commandTargetForCheckbox(checkbox);
+      if (!badge || !row) {
+        return;
+      }
+      row.classList.toggle("has-delivery", !result.failed);
+      row.classList.toggle("has-failed-delivery", result.failed);
+      badge.classList.toggle("sent", !result.failed);
+      badge.classList.toggle("failed", result.failed);
+      badge.dataset.deliveryJump = target;
+      badge.setAttribute("aria-label", `投递状态：${target}`);
+      badge.textContent = result.status;
+      badge.title = `${target}：${result.detail}`;
+    }
+
+    function resetDeliveryBadgeForCheckbox(checkbox) {
+      const badge = deliveryBadgeForCheckbox(checkbox);
+      const row = checkbox.closest(".command-target");
+      const target = commandTargetForCheckbox(checkbox);
+      if (!badge || !row) {
+        return;
+      }
+      row.classList.remove("has-delivery", "has-failed-delivery");
+      badge.classList.remove("sent", "failed");
+      badge.dataset.deliveryJump = target;
+      badge.setAttribute("aria-label", `投递状态：${target}`);
+      badge.textContent = "未发送";
+      badge.title = `${target}：点击切换到该会话`;
+    }
+
+    function updateCommandSenderState() {
+      const selectedTargets = selectedCommandTargets();
+      const command = commandInput.value.trim();
+      const mirrorTargets = Math.max(0, selectedTargets.length - 1);
+      commandTargetCount.textContent = `已选 ${selectedTargets.length} / ${commandTargetCheckboxes.length}`;
+      commandSelectAllTargets.checked = selectedTargets.length === commandTargetCheckboxes.length;
+      commandSelectAllTargets.indeterminate = selectedTargets.length > 0 && selectedTargets.length < commandTargetCheckboxes.length;
+      commandTargetCheckboxes.forEach(resetDeliveryBadgeForCheckbox);
+      sendCommandButton.disabled = selectedTargets.length === 0 || command.length === 0;
+      sendNoEnterButton.disabled = selectedTargets.length === 0 || command.length === 0;
+      commandRiskWarning.classList.toggle("show", commandLooksRisky(command));
+
+      if (selectedTargets.length < 2 && syncInputEnabled) {
+        syncInputEnabled = false;
+      }
+
+      const syncing = syncInputEnabled && selectedTargets.length >= 2;
+      syncInputToggleButton.classList.toggle("syncing", syncing);
+      syncInputToggleButton.setAttribute("aria-pressed", String(syncing));
+      syncInputToggleButton.disabled = selectedTargets.length < 2;
+      syncInputToggleLabel.textContent = syncing
+        ? `同步输入: ${mirrorTargets} 个目标 · 开`
+        : "同步输入: 关";
+      syncInputBanner.classList.toggle("show", syncing);
+      syncInputBannerText.textContent = syncing
+        ? `同步输入中：${selectedTargets.slice(1).join("、")}`
+        : "同步输入中";
+    }
+
+    function setCommandSenderExpanded(nextExpanded) {
+      commandSenderPanel.classList.toggle("open", nextExpanded);
+      commandSenderToggle.classList.toggle("active", nextExpanded);
+      commandSenderToggle.setAttribute("aria-pressed", String(nextExpanded));
+    }
+
+    commandSenderToggle.addEventListener("click", () => {
+      setCommandSenderExpanded(!commandSenderPanel.classList.contains("open"));
+    });
+
+    commandSenderPanelToggle.addEventListener("click", () => {
+      setCommandSenderExpanded(false);
+    });
+
+    commandTargetCheckboxes.forEach((checkbox) => {
+      checkbox.addEventListener("change", updateCommandSenderState);
+    });
+
+    commandTargetTerminalSelects.forEach((select) => {
+      select.addEventListener("change", updateCommandSenderState);
+    });
+
+    commandSelectAllTargets.addEventListener("change", () => {
+      commandTargetCheckboxes.forEach((checkbox) => {
+        checkbox.checked = commandSelectAllTargets.checked;
+      });
+      updateCommandSenderState();
+    });
+
+    sessionTabs.forEach((tab) => {
+      tab.addEventListener("click", () => {
+        activateSession(tab.dataset.sessionTarget || "192.168.10.75[Harbor] / 终端 2");
+      });
+    });
+
+    commandInput.addEventListener("input", updateCommandSenderState);
+
+    commandHistorySelect.addEventListener("change", () => {
+      if (!commandHistorySelect.value) {
+        return;
+      }
+      commandInput.value = commandHistorySelect.value;
+      commandHistorySelect.value = "";
+      updateCommandSenderState();
+      commandInput.focus();
+    });
+
+    clearCommandButton.addEventListener("click", () => {
+      commandInput.value = "";
+      commandSendResult.textContent = "命令已清空。";
+      updateCommandSenderState();
+      commandInput.focus();
+    });
+
+    function simulateCommandSend(appendEnter) {
+      const selectedTargets = selectedCommandTargets();
+      const now = new Date();
+      const time = now.toLocaleTimeString("zh-CN", { hour12: false });
+      sendCount += 1;
+      const results = selectedTargets.map(deliveryResultForTarget);
+      const successCount = results.filter((result) => !result.failed).length;
+      const failureCount = results.length - successCount;
+      commandSendResult.textContent = `第 ${sendCount} 次投递：${successCount} 个已写入，${failureCount} 个失败；${appendEnter ? "已追加回车" : "未追加回车"}。`;
+      commandLastSent.textContent = `上次发送：${time}`;
+      commandTargetCheckboxes.forEach(resetDeliveryBadgeForCheckbox);
+      commandTargetCheckboxes.filter((checkbox) => checkbox.checked).forEach((checkbox) => {
+        const target = commandTargetForCheckbox(checkbox);
+        updateDeliveryBadgeForCheckbox(checkbox, deliveryResultForTarget(target));
+      });
+    }
+
+    sendCommandButton.addEventListener("click", () => {
+      simulateCommandSend(appendEnterToggle.checked);
+    });
+
+    sendNoEnterButton.addEventListener("click", () => {
+      simulateCommandSend(false);
+    });
+
+    syncInputToggleButton.addEventListener("click", () => {
+      syncInputEnabled = !syncInputEnabled;
+      commandSendResult.textContent = syncInputEnabled
+        ? "Sync Input 已开启，实时输入会镜像到选中的其他终端。"
+        : "Sync Input 已关闭，Command Sender 保持可连续发送。";
+      updateCommandSenderState();
+    });
+
+    document.querySelectorAll("[data-delivery-jump]").forEach((button) => {
+      button.addEventListener("click", () => {
+        activateSession(button.dataset.deliveryJump || activeSessionTarget);
+      });
+    });
+
+    updateCommandSenderState();
+  </script>
 </body>
 </html>
