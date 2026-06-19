@@ -284,6 +284,13 @@ Ant Design, Mantine, or similar libraries just to fix one modal or button.
   can break OSC parsing. Keep WebLinksAddon and OSC7/current-directory handling
   independent, and skip cells that already have ANSI foreground, inverse, or
   invisible attributes so remote output colors remain authoritative.
+- Terminal output search should use xterm's official `@xterm/addon-search`
+  `SearchAddon`, loaded inside `TerminalPanel`. Keep search state scoped by
+  runtime tab id in the workspace layer, clear `SearchAddon` decorations when
+  the search bar closes, and avoid parsing xterm DOM or scrollback manually.
+  Search decoration options must satisfy xterm's `#RRGGBB` contract while being
+  derived from global `--mx-*` tokens; use a local token-to-hex adapter rather
+  than hard-coded feature colors.
 - Scrollable app panes should use the shared light scrollbar treatment in
   `src/styles/app.css`: transparent tracks/corners, no WebKit scrollbar
   buttons/arrows, transparent thumbs by default, and only a low-alpha neutral
