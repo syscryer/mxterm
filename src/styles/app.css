@@ -1836,6 +1836,12 @@ button {
   align-self: center;
 }
 
+.title-pane-toggle .title-tool-icon {
+  width: 22px;
+  height: 22px;
+  stroke-width: 1.25;
+}
+
 .title-sidebar-tools {
   min-width: 0;
   display: flex;
