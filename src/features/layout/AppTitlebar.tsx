@@ -295,12 +295,21 @@ function GlyphShell({ children }: { children: ReactNode }) {
 }
 
 function SidebarToggleGlyph({ collapsed }: { collapsed: boolean }) {
+  const railX = collapsed ? 11 : 6;
+
   return (
-    <GlyphShell>
-      <rect x="2.5" y="3" width="11" height="10" rx="2" />
-      <path d="M6 3v10" />
-      <path d={collapsed ? "M9 6.2 11 8l-2 1.8" : "M11 6.2 9 8l2 1.8"} />
-    </GlyphShell>
+    <svg
+      className="title-tool-icon"
+      viewBox="0 0 20 20"
+      fill="none"
+      stroke="currentColor"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <rect x="3.5" y="3.5" width="13" height="13" rx="3" />
+      <rect x={railX} y="6.25" width="3" height="7.5" rx="1" fill="currentColor" stroke="none" />
+    </svg>
   );
 }
 
