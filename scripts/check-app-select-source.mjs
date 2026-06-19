@@ -11,6 +11,8 @@ const requiredSnippets = [
   "document.body",
   "onPointerDown={(event) => {",
   "onClick={(event) => {",
+  "handleMenuWheel",
+  "onWheel={handleMenuWheel}",
   "chooseOption(option);",
 ];
 
@@ -28,6 +30,10 @@ if (!/createPortal\([\s\S]*<DismissableLayerBranch asChild>[\s\S]*className="app
 
 if (!/onClick=\{\(event\) => \{[\s\S]*event\.preventDefault\(\);[\s\S]*event\.stopPropagation\(\);[\s\S]*chooseOption\(option\);[\s\S]*\}\}/.test(selectSource)) {
   throw new Error("AppSelect option click should select the option, not only stop the event.");
+}
+
+if (!/function handleMenuWheel\(event: ReactWheelEvent<HTMLDivElement>\)[\s\S]*scrollTop[\s\S]*event\.deltaY[\s\S]*event\.preventDefault\(\);[\s\S]*event\.stopPropagation\(\);/.test(selectSource)) {
+  throw new Error("AppSelect portal menu should own wheel scrolling inside modal scroll locks.");
 }
 
 if (!/\.app-select-menu\s*\{(?:(?!\n\})[\s\S])*pointer-events:\s*auto;(?:(?!\n\})[\s\S])*\n\}/.test(styleSource)) {

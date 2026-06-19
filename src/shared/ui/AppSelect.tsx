@@ -3,6 +3,7 @@ import { ChevronDown, Check } from "lucide-react";
 import {
   type CSSProperties,
   type ReactNode,
+  type WheelEvent as ReactWheelEvent,
   useEffect,
   useLayoutEffect,
   useRef,
@@ -20,6 +21,7 @@ interface AppSelectProps<T extends string> {
   ariaLabel?: string;
   className?: string;
   disabled?: boolean;
+  menuMinWidth?: number;
   options: Array<AppSelectOption<T>>;
   placeholder?: ReactNode;
   value: T;
@@ -33,10 +35,16 @@ interface MenuPosition {
   width: number;
 }
 
+interface MenuPositionOptions {
+  menuMinWidth?: number;
+  optionCount: number;
+}
+
 export function AppSelect<T extends string>({
   ariaLabel,
   className,
   disabled = false,
+  menuMinWidth,
   options,
   placeholder = "请选择",
   value,
@@ -59,9 +67,11 @@ export function AppSelect<T extends string>({
       return;
     }
 
-    setPosition(readMenuPosition(triggerRef.current));
+    setPosition(
+      readMenuPosition(triggerRef.current, { menuMinWidth, optionCount: options.length }),
+    );
     setHighlightedIndex(selectedIndex);
-  }, [open, selectedIndex]);
+  }, [menuMinWidth, open, options.length, selectedIndex]);
 
   useEffect(() => {
     if (!open) {
@@ -81,7 +91,9 @@ export function AppSelect<T extends string>({
     }
 
     function updatePosition() {
-      setPosition(readMenuPosition(triggerRef.current));
+      setPosition(
+        readMenuPosition(triggerRef.current, { menuMinWidth, optionCount: options.length }),
+      );
     }
 
     document.addEventListener("pointerdown", closeOnPointerDown);
@@ -93,7 +105,7 @@ export function AppSelect<T extends string>({
       window.removeEventListener("resize", updatePosition);
       window.removeEventListener("scroll", updatePosition, true);
     };
-  }, [open]);
+  }, [menuMinWidth, open, options.length]);
 
   function chooseOption(option: AppSelectOption<T>) {
     if (option.disabled) {
@@ -110,6 +122,27 @@ export function AppSelect<T extends string>({
     if (nextIndex >= 0) {
       setHighlightedIndex(nextIndex);
     }
+  }
+
+  function handleMenuWheel(event: ReactWheelEvent<HTMLDivElement>) {
+    const menu = menuRef.current;
+    if (!menu || menu.scrollHeight <= menu.clientHeight) {
+      return;
+    }
+
+    const previousScrollTop = menu.scrollTop;
+    const nextScrollTop = Math.min(
+      menu.scrollHeight - menu.clientHeight,
+      Math.max(0, previousScrollTop + event.deltaY),
+    );
+
+    if (nextScrollTop === previousScrollTop) {
+      return;
+    }
+
+    menu.scrollTop = nextScrollTop;
+    event.preventDefault();
+    event.stopPropagation();
   }
 
   return (
@@ -173,6 +206,7 @@ export function AppSelect<T extends string>({
                 }
                 role="listbox"
                 aria-label={ariaLabel}
+                onWheel={handleMenuWheel}
               >
                 {options.map((option, index) => (
                   <button
@@ -213,7 +247,10 @@ export function AppSelect<T extends string>({
   );
 }
 
-function readMenuPosition(trigger: HTMLButtonElement | null): MenuPosition | null {
+function readMenuPosition(
+  trigger: HTMLButtonElement | null,
+  { menuMinWidth = 0, optionCount }: MenuPositionOptions,
+): MenuPosition | null {
   if (!trigger) {
     return null;
   }
@@ -221,22 +258,33 @@ function readMenuPosition(trigger: HTMLButtonElement | null): MenuPosition | nul
   const rect = trigger.getBoundingClientRect();
   const viewportPadding = 12;
   const gap = 5;
+  const optionHeight = 34;
+  const menuPaddingY = 16;
+  const menuBorderY = 2;
+  const menuChromeHeight = menuPaddingY + menuBorderY + 2;
+  const menuWidth = Math.max(rect.width, menuMinWidth);
+  const minimumMenuHeight = optionHeight + menuChromeHeight;
+  const desiredHeight = Math.min(
+    260,
+    Math.max(minimumMenuHeight, optionCount * optionHeight + menuChromeHeight),
+  );
   const spaceBelow = window.innerHeight - rect.bottom - viewportPadding;
   const spaceAbove = rect.top - viewportPadding;
-  const openAbove = spaceBelow < 160 && spaceAbove > spaceBelow;
-  const maxHeight = Math.max(
-    120,
-    Math.min(260, openAbove ? spaceAbove - gap : spaceBelow - gap),
+  const openAbove = spaceBelow < desiredHeight && spaceAbove > spaceBelow;
+  const availableHeight = Math.max(
+    minimumMenuHeight,
+    (openAbove ? spaceAbove : spaceBelow) - gap,
   );
+  const maxHeight = Math.min(260, desiredHeight, availableHeight);
 
   return {
     left: Math.min(
       Math.max(viewportPadding, rect.left),
-      Math.max(viewportPadding, window.innerWidth - rect.width - viewportPadding),
+      Math.max(viewportPadding, window.innerWidth - menuWidth - viewportPadding),
     ),
     maxHeight,
     top: openAbove ? rect.top - gap - maxHeight : rect.bottom + gap,
-    width: rect.width,
+    width: menuWidth,
   };
 }
 
