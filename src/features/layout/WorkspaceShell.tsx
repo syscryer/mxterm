@@ -72,6 +72,7 @@ import {
 } from "../files/remoteFilePaths";
 import type {
   RemoteFileArchiveUploadResult,
+  RemoteFileDownloadToLocalInput,
   RemoteFileDownloadToLocalResult,
   RemoteFileEntry,
   RemoteFileEntryMetadata,
@@ -269,6 +270,45 @@ type TransferKind = "file" | "directory";
 type TransferStatus = "queued" | "running" | "success" | "error" | "skipped" | "canceled";
 type WorkspaceMode = "home" | "ssh" | "local";
 
+type RemoteFileTransferRetry =
+  | {
+      action: "local-file-upload";
+      connectionId: string;
+      conflictPolicy: RemoteFileTransferConflictPolicy;
+      localPath: string;
+      parentPath: string;
+    }
+  | {
+      action: "local-directory-upload";
+      compress: boolean;
+      connectionId: string;
+      conflictPolicy: RemoteFileTransferConflictPolicy;
+      keepArchive: boolean;
+      localPath: string;
+      parentPath: string;
+    }
+  | {
+      action: "browser-file-upload";
+      connectionId: string;
+      conflictPolicy: RemoteFileTransferConflictPolicy;
+      item: RemoteFileUploadItem;
+      parentPath: string;
+    }
+  | {
+      action: "browser-directory-upload";
+      connectionId: string;
+      conflictPolicy: RemoteFileTransferConflictPolicy;
+      items: RemoteFileUploadItem[];
+      keepArchive: boolean;
+      parentPath: string;
+      rootName: string;
+    }
+  | {
+      action: "download";
+      entry: RemoteFileEntry;
+      input: Omit<RemoteFileDownloadToLocalInput, "transferId">;
+    };
+
 interface RemoteFileTransferItem {
   id: string;
   createdAt: number;
@@ -280,9 +320,11 @@ interface RemoteFileTransferItem {
   progress: number;
   progressDetail?: string | null;
   progressIndeterminate?: boolean;
+  retry?: RemoteFileTransferRetry | null;
   remotePath: string;
   speedText?: string | null;
   stage: string;
+  startedAt: number;
   status: TransferStatus;
 }
 
@@ -305,6 +347,22 @@ interface ArchiveBuildProgress {
   loadedBytes: number;
   phase: "read" | "compress";
   totalBytes: number;
+}
+
+interface TransferRunOptions {
+  connection?: ConnectionProfile;
+  conflictPolicy?: RemoteFileTransferConflictPolicy;
+  transferId?: string;
+}
+
+interface DirectoryTransferRunOptions extends TransferRunOptions {
+  compress?: boolean;
+  keepArchive?: boolean;
+}
+
+interface DownloadTransferRunOptions {
+  input?: Omit<RemoteFileDownloadToLocalInput, "transferId">;
+  transferId?: string;
 }
 
 const defaultLeftPaneWidth = 336;
@@ -826,7 +884,7 @@ export function WorkspaceShell() {
           progressDetail: formatTransferProgressBytes(event.loaded_bytes, totalBytes),
           progressIndeterminate: totalBytes <= 0,
           speedText: formatTransferSpeed(
-            calculateTransferAverageSpeed(event.loaded_bytes, item.createdAt),
+            calculateTransferAverageSpeed(event.loaded_bytes, item.startedAt),
           ),
         };
       }),
@@ -841,6 +899,7 @@ export function WorkspaceShell() {
     progressDetail?: string | null;
     progressIndeterminate?: boolean;
     remotePath: string;
+    retry?: RemoteFileTransferRetry | null;
     speedText?: string | null;
     stage: string;
   }) {
@@ -857,8 +916,10 @@ export function WorkspaceShell() {
       progressDetail: input.progressDetail ?? null,
       progressIndeterminate: input.progressIndeterminate ?? false,
       remotePath: normalizeRemotePath(input.remotePath),
+      retry: input.retry ?? null,
       speedText: input.speedText ?? null,
       stage: input.stage,
+      startedAt: Date.now(),
       status: "queued",
     };
     setRemoteFileTransfers((items) => [item, ...items]);
@@ -976,6 +1037,77 @@ export function WorkspaceShell() {
     }
   }
 
+  function prepareTransferRetry(transferId: string, stage: string) {
+    updateRemoteFileTransfer(transferId, {
+      error: null,
+      localPath: null,
+      progress: 0,
+      progressDetail: null,
+      progressIndeterminate: false,
+      speedText: null,
+      stage,
+      startedAt: Date.now(),
+      status: "queued",
+    });
+  }
+
+  function connectionForTransfer(connectionId: string) {
+    return connectionById.get(connectionId) || null;
+  }
+
+  function retryRemoteFileTransfer(transferId: string) {
+    const item = remoteFileTransfers.find((transfer) => transfer.id === transferId);
+    if (!item || item.status !== "error" || !item.retry) {
+      return;
+    }
+
+    const retry = item.retry;
+    const connection = retry.action === "download" ? null : connectionForTransfer(retry.connectionId);
+    if (retry.action !== "download" && !connection) {
+      failTransfer(transferId, "重试失败", new Error("连接已不存在，无法重试传输。"));
+      return;
+    }
+
+    switch (retry.action) {
+      case "local-file-upload":
+        void runLocalFileUpload(retry.parentPath, retry.localPath, {
+          connection: connection!,
+          conflictPolicy: retry.conflictPolicy,
+          transferId,
+        });
+        return;
+      case "local-directory-upload":
+        void runLocalDirectoryUpload(retry.parentPath, retry.localPath, {
+          compress: retry.compress,
+          connection: connection!,
+          conflictPolicy: retry.conflictPolicy,
+          keepArchive: retry.keepArchive,
+          transferId,
+        });
+        return;
+      case "browser-file-upload":
+        void runSingleFileUpload(retry.parentPath, retry.item, {
+          connection: connection!,
+          conflictPolicy: retry.conflictPolicy,
+          transferId,
+        });
+        return;
+      case "browser-directory-upload":
+        void runDirectoryUpload(retry.parentPath, retry.rootName, retry.items, {
+          connection: connection!,
+          conflictPolicy: retry.conflictPolicy,
+          keepArchive: retry.keepArchive,
+          transferId,
+        });
+        return;
+      case "download":
+        void runRemoteFileDownload(retry.entry, {
+          input: retry.input,
+          transferId,
+        });
+    }
+  }
+
   function failTransfer(transferId: string, stage: string, error: unknown) {
     if (isTransferCanceledError(error)) {
       cancelTransfer(transferId);
@@ -1011,7 +1143,7 @@ export function WorkspaceShell() {
   }
 
   async function resolveDownloadConflictPolicy(
-    entry: RemoteFileEntry,
+    downloadOptions: Omit<RemoteFileDownloadToLocalInput, "transferId" | "compress" | "conflictPolicy" | "keepArchives">,
     transferId: string,
   ): Promise<RemoteFileTransferConflictPolicy | "failed" | null> {
     const defaultPolicy = settings.fileTransfer.conflictPolicyDefault;
@@ -1019,7 +1151,7 @@ export function WorkspaceShell() {
       return toRemoteFileConflictPolicy(defaultPolicy);
     }
 
-    if (!hasTauriRuntime() || !activeConnection) {
+    if (!hasTauriRuntime()) {
       return "rename";
     }
 
@@ -1031,7 +1163,7 @@ export function WorkspaceShell() {
     });
     let check;
     try {
-      check = await remoteFileCheckDownloadTarget(downloadTargetOptions(activeConnection, entry));
+      check = await remoteFileCheckDownloadTarget(downloadOptions);
     } catch (error) {
       failTransfer(transferId, "检查本地目标失败", error);
       return "failed";
@@ -1047,6 +1179,7 @@ export function WorkspaceShell() {
   }
 
   async function resolveUploadConflictPolicy(
+    connection: ConnectionProfile,
     remotePath: string,
     transferId: string,
   ): Promise<RemoteFileTransferConflictPolicy | "failed" | null> {
@@ -1055,7 +1188,7 @@ export function WorkspaceShell() {
       return toRemoteFileConflictPolicy(defaultPolicy);
     }
 
-    if (!hasTauriRuntime() || !activeConnection) {
+    if (!hasTauriRuntime()) {
       return "rename";
     }
 
@@ -1067,7 +1200,7 @@ export function WorkspaceShell() {
     });
     let check;
     try {
-      check = await remoteFileCheckPath(activeConnection.id, remotePath);
+      check = await remoteFileCheckPath(connection.id, remotePath);
     } catch (error) {
       failTransfer(transferId, "检查同名目标失败", error);
       return "failed";
@@ -1722,13 +1855,22 @@ export function WorkspaceShell() {
     });
   }
 
-  async function runLocalFileUpload(parentPath: string, localPath: string) {
-    if (!activeConnection) {
+  async function runLocalFileUpload(
+    parentPath: string,
+    localPath: string,
+    options: TransferRunOptions = {},
+  ) {
+    const connection = options.connection ?? activeConnection;
+    if (!connection) {
+      if (options.transferId) {
+        failTransfer(options.transferId, "重试失败", new Error("连接已不存在，无法重试传输。"));
+      }
       return;
     }
+    const normalizedParentPath = normalizeRemotePath(parentPath);
     const localName = localPathName(localPath);
-    const uploadPath = joinRemotePath(parentPath, localName);
-    const transferId = addRemoteFileTransfer({
+    const uploadPath = joinRemotePath(normalizedParentPath, localName);
+    const transferId = options.transferId ?? addRemoteFileTransfer({
       direction: "upload",
       kind: "file",
       name: localName,
@@ -1736,9 +1878,12 @@ export function WorkspaceShell() {
       remotePath: uploadPath,
       stage: "等待上传",
     });
+    if (options.transferId) {
+      prepareTransferRetry(transferId, "准备重试");
+    }
 
     try {
-      const conflictPolicy = await resolveUploadConflictPolicy(uploadPath, transferId);
+      const conflictPolicy = options.conflictPolicy ?? await resolveUploadConflictPolicy(connection, uploadPath, transferId);
       if (conflictPolicy === "failed") {
         return;
       }
@@ -1747,13 +1892,22 @@ export function WorkspaceShell() {
         return;
       }
 
+      updateRemoteFileTransfer(transferId, {
+        retry: {
+          action: "local-file-upload",
+          connectionId: connection.id,
+          conflictPolicy,
+          localPath,
+          parentPath: normalizedParentPath,
+        },
+      });
       setTransferProgress(transferId, {
         indeterminate: true,
         progress: 4,
         stage: "上传中",
       });
       const result = await remoteFileUploadLocalFile({
-        connectionId: activeConnection.id,
+        connectionId: connection.id,
         conflictPolicy,
         localPath,
         path: uploadPath,
@@ -1765,13 +1919,22 @@ export function WorkspaceShell() {
     }
   }
 
-  async function runLocalDirectoryUpload(parentPath: string, localPath: string) {
-    if (!activeConnection) {
+  async function runLocalDirectoryUpload(
+    parentPath: string,
+    localPath: string,
+    options: DirectoryTransferRunOptions = {},
+  ) {
+    const connection = options.connection ?? activeConnection;
+    if (!connection) {
+      if (options.transferId) {
+        failTransfer(options.transferId, "重试失败", new Error("连接已不存在，无法重试传输。"));
+      }
       return;
     }
+    const normalizedParentPath = normalizeRemotePath(parentPath);
     const rootName = localPathName(localPath);
-    const remotePath = joinRemotePath(parentPath, rootName);
-    const transferId = addRemoteFileTransfer({
+    const remotePath = joinRemotePath(normalizedParentPath, rootName);
+    const transferId = options.transferId ?? addRemoteFileTransfer({
       direction: "upload",
       kind: "directory",
       name: rootName,
@@ -1779,9 +1942,12 @@ export function WorkspaceShell() {
       remotePath,
       stage: "等待上传",
     });
+    if (options.transferId) {
+      prepareTransferRetry(transferId, "准备重试");
+    }
 
     try {
-      const conflictPolicy = await resolveUploadConflictPolicy(remotePath, transferId);
+      const conflictPolicy = options.conflictPolicy ?? await resolveUploadConflictPolicy(connection, remotePath, transferId);
       if (conflictPolicy === "failed") {
         return;
       }
@@ -1790,19 +1956,32 @@ export function WorkspaceShell() {
         return;
       }
 
+      const compress = options.compress ?? settings.fileTransfer.compressDirectories;
+      const keepArchive = options.keepArchive ?? settings.fileTransfer.keepArchives;
+      updateRemoteFileTransfer(transferId, {
+        retry: {
+          action: "local-directory-upload",
+          compress,
+          connectionId: connection.id,
+          conflictPolicy,
+          keepArchive,
+          localPath,
+          parentPath: normalizedParentPath,
+        },
+      });
       setTransferProgress(transferId, {
         indeterminate: true,
         progress: 4,
-        stage: "扫描目录",
+        stage: compress ? "打包并上传目录" : "扫描目录",
       });
       const result = await remoteFileUploadLocalArchive({
-        compress: settings.fileTransfer.compressDirectories,
-        connectionId: activeConnection.id,
+        compress,
+        connectionId: connection.id,
         conflictPolicy,
-        keepArchive: settings.fileTransfer.keepArchives,
+        keepArchive,
         localPath,
         rootName,
-        targetDir: parentPath,
+        targetDir: normalizedParentPath,
         transferId,
       });
       finishArchiveUploadTransfer(transferId, result);
@@ -1811,12 +1990,21 @@ export function WorkspaceShell() {
     }
   }
 
-  async function runSingleFileUpload(parentPath: string, item: RemoteFileUploadItem) {
-    if (!activeConnection) {
+  async function runSingleFileUpload(
+    parentPath: string,
+    item: RemoteFileUploadItem,
+    options: TransferRunOptions = {},
+  ) {
+    const connection = options.connection ?? activeConnection;
+    if (!connection) {
+      if (options.transferId) {
+        failTransfer(options.transferId, "重试失败", new Error("连接已不存在，无法重试传输。"));
+      }
       return;
     }
-    const uploadPath = joinRemotePath(parentPath, item.file.name);
-    const transferId = addRemoteFileTransfer({
+    const normalizedParentPath = normalizeRemotePath(parentPath);
+    const uploadPath = joinRemotePath(normalizedParentPath, item.file.name);
+    const transferId = options.transferId ?? addRemoteFileTransfer({
       direction: "upload",
       kind: "file",
       name: item.file.name,
@@ -1824,6 +2012,9 @@ export function WorkspaceShell() {
       remotePath: uploadPath,
       stage: "等待上传",
     });
+    if (options.transferId) {
+      prepareTransferRetry(transferId, "准备重试");
+    }
 
     if (!hasTauriRuntime()) {
       const stopPulse = startTransferProgressPulse(transferId, {
@@ -1842,7 +2033,7 @@ export function WorkspaceShell() {
 
     let localPath: string | null = null;
     try {
-      const conflictPolicy = await resolveUploadConflictPolicy(uploadPath, transferId);
+      const conflictPolicy = options.conflictPolicy ?? await resolveUploadConflictPolicy(connection, uploadPath, transferId);
       if (conflictPolicy === "failed") {
         return;
       }
@@ -1851,6 +2042,15 @@ export function WorkspaceShell() {
         return;
       }
 
+      updateRemoteFileTransfer(transferId, {
+        retry: {
+          action: "browser-file-upload",
+          connectionId: connection.id,
+          conflictPolicy,
+          item,
+          parentPath: normalizedParentPath,
+        },
+      });
       setTransferProgress(transferId, {
         detail: formatTransferProgressBytes(0, item.file.size),
         progress: 4,
@@ -1874,7 +2074,7 @@ export function WorkspaceShell() {
         stage: "上传中",
       });
       const result = await remoteFileUploadLocalFile({
-        connectionId: activeConnection.id,
+        connectionId: connection.id,
         conflictPolicy,
         localPath,
         path: uploadPath,
@@ -1894,12 +2094,18 @@ export function WorkspaceShell() {
     parentPath: string,
     rootName: string,
     items: RemoteFileUploadItem[],
+    options: DirectoryTransferRunOptions = {},
   ) {
-    if (!activeConnection) {
+    const connection = options.connection ?? activeConnection;
+    if (!connection) {
+      if (options.transferId) {
+        failTransfer(options.transferId, "重试失败", new Error("连接已不存在，无法重试传输。"));
+      }
       return;
     }
-    const remotePath = joinRemotePath(parentPath, rootName);
-    const transferId = addRemoteFileTransfer({
+    const normalizedParentPath = normalizeRemotePath(parentPath);
+    const remotePath = joinRemotePath(normalizedParentPath, rootName);
+    const transferId = options.transferId ?? addRemoteFileTransfer({
       direction: "upload",
       kind: "directory",
       name: rootName,
@@ -1907,6 +2113,9 @@ export function WorkspaceShell() {
       remotePath,
       stage: "等待打包",
     });
+    if (options.transferId) {
+      prepareTransferRetry(transferId, "准备重试");
+    }
 
     if (!hasTauriRuntime()) {
       const stopPulse = startTransferProgressPulse(transferId, {
@@ -1925,7 +2134,7 @@ export function WorkspaceShell() {
 
     let localPath: string | null = null;
     try {
-      const conflictPolicy = await resolveUploadConflictPolicy(remotePath, transferId);
+      const conflictPolicy = options.conflictPolicy ?? await resolveUploadConflictPolicy(connection, remotePath, transferId);
       if (conflictPolicy === "failed") {
         return;
       }
@@ -1934,6 +2143,18 @@ export function WorkspaceShell() {
         return;
       }
 
+      const keepArchive = options.keepArchive ?? settings.fileTransfer.keepArchives;
+      updateRemoteFileTransfer(transferId, {
+        retry: {
+          action: "browser-directory-upload",
+          connectionId: connection.id,
+          conflictPolicy,
+          items,
+          keepArchive,
+          parentPath: normalizedParentPath,
+          rootName,
+        },
+      });
       const totalBytes = totalUploadBytes(items);
       const archiveSpeed = createTransferSpeedTracker();
       setTransferProgress(transferId, {
@@ -1967,12 +2188,12 @@ export function WorkspaceShell() {
       });
       const result = await remoteFileUploadLocalArchive({
         compress: true,
-        connectionId: activeConnection.id,
+        connectionId: connection.id,
         conflictPolicy,
-        keepArchive: settings.fileTransfer.keepArchives,
+        keepArchive,
         localPath,
         rootName,
-        targetDir: parentPath,
+        targetDir: normalizedParentPath,
         transferId,
       }).finally(stopPulse);
       finishArchiveUploadTransfer(transferId, result);
@@ -2020,13 +2241,21 @@ export function WorkspaceShell() {
     void runRemoteFileDownload(entry);
   }
 
-  async function runRemoteFileDownload(entry: RemoteFileEntry) {
-    if (!activeConnection) {
+  async function runRemoteFileDownload(
+    entry: RemoteFileEntry,
+    options: DownloadTransferRunOptions = {},
+  ) {
+    const connection = options.input
+      ? connectionForTransfer(options.input.connectionId)
+      : activeConnection;
+    if (!connection) {
+      if (options.transferId) {
+        failTransfer(options.transferId, "重试失败", new Error("连接已不存在，无法重试传输。"));
+      }
       return;
     }
-    const connection = activeConnection;
     const isDirectory = entry.type === "directory";
-    const transferId = addRemoteFileTransfer({
+    const transferId = options.transferId ?? addRemoteFileTransfer({
       direction: "download",
       kind: isDirectory ? "directory" : "file",
       name: entry.name,
@@ -2034,11 +2263,14 @@ export function WorkspaceShell() {
       remotePath: entry.path,
       stage: isDirectory ? "等待扫描" : "等待下载",
     });
+    if (options.transferId) {
+      prepareTransferRetry(transferId, "准备重试");
+    }
 
     let stopPulse: (() => void) | null = null;
     try {
-      const downloadOptions = downloadTargetOptions(connection, entry);
-      const conflictPolicy = await resolveDownloadConflictPolicy(entry, transferId);
+      const downloadOptions = options.input ?? downloadTargetOptions(connection, entry);
+      const conflictPolicy = options.input?.conflictPolicy ?? await resolveDownloadConflictPolicy(downloadOptions, transferId);
       if (conflictPolicy === "failed") {
         return;
       }
@@ -2046,6 +2278,20 @@ export function WorkspaceShell() {
         cancelTransfer(transferId);
         return;
       }
+
+      const request: Omit<RemoteFileDownloadToLocalInput, "transferId"> = options.input ?? {
+        ...downloadOptions,
+        compress: settings.fileTransfer.compressDirectories,
+        conflictPolicy,
+        keepArchives: settings.fileTransfer.keepArchives,
+      };
+      updateRemoteFileTransfer(transferId, {
+        retry: {
+          action: "download",
+          entry,
+          input: request,
+        },
+      });
 
       let result: RemoteFileDownloadToLocalResult;
       if (hasTauriRuntime()) {
@@ -2055,10 +2301,7 @@ export function WorkspaceShell() {
           stage: isDirectory ? "扫描目录并下载" : "准备下载",
         });
         result = await remoteFileDownloadToLocal({
-          ...downloadOptions,
-          compress: settings.fileTransfer.compressDirectories,
-          conflictPolicy,
-          keepArchives: settings.fileTransfer.keepArchives,
+          ...request,
           transferId,
         });
       } else {
@@ -4312,6 +4555,7 @@ export function WorkspaceShell() {
                 onClearFinished={clearFinishedTransfers}
                 onCopyPath={copyRemotePath}
                 onRemove={removeRemoteFileTransfer}
+                onRetry={retryRemoteFileTransfer}
                 onOpenLocalPath={openLocalTransferPath}
                 onRevealLocalPath={revealLocalTransferPath}
               />
@@ -4643,6 +4887,7 @@ function RemoteFileTransferPanel({
   onClearFinished,
   onCopyPath,
   onRemove,
+  onRetry,
   onOpenLocalPath,
   onRevealLocalPath,
 }: {
@@ -4651,6 +4896,7 @@ function RemoteFileTransferPanel({
   onClearFinished: () => void;
   onCopyPath: (path: string) => void;
   onRemove: (transferId: string) => void;
+  onRetry: (transferId: string) => void;
   onOpenLocalPath: (path: string) => void;
   onRevealLocalPath: (path: string) => void;
 }) {
@@ -4738,6 +4984,12 @@ function RemoteFileTransferPanel({
                   {item.localPath ? (
                     <button type="button" onClick={() => onRevealLocalPath(item.localPath || "")}>
                       定位
+                    </button>
+                  ) : null}
+                  {item.status === "error" && item.retry ? (
+                    <button type="button" onClick={() => onRetry(item.id)}>
+                      <RefreshCw className="ui-icon" aria-hidden="true" />
+                      重试
                     </button>
                   ) : null}
                   {item.status === "queued" || item.status === "running" ? (
