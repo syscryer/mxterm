@@ -244,6 +244,11 @@ Ant Design, Mantine, or similar libraries just to fix one modal or button.
   be preferred before local name/notes/group inference. Connection-test and
   terminal-success flows may trigger `connectionProbeSystem` in the background;
   probe failures should not block the already successful SSH flow.
+- Connection search, quick-open entries, and connection recency ordering should
+  use `src/features/connections/connectionSearch.ts`. Do not add local timestamp
+  parsing, recent-sort comparators, or search text builders in `ConnectionPane`,
+  `WorkspaceShell`, or future connection pickers; extend the shared utility and
+  update `scripts/check-connection-quick-search-source.mjs` instead.
 - xterm internal layers such as `.xterm-viewport` and `.xterm-screen` must use
   the same background as the terminal host. Their upstream CSS defaults to pure
   black, which creates visible right/bottom bands when FitAddon rounds the
