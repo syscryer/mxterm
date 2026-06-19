@@ -763,3 +763,41 @@ Latest user asked to analyze only, no source edits. Findings:
 ### Next Steps
 
 - None - task complete
+
+
+## Session 24: 连接快速搜索弹层
+
+**Date**: 2026-06-20
+**Task**: 连接快速搜索弹层
+**Branch**: `master`
+
+### Summary
+
+实现连接区中央快速搜索弹层，支持多字段搜索、最近连接排序、键盘快速选择，并将弹层材质调整为全局玻璃效果。
+
+### Main Changes
+
+- 新增连接快速搜索弹层入口、结果列表和键盘操作。
+- 抽出连接搜索、匹配评分、最近排序和地址格式化工具。
+- 更新全局样式，让快速搜索弹层使用项目玻璃材质 token。
+- 补充 source-check 脚本和前端规范约束。
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `f36d15e` | `feat(connections): add quick search` |
+
+### Testing
+
+- [OK] `node scripts\check-connection-quick-search-source.mjs`
+- [OK] `npm run check`
+- [OK] `git diff --check`
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
