@@ -152,6 +152,9 @@ reachable: bool
 - Credential data is stored as JSON at `app.path().app_data_dir()/credentials.json`.
 - Trusted host keys are stored as JSON at `app.path().app_data_dir()/known_hosts.json`.
 - JSON roots use `version` plus the relevant item list (`profiles`, `credentials`, or `entries`).
+- Connection, credential, known-host, and tunnel JSON stores must use the shared atomic JSON store helper. Writes create a synced temporary file, keep a `.bak` copy of the previous primary file when present, and replace the primary file atomically.
+- Store loads should return the default document when the primary file is missing. If the primary file exists but cannot be read or parsed, load should try the `.bak` file before returning the primary error.
+- Commands that perform a `load -> mutate -> save` sequence on connection, credential, or known-host stores must serialize that sequence with the matching store lock. Do not hold these locks across SSH, SFTP, terminal, network probing, or other remote operations.
 - `ConnectionAuthKind` uses `#[serde(rename_all = "snake_case")]`; frontend values must be `password` or `private_key`.
 - `ConnectionCredentialMode` uses `saved`, `inline`, or `prompt`.
 - `ConnectionProxyKind` uses `none`, `http_connect`, or `socks5`.
@@ -256,6 +259,7 @@ reachable: bool
 - Unit-test credential validation for blank name, missing password, missing private key, auth-field clearing, and JSON store round-trip/delete.
 - Unit-test known-host store behavior for unknown, trusted, and changed fingerprints.
 - Unit-test saved connection resolution for saved, inline, prompt, missing credential, proxy, SSH jump round-trip, and advanced timeout behavior.
+- Unit-test shared JSON store behavior for missing primary files, atomic write backup creation, and `.bak` recovery when the primary JSON is corrupt.
 - Unit-test terminal connection validation for missing runtime prompt credentials and invalid direct SSH request fields.
 - Unit-test remote system parsing for Ubuntu/CentOS-style `/etc/os-release` payloads and connection-store round trip/preservation of `remote_os_*` fields.
 - Source-check that `connection_test_profile`, `resolve_transient_connection`, and the frontend `connectionTestProfile` wrapper are registered together, and that dialog testing does not call `saveConnection` / `connectionUpsert`.

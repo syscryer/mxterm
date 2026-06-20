@@ -5,8 +5,10 @@ use std::io::Write;
 use std::net::{TcpStream, ToSocketAddrs};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::OnceLock;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Emitter, Manager, State};
+use tokio::sync::Mutex;
 
 use crate::app_error::AppError;
 use crate::connections::{
@@ -37,6 +39,10 @@ use crate::terminal::session::ExecProgressCallback;
 use crate::tunnels::{
     TunnelManager, TunnelRuleIdRequest, TunnelRuleInput, TunnelRuleWithState, TunnelStartRequest,
 };
+
+static CONNECTION_STORE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+static CREDENTIAL_STORE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+static KNOWN_HOST_STORE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
 #[derive(Debug, Deserialize)]
 pub struct TerminalConnectRequest {
@@ -1247,6 +1253,7 @@ pub async fn connection_upsert(
     app: AppHandle,
     request: ConnectionProfileInput,
 ) -> Result<ConnectionProfile, AppError> {
+    let _guard = connection_store_lock().lock().await;
     let mut store = ConnectionStore::load(connection_store_path(&app)?)?;
     store.upsert(request, &now_timestamp()?)
 }
@@ -1256,6 +1263,7 @@ pub async fn connection_set_favorite(
     app: AppHandle,
     request: ConnectionFavoriteRequest,
 ) -> Result<ConnectionProfile, AppError> {
+    let _guard = connection_store_lock().lock().await;
     let mut store = ConnectionStore::load(connection_store_path(&app)?)?;
     store.set_favorite(
         request.connection_id.trim(),
@@ -1269,12 +1277,14 @@ pub async fn connection_mark_connected(
     app: AppHandle,
     request: ConnectionActivityRequest,
 ) -> Result<ConnectionProfile, AppError> {
+    let _guard = connection_store_lock().lock().await;
     let mut store = ConnectionStore::load(connection_store_path(&app)?)?;
     store.mark_connected(request.connection_id.trim(), &now_timestamp()?)
 }
 
 #[tauri::command]
 pub async fn connection_delete(app: AppHandle, id: String) -> Result<(), AppError> {
+    let _guard = connection_store_lock().lock().await;
     let mut store = ConnectionStore::load(connection_store_path(&app)?)?;
     store.delete(id.trim())
 }
@@ -1290,6 +1300,7 @@ pub async fn credential_upsert(
     app: AppHandle,
     request: CredentialProfileInput,
 ) -> Result<CredentialProfile, AppError> {
+    let _guard = credential_store_lock().lock().await;
     let mut store = CredentialStore::load(credential_store_path(&app)?)?;
     store.upsert(request, &now_timestamp()?)
 }
@@ -1306,6 +1317,8 @@ pub async fn credential_delete(app: AppHandle, id: String) -> Result<(), AppErro
         ));
     }
 
+    let _connection_guard = connection_store_lock().lock().await;
+    let _credential_guard = credential_store_lock().lock().await;
     let connection_store = ConnectionStore::load(connection_store_path(&app)?)?;
     let references = connection_store
         .list()
@@ -1331,6 +1344,7 @@ pub async fn known_host_trust(
     app: AppHandle,
     request: KnownHostTrustRequest,
 ) -> Result<(), AppError> {
+    let _guard = known_host_store_lock().lock().await;
     let mut store = KnownHostStore::load(known_host_store_path(&app)?)?;
     store.trust(request.host_key, &now_timestamp()?)?;
     Ok(())
@@ -1402,6 +1416,7 @@ pub async fn connection_probe_system(
     session.close().await;
     let output = output?;
     let system = parse_remote_system_probe(&output.stdout);
+    let _guard = connection_store_lock().lock().await;
     let mut store = ConnectionStore::load(connection_store_path(&app)?)?;
 
     if system.is_empty() {
@@ -2097,6 +2112,18 @@ mod tests {
 
         let _ = fs::remove_dir_all(&root);
     }
+}
+
+fn connection_store_lock() -> &'static Mutex<()> {
+    CONNECTION_STORE_LOCK.get_or_init(|| Mutex::new(()))
+}
+
+fn credential_store_lock() -> &'static Mutex<()> {
+    CREDENTIAL_STORE_LOCK.get_or_init(|| Mutex::new(()))
+}
+
+fn known_host_store_lock() -> &'static Mutex<()> {
+    KNOWN_HOST_STORE_LOCK.get_or_init(|| Mutex::new(()))
 }
 
 fn window_material_info(id: i32) -> WindowMaterial {

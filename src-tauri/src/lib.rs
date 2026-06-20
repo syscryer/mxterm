@@ -7,6 +7,7 @@ mod known_hosts;
 mod remote_files;
 mod remote_monitor;
 mod ssh_config;
+mod storage;
 mod terminal;
 mod tunnels;
 

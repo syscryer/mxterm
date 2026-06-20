@@ -1,6 +1,5 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::fs;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -12,6 +11,7 @@ use uuid::Uuid;
 
 use crate::app_error::AppError;
 use crate::ssh_config::{resolve_saved_connection, RuntimeCredentialInput};
+use crate::storage::{load_json_document, write_json_document, JsonStoreErrorLabels};
 use crate::terminal::session::ReusableForwardSession;
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -117,6 +117,21 @@ struct RunningTunnel {
     task: JoinHandle<()>,
 }
 
+fn tunnel_store_error_labels() -> JsonStoreErrorLabels {
+    JsonStoreErrorLabels {
+        create_dir_code: "tunnel_store_create_dir_failed",
+        create_dir_message: "隧道规则目录创建失败。",
+        parse_code: "tunnel_store_parse_failed",
+        parse_message: "隧道规则文件格式无效。",
+        read_code: "tunnel_store_read_failed",
+        read_message: "隧道规则读取失败。",
+        serialize_code: "tunnel_store_serialize_failed",
+        serialize_message: "隧道规则序列化失败。",
+        write_code: "tunnel_store_write_failed",
+        write_message: "隧道规则写入失败。",
+    }
+}
+
 impl Default for TunnelKind {
     fn default() -> Self {
         Self::Local
@@ -125,29 +140,14 @@ impl Default for TunnelKind {
 
 impl TunnelStore {
     pub fn load(path: PathBuf) -> Result<Self, AppError> {
-        let mut document = if path.exists() {
-            let content = fs::read_to_string(&path).map_err(|error| {
-                AppError::new(
-                    "tunnel_store_read_failed",
-                    "隧道规则读取失败。",
-                    error,
-                    true,
-                )
-            })?;
-            serde_json::from_str(&content).map_err(|error| {
-                AppError::new(
-                    "tunnel_store_parse_failed",
-                    "隧道规则文件格式无效。",
-                    error,
-                    true,
-                )
-            })?
-        } else {
-            TunnelStoreDocument {
+        let mut document = load_json_document(
+            &path,
+            || TunnelStoreDocument {
                 version: 1,
                 rules: Vec::new(),
-            }
-        };
+            },
+            tunnel_store_error_labels(),
+        )?;
         document.version = 1;
 
         Ok(Self { path, document })
@@ -222,37 +222,14 @@ impl TunnelStore {
     }
 
     fn save(&self) -> Result<(), AppError> {
-        if let Some(parent) = self.path.parent() {
-            fs::create_dir_all(parent).map_err(|error| {
-                AppError::new(
-                    "tunnel_store_create_dir_failed",
-                    "隧道规则目录创建失败。",
-                    error,
-                    true,
-                )
-            })?;
-        }
-
-        let content = serde_json::to_string_pretty(&TunnelStoreDocument {
-            version: 1,
-            rules: self.document.rules.clone(),
-        })
-        .map_err(|error| {
-            AppError::new(
-                "tunnel_store_serialize_failed",
-                "隧道规则序列化失败。",
-                error,
-                true,
-            )
-        })?;
-        fs::write(&self.path, content).map_err(|error| {
-            AppError::new(
-                "tunnel_store_write_failed",
-                "隧道规则写入失败。",
-                error,
-                true,
-            )
-        })
+        write_json_document(
+            &self.path,
+            &TunnelStoreDocument {
+                version: 1,
+                rules: self.document.rules.clone(),
+            },
+            tunnel_store_error_labels(),
+        )
     }
 }
 
@@ -795,6 +772,8 @@ fn now_timestamp() -> Result<String, AppError> {
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+
     use super::*;
 
     fn valid_input() -> TunnelRuleInput {
