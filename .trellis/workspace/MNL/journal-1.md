@@ -838,3 +838,43 @@ Added SQLite foundation schema, rusqlite dependency, storage_sqlite tests, and b
 ### Next Steps
 
 - Phase 2: keyring-backed SQLite migration and production cutover planning.
+
+
+## Session 26: Storage vault migration
+
+**Date**: 2026-06-20
+**Task**: Storage vault migration
+**Branch**: `master`
+
+### Summary
+
+Completed SQLite plus encrypted secrets.enc vault migration, verified vault tests and frontend typecheck, and performed process/data-level desktop smoke checks.
+
+### Main Changes
+
+- Added `secrets.enc` encrypted vault storage using Argon2id + AES-256-GCM and a local auto-unlock key when master-password protection is disabled.
+- Switched production connection, credential, known-host, and tunnel storage to SQLite after the JSON migration path succeeds.
+- Added Settings security controls for enabling/disabling master-password protection through vault rekey commands.
+- Archived the storage vault migration task after validation.
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `d3f5df9` | feat(storage): add encrypted vault repository |
+
+### Testing
+
+- [OK] `cargo test --manifest-path src-tauri\Cargo.toml storage_vault --lib` (8 passed)
+- [OK] `npm run check`
+- [OK] Desktop process/data smoke: `m-xterm.exe` running, Vite dev server returned 200, AppData contains `mxterm.db`, `secrets.enc`, and `secrets.local.key`.
+- [OK] `secrets.enc` envelope uses `argon2id` + `aes-256-gcm`; plaintext scan found no password/private-key marker strings.
+- [WARN] Windows Computer Use UI automation could not run because the plugin failed to initialize its bundled `@oai/sky` module; manual UI clicking of the Settings security switch was not completed in this session.
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete

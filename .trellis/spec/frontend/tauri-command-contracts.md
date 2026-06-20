@@ -7,7 +7,7 @@
 - Trigger: a React feature calls, changes, or adds a Tauri command.
 - Source files: `src/shared/tauri/commands.ts`, `src/features/connections/connectionTypes.ts`, and `src/features/terminal/terminalTypes.ts`.
 - Frontend code must call Rust through typed wrapper functions instead of scattering `invoke(...)` calls through UI components.
-- Secret vault startup is settings-driven: if `settings.security.masterPasswordEnabled` is false, `useSecretVault` calls `secretVaultUnlockLocal()` and should not show the unlock gate; if true, the gate calls `secretVaultUnlock(masterPassword)`.
+- Secret vault startup is settings-driven: if `settings.security.masterPasswordEnabled` is false, `useSecretVault` calls `secretVaultUnlockLocal()` once and should not show the unlock gate after success; if true, the gate calls `secretVaultUnlock(masterPassword)`. A failed local auto-unlock must stop retrying automatically and surface a stable unlock/error state instead of toggling storage hooks indefinitely.
 - The Settings security page owns the master-password protection switch. Turning it on must call `secretVaultEnableMasterPassword(masterPassword)` before persisting `masterPasswordEnabled: true`; turning it off must call `secretVaultDisableMasterPassword()` before persisting false.
 
 ### 2. Signatures
@@ -150,7 +150,7 @@ type HostKeyInfo = {
 
 | Condition | Frontend behavior |
 | --- | --- |
-| Vault protection disabled | Auto-unlock with `secretVaultUnlockLocal()` and enable connection/credential hooks only after `status.unlocked`. |
+| Vault protection disabled | Auto-unlock once with `secretVaultUnlockLocal()` and enable connection/credential hooks only after `status.unlocked`; if local unlock fails, keep the error stable and avoid an automatic retry loop. |
 | Vault protection enabled and locked | Show `SecretVaultGate` and keep storage hooks disabled until unlock succeeds. |
 | Enabling master password from Settings | Require non-empty matching password fields, call `secretVaultEnableMasterPassword`, then persist the setting only on success. |
 | Disabling master password from Settings | Call `secretVaultDisableMasterPassword` and persist the setting only on success. |

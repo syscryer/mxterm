@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import {
   secretVaultDisableMasterPassword,
@@ -23,6 +23,7 @@ export function useSecretVault({ masterPasswordEnabled }: { masterPasswordEnable
   const [loading, setLoading] = useState(isTauri);
   const [unlocking, setUnlocking] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const localAutoUnlockAttemptedRef = useRef(false);
 
   const refresh = useCallback(async () => {
     if (!isTauri) {
@@ -49,6 +50,10 @@ export function useSecretVault({ masterPasswordEnabled }: { masterPasswordEnable
   useEffect(() => {
     void refresh();
   }, [refresh]);
+
+  useEffect(() => {
+    localAutoUnlockAttemptedRef.current = false;
+  }, [isTauri, masterPasswordEnabled]);
 
   const unlock = useCallback(
     async (masterPassword: string) => {
@@ -94,9 +99,17 @@ export function useSecretVault({ masterPasswordEnabled }: { masterPasswordEnable
   }, [isTauri]);
 
   useEffect(() => {
-    if (!isTauri || masterPasswordEnabled || loading || unlocking || status.unlocked) {
+    if (
+      !isTauri ||
+      masterPasswordEnabled ||
+      loading ||
+      unlocking ||
+      status.unlocked ||
+      localAutoUnlockAttemptedRef.current
+    ) {
       return;
     }
+    localAutoUnlockAttemptedRef.current = true;
     void unlockLocal();
   }, [isTauri, loading, masterPasswordEnabled, status.unlocked, unlockLocal, unlocking]);
 
