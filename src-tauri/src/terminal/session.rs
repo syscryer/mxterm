@@ -121,6 +121,11 @@ pub struct ReusableSftpSession {
     sftp: SftpSession,
 }
 
+pub struct ReusableForwardSession {
+    client: SshHandle,
+    jump_client: Option<SshHandle>,
+}
+
 pub(crate) struct TerminalOutputDecoder {
     decoder: Decoder,
     terminal_encoding: String,
@@ -509,6 +514,111 @@ impl ReusableExecSession {
             stderr,
             exit_status,
         })
+    }
+
+    pub async fn close(&self) {
+        let _ = self
+            .client
+            .disconnect(Disconnect::ByApplication, "", "English")
+            .await;
+        if let Some(jump_client) = self.jump_client.as_ref() {
+            let _ = jump_client
+                .disconnect(Disconnect::ByApplication, "", "English")
+                .await;
+        }
+    }
+}
+
+impl ReusableForwardSession {
+    pub async fn connect_resolved(
+        app: &AppHandle,
+        config: &ResolvedSshConfig,
+    ) -> Result<Self, AppError> {
+        let username = config.username.clone();
+        let auth_method = auth_method(config).map_err(map_tunnel_auth_error)?;
+        let ssh_config = Arc::new(client::Config {
+            keepalive_interval: Some(duration_from_ms(config.advanced.keepalive_interval_ms)),
+            keepalive_max: 1,
+            nodelay: true,
+            ..<_>::default()
+        });
+        let host_key_handler = KnownHostClient {
+            host: config.host.clone(),
+            port: config.port,
+            store_path: known_host_store_path(app)?,
+        };
+
+        let (mut client, jump_client) = run_with_timeout(
+            "tunnel_ssh_connect_timeout",
+            "SSH 隧道连接超时。",
+            duration_from_ms(config.advanced.connect_timeout_ms),
+            connect_target_client(app, ssh_config, config, host_key_handler),
+        )
+        .await?
+        .map_err(|error| {
+            app_error_from_russh(error, "tunnel_ssh_connect_failed", "SSH 隧道连接失败。")
+        })?;
+
+        run_with_timeout(
+            "tunnel_ssh_auth_timeout",
+            "SSH 隧道认证超时。",
+            duration_from_ms(config.advanced.auth_timeout_ms),
+            authenticate(&mut client, &username, auth_method),
+        )
+        .await?
+        .map_err(map_tunnel_auth_error)?;
+
+        Ok(Self {
+            client,
+            jump_client,
+        })
+    }
+
+    pub async fn forward_tcp_stream(
+        &self,
+        mut local_stream: TcpStream,
+        remote_host: &str,
+        remote_port: u16,
+    ) -> Result<(), AppError> {
+        let peer_addr = local_stream.peer_addr().ok();
+        let source_host = peer_addr
+            .map(|address| address.ip().to_string())
+            .unwrap_or_else(|| "127.0.0.1".to_string());
+        let source_port = peer_addr.map(|address| address.port()).unwrap_or(0);
+        let channel = run_with_timeout(
+            "tunnel_direct_tcpip_timeout",
+            "SSH 隧道通道打开超时。",
+            Duration::from_secs(20),
+            self.client.channel_open_direct_tcpip(
+                remote_host.to_string(),
+                u32::from(remote_port),
+                source_host,
+                u32::from(source_port),
+            ),
+        )
+        .await?
+        .map_err(|error| {
+            AppError::new(
+                "tunnel_direct_tcpip_failed",
+                "SSH 隧道目标连接失败。",
+                error,
+                true,
+            )
+        })?;
+        let mut remote_stream = channel.into_stream();
+        tokio::io::copy_bidirectional(&mut local_stream, &mut remote_stream)
+            .await
+            .map_err(|error| {
+                AppError::new(
+                    "tunnel_stream_copy_failed",
+                    "SSH 隧道数据转发失败。",
+                    error,
+                    true,
+                )
+            })?;
+        let _ = remote_stream.shutdown().await;
+        let _ = local_stream.shutdown().await;
+        Ok(())
     }
 
     pub async fn close(&self) {
@@ -1247,6 +1357,36 @@ fn app_error_from_russh(
     }
 
     AppError::new(fallback_code, fallback_message, error, true)
+}
+
+fn map_tunnel_auth_error(error: AppError) -> AppError {
+    match error.code.as_str() {
+        "terminal_auth_missing" => AppError::new(
+            "tunnel_auth_missing",
+            "请填写密码或选择私钥。",
+            error.raw_message,
+            error.recoverable,
+        ),
+        "terminal_auth_failed" => AppError::new(
+            "tunnel_ssh_auth_failed",
+            "SSH 隧道认证失败。",
+            error.raw_message,
+            error.recoverable,
+        ),
+        "terminal_auth_rejected" => AppError::new(
+            "tunnel_ssh_auth_rejected",
+            "SSH 隧道认证未通过。",
+            error.raw_message,
+            error.recoverable,
+        ),
+        "terminal_private_key_invalid" => AppError::new(
+            "tunnel_private_key_invalid",
+            "SSH 隧道私钥读取失败。",
+            error.raw_message,
+            error.recoverable,
+        ),
+        _ => error,
+    }
 }
 
 fn map_jump_auth_error(error: AppError) -> AppError {

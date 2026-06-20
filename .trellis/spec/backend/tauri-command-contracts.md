@@ -996,6 +996,144 @@ let command = format!("kill -{} {}", request.signal, request.pid);
 let command = build_process_signal_command(pid, signal)?;
 ```
 
+## Scenario: SSH Tunnel Commands
+
+### 1. Scope / Trigger
+
+- Trigger: backend code adds or changes SSH tunnel rules, local port forwarding lifecycle, tunnel persistence, prompt credentials, or `tunnel_*` Tauri commands.
+- Source files: `src-tauri/src/tunnels.rs`, `src-tauri/src/terminal/session.rs`, `src-tauri/src/commands.rs`, `src-tauri/src/lib.rs`, `src-tauri/src/ssh_config.rs`, `src/shared/tauri/commands.ts`, and `src/features/tunnels/tunnelTypes.ts`.
+- This is a cross-layer command contract because Rust owns saved SSH resolution, local `TcpListener` binding, direct-tcpip forwarding, runtime state, and `tunnels.json`, while React renders and edits typed rules.
+
+### 2. Signatures
+
+- `tunnel_list(app: AppHandle, manager: State<TunnelManager>) -> Result<Vec<TunnelRuleWithState>, AppError>`
+- `tunnel_upsert(app: AppHandle, manager: State<TunnelManager>, request: TunnelRuleInput) -> Result<TunnelRuleWithState, AppError>`
+- `tunnel_delete(app: AppHandle, manager: State<TunnelManager>, request: TunnelRuleIdRequest) -> Result<(), AppError>`
+- `tunnel_start(app: AppHandle, manager: State<TunnelManager>, request: TunnelStartRequest) -> Result<TunnelRuleWithState, AppError>`
+- `tunnel_stop(app: AppHandle, manager: State<TunnelManager>, request: TunnelRuleIdRequest) -> Result<TunnelRuleWithState, AppError>`
+- `tunnel_autostart(app: AppHandle, manager: State<TunnelManager>) -> Result<Vec<TunnelRuleWithState>, AppError>`
+- `ReusableForwardSession::connect_resolved(app, config) -> Result<ReusableForwardSession, AppError>`
+- `ReusableForwardSession::forward_tcp_stream(local_stream, remote_host, remote_port) -> Result<(), AppError>`
+
+Request fields:
+
+```rust
+TunnelRuleInput {
+    id: Option<String>,
+    name: Option<String>,
+    kind: TunnelKind, // local | remote | dynamic; MVP accepts local only
+    connection_id: String,
+    local_host: String,
+    local_port: u16,
+    remote_host: String,
+    remote_port: u16,
+    auto_start: bool,
+}
+
+TunnelStartRequest {
+    rule_id: String,
+    runtime_credential: Option<RuntimeCredentialInput>,
+}
+
+TunnelRuleIdRequest {
+    rule_id: String,
+}
+```
+
+Response fields:
+
+```rust
+TunnelRuleWithState {
+    rule: TunnelRule,
+    state: TunnelRuntimeState,
+}
+
+TunnelRuntimeState {
+    rule_id: String,
+    status: TunnelStatus, // stopped | starting | running | failed | credential_required
+    bound_host: Option<String>,
+    bound_port: Option<u16>,
+    started_at: Option<String>,
+    last_error: Option<String>,
+    last_error_code: Option<String>,
+    active_connections: u32,
+}
+```
+
+### 3. Contracts
+
+- Tunnel rules are stored as JSON at `app.path().app_data_dir()/tunnels.json` with root `{ version, rules }`. Runtime state is kept only in `TunnelManager` memory.
+- `TunnelKind` is persisted for future extension, but MVP validation must reject anything except `local`.
+- A tunnel rule references a saved `ConnectionProfile` by `connection_id`. React must not send host, port, proxy, jump, password, private-key passphrase, or raw SSH config in tunnel commands.
+- `tunnel_start` resolves the saved connection through `resolve_saved_connection(...)` and reuses credential mode, proxy, SSH jump, known_hosts, and timeout behavior.
+- Runtime prompt credentials may be supplied only through `TunnelStartRequest.runtime_credential`. They are for this one start attempt and must not be written to `tunnels.json`, `connections.json`, or `credentials.json`.
+- `tunnel_autostart` starts only `auto_start = true` rules. If a prompt credential is required, it must not open a prompt; set the state to `credential_required` and continue with other rules.
+- `running` means the local listener is bound and the SSH forwarding session is ready. It must not claim the remote target service is healthy until a local client actually connects.
+- Per local client connection, Rust opens `channel_open_direct_tcpip(remote_host, remote_port, source_host, source_port)` and bridges the local `TcpStream` with the SSH channel stream.
+- Stopping or deleting a running tunnel must close the SSH session and release the local listener. Deleting a running rule stops it first.
+- `TunnelManager.store_lock` may protect only `TunnelStore` load/upsert/delete/save file operations. Do not hold it across `resolve_saved_connection`, local `TcpListener` binding, SSH handshake/auth, accept-loop setup, or autostart attempts; those operations can block for network timeouts and must not freeze tunnel list/edit/stop/delete commands.
+- The accept loop owns runtime cleanup on abnormal listener exit: set a failed state, remove the rule id from the `running` map, then close the SSH session. A stale `running` entry whose state is `failed`, `credential_required`, or `stopped` must be replaceable by the next start attempt instead of short-circuiting back to the stale state.
+- `tunnel_stop` should be idempotent after a running rule has already been removed from the store: if `stop_running` removed a runtime entry but the persisted rule is missing, return a stopped state based on the removed runtime rule instead of surfacing `tunnel_rule_missing`.
+- Editing a starting or running tunnel must be rejected; users must stop the tunnel before changing its rule.
+- All new tunnel commands must be registered in `src-tauri/src/lib.rs` through `tauri::generate_handler!` and exposed through typed frontend wrappers.
+
+### 4. Validation & Error Matrix
+
+| Condition | Error code | Recoverable |
+| --- | --- | --- |
+| Blank or unknown rule id | `tunnel_rule_missing` | false |
+| Editing a running rule | `tunnel_update_running` | true |
+| Non-local `kind` in MVP | `tunnel_kind_unsupported` | true |
+| Blank `connection_id` | `tunnel_connection_missing` | true |
+| Blank `local_host` | `tunnel_local_host_missing` | true |
+| Blank `remote_host` | `tunnel_remote_host_missing` | true |
+| `local_port == 0` | `tunnel_local_port_invalid` | true |
+| `remote_port == 0` | `tunnel_remote_port_invalid` | true |
+| Local bind fails, usually port already used | `tunnel_local_bind_failed` | true |
+| Prompt credential missing on manual start | `credential_prompt_required` | true |
+| Prompt credential missing on autostart | state `credential_required` | n/a |
+| SSH connect/auth/direct-tcpip failures | `tunnel_ssh_*` / `tunnel_direct_tcpip_failed` | true |
+| Local/SSH stream copy fails | `tunnel_stream_copy_failed` | true |
+| Store path/read/parse/write fails | `tunnel_store_*` | true |
+
+### 5. Good / Base / Bad Cases
+
+- Good: `tunnel_start` receives a saved rule id, resolves the saved connection, binds `127.0.0.1:15432`, opens one reusable SSH forwarding session, and creates direct-tcpip channels only when local clients connect.
+- Good: `tunnel_autostart` starts saved auto-start rules and marks prompt-credential rules as `credential_required` without blocking app startup.
+- Base: a rule references a deleted connection; list still returns the rule, while start fails with the saved-connection error so the user can edit or delete the rule.
+- Bad: a tunnel command accepts frontend-supplied SSH host/password fields, writes prompt credentials into the rule store, silently downgrades SSH jump failures to direct connections, or reports remote service success just because the local listener was bound.
+
+### 6. Tests Required
+
+- Unit-test tunnel rule validation for blank connection id, blank local/remote host, zero ports, non-local kind, and trimming/default name behavior.
+- Unit-test tunnel store round-trip for `{ version, rules }`, created/updated timestamps, and delete-missing behavior.
+- Unit-test tunnel runtime lifecycle helpers for replacing stale failed/credential/stopped runtime entries and for resolving a stopped response after a removed running rule no longer exists in the persisted store.
+- Cross-check command registration in `commands.rs`, `lib.rs`, and `src/shared/tauri/commands.ts` whenever adding or renaming a `tunnel_*` command.
+- Run `cargo fmt --manifest-path src-tauri/Cargo.toml --check` after changing Rust tunnel/session code.
+- Run `cargo test --manifest-path src-tauri/Cargo.toml tunnels --lib` and `cargo check --manifest-path src-tauri/Cargo.toml` after changing tunnel command structs, storage behavior, or `ReusableForwardSession` when compile/test runs are approved for the session.
+- Run `npm run check` after changing frontend tunnel types, command wrappers, or panel props.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```rust
+// Bypasses saved connection resolution and can drift from terminal/file behavior.
+let config = ResolvedSshConfig {
+    host: request.host,
+    port: request.port,
+    password: request.password,
+    ..Default::default()
+};
+```
+
+#### Correct
+
+```rust
+let config = resolve_saved_connection(app, &rule.connection_id, request.runtime_credential)?;
+let session = ReusableForwardSession::connect_resolved(app, &config).await?;
+```
+
 ## Scenario: Window Material Commands
 
 ### 1. Scope / Trigger

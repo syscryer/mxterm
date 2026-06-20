@@ -788,6 +788,113 @@ await remoteMonitorProcessSignal({ connectionId, pid, signal: userTypedSignal as
 await remoteMonitorProcessSignal({ connectionId, pid, signal: "term" });
 ```
 
+## Scenario: SSH Tunnel Wrappers and Panel
+
+### 1. Scope / Trigger
+
+- Trigger: frontend code adds or changes SSH tunnel commands, tunnel types, the right-pane tunnel tool, prompt credential UI, host-key retry UI, or tunnel autostart wiring.
+- Source files: `src/shared/tauri/commands.ts`, `src/features/tunnels/tunnelTypes.ts`, `src/features/tunnels/TunnelPanel.tsx`, `src/features/files/RemoteFilePanel.tsx`, `src/features/layout/WorkspaceShell.tsx`, `src-tauri/src/commands.rs`, and `src-tauri/src/tunnels.rs`.
+- This is a cross-layer command contract because React edits typed tunnel rules and Rust owns persistence, saved SSH resolution, local listener lifecycle, and runtime state.
+
+### 2. Signatures
+
+```ts
+tunnelList(): Promise<TunnelRuleWithState[]>
+tunnelUpsert(request: TunnelRuleInput): Promise<TunnelRuleWithState>
+tunnelDelete(ruleId: string): Promise<void>
+tunnelStart(ruleId: string, runtimeCredential?: TunnelRuntimeCredentialInput): Promise<TunnelRuleWithState>
+tunnelStop(ruleId: string): Promise<TunnelRuleWithState>
+tunnelAutostart(): Promise<TunnelRuleWithState[]>
+```
+
+Frontend types mirror Rust snake_case fields:
+
+```ts
+type TunnelKind = "local" | "remote" | "dynamic";
+type TunnelStatus = "stopped" | "starting" | "running" | "failed" | "credential_required";
+
+interface TunnelRuleInput {
+  id?: string;
+  name?: string;
+  kind: TunnelKind;
+  connection_id: string;
+  local_host: string;
+  local_port: number;
+  remote_host: string;
+  remote_port: number;
+  auto_start: boolean;
+}
+
+interface TunnelRuntimeCredentialInput {
+  auth_kind?: "password" | "private_key";
+  password?: string;
+  private_key_path?: string;
+  private_key_passphrase?: string;
+}
+```
+
+### 3. Contracts
+
+- Components must call the typed wrappers in `src/shared/tauri/commands.ts`; do not call `invoke("tunnel_*")` directly from feature components.
+- Wrapper payload keys must match Rust command parameters exactly: `tunnel_upsert` uses `{ request }`; `tunnel_delete`, `tunnel_start`, and `tunnel_stop` wrap `rule_id` under `request`.
+- The UI may use editable strings for ports while the dialog is open, but it must convert to integer `1..=65535` before calling `tunnelUpsert`.
+- The UI sends only a saved `connection_id` and tunnel rule fields. It must not send saved connection host, port, proxy, jump, password, private-key passphrase, or command strings.
+- Prompt credentials are collected only after backend returns `credential_prompt_required` from a manual start. They are passed to `tunnelStart` once and are not stored in React rule state after the start succeeds.
+- Host-key errors from tunnel start must be parsed with the shared host-key parser, trusted through `knownHostTrust(...)`, and then retried with the same optional runtime credential.
+- Delete actions must remove a tunnel row only after `tunnelDelete(...)` succeeds. If delete fails, keep the row, show the `AppError.message`, close the confirmation dialog, and refresh the list so React does not drift from Rust runtime state.
+- `TunnelPanel` may refresh and list rules, but app-level autostart belongs in `WorkspaceShell` mount so auto-start rules run even if the user never opens the tunnel tab.
+- The right-pane entry is `RemoteFileTool = "files" | "transfers" | "monitor" | "tunnels"`; the tunnel panel should be passed through the existing `RemoteFilePanel` tool slot.
+- Tunnel UI must use Radix Dialog, Lucide icons, `AppSelect`, shared confirmation dialog, and global `--mx-*` tokens. Do not use native `<select>` or feature-local dropdown popovers.
+- A visible `running` state means data was written to the local forwarding machinery, not that the remote target command or service succeeded.
+
+### 4. Validation & Error Matrix
+
+| Condition | Frontend behavior |
+| --- | --- |
+| No saved SSH connections | Disable new-rule action and show the tunnel empty state. |
+| Dialog has blank connection/local host/remote host | Keep the dialog open and show inline validation. |
+| Port text is not an integer in `1..=65535` | Keep the dialog open and show inline validation. |
+| `credential_prompt_required` from manual start | Open the one-time credential dialog; do not persist the credential. |
+| `host_key_unknown` or `host_key_changed` from manual start | Open host-key confirmation, call `knownHostTrust`, then retry the same tunnel start. |
+| Start/stop/delete/upsert returns `AppError` | Show `AppError.message` in the panel or dialog and refresh list state when useful. |
+| `tunnelList` returns `Command tunnel_list not found` in a live Tauri session after frontend hot update | Treat it as a backend-restart/version mismatch state: show a neutral unavailable empty state that asks the user to restart the app, and do not show the red inline error. |
+| Browser preview has no Tauri runtime | Use deterministic preview tunnel data only for visual inspection. |
+
+### 5. Good / Base / Bad Cases
+
+- Good: `TunnelPanel` submits `kind: "local"`, `connection_id`, local bind host/port, remote target host/port, and `auto_start`, then renders the returned `TunnelRuleWithState`.
+- Good: Workspace startup calls `tunnelAutostart()` once in the shell; opening the tunnel tab later calls `tunnelList()` to render current runtime state.
+- Good: a prompt-credential tunnel start opens a one-time password/private-key dialog and retries with `runtime_credential` only for that request.
+- Base: browser preview shows a fake stopped tunnel so CSS/layout can be inspected without a Tauri runtime.
+- Bad: a component calls `invoke("tunnel_start")` directly, stores runtime credentials in `TunnelRule`, uses native `<select>`, or reports command execution success from tunnel delivery state.
+
+### 6. Tests Required
+
+- Run `npm run check` after changing tunnel types, wrappers, `TunnelPanel`, `RemoteFilePanel` tool props, or `WorkspaceShell` autostart wiring.
+- Cross-check frontend tunnel types and wrapper payloads against Rust structs in `src-tauri/src/tunnels.rs` and command signatures in `src-tauri/src/commands.rs`.
+- Browser/desktop visual checks should cover empty state, list state, failed state, prompt credential dialog, host-key dialog, and dark theme token contrast when UI work is visible.
+- Run Rust tunnel tests/checks when backend payload changes require them and compile/test runs are approved for the session.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```tsx
+await invoke("tunnel_start", {
+  rule_id: rule.id,
+  password: prompt.password,
+});
+```
+
+#### Correct
+
+```tsx
+await tunnelStart(rule.id, {
+  auth_kind: "password",
+  password: prompt.password,
+});
+```
+
 ## Scenario: Window Material Commands
 
 ### 1. Scope / Trigger

@@ -8158,3 +8158,415 @@ body {
 .settings-nav-item.active {
   box-shadow: none;
 }
+.tunnel-tool-body {
+  flex: 1 1 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--mx-panel);
+}
+
+.tunnel-panel {
+  flex: 1 1 0;
+  min-height: 0;
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr);
+  color: var(--mx-text);
+  background: var(--mx-panel);
+}
+
+.tunnel-panel-head {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 10px;
+  border-bottom: 1px solid var(--mx-line);
+  background: var(--mx-panel-soft);
+}
+
+.tunnel-panel-head > span {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.tunnel-panel-head strong {
+  color: var(--mx-text);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.tunnel-panel-head small {
+  color: var(--mx-subtle);
+  font-size: 11px;
+}
+
+.tunnel-head-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.tunnel-primary-button,
+.tunnel-empty button,
+.tunnel-item footer button {
+  height: 28px;
+  border: 1px solid var(--mx-line);
+  border-radius: 7px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  padding: 0 9px;
+  color: var(--mx-text);
+  background: var(--mx-panel);
+  font-size: 12px;
+  white-space: nowrap;
+  box-shadow: 0 1px 2px color-mix(in srgb, var(--mx-text) 7%, transparent);
+}
+
+.tunnel-primary-button {
+  border-color: color-mix(in srgb, var(--mx-primary) 42%, var(--mx-line));
+  color: var(--mx-primary);
+  background: color-mix(in srgb, var(--mx-primary) 8%, var(--mx-panel));
+}
+
+.tunnel-primary-button:hover:not(:disabled),
+.tunnel-empty button:hover,
+.tunnel-item footer button:hover:not(:disabled) {
+  border-color: var(--mx-line-strong);
+  color: var(--mx-text);
+  background: var(--mx-panel-soft);
+}
+
+.tunnel-primary-button:disabled,
+.tunnel-item footer button:disabled,
+.tunnel-empty button:disabled {
+  color: var(--mx-subtle);
+  background: var(--mx-panel-soft);
+  box-shadow: none;
+  cursor: default;
+}
+
+.tunnel-list {
+  min-height: 0;
+  overflow: auto;
+  display: grid;
+  align-content: start;
+  gap: 8px;
+  padding: 8px;
+}
+
+.tunnel-item {
+  min-width: 0;
+  border: 1px solid var(--mx-line);
+  border-radius: 8px;
+  display: grid;
+  gap: 7px;
+  padding: 9px;
+  background: var(--mx-panel);
+  box-shadow: 0 1px 2px color-mix(in srgb, var(--mx-text) 5%, transparent);
+}
+
+.tunnel-item.running {
+  border-color: color-mix(in srgb, var(--mx-success) 42%, var(--mx-line));
+}
+
+.tunnel-item.starting {
+  border-color: color-mix(in srgb, var(--mx-primary) 42%, var(--mx-line));
+}
+
+.tunnel-item.failed,
+.tunnel-item.credential_required {
+  border-color: color-mix(in srgb, var(--mx-danger) 38%, var(--mx-line));
+  background: color-mix(in srgb, var(--mx-danger) 5%, var(--mx-panel));
+}
+
+.tunnel-item header,
+.tunnel-item footer {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.tunnel-item footer {
+  justify-content: flex-start;
+  flex-wrap: wrap;
+}
+
+.tunnel-item-title {
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.tunnel-item-title .ui-icon {
+  width: 15px;
+  height: 15px;
+  color: var(--mx-primary);
+}
+
+.tunnel-item-title strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--mx-text);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.tunnel-status {
+  flex: 0 0 auto;
+  border-radius: 999px;
+  padding: 2px 7px;
+  color: var(--mx-muted);
+  background: var(--mx-panel-soft);
+  font-size: 11px;
+  font-weight: 560;
+  line-height: 1.45;
+}
+
+.tunnel-status.running {
+  color: var(--mx-success);
+  background: color-mix(in srgb, var(--mx-success) 10%, transparent);
+}
+
+.tunnel-status.starting {
+  color: var(--mx-primary);
+  background: color-mix(in srgb, var(--mx-primary) 10%, transparent);
+}
+
+.tunnel-status.failed,
+.tunnel-status.credential_required {
+  color: var(--mx-danger);
+  background: color-mix(in srgb, var(--mx-danger) 10%, transparent);
+}
+
+.tunnel-route {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  align-items: center;
+  gap: 6px;
+  color: var(--mx-subtle);
+}
+
+.tunnel-route code,
+.tunnel-host-key-dialog code {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  border-radius: 6px;
+  padding: 4px 6px;
+  color: var(--mx-muted);
+  background: var(--mx-panel-soft);
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+.tunnel-meta {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  color: var(--mx-subtle);
+  font-size: 11px;
+}
+
+.tunnel-meta span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tunnel-meta em {
+  border-radius: 999px;
+  padding: 1px 6px;
+  color: var(--mx-muted);
+  background: var(--mx-panel-soft);
+  font-style: normal;
+}
+
+.tunnel-item-error,
+.tunnel-inline-error {
+  margin: 0;
+  border-radius: 7px;
+  padding: 6px 8px;
+  color: var(--mx-danger);
+  background: color-mix(in srgb, var(--mx-danger) 9%, transparent);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.tunnel-inline-error {
+  margin: 8px 8px 0;
+}
+
+.tunnel-icon-button {
+  width: 28px;
+  padding: 0;
+}
+
+.tunnel-icon-button.danger {
+  color: var(--mx-danger);
+}
+
+.tunnel-empty {
+  min-height: 180px;
+  display: grid;
+  align-content: center;
+  justify-items: center;
+  gap: 8px;
+  padding: 20px 12px;
+  color: var(--mx-subtle);
+  text-align: center;
+}
+
+.tunnel-empty > .ui-icon {
+  width: 30px;
+  height: 30px;
+  color: var(--mx-primary);
+}
+
+.tunnel-empty strong {
+  color: var(--mx-text);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.tunnel-empty small {
+  max-width: 260px;
+  color: var(--mx-subtle);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.tunnel-dialog {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  z-index: 22;
+  width: min(520px, calc(100vw - 40px));
+  max-height: min(720px, calc(100vh - 40px));
+  border: 1px solid var(--mx-line);
+  border-radius: 8px;
+  overflow: hidden;
+  transform: translate(-50%, -50%);
+  outline: none;
+  color: var(--mx-text);
+  background: var(--mx-panel);
+  box-shadow:
+    0 18px 52px color-mix(in srgb, var(--mx-text) 18%, transparent),
+    inset 0 1px 0 color-mix(in srgb, var(--mx-panel) 84%, transparent);
+}
+
+.tunnel-dialog form {
+  min-height: 0;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+}
+
+.tunnel-dialog-body {
+  gap: 10px;
+}
+
+.tunnel-dialog label {
+  display: grid;
+  gap: 4px;
+  color: var(--mx-muted);
+  font-size: 12px;
+}
+
+.tunnel-dialog input {
+  width: 100%;
+  min-width: 0;
+  border: 1px solid var(--mx-line);
+  border-radius: 6px;
+  padding: 6px 8px;
+  color: var(--mx-text);
+  background: var(--mx-panel);
+  font: inherit;
+  font-size: 13px;
+}
+
+.tunnel-dialog .app-select-trigger {
+  width: 100%;
+  height: 32px;
+}
+
+.tunnel-form-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 104px;
+  gap: 8px;
+}
+
+.tunnel-check-row {
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+  gap: 8px;
+  border: 1px solid var(--mx-line-soft);
+  border-radius: 8px;
+  padding: 8px;
+  background: var(--mx-panel-soft);
+}
+
+.tunnel-check-row input {
+  width: 15px;
+  height: 15px;
+  margin-top: 2px;
+}
+
+.tunnel-check-row span {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.tunnel-check-row strong {
+  color: var(--mx-text);
+  font-size: 12px;
+  font-weight: 560;
+}
+
+.tunnel-check-row small {
+  color: var(--mx-subtle);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.tunnel-dialog-actions {
+  grid-template-columns: minmax(0, 1fr) auto auto;
+}
+
+.tunnel-dialog-icon-head {
+  border: 1px solid var(--mx-line-soft);
+  border-radius: 8px;
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  padding: 8px;
+  color: var(--mx-muted);
+  background: var(--mx-panel-soft);
+  font-size: 12px;
+}
+
+.tunnel-dialog-icon-head .ui-icon {
+  width: 16px;
+  height: 16px;
+  color: var(--mx-primary);
+}
+
+.tunnel-dialog-icon-head.warning .ui-icon {
+  color: var(--mx-danger);
+}

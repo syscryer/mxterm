@@ -8,6 +8,7 @@ mod remote_files;
 mod remote_monitor;
 mod ssh_config;
 mod terminal;
+mod tunnels;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -17,6 +18,7 @@ pub fn run() {
         .manage(remote_monitor::RemoteMonitorManager::default())
         .manage(remote_files::RemoteFileManager::default())
         .manage(terminal::manager::TerminalManager::default())
+        .manage(tunnels::TunnelManager::default())
         .setup(|app| {
             #[cfg(windows)]
             {
@@ -72,6 +74,12 @@ pub fn run() {
             commands::remote_file_download_to_local,
             commands::remote_monitor_snapshot,
             commands::remote_monitor_process_signal,
+            commands::tunnel_list,
+            commands::tunnel_upsert,
+            commands::tunnel_delete,
+            commands::tunnel_start,
+            commands::tunnel_stop,
+            commands::tunnel_autostart,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

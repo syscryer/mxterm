@@ -44,6 +44,11 @@ import type {
   RemoteProcessActionResult,
 } from "../../features/monitor/monitorTypes";
 import type { TerminalConnectRequest } from "../../features/terminal/terminalTypes";
+import type {
+  TunnelRuleInput,
+  TunnelRuleWithState,
+  TunnelRuntimeCredentialInput,
+} from "../../features/tunnels/tunnelTypes";
 
 export interface NativeWindowMaterial {
   id: number;
@@ -483,4 +488,40 @@ export function remoteFileCancelTransfer(transferId: string) {
       transfer_id: transferId,
     },
   });
+}
+export function tunnelList() {
+  return invoke<TunnelRuleWithState[]>("tunnel_list");
+}
+
+export function tunnelUpsert(request: TunnelRuleInput) {
+  return invoke<TunnelRuleWithState>("tunnel_upsert", { request });
+}
+
+export function tunnelDelete(ruleId: string) {
+  return invoke<void>("tunnel_delete", {
+    request: {
+      rule_id: ruleId,
+    },
+  });
+}
+
+export function tunnelStart(ruleId: string, runtimeCredential?: TunnelRuntimeCredentialInput) {
+  return invoke<TunnelRuleWithState>("tunnel_start", {
+    request: {
+      rule_id: ruleId,
+      runtime_credential: runtimeCredential,
+    },
+  });
+}
+
+export function tunnelStop(ruleId: string) {
+  return invoke<TunnelRuleWithState>("tunnel_stop", {
+    request: {
+      rule_id: ruleId,
+    },
+  });
+}
+
+export function tunnelAutostart() {
+  return invoke<TunnelRuleWithState[]>("tunnel_autostart");
 }

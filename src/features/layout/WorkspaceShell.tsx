@@ -85,6 +85,7 @@ import type {
   RemoteFileUploadResult,
 } from "../files/remoteFileTypes";
 import { SettingsView } from "../settings/SettingsView";
+import { TunnelPanel } from "../tunnels/TunnelPanel";
 import {
   getTerminalColorScheme,
   getTerminalColorSchemeTone,
@@ -135,6 +136,7 @@ import {
   terminalClose,
   terminalConnect,
   terminalWrite,
+  tunnelAutostart,
 } from "../../shared/tauri/commands";
 import { selectLocalUploadDirectories, selectLocalUploadFiles } from "../../shared/tauri/dialog";
 import {
@@ -499,6 +501,13 @@ export function WorkspaceShell() {
   }, [terminalTabs]);
 
   useEffect(() => initializeWindowStatePersistence(), []);
+
+  useEffect(() => {
+    if (!hasTauriRuntime()) {
+      return;
+    }
+    void tunnelAutostart().catch(() => undefined);
+  }, []);
 
   useEffect(() => {
     localTerminalTabsRef.current = localTerminalTabs;
@@ -4552,6 +4561,9 @@ export function WorkspaceShell() {
                 active={showSessionWorkspace && !rightPaneCollapsed && rightTool === "monitor"}
                 connection={remoteFileConnection}
               />
+            }
+            tunnelPanel={
+              <TunnelPanel activeConnectionId={activeConnectionId} connections={connections} />
             }
             transferPanel={
               <RemoteFileTransferPanel
