@@ -152,6 +152,8 @@ reachable: bool
 - Credential data is stored as JSON at `app.path().app_data_dir()/credentials.json`.
 - Trusted host keys are stored as JSON at `app.path().app_data_dir()/known_hosts.json`.
 - JSON roots use `version` plus the relevant item list (`profiles`, `credentials`, or `entries`).
+- SQLite storage foundation lives in `src-tauri/src/storage_sqlite.rs` and is schema-only until the keyring-backed migration is implemented. Do not route production Tauri commands to SQLite before SQLite rows and keyring secrets can be migrated atomically.
+- SQLite schema may store `secret_ref` and `secret_slot_id`, but must not define plaintext password or private-key passphrase columns. Existing JSON stores remain the transition source until the keyring migration task cuts production over.
 - Connection, credential, known-host, and tunnel JSON stores must use the shared atomic JSON store helper. Writes create a synced temporary file, keep a `.bak` copy of the previous primary file when present, and replace the primary file atomically.
 - Store loads should return the default document when the primary file is missing. If the primary file exists but cannot be read or parsed, load should try the `.bak` file before returning the primary error.
 - Commands that perform a `load -> mutate -> save` sequence on connection, credential, or known-host stores must serialize that sequence with the matching store lock. Do not hold these locks across SSH, SFTP, terminal, network probing, or other remote operations.
@@ -178,7 +180,7 @@ reachable: bool
 - Advanced terminal encoding is stored in `advanced.terminal_encoding`. Rust must normalize and validate the encoding, then carry it through `ResolvedSshConfig` into interactive terminal sessions.
 - Interactive terminal output is decoded in Rust from the configured terminal encoding into UTF-8 bytes before emitting `terminal:output`. Interactive terminal input is encoded in Rust from the frontend Unicode string into the configured terminal encoding before writing to the SSH channel.
 - Remote-file exec/read/write paths do not use `advanced.terminal_encoding`; they keep their own UTF-8 or raw-byte file semantics.
-- The first version intentionally stores passwords and private-key passphrases in clear text. Do not add masking/encryption unless the task explicitly introduces the lock-screen or secret-store feature.
+- Current JSON stores may still contain legacy clear-text passwords and private-key passphrases until the keyring migration is implemented. Do not copy those plaintext secrets into SQLite or silently downgrade keyring failures back to SQLite/JSON plaintext during the migration work.
 - All command failures return `AppError { code, message, raw_message, recoverable }`.
 - `credential_delete` must check saved connection references and return `credential_in_use` instead of deleting a credential currently referenced by `credential_mode=saved`.
 - Host-key verification is stateful. Unknown host keys return `host_key_unknown` with serialized `HostKeyInfo` in `raw_message`; changed host keys return `host_key_changed` with the new key and old fingerprint. Only `known_host_trust` may write or update trusted host keys.
@@ -299,6 +301,114 @@ let config = resolve_saved_connection(app, connection_id, prompt_credential)?;
 manager.connect_resolved(app, &config).await
 ```
 
+## Scenario: SQLite Storage Foundation
+
+### 1. Scope / Trigger
+
+- Trigger: backend code adds or changes SQLite schema, storage bootstrap, schema versioning, future JSON-to-SQLite migration helpers, or secret reference columns.
+- Source files: `src-tauri/src/storage_sqlite.rs`, `src-tauri/src/lib.rs`, `src-tauri/Cargo.toml`, `src-tauri/Cargo.lock`, and future migration code that reads the existing JSON stores.
+- This is an infrastructure contract. Phase 1 creates a DB foundation only; existing Tauri commands must keep using JSON stores until keyring-backed migration can move structured rows and secrets atomically.
+
+### 2. Signatures
+
+- `sqlite_store_path(app: &AppHandle) -> Result<PathBuf, AppError>`
+- `SqliteStore::open(path: impl AsRef<Path>) -> Result<SqliteStore, AppError>`
+- `SqliteStore::initialize(&self) -> Result<(), AppError>`
+- `SqliteStore::schema_version(&self) -> Result<i64, AppError>`
+- `normalize_known_host_host(host: &str) -> String`
+
+Schema version 1 creates these tables:
+
+```sql
+schema_migrations(version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)
+app_meta(key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at TEXT NOT NULL)
+app_settings(key TEXT PRIMARY KEY, value_json TEXT NOT NULL, updated_at TEXT NOT NULL)
+connection_groups(id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE, sort_order INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)
+connections(..., credential_mode TEXT NOT NULL, credential_id TEXT, inline_secret_ref TEXT, inline_secret_slot_id TEXT, inline_private_key_path TEXT, ...)
+credentials(..., kind TEXT NOT NULL, secret_ref TEXT, secret_slot_id TEXT, private_key_path TEXT, ...)
+known_hosts(host TEXT NOT NULL, port INTEGER NOT NULL, key_algorithm TEXT NOT NULL, fingerprint_sha256 TEXT NOT NULL, public_key TEXT NOT NULL, first_trusted_at TEXT NOT NULL, last_seen_at TEXT NOT NULL)
+tunnels(..., connection_id TEXT NOT NULL, local_host TEXT NOT NULL, local_port INTEGER NOT NULL, remote_host TEXT NOT NULL, remote_port INTEGER NOT NULL, auto_start INTEGER NOT NULL DEFAULT 0, ...)
+```
+
+### 3. Contracts
+
+- SQLite file path is `app.path().app_data_dir()/mxterm.db`.
+- Use `rusqlite` with the `bundled` feature so Windows development and packaging do not depend on a system SQLite install.
+- `initialize()` must be idempotent: it may be called repeatedly and must keep `schema_migrations` at the current max version.
+- Migration timestamps and schema-owned time fields are ISO8601 strings. SQLite initialization may use UTC `strftime('%Y-%m-%dT%H:%M:%fZ', 'now')` for migration rows.
+- `known_hosts.host` migration/write helpers must trim and lowercase host values before writing to SQLite.
+- SQLite schema may store only secret references: local `secret_ref` and cross-device `secret_slot_id`. It must not define plaintext password or private-key passphrase columns.
+- Phase 1 must not route `connection_*`, `credential_*`, `known_host_*`, `tunnel_*`, terminal, SFTP, or monitor production reads/writes to SQLite. JSON stores remain authoritative until the keyring migration task lands.
+- The production cutover must migrate SQLite rows and keyring secrets as one atomic flow. Do not create an intermediate state where SQLite rows point at empty secret refs and users cannot connect.
+
+### 4. Validation & Error Matrix
+
+| Condition | Error code | Recoverable |
+| --- | --- | --- |
+| App data dir cannot resolve | `sqlite_store_path_failed` | true |
+| DB parent directory cannot be created | `sqlite_store_open_failed` | true |
+| DB cannot open | `sqlite_store_open_failed` | true |
+| Schema initialization fails | `sqlite_store_init_failed` | true |
+| Schema version insert fails | `sqlite_store_init_failed` | true |
+| Schema/version/table query fails | `sqlite_store_query_failed` | true |
+| Schema introduces `password` or `passphrase` columns in `connections` or `credentials` | test failure | n/a |
+
+### 5. Good / Base / Bad Cases
+
+- Good: `SqliteStore::open(temp_dir/mxterm.db)` creates the parent directory, opens SQLite, `initialize()` creates all core tables, and `schema_version()` returns `1`.
+- Good: running `initialize()` twice leaves a single current schema version and no duplicate schema side effects.
+- Good: migrating or preparing a known-host row normalizes `"  Example.COM  "` to `"example.com"`.
+- Base: application startup continues to use JSON stores even if SQLite foundation exists, because Phase 1 is not a production cutover.
+- Bad: a command handler starts loading connections from SQLite before keyring secret refs are populated, a migration writes raw passwords into SQLite, or a keyring failure silently falls back to SQLite plaintext.
+
+### 6. Tests Required
+
+- Unit-test schema initialization records the current schema version.
+- Unit-test repeated initialization is idempotent.
+- Unit-test all core tables exist: `schema_migrations`, `app_meta`, `app_settings`, `connection_groups`, `connections`, `credentials`, `known_hosts`, and `tunnels`.
+- Unit-test `normalize_known_host_host` trims and lowercases host values.
+- Unit-test `connections` and `credentials` column names do not contain plaintext `password` or `passphrase` fields.
+- Run `cargo test --manifest-path src-tauri/Cargo.toml storage_sqlite --lib` after changing `storage_sqlite.rs`.
+- Run `cargo fmt --manifest-path src-tauri/Cargo.toml --check`, `cargo check --manifest-path src-tauri/Cargo.toml`, and `git diff --check` after changing SQLite schema or dependencies.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```rust
+// Phase 1 must not cut production reads to SQLite before keyring migration.
+let store = SqliteStore::open(sqlite_store_path(&app)?)?;
+load_connection_from_sqlite(&store, connection_id)
+```
+
+#### Correct
+
+```rust
+// JSON remains authoritative until SQLite + keyring migration cuts over atomically.
+let store = ConnectionStore::load(connection_store_path(&app)?)?;
+store.get(connection_id)
+```
+
+#### Wrong
+
+```sql
+CREATE TABLE credentials (
+    id TEXT PRIMARY KEY,
+    password TEXT,
+    private_key_passphrase TEXT
+);
+```
+
+#### Correct
+
+```sql
+CREATE TABLE credentials (
+    id TEXT PRIMARY KEY,
+    secret_ref TEXT,
+    secret_slot_id TEXT,
+    private_key_path TEXT
+);
+```
 ## Scenario: Remote File Listing Command
 
 ### 1. Scope / Trigger
