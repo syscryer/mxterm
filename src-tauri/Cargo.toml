@@ -32,5 +32,5 @@ tauri-plugin-dialog = "2"
 portable-pty = "0.9"
 
 [target.'cfg(windows)'.dependencies]
-windows = { version = "0.61", features = ["Win32_Foundation", "Win32_Graphics_Dwm", "Win32_UI_WindowsAndMessaging"] }
+windows = { version = "0.61", features = ["Win32_Foundation", "Win32_Graphics_Dwm", "Win32_Storage_FileSystem", "Win32_UI_WindowsAndMessaging"] }
 windows-version = "0.1"

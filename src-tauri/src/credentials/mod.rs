@@ -1,10 +1,10 @@
-use std::fs;
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
 use crate::app_error::AppError;
 use crate::connections::ConnectionAuthKind;
+use crate::storage::{load_json_document, write_json_document, JsonStoreErrorLabels};
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
 pub struct CredentialProfileInput {
@@ -67,31 +67,31 @@ pub struct CredentialStore {
     document: CredentialStoreDocument,
 }
 
+fn credential_store_error_labels() -> JsonStoreErrorLabels {
+    JsonStoreErrorLabels {
+        create_dir_code: "credential_store_create_dir_failed",
+        create_dir_message: "凭据仓库目录创建失败。",
+        parse_code: "credential_store_parse_failed",
+        parse_message: "凭据仓库文件格式无效。",
+        read_code: "credential_store_read_failed",
+        read_message: "凭据仓库读取失败。",
+        serialize_code: "credential_store_serialize_failed",
+        serialize_message: "凭据仓库序列化失败。",
+        write_code: "credential_store_write_failed",
+        write_message: "凭据仓库写入失败。",
+    }
+}
+
 impl CredentialStore {
     pub fn load(path: PathBuf) -> Result<Self, AppError> {
-        let mut document = if path.exists() {
-            let content = fs::read_to_string(&path).map_err(|error| {
-                AppError::new(
-                    "credential_store_read_failed",
-                    "凭据仓库读取失败。",
-                    error,
-                    true,
-                )
-            })?;
-            serde_json::from_str(&content).map_err(|error| {
-                AppError::new(
-                    "credential_store_parse_failed",
-                    "凭据仓库文件格式无效。",
-                    error,
-                    true,
-                )
-            })?
-        } else {
-            CredentialStoreDocument {
+        let mut document = load_json_document(
+            &path,
+            || CredentialStoreDocument {
                 version: 1,
                 profiles: Vec::new(),
-            }
-        };
+            },
+            credential_store_error_labels(),
+        )?;
         document.version = 1;
 
         Ok(Self { path, document })
@@ -169,33 +169,7 @@ impl CredentialStore {
     }
 
     fn save(&self) -> Result<(), AppError> {
-        if let Some(parent) = self.path.parent() {
-            fs::create_dir_all(parent).map_err(|error| {
-                AppError::new(
-                    "credential_store_create_dir_failed",
-                    "凭据仓库目录创建失败。",
-                    error,
-                    true,
-                )
-            })?;
-        }
-
-        let content = serde_json::to_string_pretty(&self.document).map_err(|error| {
-            AppError::new(
-                "credential_store_serialize_failed",
-                "凭据仓库序列化失败。",
-                error,
-                true,
-            )
-        })?;
-        fs::write(&self.path, content).map_err(|error| {
-            AppError::new(
-                "credential_store_write_failed",
-                "凭据仓库写入失败。",
-                error,
-                true,
-            )
-        })
+        write_json_document(&self.path, &self.document, credential_store_error_labels())
     }
 }
 

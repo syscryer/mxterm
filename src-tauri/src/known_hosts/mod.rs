@@ -1,10 +1,10 @@
-use std::fs;
 use std::path::PathBuf;
 
 use russh::keys::ssh_key::{HashAlg, PublicKey};
 use serde::{Deserialize, Serialize};
 
 use crate::app_error::AppError;
+use crate::storage::{load_json_document, write_json_document, JsonStoreErrorLabels};
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
 pub struct KnownHostEntry {
@@ -53,31 +53,31 @@ pub struct KnownHostStore {
     document: KnownHostStoreDocument,
 }
 
+fn known_host_store_error_labels() -> JsonStoreErrorLabels {
+    JsonStoreErrorLabels {
+        create_dir_code: "known_host_store_create_dir_failed",
+        create_dir_message: "主机密钥仓库目录创建失败。",
+        parse_code: "known_host_store_parse_failed",
+        parse_message: "主机密钥仓库文件格式无效。",
+        read_code: "known_host_store_read_failed",
+        read_message: "主机密钥仓库读取失败。",
+        serialize_code: "known_host_store_serialize_failed",
+        serialize_message: "主机密钥仓库序列化失败。",
+        write_code: "known_host_store_write_failed",
+        write_message: "主机密钥仓库写入失败。",
+    }
+}
+
 impl KnownHostStore {
     pub fn load(path: PathBuf) -> Result<Self, AppError> {
-        let mut document = if path.exists() {
-            let content = fs::read_to_string(&path).map_err(|error| {
-                AppError::new(
-                    "known_host_store_read_failed",
-                    "主机密钥仓库读取失败。",
-                    error,
-                    true,
-                )
-            })?;
-            serde_json::from_str(&content).map_err(|error| {
-                AppError::new(
-                    "known_host_store_parse_failed",
-                    "主机密钥仓库文件格式无效。",
-                    error,
-                    true,
-                )
-            })?
-        } else {
-            KnownHostStoreDocument {
+        let mut document = load_json_document(
+            &path,
+            || KnownHostStoreDocument {
                 version: 1,
                 entries: Vec::new(),
-            }
-        };
+            },
+            known_host_store_error_labels(),
+        )?;
         document.version = 1;
 
         Ok(Self { path, document })
@@ -148,33 +148,7 @@ impl KnownHostStore {
     }
 
     fn save(&self) -> Result<(), AppError> {
-        if let Some(parent) = self.path.parent() {
-            fs::create_dir_all(parent).map_err(|error| {
-                AppError::new(
-                    "known_host_store_create_dir_failed",
-                    "主机密钥仓库目录创建失败。",
-                    error,
-                    true,
-                )
-            })?;
-        }
-
-        let content = serde_json::to_string_pretty(&self.document).map_err(|error| {
-            AppError::new(
-                "known_host_store_serialize_failed",
-                "主机密钥仓库序列化失败。",
-                error,
-                true,
-            )
-        })?;
-        fs::write(&self.path, content).map_err(|error| {
-            AppError::new(
-                "known_host_store_write_failed",
-                "主机密钥仓库写入失败。",
-                error,
-                true,
-            )
-        })
+        write_json_document(&self.path, &self.document, known_host_store_error_labels())
     }
 }
 

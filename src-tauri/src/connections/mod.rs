@@ -1,9 +1,9 @@
-use std::fs;
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
 use crate::app_error::AppError;
+use crate::storage::{load_json_document, write_json_document, JsonStoreErrorLabels};
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -247,32 +247,31 @@ pub struct ConnectionStore {
     document: ConnectionStoreDocument,
 }
 
+fn connection_store_error_labels() -> JsonStoreErrorLabels {
+    JsonStoreErrorLabels {
+        create_dir_code: "connection_store_create_dir_failed",
+        create_dir_message: "连接仓库目录创建失败。",
+        parse_code: "connection_store_parse_failed",
+        parse_message: "连接仓库文件格式无效。",
+        read_code: "connection_store_read_failed",
+        read_message: "连接仓库读取失败。",
+        serialize_code: "connection_store_serialize_failed",
+        serialize_message: "连接仓库序列化失败。",
+        write_code: "connection_store_write_failed",
+        write_message: "连接仓库写入失败。",
+    }
+}
+
 impl ConnectionStore {
     pub fn load(path: PathBuf) -> Result<Self, AppError> {
-        let mut document = if path.exists() {
-            let content = fs::read_to_string(&path).map_err(|error| {
-                AppError::new(
-                    "connection_store_read_failed",
-                    "连接仓库读取失败。",
-                    error,
-                    true,
-                )
-            })?;
-            serde_json::from_str(&content).map_err(|error| {
-                AppError::new(
-                    "connection_store_parse_failed",
-                    "连接仓库文件格式无效。",
-                    error,
-                    true,
-                )
-            })?
-        } else {
-            ConnectionStoreDocument {
+        let mut document = load_json_document(
+            &path,
+            || ConnectionStoreDocument {
                 version: 2,
                 profiles: Vec::new(),
-            }
-        };
-
+            },
+            connection_store_error_labels(),
+        )?;
         document.version = 2;
         document.profiles = document
             .profiles
@@ -477,43 +476,20 @@ impl ConnectionStore {
     }
 
     fn save(&self) -> Result<(), AppError> {
-        if let Some(parent) = self.path.parent() {
-            fs::create_dir_all(parent).map_err(|error| {
-                AppError::new(
-                    "connection_store_create_dir_failed",
-                    "连接仓库目录创建失败。",
-                    error,
-                    true,
-                )
-            })?;
-        }
-
-        let content = serde_json::to_string_pretty(&ConnectionStoreDocument {
-            version: 2,
-            profiles: self
-                .document
-                .profiles
-                .iter()
-                .cloned()
-                .map(strip_legacy_profile_fields)
-                .collect(),
-        })
-        .map_err(|error| {
-            AppError::new(
-                "connection_store_serialize_failed",
-                "连接仓库序列化失败。",
-                error,
-                true,
-            )
-        })?;
-        fs::write(&self.path, content).map_err(|error| {
-            AppError::new(
-                "connection_store_write_failed",
-                "连接仓库写入失败。",
-                error,
-                true,
-            )
-        })
+        write_json_document(
+            &self.path,
+            &ConnectionStoreDocument {
+                version: 2,
+                profiles: self
+                    .document
+                    .profiles
+                    .iter()
+                    .cloned()
+                    .map(strip_legacy_profile_fields)
+                    .collect(),
+            },
+            connection_store_error_labels(),
+        )
     }
 }
 
