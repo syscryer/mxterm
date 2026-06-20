@@ -1,5 +1,6 @@
 use std::path::PathBuf;
 
+use serde::Deserialize;
 use tauri::{AppHandle, Manager};
 
 use crate::app_error::AppError;
@@ -10,7 +11,7 @@ use crate::connections::{
 use crate::credentials::{CredentialProfile, CredentialStore};
 use crate::known_hosts::HostKeyInfo;
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, Deserialize)]
 pub struct RuntimeCredentialInput {
     pub auth_kind: Option<ConnectionAuthKind>,
     pub password: Option<String>,

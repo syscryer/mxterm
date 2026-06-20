@@ -13,6 +13,7 @@ import {
   Folder,
   FolderPlus,
   Info,
+  Network,
   PanelRightClose,
   Pencil,
   RefreshCw,
@@ -46,7 +47,7 @@ import {
 } from "./remoteFilePaths";
 import type { RemoteFileEntry } from "./remoteFileTypes";
 
-export type RemoteFileTool = "files" | "transfers" | "monitor";
+export type RemoteFileTool = "files" | "transfers" | "monitor" | "tunnels";
 
 export interface RemoteFileUploadItem {
   file: File;
@@ -76,6 +77,7 @@ interface RemoteFilePanelProps {
   onUploadFile?: (parentPath: string) => void;
   onUploadItems?: (parentPath: string, items: RemoteFileUploadItem[]) => void;
   terminalPath?: string | null;
+  tunnelPanel?: ReactNode;
 }
 
 interface RemoteFileRefreshRequest {
@@ -154,6 +156,7 @@ export function RemoteFilePanel({
   onUploadFile,
   onUploadItems,
   terminalPath,
+  tunnelPanel,
 }: RemoteFilePanelProps) {
   const terminalDirectory = terminalPath ? normalizeRemotePath(terminalPath) : null;
   const [currentPath, setCurrentPath] = useState(defaultRemotePath);
@@ -233,6 +236,8 @@ export function RemoteFilePanel({
         <div className="monitor-tool-body">
           {monitorPanel || <p className="file-panel-empty">打开一个 SSH 会话后显示监控。</p>}
         </div>
+      ) : activeTool === "tunnels" ? (
+        tunnelPanel || <p className="file-panel-empty">还没有隧道规则。</p>
       ) : (
         <FilePanelShell
           disabled={disabled}
@@ -744,6 +749,10 @@ function FilePanelTabs({
       <button className={activeTool === "monitor" ? "active" : ""} type="button" onClick={() => onToolChange?.("monitor")}>
         <Activity className="ui-icon" aria-hidden="true" />
         监控
+      </button>
+      <button className={activeTool === "tunnels" ? "active" : ""} type="button" onClick={() => onToolChange?.("tunnels")}>
+        <Network className="ui-icon" aria-hidden="true" />
+        隧道
       </button>
       {onToggleRightPane ? (
         <Tooltip label="收起右侧面板">

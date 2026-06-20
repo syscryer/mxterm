@@ -34,6 +34,9 @@ use crate::terminal::local::list_profiles as list_local_profiles;
 pub use crate::terminal::local_profiles::{LocalTerminalProfile, LocalTerminalProfileInput};
 use crate::terminal::manager::TerminalManager;
 use crate::terminal::session::ExecProgressCallback;
+use crate::tunnels::{
+    TunnelManager, TunnelRuleIdRequest, TunnelRuleInput, TunnelRuleWithState, TunnelStartRequest,
+};
 
 #[derive(Debug, Deserialize)]
 pub struct TerminalConnectRequest {
@@ -515,6 +518,57 @@ pub async fn remote_monitor_process_signal(
         .await
 }
 
+#[tauri::command]
+pub async fn tunnel_list(
+    app: AppHandle,
+    manager: State<'_, TunnelManager>,
+) -> Result<Vec<TunnelRuleWithState>, AppError> {
+    manager.list(&app).await
+}
+
+#[tauri::command]
+pub async fn tunnel_upsert(
+    app: AppHandle,
+    manager: State<'_, TunnelManager>,
+    request: TunnelRuleInput,
+) -> Result<TunnelRuleWithState, AppError> {
+    manager.upsert(&app, request).await
+}
+
+#[tauri::command]
+pub async fn tunnel_delete(
+    app: AppHandle,
+    manager: State<'_, TunnelManager>,
+    request: TunnelRuleIdRequest,
+) -> Result<(), AppError> {
+    manager.delete(&app, &request.rule_id).await
+}
+
+#[tauri::command]
+pub async fn tunnel_start(
+    app: AppHandle,
+    manager: State<'_, TunnelManager>,
+    request: TunnelStartRequest,
+) -> Result<TunnelRuleWithState, AppError> {
+    manager.start(&app, request).await
+}
+
+#[tauri::command]
+pub async fn tunnel_stop(
+    app: AppHandle,
+    manager: State<'_, TunnelManager>,
+    request: TunnelRuleIdRequest,
+) -> Result<TunnelRuleWithState, AppError> {
+    manager.stop(&app, &request.rule_id).await
+}
+
+#[tauri::command]
+pub async fn tunnel_autostart(
+    app: AppHandle,
+    manager: State<'_, TunnelManager>,
+) -> Result<Vec<TunnelRuleWithState>, AppError> {
+    manager.autostart(&app).await
+}
 #[tauri::command]
 pub async fn remote_file_read(
     app: AppHandle,
@@ -2031,7 +2085,10 @@ mod tests {
 
     #[test]
     fn local_download_directory_ready_creates_missing_directory() {
-        let root = std::env::temp_dir().join(format!("mxterm-download-ready-{}", crate::commands::now_millis()));
+        let root = std::env::temp_dir().join(format!(
+            "mxterm-download-ready-{}",
+            crate::commands::now_millis()
+        ));
         let nested = root.join("group").join("time");
 
         ensure_local_download_directory_ready(&nested).expect("directory should be prepared");
