@@ -97,6 +97,8 @@ import {
   type WindowMaterialMode,
 } from "../settings/settingsTypes";
 import { useSettings } from "../settings/useSettings";
+import { SecretVaultGate } from "../security/SecretVaultGate";
+import { useSecretVault } from "../security/useSecretVault";
 import { useConnections } from "../connections/useConnections";
 import { useCredentials } from "../connections/useCredentials";
 import {
@@ -396,6 +398,20 @@ type NativeFileDropPosition = Extract<DragDropEvent, { type: "enter" | "over" | 
 
 export function WorkspaceShell() {
   const {
+    reset,
+    settings,
+    updateAppearance,
+    updateBasic,
+    updateFileTransfer,
+    updateLocalTerminal,
+    updateSecurity,
+    updateTerminalTheme,
+  } = useSettings();
+  const secretVault = useSecretVault({
+    masterPasswordEnabled: settings.security.masterPasswordEnabled,
+  });
+  const storageReady = secretVault.ready;
+  const {
     connections,
     error,
     loading,
@@ -405,29 +421,20 @@ export function WorkspaceShell() {
     remove,
     setFavorite,
     upsert,
-  } = useConnections();
+  } = useConnections({ enabled: storageReady });
   const {
     credentials,
     error: credentialError,
     loading: credentialLoading,
     remove: removeCredential,
     upsert: upsertCredential,
-  } = useCredentials();
-  const {
-    reset,
-    settings,
-    updateAppearance,
-    updateBasic,
-    updateFileTransfer,
-    updateLocalTerminal,
-    updateTerminalTheme,
-  } = useSettings();
+  } = useCredentials({ enabled: storageReady });
   const [activeConnectionId, setActiveConnectionId] = useState<string | null>(null);
   const [activeTabId, setActiveTabId] = useState<string | null>(null);
   const [activeTabByConnectionId, setActiveTabByConnectionId] = useState<Record<string, string>>({});
   const [activeView, setActiveView] = useState<"workspace" | "settings">("workspace");
   const [settingsSectionRequest, setSettingsSectionRequest] =
-    useState<"basic" | "credentials" | "appearance" | "localTerminal" | "terminalTheme" | undefined>();
+    useState<"basic" | "credentials" | "security" | "appearance" | "localTerminal" | "terminalTheme" | undefined>();
   const [dialogOpen, setDialogOpen] = useState(false);
   const [connectionSearchOpen, setConnectionSearchOpen] = useState(false);
   const [connectionSearchQuery, setConnectionSearchQuery] = useState("");
@@ -503,11 +510,11 @@ export function WorkspaceShell() {
   useEffect(() => initializeWindowStatePersistence(), []);
 
   useEffect(() => {
-    if (!hasTauriRuntime()) {
+    if (!hasTauriRuntime() || !storageReady) {
       return;
     }
     void tunnelAutostart().catch(() => undefined);
-  }, []);
+  }, [storageReady]);
 
   useEffect(() => {
     localTerminalTabsRef.current = localTerminalTabs;
@@ -3758,6 +3765,16 @@ export function WorkspaceShell() {
       data-window-material={effectiveWindowMaterial}
       style={appShellStyle}
     >
+      {secretVault.requiresUnlock ? (
+        <SecretVaultGate
+          error={secretVault.error}
+          loading={secretVault.loading}
+          onUnlock={secretVault.unlock}
+          status={secretVault.status}
+          unlocking={secretVault.unlocking}
+        />
+      ) : null}
+
       <AppTitlebar
         activeConnectionId={activeConnectionId}
         connectionById={connectionById}
@@ -4885,18 +4902,29 @@ export function WorkspaceShell() {
           credentials={credentials}
           credentialError={credentialError}
           credentialLoading={credentialLoading}
-        effectiveWindowMaterial={effectiveWindowMaterial}
-        hidden={activeView !== "settings"}
-        settings={settings}
-        supportedWindowMaterials={supportedWindowMaterials}
-        onDeleteCredential={deleteCredentialFromSettings}
-        onReset={reset}
-        onReturnWorkspace={() => setActiveView("workspace")}
+          effectiveWindowMaterial={effectiveWindowMaterial}
+          hidden={activeView !== "settings"}
+          secretVaultBusy={secretVault.unlocking}
+          secretVaultError={secretVault.error}
+          settings={settings}
+          supportedWindowMaterials={supportedWindowMaterials}
+          onDeleteCredential={deleteCredentialFromSettings}
+          onDisableMasterPassword={async () => {
+            const nextStatus = await secretVault.disableMasterPassword();
+            return Boolean(nextStatus?.unlocked);
+          }}
+          onEnableMasterPassword={async (masterPassword) => {
+            const nextStatus = await secretVault.enableMasterPassword(masterPassword);
+            return Boolean(nextStatus?.unlocked);
+          }}
+          onReset={reset}
+          onReturnWorkspace={() => setActiveView("workspace")}
           onSaveCredential={saveCredentialFromSettings}
           onUpdateAppearance={updateAppearance}
           onUpdateBasic={updateBasic}
           onUpdateFileTransfer={updateFileTransfer}
           onUpdateLocalTerminal={updateLocalTerminal}
+          onUpdateSecurity={updateSecurity}
           onUpdateTerminalTheme={updateTerminalTheme}
         />
     </div>

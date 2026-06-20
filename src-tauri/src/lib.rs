@@ -8,9 +8,13 @@ mod remote_files;
 mod remote_monitor;
 mod ssh_config;
 mod storage;
+pub mod storage_migration;
+pub mod storage_repository;
 pub mod storage_sqlite;
+pub mod storage_vault;
 mod terminal;
 mod tunnels;
+use storage_vault::VaultState;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -21,6 +25,7 @@ pub fn run() {
         .manage(remote_files::RemoteFileManager::default())
         .manage(terminal::manager::TerminalManager::default())
         .manage(tunnels::TunnelManager::default())
+        .manage(VaultState::default())
         .setup(|app| {
             #[cfg(windows)]
             {
@@ -31,6 +36,11 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            commands::secret_vault_status,
+            commands::secret_vault_unlock,
+            commands::secret_vault_unlock_local,
+            commands::secret_vault_enable_master_password,
+            commands::secret_vault_disable_master_password,
             commands::connection_list,
             commands::connection_upsert,
             commands::connection_set_favorite,

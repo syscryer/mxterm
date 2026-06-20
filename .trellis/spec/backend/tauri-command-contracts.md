@@ -148,12 +148,11 @@ reachable: bool
 
 ### 3. Contracts
 
-- Connection data is stored as JSON at `app.path().app_data_dir()/connections.json`.
-- Credential data is stored as JSON at `app.path().app_data_dir()/credentials.json`.
-- Trusted host keys are stored as JSON at `app.path().app_data_dir()/known_hosts.json`.
-- JSON roots use `version` plus the relevant item list (`profiles`, `credentials`, or `entries`).
-- SQLite storage foundation lives in `src-tauri/src/storage_sqlite.rs` and is schema-only until the keyring-backed migration is implemented. Do not route production Tauri commands to SQLite before SQLite rows and keyring secrets can be migrated atomically.
-- SQLite schema may store `secret_ref` and `secret_slot_id`, but must not define plaintext password or private-key passphrase columns. Existing JSON stores remain the transition source until the keyring migration task cuts production over.
+- Production connection, credential, trusted host key, and tunnel data is stored in SQLite at `app.path().app_data_dir()/mxterm.db` after the vault migration runs.
+- Legacy JSON stores (`connections.json`, `credentials.json`, `known_hosts.json`, `tunnels.json`) are migration sources only. Do not route production commands back to JSON after Phase 2.
+- SSH passwords and private-key passphrases are stored in the encrypted vault through `src-tauri/src/storage_vault.rs`; SQLite stores only `secret_ref` and `secret_slot_id`.
+- `StorageRepository::open_app(...)` owns the JSON -> SQLite + vault migration and is the production facade for connection, credential, known-host, tunnel, and SSH resolution paths.
+- SQLite schema may store `secret_ref` and `secret_slot_id`, but must not define plaintext password or private-key passphrase columns. Do not silently downgrade vault failures back to SQLite/JSON plaintext.
 - Connection, credential, known-host, and tunnel JSON stores must use the shared atomic JSON store helper. Writes create a synced temporary file, keep a `.bak` copy of the previous primary file when present, and replace the primary file atomically.
 - Store loads should return the default document when the primary file is missing. If the primary file exists but cannot be read or parsed, load should try the `.bak` file before returning the primary error.
 - Commands that perform a `load -> mutate -> save` sequence on connection, credential, or known-host stores must serialize that sequence with the matching store lock. Do not hold these locks across SSH, SFTP, terminal, network probing, or other remote operations.
@@ -180,13 +179,13 @@ reachable: bool
 - Advanced terminal encoding is stored in `advanced.terminal_encoding`. Rust must normalize and validate the encoding, then carry it through `ResolvedSshConfig` into interactive terminal sessions.
 - Interactive terminal output is decoded in Rust from the configured terminal encoding into UTF-8 bytes before emitting `terminal:output`. Interactive terminal input is encoded in Rust from the frontend Unicode string into the configured terminal encoding before writing to the SSH channel.
 - Remote-file exec/read/write paths do not use `advanced.terminal_encoding`; they keep their own UTF-8 or raw-byte file semantics.
-- Current JSON stores may still contain legacy clear-text passwords and private-key passphrases until the keyring migration is implemented. Do not copy those plaintext secrets into SQLite or silently downgrade keyring failures back to SQLite/JSON plaintext during the migration work.
+- Legacy JSON stores may contain clear-text passwords and private-key passphrases before migration. Migration must move those values into vault, write only secret references to SQLite, and keep JSON as `.migrated.bak` safety copies after success.
 - All command failures return `AppError { code, message, raw_message, recoverable }`.
 - `credential_delete` must check saved connection references and return `credential_in_use` instead of deleting a credential currently referenced by `credential_mode=saved`.
 - Host-key verification is stateful. Unknown host keys return `host_key_unknown` with serialized `HostKeyInfo` in `raw_message`; changed host keys return `host_key_changed` with the new key and old fingerprint. Only `known_host_trust` may write or update trusted host keys.
 - `connection_test`, `terminal_connect`, and remote-file commands must use the same saved-connection resolution path in `ssh_config.rs`; do not re-resolve credentials independently in UI-facing command handlers.
-- `connection_test_profile` is only for testing the current `ConnectionDialog` form before it is saved. It must validate and resolve a transient profile through `resolve_transient_connection(...)`, may read `credentials.json` when `credential_mode=saved`, and must not call `ConnectionStore::upsert`, persist `connections.json`, mark recent activity, or synthesize a permanent connection id.
-- `connection_probe_system` resolves the saved connection with the same runtime prompt credential shape as `connection_test`, opens a short-lived exec session, runs only the read-only `cat /etc/os-release 2>/dev/null || uname -s 2>/dev/null || true` probe, parses `ID`, `NAME`, and `VERSION_ID`, and writes only the `remote_os_*` fields back to `connections.json`. It must not log passwords, passphrases, or full command payloads, and probe failure must be handled by the frontend as non-fatal after a successful connection.
+- `connection_test_profile` is only for testing the current `ConnectionDialog` form before it is saved. It must validate and resolve a transient profile through `resolve_transient_connection(...)`, may read saved credentials through `StorageRepository` when `credential_mode=saved`, and must not upsert a connection, mark recent activity, or synthesize a permanent connection id.
+- `connection_probe_system` resolves the saved connection with the same runtime prompt credential shape as `connection_test`, opens a short-lived exec session, runs only the read-only `cat /etc/os-release 2>/dev/null || uname -s 2>/dev/null || true` probe, parses `ID`, `NAME`, and `VERSION_ID`, and writes only the `remote_os_*` fields through `StorageRepository`. It must not log passwords, passphrases, or full command payloads, and probe failure must be handled by the frontend as non-fatal after a successful connection.
 - `connection_probe_latency` must load the saved profile by `connection_id` and probe only the saved `host`/`port` with a short TCP timeout. It must not require or log passwords, private keys, or passphrases.
 - Terminal output and state events include both `session_id` and the optional frontend `request_id`. Keep `request_id` on early connection events so React can display shell output that arrives before the `terminal_connect` promise resolves.
 - The interactive terminal reader must not stop on `ChannelMsg::Eof`; continue reading until `ChannelMsg::Close` or channel end so a shell prompt or late startup output cannot be lost during frontend handoff.
@@ -307,7 +306,7 @@ manager.connect_resolved(app, &config).await
 
 - Trigger: backend code adds or changes SQLite schema, storage bootstrap, schema versioning, future JSON-to-SQLite migration helpers, or secret reference columns.
 - Source files: `src-tauri/src/storage_sqlite.rs`, `src-tauri/src/lib.rs`, `src-tauri/Cargo.toml`, `src-tauri/Cargo.lock`, and future migration code that reads the existing JSON stores.
-- This is an infrastructure contract. Phase 1 creates a DB foundation only; existing Tauri commands must keep using JSON stores until keyring-backed migration can move structured rows and secrets atomically.
+- This is an infrastructure contract. Phase 1 creates a DB foundation only; existing Tauri commands must keep using JSON stores until vault-backed migration can move structured rows and secrets atomically.
 
 ### 2. Signatures
 
@@ -338,8 +337,8 @@ tunnels(..., connection_id TEXT NOT NULL, local_host TEXT NOT NULL, local_port I
 - Migration timestamps and schema-owned time fields are ISO8601 strings. SQLite initialization may use UTC `strftime('%Y-%m-%dT%H:%M:%fZ', 'now')` for migration rows.
 - `known_hosts.host` migration/write helpers must trim and lowercase host values before writing to SQLite.
 - SQLite schema may store only secret references: local `secret_ref` and cross-device `secret_slot_id`. It must not define plaintext password or private-key passphrase columns.
-- Phase 1 must not route `connection_*`, `credential_*`, `known_host_*`, `tunnel_*`, terminal, SFTP, or monitor production reads/writes to SQLite. JSON stores remain authoritative until the keyring migration task lands.
-- The production cutover must migrate SQLite rows and keyring secrets as one atomic flow. Do not create an intermediate state where SQLite rows point at empty secret refs and users cannot connect.
+- Phase 2 routes `connection_*`, `credential_*`, `known_host_*`, `tunnel_*`, terminal, SFTP, monitor, and tunnel resolution through SQLite + vault via `StorageRepository`.
+- The production cutover migrates SQLite rows and vault secrets as one atomic flow. Do not create an intermediate state where SQLite rows point at empty secret refs and users cannot connect.
 
 ### 4. Validation & Error Matrix
 
@@ -359,7 +358,7 @@ tunnels(..., connection_id TEXT NOT NULL, local_host TEXT NOT NULL, local_port I
 - Good: running `initialize()` twice leaves a single current schema version and no duplicate schema side effects.
 - Good: migrating or preparing a known-host row normalizes `"  Example.COM  "` to `"example.com"`.
 - Base: application startup continues to use JSON stores even if SQLite foundation exists, because Phase 1 is not a production cutover.
-- Bad: a command handler starts loading connections from SQLite before keyring secret refs are populated, a migration writes raw passwords into SQLite, or a keyring failure silently falls back to SQLite plaintext.
+- Bad: a command handler starts loading connections from SQLite before vault secret refs are populated, a migration writes raw passwords into SQLite, or a vault failure silently falls back to SQLite plaintext.
 
 ### 6. Tests Required
 
@@ -376,7 +375,7 @@ tunnels(..., connection_id TEXT NOT NULL, local_host TEXT NOT NULL, local_port I
 #### Wrong
 
 ```rust
-// Phase 1 must not cut production reads to SQLite before keyring migration.
+// Phase 1 must not cut production reads to SQLite before vault migration.
 let store = SqliteStore::open(sqlite_store_path(&app)?)?;
 load_connection_from_sqlite(&store, connection_id)
 ```
@@ -384,7 +383,7 @@ load_connection_from_sqlite(&store, connection_id)
 #### Correct
 
 ```rust
-// JSON remains authoritative until SQLite + keyring migration cuts over atomically.
+// JSON remains authoritative until SQLite + vault migration cuts over atomically.
 let store = ConnectionStore::load(connection_store_path(&app)?)?;
 store.get(connection_id)
 ```
@@ -408,6 +407,118 @@ CREATE TABLE credentials (
     secret_slot_id TEXT,
     private_key_path TEXT
 );
+```
+## Scenario: SQLite + Encrypted Vault Production Storage
+
+### 1. Scope / Trigger
+
+- Trigger: backend code adds or changes vault-backed secret storage, JSON-to-SQLite migration, repository cutover, or saved SSH credential resolution.
+- Source files: `src-tauri/src/storage_vault.rs`, `src-tauri/src/storage_migration.rs`, `src-tauri/src/storage_repository.rs`, `src-tauri/src/ssh_config.rs`, `src-tauri/src/commands.rs`, `src-tauri/src/tunnels.rs`, and `src-tauri/src/terminal/session.rs`.
+- This is a storage/security contract. Production commands must use SQLite + encrypted vault after Phase 2; legacy JSON stores are migration inputs only.
+
+### 2. Signatures
+
+- `StorageRepository::open_app(app: &AppHandle) -> Result<StorageRepository, AppError>`
+- `StorageRepository::open_root(root, secret_store) -> Result<StorageRepository, AppError>`
+- `StorageMigrator::new(root, secret_store).migrate() -> Result<(), AppError>`
+- `SecretStore::set_secret(reference, secret) -> Result<(), AppError>`
+- `SecretStore::get_secret(reference) -> Result<String, AppError>`
+- `SecretStore::delete_secret(reference) -> Result<(), AppError>`
+- `secret_vault_status(app, vault_state) -> Result<VaultStatus, AppError>`
+- `secret_vault_unlock(app, vault_state, { master_password }) -> Result<VaultStatus, AppError>`
+- `secret_vault_unlock_local(app, vault_state) -> Result<VaultStatus, AppError>`
+- `secret_vault_enable_master_password(app, vault_state, { master_password }) -> Result<VaultStatus, AppError>`
+- `secret_vault_disable_master_password(app, vault_state) -> Result<VaultStatus, AppError>`
+- `resolve_saved_connection(app, connection_id, prompt) -> Result<ResolvedSshConfig, AppError>`
+- `resolve_transient_connection(app, input) -> Result<ResolvedSshConfig, AppError>`
+
+Secret account formats:
+
+```text
+connection:<connection_id>:inline_password
+connection:<connection_id>:inline_private_key_passphrase
+credential:<credential_id>:password
+credential:<credential_id>:private_key_passphrase
+```
+
+### 3. Contracts
+
+- `StorageRepository::open_app` must initialize SQLite, run the idempotent JSON migration when needed, and then serve all production connection/credential/known-host/tunnel operations.
+- SQLite tables `connections` and `credentials` may contain only `secret_ref` and `secret_slot_id` for SSH login secrets. They must not contain plaintext password or passphrase columns.
+- `VaultSecretStore` stores secrets in app data `secrets.enc`, encrypted with Argon2id-derived AES-256-GCM. `VaultState` keeps the unlocked store in memory for the current run.
+- Default master-password protection is off. In this mode `secret_vault_unlock_local` creates/reads app-data `secrets.local.key` and uses it as the vault password so app startup does not show an unlock gate while SSH secrets still avoid SQLite/JSON plaintext.
+- When users enable master-password protection, `secret_vault_enable_master_password` re-encrypts the current unlocked vault plaintext with the supplied master password. Disabling protection re-encrypts the same plaintext back to the local key. Existing secrets must survive both transitions. Rekey commands must fail with `vault_locked` when no unlocked store is present; they must not synthesize an empty vault as a fallback.
+- Migration reads legacy JSON, writes non-empty SSH login secrets to vault, writes structured rows to SQLite in one transaction, sets `app_meta.storage_migrated_from_json=true`, then keeps legacy JSON files as `.migrated.bak` copies.
+- When the migrated marker is already true, `StorageMigrator::migrate()` must still repair missing vault entries for SQLite `secret_ref` rows from `.migrated.bak` or legacy JSON when matching plaintext exists. It must not overwrite existing vault entries, recreate secrets for deleted SQLite rows, or synthesize secrets when no legacy plaintext is available.
+- Migration failure must not delete, rename, or corrupt legacy JSON and must not set the migrated marker.
+- Prompt runtime credentials are never written to SQLite, vault, or legacy JSON.
+- Host-key checking during SSH handshake must read SQLite known_hosts through `StorageRepository`; it must not read `known_hosts.json` after cutover.
+
+### 4. Validation & Error Matrix
+
+| Condition | Error code | Recoverable |
+| --- | --- | --- |
+| Vault write fails | `secret_store_write_failed` | true |
+| Vault read fails | `secret_store_read_failed` | true |
+| Vault delete fails | `secret_store_delete_failed` | true |
+| Expected secret is missing | `secret_missing` | true |
+| Empty master password when enabling/unlocking | `vault_password_missing` | true |
+| Wrong master password or local key cannot unlock a master-protected vault | `vault_unlock_failed` | true |
+| Enable/disable master-password protection while vault is locked | `vault_locked` | true |
+| SQLite migration write/query fails | `storage_migration_sqlite_failed` | true |
+| Legacy JSON backup after migration fails | `storage_migration_backup_failed` | true |
+| Saved connection references missing credential | `credential_missing` | true |
+| Prompt credential required but absent | `credential_prompt_required` | true |
+
+### 5. Good / Base / Bad Cases
+
+- Good: default startup calls `secret_vault_unlock_local` before repository commands, so connection and credential lists load without a master-password prompt.
+- Good: enabling or disabling master-password protection rekeys the vault and preserves an existing saved SSH password.
+- Good: a legacy inline-password connection migrates to a SQLite connection row with `inline_secret_ref`, while the password value is stored only in vault and `connection_list` returns no password.
+- Good: `terminal_connect`, SFTP, monitor, and tunnel start all call `resolve_saved_connection(...)`, which reads SQLite and vault through the same repository path.
+- Base: a new install with no JSON files initializes `mxterm.db`, treats migration as complete, and uses empty SQLite tables.
+- Bad: a command writes `connections.json` after Phase 2, stores a password/passphrase in SQLite, reads host keys from `known_hosts.json`, or silently falls back to plaintext storage when vault fails.
+
+### 6. Tests Required
+
+- Unit-test stable secret account generation and fake secret store set/get/delete/error mapping.
+- Unit-test local-key unlock round-trips secrets across `VaultState` instances.
+- Unit-test local-key -> master-password -> local-key rekey preserves existing secrets and rejects local unlock while master protection is active.
+- Unit-test rekey commands reject locked state with `vault_locked` instead of creating an empty vault.
+- Unit-test migration of legacy inline password, inline private-key passphrase, saved credential password, saved credential private-key passphrase, known_hosts lowercase normalization, and tunnels round-trip.
+- Unit-test vault failure so migration does not mark success and does not create `.migrated.bak` copies.
+- Unit-test migrated-marker repair: SQLite has `secret_ref`, vault returns `secret_missing`, and `.migrated.bak` contains matching legacy plaintext, then migration restores the vault secret.
+- Unit-test repository upsert/list/resolve behavior so returned profiles do not expose plaintext secrets and saved resolution retrieves the secret from `SecretStore`.
+- Run `cargo test --manifest-path src-tauri/Cargo.toml storage_vault --lib`, `storage_migration --lib`, `storage_repository --lib`, `storage_sqlite --lib`, `npm run check`, and `cargo check --manifest-path src-tauri/Cargo.toml` after changing this area.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```rust
+let mut store = ConnectionStore::load(connection_store_path(app)?)?;
+store.upsert(request, now)?;
+```
+
+#### Correct
+
+```rust
+let repo = StorageRepository::open_app(app)?;
+repo.connection_upsert(request, now)?;
+```
+
+#### Wrong
+
+```rust
+connection.execute("INSERT INTO credentials(password) VALUES (?1)", [password])?;
+```
+
+#### Correct
+
+```rust
+let reference = SecretReference::credential(&credential_id, SecretKind::Password);
+secret_store.set_secret(&reference, password)?;
+// SQLite stores reference.account and reference.slot_id only.
 ```
 ## Scenario: Remote File Listing Command
 
@@ -1176,11 +1287,11 @@ TunnelRuntimeState {
 
 ### 3. Contracts
 
-- Tunnel rules are stored as JSON at `app.path().app_data_dir()/tunnels.json` with root `{ version, rules }`. Runtime state is kept only in `TunnelManager` memory.
+- Tunnel rules are stored in SQLite through `StorageRepository`; legacy `tunnels.json` is only a migration source. Runtime state is kept only in `TunnelManager` memory.
 - `TunnelKind` is persisted for future extension, but MVP validation must reject anything except `local`.
 - A tunnel rule references a saved `ConnectionProfile` by `connection_id`. React must not send host, port, proxy, jump, password, private-key passphrase, or raw SSH config in tunnel commands.
 - `tunnel_start` resolves the saved connection through `resolve_saved_connection(...)` and reuses credential mode, proxy, SSH jump, known_hosts, and timeout behavior.
-- Runtime prompt credentials may be supplied only through `TunnelStartRequest.runtime_credential`. They are for this one start attempt and must not be written to `tunnels.json`, `connections.json`, or `credentials.json`.
+- Runtime prompt credentials may be supplied only through `TunnelStartRequest.runtime_credential`. They are for this one start attempt and must not be written to SQLite, vault, or legacy JSON stores.
 - `tunnel_autostart` starts only `auto_start = true` rules. If a prompt credential is required, it must not open a prompt; set the state to `credential_required` and continue with other rules.
 - `running` means the local listener is bound and the SSH forwarding session is ready. It must not claim the remote target service is healthy until a local client actually connects.
 - Per local client connection, Rust opens `channel_open_direct_tcpip(remote_host, remote_port, source_host, source_port)` and bridges the local `TcpStream` with the SSH channel stream.

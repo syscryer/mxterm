@@ -48,6 +48,7 @@ struct KnownHostStoreDocument {
     entries: Vec<KnownHostEntry>,
 }
 
+#[allow(dead_code)]
 pub struct KnownHostStore {
     path: PathBuf,
     document: KnownHostStoreDocument,
@@ -68,6 +69,7 @@ fn known_host_store_error_labels() -> JsonStoreErrorLabels {
     }
 }
 
+#[allow(dead_code)]
 impl KnownHostStore {
     pub fn load(path: PathBuf) -> Result<Self, AppError> {
         let mut document = load_json_document(
@@ -83,7 +85,6 @@ impl KnownHostStore {
         Ok(Self { path, document })
     }
 
-    #[cfg(test)]
     pub fn list(&self) -> Vec<KnownHostEntry> {
         self.document.entries.clone()
     }

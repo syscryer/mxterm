@@ -71,6 +71,7 @@ import {
   type BasicSettings,
   type FontSettingMode,
   type MxtermSettings,
+  type SecuritySettings,
   type SettingsSectionId,
   type TerminalThemeSettings,
   type TerminalFontPreset,
@@ -105,10 +106,15 @@ interface SettingsViewProps {
   onReturnWorkspace: () => void;
   onSaveCredential: (input: CredentialProfileInput) => Promise<void>;
   onDeleteCredential: (credential: CredentialProfile) => Promise<void>;
+  secretVaultBusy?: boolean;
+  secretVaultError?: string | null;
+  onDisableMasterPassword: () => Promise<boolean>;
+  onEnableMasterPassword: (masterPassword: string) => Promise<boolean>;
   onUpdateAppearance: (update: Partial<AppearanceSettings>) => void;
   onUpdateBasic: (update: Partial<BasicSettings>) => void;
   onUpdateFileTransfer: (update: Partial<FileTransferSettings>) => void;
   onUpdateLocalTerminal: (update: Partial<LocalTerminalSettings>) => void;
+  onUpdateSecurity: (update: Partial<SecuritySettings>) => void;
   onUpdateTerminalTheme: (update: Partial<TerminalThemeSettings>) => void;
 }
 
@@ -120,6 +126,7 @@ const settingsSections: Array<{
 }> = [
   { id: "basic", label: "基础设置", description: "启动、连接与面板行为", icon: Settings },
   { id: "credentials", label: "账号管理", description: "复用登录账号（用户名+密码/私钥）", icon: Shield },
+  { id: "security", label: "安全", description: "主密码与本机保护", icon: ShieldCheck },
   { id: "appearance", label: "外观", description: "字号、密度与强调色", icon: Palette },
   { id: "localTerminal", label: "本地终端", description: "默认 Shell 与 profile 管理", icon: HardDrive },
   { id: "terminalTheme", label: "终端配色", description: "终端 ANSI 主题方案", icon: Terminal },
@@ -146,10 +153,15 @@ export function SettingsView({
   onReturnWorkspace,
   onSaveCredential,
   onDeleteCredential,
+  secretVaultBusy = false,
+  secretVaultError = null,
+  onDisableMasterPassword,
+  onEnableMasterPassword,
   onUpdateAppearance,
   onUpdateBasic,
   onUpdateFileTransfer,
   onUpdateLocalTerminal,
+  onUpdateSecurity,
   onUpdateTerminalTheme,
 }: SettingsViewProps) {
   const [activeSection, setActiveSection] = useState<SettingsSectionId>("basic");
@@ -238,12 +250,161 @@ export function SettingsView({
             onSave={onSaveCredential}
           />
         ) : null}
+        {activeSection === "security" ? (
+          <SecuritySettingsSection
+            busy={secretVaultBusy}
+            error={secretVaultError}
+            settings={settings.security}
+            onDisableMasterPassword={onDisableMasterPassword}
+            onEnableMasterPassword={onEnableMasterPassword}
+            onUpdate={onUpdateSecurity}
+          />
+        ) : null}
         {activeSection === "terminalTheme" ? (
           <TerminalThemeSettingsSection
             selectedScheme={selectedScheme}
             settings={settings.terminalTheme}
             onUpdate={onUpdateTerminalTheme}
           />
+        ) : null}
+      </div>
+    </section>
+  );
+}
+
+function SecuritySettingsSection({
+  busy,
+  error,
+  settings,
+  onDisableMasterPassword,
+  onEnableMasterPassword,
+  onUpdate,
+}: {
+  busy: boolean;
+  error: string | null;
+  settings: SecuritySettings;
+  onDisableMasterPassword: () => Promise<boolean>;
+  onEnableMasterPassword: (masterPassword: string) => Promise<boolean>;
+  onUpdate: (update: Partial<SecuritySettings>) => void;
+}) {
+  const [enabling, setEnabling] = useState(false);
+  const [masterPassword, setMasterPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [localError, setLocalError] = useState<string | null>(null);
+
+  async function submitEnable(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const password = masterPassword.trim();
+    if (!password) {
+      setLocalError("请输入主密码。");
+      return;
+    }
+    if (password !== confirmPassword.trim()) {
+      setLocalError("两次输入的主密码不一致。");
+      return;
+    }
+
+    setLocalError(null);
+    const ok = await onEnableMasterPassword(password);
+    if (ok) {
+      onUpdate({ masterPasswordEnabled: true });
+      setMasterPassword("");
+      setConfirmPassword("");
+      setEnabling(false);
+    }
+  }
+
+  async function disableMasterPassword() {
+    setLocalError(null);
+    const ok = await onDisableMasterPassword();
+    if (ok) {
+      onUpdate({ masterPasswordEnabled: false });
+      setEnabling(false);
+    }
+  }
+
+  return (
+    <section className="settings-page-section">
+      <header className="settings-section-head">
+        <h1>安全</h1>
+        <p>控制本机保存的连接密码是否需要主密码解锁。</p>
+      </header>
+
+      <div className="settings-panel">
+        <SettingsRow
+          icon={LockKeyhole}
+          title="启用主密码保护"
+          description={
+            settings.masterPasswordEnabled
+              ? "启动后需要输入主密码，才能读取已保存的 SSH 密码和私钥口令。"
+              : "默认使用本机自动加密保存密码，启动时不弹解锁页。"
+          }
+        >
+          <SettingsToggle
+            checked={settings.masterPasswordEnabled}
+            label="启用主密码保护"
+            onChange={(checked) => {
+              if (checked) {
+                setEnabling(true);
+                setLocalError(null);
+              } else {
+                void disableMasterPassword();
+              }
+            }}
+          />
+        </SettingsRow>
+
+        {enabling ? (
+          <form className="settings-security-master-form" onSubmit={submitEnable}>
+            <label className="credential-field">
+              <span>主密码</span>
+              <input
+                className="settings-input"
+                type="password"
+                autoComplete="new-password"
+                value={masterPassword}
+                onChange={(event) => setMasterPassword(event.currentTarget.value)}
+              />
+            </label>
+            <label className="credential-field">
+              <span>确认主密码</span>
+              <input
+                className="settings-input"
+                type="password"
+                autoComplete="new-password"
+                value={confirmPassword}
+                onChange={(event) => setConfirmPassword(event.currentTarget.value)}
+              />
+            </label>
+            <div className="settings-security-master-actions">
+              <button className="settings-action-button" type="submit" disabled={busy}>
+                启用
+              </button>
+              <button
+                className="settings-action-button"
+                type="button"
+                disabled={busy}
+                onClick={() => {
+                  setEnabling(false);
+                  setLocalError(null);
+                  setMasterPassword("");
+                  setConfirmPassword("");
+                }}
+              >
+                取消
+              </button>
+            </div>
+          </form>
+        ) : null}
+
+        <p className="settings-note">
+          关闭时不会明文保存密码；开启后如果忘记主密码，已保存的密码和口令无法恢复。
+        </p>
+
+        {localError || error ? (
+          <p className="settings-path-error" role="alert">
+            {localError || error}
+          </p>
         ) : null}
       </div>
     </section>

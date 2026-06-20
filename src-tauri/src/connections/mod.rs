@@ -242,6 +242,7 @@ struct ConnectionStoreDocument {
     profiles: Vec<ConnectionProfile>,
 }
 
+#[allow(dead_code)]
 pub struct ConnectionStore {
     path: PathBuf,
     document: ConnectionStoreDocument,
@@ -262,6 +263,7 @@ fn connection_store_error_labels() -> JsonStoreErrorLabels {
     }
 }
 
+#[allow(dead_code)]
 impl ConnectionStore {
     pub fn load(path: PathBuf) -> Result<Self, AppError> {
         let mut document = load_json_document(

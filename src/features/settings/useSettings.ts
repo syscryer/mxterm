@@ -7,6 +7,7 @@ import {
   type BasicSettings,
   type FileTransferSettings,
   type MxtermSettings,
+  type SecuritySettings,
   type TerminalThemeSettings,
 } from "./settingsTypes";
 import type { LocalTerminalSettings } from "../terminal/localTerminalTypes";
@@ -38,6 +39,18 @@ export function useSettings() {
         ...current,
         appearance: {
           ...current.appearance,
+          ...update,
+        },
+      }),
+    );
+  }, []);
+
+  const updateSecurity = useCallback((update: Partial<SecuritySettings>) => {
+    setSettings((current) =>
+      normalizeSettings({
+        ...current,
+        security: {
+          ...current.security,
           ...update,
         },
       }),
@@ -88,6 +101,7 @@ export function useSettings() {
     updateBasic,
     updateFileTransfer,
     updateLocalTerminal,
+    updateSecurity,
     updateTerminalTheme,
     reset,
   };

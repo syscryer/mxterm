@@ -62,6 +62,7 @@ struct CredentialStoreDocument {
     profiles: Vec<CredentialProfile>,
 }
 
+#[allow(dead_code)]
 pub struct CredentialStore {
     path: PathBuf,
     document: CredentialStoreDocument,
@@ -82,6 +83,7 @@ fn credential_store_error_labels() -> JsonStoreErrorLabels {
     }
 }
 
+#[allow(dead_code)]
 impl CredentialStore {
     pub fn load(path: PathBuf) -> Result<Self, AppError> {
         let mut document = load_json_document(

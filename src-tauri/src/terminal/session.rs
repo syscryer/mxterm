@@ -9,7 +9,7 @@ use russh::keys::{load_secret_key, PrivateKeyWithHashAlg};
 use russh::{ChannelMsg, ChannelReadHalf, ChannelWriteHalf, Disconnect};
 use russh_sftp::client::SftpSession;
 use std::future::Future;
-use tauri::AppHandle;
+use tauri::{AppHandle, Manager};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::sync::Mutex;
@@ -21,22 +21,25 @@ use crate::connections::{
     normalize_terminal_encoding, ConnectionAdvancedConfig, ConnectionJumpConfig,
     ConnectionJumpKind, ConnectionProxyConfig, ConnectionProxyKind,
 };
-use crate::known_hosts::{host_key_info, KnownHostCheck, KnownHostStore};
+use crate::known_hosts::{host_key_info, KnownHostCheck};
 use crate::ssh_config::{
-    app_error_for_host_key_changed, app_error_for_host_key_unknown, known_host_store_path,
-    resolve_saved_connection, ResolvedSshConfig,
+    app_error_for_host_key_changed, app_error_for_host_key_unknown, resolve_saved_connection,
+    ResolvedSshConfig,
 };
+use crate::storage_repository::StorageRepository;
+use crate::storage_vault::{SecretStore, VaultState};
 
 const REMOTE_EXEC_TRANSFER_CHUNK_BYTES: usize = 256 * 1024;
 
 type SshHandle = client::Handle<KnownHostClient>;
 type ChannelWriter = ChannelWriteHalf<client::Msg>;
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 struct KnownHostClient {
     host: String,
     port: u16,
-    store_path: std::path::PathBuf,
+    app_data_dir: std::path::PathBuf,
+    secret_store: Arc<dyn SecretStore>,
 }
 
 impl client::Handler for KnownHostClient {
@@ -47,8 +50,13 @@ impl client::Handler for KnownHostClient {
         server_public_key: &russh::keys::ssh_key::PublicKey,
     ) -> Result<bool, Self::Error> {
         let host_key = host_key_info(&self.host, self.port, server_public_key);
-        let store = KnownHostStore::load(self.store_path.clone()).map_err(to_russh_error)?;
-        match store.check(&self.host, self.port, host_key) {
+        let store =
+            StorageRepository::open_root(self.app_data_dir.clone(), Arc::clone(&self.secret_store))
+                .map_err(to_russh_error)?;
+        match store
+            .known_host_check(&self.host, self.port, host_key)
+            .map_err(to_russh_error)?
+        {
             KnownHostCheck::Trusted { .. } => Ok(true),
             KnownHostCheck::Unknown { host_key } => {
                 Err(to_russh_error(app_error_for_host_key_unknown(&host_key)))
@@ -60,6 +68,20 @@ impl client::Handler for KnownHostClient {
     }
 }
 
+fn vault_secret_store(app: &AppHandle) -> Result<Arc<dyn SecretStore>, AppError> {
+    app.state::<VaultState>().secret_store()
+}
+
+fn ssh_app_data_dir(app: &AppHandle) -> Result<std::path::PathBuf, AppError> {
+    app.path().app_data_dir().map_err(|error| {
+        AppError::new(
+            "sqlite_store_path_failed",
+            "SQLite 存储路径获取失败。",
+            error,
+            true,
+        )
+    })
+}
 enum AuthMethod {
     Password(String),
     PrivateKey {
@@ -154,7 +176,8 @@ impl TerminalSession {
         let host_key_handler = KnownHostClient {
             host: host.clone(),
             port,
-            store_path: known_host_store_path(&app)?,
+            app_data_dir: ssh_app_data_dir(&app)?,
+            secret_store: vault_secret_store(&app)?,
         };
 
         emit_progress(&progress, "tcp_connecting", "正在建立 SSH TCP 连接...");
@@ -326,7 +349,8 @@ impl ReusableExecSession {
         let host_key_handler = KnownHostClient {
             host: config.host.clone(),
             port: config.port,
-            store_path: known_host_store_path(app)?,
+            app_data_dir: ssh_app_data_dir(app)?,
+            secret_store: vault_secret_store(app)?,
         };
 
         let (mut client, jump_client) = run_with_timeout(
@@ -545,7 +569,8 @@ impl ReusableForwardSession {
         let host_key_handler = KnownHostClient {
             host: config.host.clone(),
             port: config.port,
-            store_path: known_host_store_path(app)?,
+            app_data_dir: ssh_app_data_dir(app)?,
+            secret_store: vault_secret_store(app)?,
         };
 
         let (mut client, jump_client) = run_with_timeout(
@@ -650,7 +675,8 @@ impl ReusableSftpSession {
         let host_key_handler = KnownHostClient {
             host: config.host.clone(),
             port: config.port,
-            store_path: known_host_store_path(app)?,
+            app_data_dir: ssh_app_data_dir(app)?,
+            secret_store: vault_secret_store(app)?,
         };
 
         let (mut client, jump_client) = run_with_timeout(
@@ -867,7 +893,8 @@ async fn connect_target_client(
             let jump_host_key_handler = KnownHostClient {
                 host: jump.host.clone(),
                 port: jump.port,
-                store_path: known_host_store_path(app).map_err(to_russh_error)?,
+                app_data_dir: ssh_app_data_dir(app).map_err(to_russh_error)?,
+                secret_store: vault_secret_store(app).map_err(to_russh_error)?,
             };
 
             let mut jump_client = run_with_timeout(
