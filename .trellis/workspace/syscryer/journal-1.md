@@ -801,3 +801,40 @@ Latest user asked to analyze only, no source edits. Findings:
 ### Next Steps
 
 - None - task complete
+
+## Session 25: SQLite storage foundation
+
+**Date**: 2026-06-20
+**Task**: SQLite storage foundation
+**Branch**: `master`
+
+### Summary
+
+Added SQLite foundation schema, rusqlite dependency, storage_sqlite tests, and backend storage contract for schema-only Phase 1.
+
+### Main Changes
+
+- Added `src-tauri/src/storage_sqlite.rs` with SQLite schema bootstrap, schema version query, app data DB path helper, and known-host lowercase normalization.
+- Added `rusqlite` with bundled SQLite for Windows-friendly local storage.
+- Documented the Phase 1 boundary: SQLite is schema-only until keyring-backed atomic migration cuts production over.
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `8f3cf2f` | feat(storage): add sqlite foundation |
+
+### Testing
+
+- [OK] `cargo fmt --manifest-path src-tauri\Cargo.toml --check`
+- [OK] `cargo test --manifest-path src-tauri\Cargo.toml storage_sqlite --lib` (5 passed)
+- [OK] `cargo check --manifest-path src-tauri\Cargo.toml` (only existing `default_profile_id` dead_code warning)
+- [OK] `git diff --check`
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- Phase 2: keyring-backed SQLite migration and production cutover planning.
