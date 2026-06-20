@@ -32,15 +32,22 @@ const demoCredentials: CredentialProfile[] = [
   },
 ];
 
-export function useCredentials() {
+export function useCredentials(options: { enabled?: boolean } = {}) {
   const [credentials, setCredentials] = useState<CredentialProfile[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const isTauri = hasTauriRuntime();
+  const enabled = options.enabled ?? true;
 
   const reload = useCallback(async () => {
     setLoading(true);
     setError(null);
+
+    if (!enabled) {
+      setCredentials([]);
+      setLoading(false);
+      return;
+    }
 
     if (!isTauri) {
       setCredentials(demoCredentials);
@@ -55,7 +62,7 @@ export function useCredentials() {
     } finally {
       setLoading(false);
     }
-  }, [isTauri]);
+  }, [enabled, isTauri]);
 
   useEffect(() => {
     void reload();
@@ -106,7 +113,6 @@ export function useCredentials() {
     [credentials, error, loading, reload, remove, upsert],
   );
 }
-
 function normalizeCredentialInput(input: CredentialProfileInput): CredentialProfileInput {
   const trim = (value: string | undefined | null) => value?.trim() || undefined;
   return {

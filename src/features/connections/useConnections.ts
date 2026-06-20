@@ -140,15 +140,22 @@ const demoConnections: ConnectionProfile[] = [
   },
 ];
 
-export function useConnections() {
+export function useConnections(options: { enabled?: boolean } = {}) {
   const [connections, setConnections] = useState<ConnectionProfile[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const isTauri = hasTauriRuntime();
+  const enabled = options.enabled ?? true;
 
   const reload = useCallback(async () => {
     setLoading(true);
     setError(null);
+
+    if (!enabled) {
+      setConnections([]);
+      setLoading(false);
+      return;
+    }
 
     if (!isTauri) {
       setConnections(demoConnections);
@@ -163,7 +170,7 @@ export function useConnections() {
     } finally {
       setLoading(false);
     }
-  }, [isTauri]);
+  }, [enabled, isTauri]);
 
   useEffect(() => {
     void reload();
@@ -323,7 +330,6 @@ export function useConnections() {
     ],
   );
 }
-
 export function normalizeConnectionInput(input: ConnectionProfileInput): ConnectionProfileInput {
   const credentialMode = input.credential_mode || "inline";
   const inlineAuthKind =

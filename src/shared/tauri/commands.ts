@@ -50,11 +50,42 @@ import type {
   TunnelRuntimeCredentialInput,
 } from "../../features/tunnels/tunnelTypes";
 
+export interface SecretVaultStatus {
+  initialized: boolean;
+  unlocked: boolean;
+}
 export interface NativeWindowMaterial {
   id: number;
   name: string;
 }
 
+export function secretVaultStatus() {
+  return invoke<SecretVaultStatus>("secret_vault_status");
+}
+
+export function secretVaultUnlock(masterPassword: string) {
+  return invoke<SecretVaultStatus>("secret_vault_unlock", {
+    request: {
+      master_password: masterPassword,
+    },
+  });
+}
+
+export function secretVaultUnlockLocal() {
+  return invoke<SecretVaultStatus>("secret_vault_unlock_local");
+}
+
+export function secretVaultEnableMasterPassword(masterPassword: string) {
+  return invoke<SecretVaultStatus>("secret_vault_enable_master_password", {
+    request: {
+      master_password: masterPassword,
+    },
+  });
+}
+
+export function secretVaultDisableMasterPassword() {
+  return invoke<SecretVaultStatus>("secret_vault_disable_master_password");
+}
 export function connectionList() {
   return invoke<ConnectionProfile[]>("connection_list");
 }

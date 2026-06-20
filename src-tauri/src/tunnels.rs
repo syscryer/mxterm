@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::async_runtime::JoinHandle;
-use tauri::{AppHandle, Manager};
+use tauri::AppHandle;
 use tokio::net::TcpListener;
 use tokio::sync::{Mutex, RwLock};
 use uuid::Uuid;
@@ -12,6 +12,7 @@ use uuid::Uuid;
 use crate::app_error::AppError;
 use crate::ssh_config::{resolve_saved_connection, RuntimeCredentialInput};
 use crate::storage::{load_json_document, write_json_document, JsonStoreErrorLabels};
+use crate::storage_repository::StorageRepository;
 use crate::terminal::session::ReusableForwardSession;
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -99,6 +100,7 @@ struct TunnelStoreDocument {
     rules: Vec<TunnelRule>,
 }
 
+#[allow(dead_code)]
 pub struct TunnelStore {
     path: PathBuf,
     document: TunnelStoreDocument,
@@ -138,6 +140,7 @@ impl Default for TunnelKind {
     }
 }
 
+#[allow(dead_code)]
 impl TunnelStore {
     pub fn load(path: PathBuf) -> Result<Self, AppError> {
         let mut document = load_json_document(
@@ -206,21 +209,6 @@ impl TunnelStore {
         Ok(rule)
     }
 
-    pub fn delete(&mut self, id: &str) -> Result<(), AppError> {
-        let original_len = self.document.rules.len();
-        self.document.rules.retain(|rule| rule.id != id);
-        if self.document.rules.len() == original_len {
-            return Err(AppError::new(
-                "tunnel_rule_missing",
-                "隧道规则不存在。",
-                format!("rule_id={id}"),
-                false,
-            ));
-        }
-
-        self.save()
-    }
-
     fn save(&self) -> Result<(), AppError> {
         write_json_document(
             &self.path,
@@ -236,8 +224,8 @@ impl TunnelStore {
 impl TunnelManager {
     pub async fn list(&self, app: &AppHandle) -> Result<Vec<TunnelRuleWithState>, AppError> {
         let _guard = self.store_lock.lock().await;
-        let store = TunnelStore::load(tunnel_store_path(app)?)?;
-        Ok(self.attach_states(store.list()).await)
+        let rules = StorageRepository::open_app(app)?.tunnel_list()?;
+        Ok(self.attach_states(rules).await)
     }
 
     pub async fn upsert(
@@ -265,8 +253,7 @@ impl TunnelManager {
         }
 
         let _guard = self.store_lock.lock().await;
-        let mut store = TunnelStore::load(tunnel_store_path(app)?)?;
-        let rule = store.upsert(input, &now_timestamp()?)?;
+        let rule = StorageRepository::open_app(app)?.tunnel_upsert(input, &now_timestamp()?)?;
         self.attach_state(rule).await
     }
 
@@ -275,8 +262,7 @@ impl TunnelManager {
         let _ = self.stop_running(&rule_id).await;
 
         let _guard = self.store_lock.lock().await;
-        let mut store = TunnelStore::load(tunnel_store_path(app)?)?;
-        store.delete(&rule_id)?;
+        StorageRepository::open_app(app)?.tunnel_delete(&rule_id)?;
         self.states.write().await.remove(&rule_id);
         Ok(())
     }
@@ -306,7 +292,7 @@ impl TunnelManager {
     pub async fn autostart(&self, app: &AppHandle) -> Result<Vec<TunnelRuleWithState>, AppError> {
         let rules = {
             let _guard = self.store_lock.lock().await;
-            TunnelStore::load(tunnel_store_path(app)?)?.list()
+            StorageRepository::open_app(app)?.tunnel_list()?
         };
 
         let mut tasks = Vec::new();
@@ -334,15 +320,16 @@ impl TunnelManager {
     ) -> Result<TunnelRuleWithState, AppError> {
         let rule = {
             let _guard = self.store_lock.lock().await;
-            let store = TunnelStore::load(tunnel_store_path(app)?)?;
-            store.get(rule_id).ok_or_else(|| {
-                AppError::new(
-                    "tunnel_rule_missing",
-                    "隧道规则不存在。",
-                    format!("rule_id={rule_id}"),
-                    false,
-                )
-            })?
+            StorageRepository::open_app(app)?
+                .tunnel_get(rule_id)?
+                .ok_or_else(|| {
+                    AppError::new(
+                        "tunnel_rule_missing",
+                        "隧道规则不存在。",
+                        format!("rule_id={rule_id}"),
+                        false,
+                    )
+                })?
         };
 
         let has_running = { self.running.lock().await.contains_key(rule_id) };
@@ -439,8 +426,8 @@ impl TunnelManager {
 
     async fn load_rule(&self, app: &AppHandle, rule_id: &str) -> Result<TunnelRule, AppError> {
         let _guard = self.store_lock.lock().await;
-        TunnelStore::load(tunnel_store_path(app)?)?
-            .get(rule_id)
+        StorageRepository::open_app(app)?
+            .tunnel_get(rule_id)?
             .ok_or_else(|| {
                 AppError::new(
                     "tunnel_rule_missing",
@@ -494,18 +481,6 @@ impl TunnelManager {
             .await
             .insert(state.rule_id.clone(), state);
     }
-}
-
-pub fn tunnel_store_path(app: &AppHandle) -> Result<PathBuf, AppError> {
-    let app_data_dir = app.path().app_data_dir().map_err(|error| {
-        AppError::new(
-            "tunnel_store_path_failed",
-            "隧道规则路径获取失败。",
-            error,
-            true,
-        )
-    })?;
-    Ok(app_data_dir.join("tunnels.json"))
 }
 
 async fn run_tunnel_accept_loop(
@@ -599,7 +574,9 @@ fn resolve_stopped_rule(
     }
 }
 
-fn validate_tunnel_rule_input(input: TunnelRuleInput) -> Result<TunnelRuleInput, AppError> {
+pub(crate) fn validate_tunnel_rule_input(
+    input: TunnelRuleInput,
+) -> Result<TunnelRuleInput, AppError> {
     if input.kind != TunnelKind::Local {
         return Err(AppError::new(
             "tunnel_kind_unsupported",

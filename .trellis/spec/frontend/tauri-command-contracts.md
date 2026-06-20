@@ -7,10 +7,17 @@
 - Trigger: a React feature calls, changes, or adds a Tauri command.
 - Source files: `src/shared/tauri/commands.ts`, `src/features/connections/connectionTypes.ts`, and `src/features/terminal/terminalTypes.ts`.
 - Frontend code must call Rust through typed wrapper functions instead of scattering `invoke(...)` calls through UI components.
+- Secret vault startup is settings-driven: if `settings.security.masterPasswordEnabled` is false, `useSecretVault` calls `secretVaultUnlockLocal()` and should not show the unlock gate; if true, the gate calls `secretVaultUnlock(masterPassword)`.
+- The Settings security page owns the master-password protection switch. Turning it on must call `secretVaultEnableMasterPassword(masterPassword)` before persisting `masterPasswordEnabled: true`; turning it off must call `secretVaultDisableMasterPassword()` before persisting false.
 
 ### 2. Signatures
 
 ```ts
+secretVaultStatus(): Promise<SecretVaultStatus>
+secretVaultUnlock(masterPassword: string): Promise<SecretVaultStatus>
+secretVaultUnlockLocal(): Promise<SecretVaultStatus>
+secretVaultEnableMasterPassword(masterPassword: string): Promise<SecretVaultStatus>
+secretVaultDisableMasterPassword(): Promise<SecretVaultStatus>
 connectionList(): Promise<ConnectionProfile[]>
 connectionUpsert(request: ConnectionProfileInput): Promise<ConnectionProfile>
 connectionSetFavorite(connectionId: string, isFavorite: boolean): Promise<ConnectionProfile>
@@ -143,6 +150,10 @@ type HostKeyInfo = {
 
 | Condition | Frontend behavior |
 | --- | --- |
+| Vault protection disabled | Auto-unlock with `secretVaultUnlockLocal()` and enable connection/credential hooks only after `status.unlocked`. |
+| Vault protection enabled and locked | Show `SecretVaultGate` and keep storage hooks disabled until unlock succeeds. |
+| Enabling master password from Settings | Require non-empty matching password fields, call `secretVaultEnableMasterPassword`, then persist the setting only on success. |
+| Disabling master password from Settings | Call `secretVaultDisableMasterPassword` and persist the setting only on success. |
 | `connectionList` fails in a browser preview without Tauri | Show the static fallback profile from `useConnections` so the layout remains inspectable. |
 | `connectionUpsert` rejects validation | Surface the Rust `AppError.message` as user-facing form feedback. |
 | `connectionTestProfile` rejects validation or connection setup | Keep the dialog open, show the Rust `AppError.message`, and do not add or update the connection list. |
@@ -170,6 +181,7 @@ type HostKeyInfo = {
 - Good: `ConnectionDialog` holds editable strings, clears fields when credential or auth mode changes, and delegates normalization to `useConnections` before saving.
 - Good: `ConnectionDialog` tests the current unsaved form through `connectionTestProfile(input)`, leaving the connection repository unchanged until the user clicks save.
 - Good: `SettingsView` edits saved login-account records through `useCredentials`; it asks for username plus password or private key material, and never asks for host or port in account management.
+- Good: `SettingsView` security section enables master-password protection only after vault rekey succeeds, and default startup keeps the workspace usable without an unlock prompt.
 - Base: `ConnectionPane` displays `username@host:port`, calls `onOpen(connection)`, and does not know about Tauri details.
 - Bad: A component calls `invoke("connection_upsert", ...)` directly, tests an unsaved dialog form by saving/upserting it first, stores runtime session ids inside `ConnectionProfile`, or sends raw passwords to remote-file commands.
 

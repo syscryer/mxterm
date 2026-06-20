@@ -13,11 +13,11 @@ use tokio::sync::Mutex;
 use crate::app_error::AppError;
 use crate::connections::{
     parse_remote_system_probe, ConnectionAuthKind, ConnectionProfile, ConnectionProfileInput,
-    ConnectionStore, REMOTE_SYSTEM_PROBE_COMMAND,
+    REMOTE_SYSTEM_PROBE_COMMAND,
 };
-use crate::credentials::{CredentialProfile, CredentialProfileInput, CredentialStore};
+use crate::credentials::{CredentialProfile, CredentialProfileInput};
 use crate::events::RemoteFileTransferProgressEvent;
-use crate::known_hosts::{HostKeyInfo, KnownHostStore};
+use crate::known_hosts::HostKeyInfo;
 use crate::remote_files::{
     RemoteFileArchiveUploadResult, RemoteFileEntry, RemoteFileEntryMetadata, RemoteFileManager,
     RemoteFileMetadata, RemoteFilePathCheckResult, RemoteFileReadResult, RemoteFileUploadResult,
@@ -28,10 +28,11 @@ use crate::remote_monitor::{
     RemoteProcessActionResult, RemoteProcessSignal,
 };
 use crate::ssh_config::{
-    connection_store_path, credential_store_path, known_host_store_path, load_connection_profile,
-    resolve_saved_connection, resolve_transient_connection, ResolvedSshConfig,
-    RuntimeCredentialInput,
+    load_connection_profile, resolve_saved_connection, resolve_transient_connection,
+    ResolvedSshConfig, RuntimeCredentialInput,
 };
+use crate::storage_repository::StorageRepository;
+use crate::storage_vault::{VaultState, VaultStatus};
 use crate::terminal::local::list_profiles as list_local_profiles;
 pub use crate::terminal::local_profiles::{LocalTerminalProfile, LocalTerminalProfileInput};
 use crate::terminal::manager::TerminalManager;
@@ -381,6 +382,57 @@ pub struct ConnectionActivityRequest {
     pub connection_id: String,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct SecretVaultUnlockRequest {
+    pub master_password: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SecretVaultEnableMasterPasswordRequest {
+    pub master_password: String,
+}
+
+#[tauri::command]
+pub fn secret_vault_status(
+    app: AppHandle,
+    vault_state: State<'_, VaultState>,
+) -> Result<VaultStatus, AppError> {
+    vault_state.status(app_data_dir(&app)?)
+}
+
+#[tauri::command]
+pub fn secret_vault_unlock(
+    app: AppHandle,
+    vault_state: State<'_, VaultState>,
+    request: SecretVaultUnlockRequest,
+) -> Result<VaultStatus, AppError> {
+    vault_state.unlock(app_data_dir(&app)?, &request.master_password)
+}
+
+#[tauri::command]
+pub fn secret_vault_unlock_local(
+    app: AppHandle,
+    vault_state: State<'_, VaultState>,
+) -> Result<VaultStatus, AppError> {
+    vault_state.unlock_local(app_data_dir(&app)?)
+}
+
+#[tauri::command]
+pub fn secret_vault_enable_master_password(
+    app: AppHandle,
+    vault_state: State<'_, VaultState>,
+    request: SecretVaultEnableMasterPasswordRequest,
+) -> Result<VaultStatus, AppError> {
+    vault_state.enable_master_password(app_data_dir(&app)?, &request.master_password)
+}
+
+#[tauri::command]
+pub fn secret_vault_disable_master_password(
+    app: AppHandle,
+    vault_state: State<'_, VaultState>,
+) -> Result<VaultStatus, AppError> {
+    vault_state.disable_master_password(app_data_dir(&app)?)
+}
 #[tauri::command]
 pub async fn terminal_connect(
     app: AppHandle,
@@ -1244,8 +1296,7 @@ pub async fn remote_file_download_to_local(
 
 #[tauri::command]
 pub async fn connection_list(app: AppHandle) -> Result<Vec<ConnectionProfile>, AppError> {
-    let store = ConnectionStore::load(connection_store_path(&app)?)?;
-    Ok(store.list())
+    StorageRepository::open_app(&app)?.connection_list()
 }
 
 #[tauri::command]
@@ -1254,8 +1305,7 @@ pub async fn connection_upsert(
     request: ConnectionProfileInput,
 ) -> Result<ConnectionProfile, AppError> {
     let _guard = connection_store_lock().lock().await;
-    let mut store = ConnectionStore::load(connection_store_path(&app)?)?;
-    store.upsert(request, &now_timestamp()?)
+    StorageRepository::open_app(&app)?.connection_upsert(request, &now_timestamp()?)
 }
 
 #[tauri::command]
@@ -1264,8 +1314,7 @@ pub async fn connection_set_favorite(
     request: ConnectionFavoriteRequest,
 ) -> Result<ConnectionProfile, AppError> {
     let _guard = connection_store_lock().lock().await;
-    let mut store = ConnectionStore::load(connection_store_path(&app)?)?;
-    store.set_favorite(
+    StorageRepository::open_app(&app)?.connection_set_favorite(
         request.connection_id.trim(),
         request.is_favorite,
         &now_timestamp()?,
@@ -1278,21 +1327,19 @@ pub async fn connection_mark_connected(
     request: ConnectionActivityRequest,
 ) -> Result<ConnectionProfile, AppError> {
     let _guard = connection_store_lock().lock().await;
-    let mut store = ConnectionStore::load(connection_store_path(&app)?)?;
-    store.mark_connected(request.connection_id.trim(), &now_timestamp()?)
+    StorageRepository::open_app(&app)?
+        .connection_mark_connected(request.connection_id.trim(), &now_timestamp()?)
 }
 
 #[tauri::command]
 pub async fn connection_delete(app: AppHandle, id: String) -> Result<(), AppError> {
     let _guard = connection_store_lock().lock().await;
-    let mut store = ConnectionStore::load(connection_store_path(&app)?)?;
-    store.delete(id.trim())
+    StorageRepository::open_app(&app)?.connection_delete(id.trim())
 }
 
 #[tauri::command]
 pub async fn credential_list(app: AppHandle) -> Result<Vec<CredentialProfile>, AppError> {
-    let store = CredentialStore::load(credential_store_path(&app)?)?;
-    Ok(store.list())
+    StorageRepository::open_app(&app)?.credential_list()
 }
 
 #[tauri::command]
@@ -1301,8 +1348,7 @@ pub async fn credential_upsert(
     request: CredentialProfileInput,
 ) -> Result<CredentialProfile, AppError> {
     let _guard = credential_store_lock().lock().await;
-    let mut store = CredentialStore::load(credential_store_path(&app)?)?;
-    store.upsert(request, &now_timestamp()?)
+    StorageRepository::open_app(&app)?.credential_upsert(request, &now_timestamp()?)
 }
 
 #[tauri::command]
@@ -1319,24 +1365,7 @@ pub async fn credential_delete(app: AppHandle, id: String) -> Result<(), AppErro
 
     let _connection_guard = connection_store_lock().lock().await;
     let _credential_guard = credential_store_lock().lock().await;
-    let connection_store = ConnectionStore::load(connection_store_path(&app)?)?;
-    let references = connection_store
-        .list()
-        .into_iter()
-        .filter(|profile| profile.credential_id.as_deref() == Some(credential_id))
-        .map(|profile| profile.name)
-        .collect::<Vec<_>>();
-    if !references.is_empty() {
-        return Err(AppError::new(
-            "credential_in_use",
-            "该凭据正在被连接使用，请先修改连接。",
-            references.join(", "),
-            true,
-        ));
-    }
-
-    let mut store = CredentialStore::load(credential_store_path(&app)?)?;
-    store.delete(credential_id)
+    StorageRepository::open_app(&app)?.credential_delete(credential_id)
 }
 
 #[tauri::command]
@@ -1345,8 +1374,7 @@ pub async fn known_host_trust(
     request: KnownHostTrustRequest,
 ) -> Result<(), AppError> {
     let _guard = known_host_store_lock().lock().await;
-    let mut store = KnownHostStore::load(known_host_store_path(&app)?)?;
-    store.trust(request.host_key, &now_timestamp()?)?;
+    StorageRepository::open_app(&app)?.known_host_trust(request.host_key, &now_timestamp()?)?;
     Ok(())
 }
 
@@ -1417,10 +1445,10 @@ pub async fn connection_probe_system(
     let output = output?;
     let system = parse_remote_system_probe(&output.stdout);
     let _guard = connection_store_lock().lock().await;
-    let mut store = ConnectionStore::load(connection_store_path(&app)?)?;
+    let repo = StorageRepository::open_app(&app)?;
 
     if system.is_empty() {
-        return store.get(&config.connection_id).ok_or_else(|| {
+        return repo.connection_get(&config.connection_id)?.ok_or_else(|| {
             AppError::new(
                 "connection_missing",
                 "连接不存在。",
@@ -1430,7 +1458,7 @@ pub async fn connection_probe_system(
         });
     }
 
-    store.update_remote_system(&config.connection_id, system, &now_timestamp()?)
+    repo.connection_update_remote_system(&config.connection_id, system, &now_timestamp()?)
 }
 
 #[tauri::command]
@@ -2250,6 +2278,17 @@ mod window_material {
             ))
         }
     }
+}
+
+fn app_data_dir(app: &AppHandle) -> Result<PathBuf, AppError> {
+    app.path().app_data_dir().map_err(|error| {
+        AppError::new(
+            "sqlite_store_path_failed",
+            "SQLite 存储路径获取失败。",
+            error,
+            true,
+        )
+    })
 }
 
 fn now_timestamp() -> Result<String, AppError> {

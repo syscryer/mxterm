@@ -13,6 +13,7 @@ import {
 export type SettingsSectionId =
   | "basic"
   | "credentials"
+  | "security"
   | "appearance"
   | "terminalTheme"
   | "localTerminal";
@@ -67,6 +68,10 @@ export interface AppearanceSettings {
   windowMaterial: WindowMaterialMode;
 }
 
+export interface SecuritySettings {
+  masterPasswordEnabled: boolean;
+}
+
 export interface TerminalThemeSettings {
   scheme: TerminalColorSchemeId;
 }
@@ -86,6 +91,7 @@ export interface MxtermSettings {
   basic: BasicSettings;
   fileTransfer: FileTransferSettings;
   localTerminal: LocalTerminalSettings;
+  security: SecuritySettings;
   terminalTheme: TerminalThemeSettings;
 }
 
@@ -198,6 +204,9 @@ export const defaultSettings: MxtermSettings = {
     customProfiles: [],
     reopenLastLocalWorkspace: true,
   },
+  security: {
+    masterPasswordEnabled: false,
+  },
   appearance: {
     accentColor: "blue",
     accentColorCustom: "#2374C6",
@@ -225,6 +234,7 @@ export function normalizeSettings(value: unknown): MxtermSettings {
   const basic = isRecord(record.basic) ? record.basic : {};
   const fileTransfer = isRecord(record.fileTransfer) ? record.fileTransfer : {};
   const localTerminal = isRecord(record.localTerminal) ? record.localTerminal : {};
+  const security = isRecord(record.security) ? record.security : {};
   const appearance = isRecord(record.appearance) ? record.appearance : {};
   const terminalTheme = isRecord(record.terminalTheme) ? record.terminalTheme : {};
 
@@ -294,6 +304,12 @@ export function normalizeSettings(value: unknown): MxtermSettings {
       reopenLastLocalWorkspace: normalizeBoolean(
         localTerminal.reopenLastLocalWorkspace,
         defaultSettings.localTerminal.reopenLastLocalWorkspace,
+      ),
+    },
+    security: {
+      masterPasswordEnabled: normalizeBoolean(
+        security.masterPasswordEnabled,
+        defaultSettings.security.masterPasswordEnabled,
       ),
     },
     appearance: {

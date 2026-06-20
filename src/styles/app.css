@@ -497,6 +497,20 @@ button {
   font-size: 12px;
 }
 
+.settings-security-master-form {
+  border-top: 1px solid var(--mx-border);
+  display: grid;
+  gap: 12px;
+  margin-top: 4px;
+  padding: 14px;
+}
+
+.settings-security-master-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
 .settings-local-terminal-default {
   min-width: 0;
   display: grid;
@@ -8569,4 +8583,177 @@ body {
 
 .tunnel-dialog-icon-head.warning .ui-icon {
   color: var(--mx-danger);
+}
+
+.vault-gate-overlay {
+  position: fixed;
+  inset: 36px 0 0;
+  z-index: 35;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: color-mix(in srgb, var(--mx-bg) 58%, transparent);
+  backdrop-filter: blur(18px) saturate(1.08);
+  -webkit-backdrop-filter: blur(18px) saturate(1.08);
+}
+
+.vault-gate-panel {
+  width: min(384px, calc(100vw - 48px));
+  border: 1px solid var(--mx-glass-border);
+  border-radius: 8px;
+  display: grid;
+  gap: 14px;
+  padding: 16px;
+  color: var(--mx-text);
+  background: var(--mx-glass-bg-strong);
+  box-shadow: var(--mx-glass-shadow);
+}
+
+.vault-gate-head {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 36px minmax(0, 1fr);
+  align-items: center;
+  gap: 11px;
+}
+
+.vault-gate-icon {
+  width: 36px;
+  height: 36px;
+  border: 1px solid color-mix(in srgb, var(--mx-primary) 24%, var(--mx-line));
+  border-radius: 8px;
+  display: grid;
+  place-items: center;
+  color: var(--mx-primary);
+  background: color-mix(in srgb, var(--mx-primary) 9%, var(--mx-panel));
+}
+
+.vault-gate-head span:last-child {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+
+.vault-gate-head strong {
+  color: var(--mx-text);
+  font-size: 15px;
+  font-weight: 620;
+}
+
+.vault-gate-head small,
+.vault-gate-note,
+.vault-gate-loading {
+  color: var(--mx-muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.vault-gate-field {
+  min-width: 0;
+  display: grid;
+  gap: 6px;
+  color: var(--mx-muted);
+  font-size: 12px;
+  font-weight: 520;
+}
+
+.vault-gate-secret-field {
+  min-width: 0;
+  height: 34px;
+  border: 1px solid var(--mx-line);
+  border-radius: 8px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 32px;
+  align-items: center;
+  background: var(--mx-panel);
+}
+
+.vault-gate-secret-field:focus-within {
+  border-color: var(--mx-primary);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--mx-primary) 16%, transparent);
+}
+
+.vault-gate-secret-field input {
+  min-width: 0;
+  width: 100%;
+  border: 0;
+  padding: 0 0 0 10px;
+  color: var(--mx-text);
+  background: transparent;
+  font-size: 13px;
+}
+
+.vault-gate-secret-field input:focus {
+  box-shadow: none;
+}
+
+.vault-gate-secret-field button {
+  width: 30px;
+  height: 30px;
+  border: 0;
+  border-radius: 7px;
+  display: grid;
+  place-items: center;
+  color: var(--mx-subtle);
+  background: transparent;
+}
+
+.vault-gate-secret-field button:hover {
+  color: var(--mx-text);
+  background: var(--mx-active);
+}
+
+.vault-gate-loading {
+  min-height: 34px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.vault-gate-note {
+  margin: -2px 0 0;
+}
+
+.vault-gate-error {
+  margin: 0;
+  border-radius: 7px;
+  padding: 7px 9px;
+  color: color-mix(in srgb, var(--mx-danger) 86%, var(--mx-text));
+  background: color-mix(in srgb, var(--mx-danger) 10%, var(--mx-panel));
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.vault-gate-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.vault-gate-actions button {
+  min-width: 104px;
+  height: 32px;
+  border: 1px solid var(--mx-line);
+  border-radius: 7px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 0 12px;
+  font-size: 12px;
+  font-weight: 560;
+}
+
+.vault-gate-actions button:disabled {
+  opacity: 0.62;
+  cursor: default;
+}
+
+.spinning {
+  animation: mx-spin 800ms linear infinite;
+}
+
+@keyframes mx-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
