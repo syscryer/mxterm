@@ -447,6 +447,8 @@ credential:<credential_id>:private_key_passphrase
 - SQLite tables `connections` and `credentials` may contain only `secret_ref` and `secret_slot_id` for SSH login secrets. They must not contain plaintext password or passphrase columns.
 - `VaultSecretStore` stores secrets in app data `secrets.enc`, encrypted with Argon2id-derived AES-256-GCM. `VaultState` keeps the unlocked store in memory for the current run.
 - Default master-password protection is off. In this mode `secret_vault_unlock_local` creates/reads app-data `secrets.local.key` and uses it as the vault password so app startup does not show an unlock gate while SSH secrets still avoid SQLite/JSON plaintext.
+- If `secrets.enc` already exists but `secrets.local.key` is missing, `secret_vault_unlock_local` must not blindly create a new local key and try to decrypt the old vault. It should report `vault_local_key_missing` or, when `.migrated.bak` / legacy JSON contains matching plaintext, rebuild an encrypted vault from those backups and preserve the old vault as `secrets.enc.recovered*.bak`.
+- If local-key decrypt fails and the local key file is newer than `secrets.enc`, treat it as a likely regenerated local key and allow the same legacy-backup recovery. If the local key is older than the vault, treat the vault as likely master-password protected and return `vault_unlock_failed` instead of bypassing the master-password model.
 - When users enable master-password protection, `secret_vault_enable_master_password` re-encrypts the current unlocked vault plaintext with the supplied master password. Disabling protection re-encrypts the same plaintext back to the local key. Existing secrets must survive both transitions. Rekey commands must fail with `vault_locked` when no unlocked store is present; they must not synthesize an empty vault as a fallback.
 - Migration reads legacy JSON, writes non-empty SSH login secrets to vault, writes structured rows to SQLite in one transaction, sets `app_meta.storage_migrated_from_json=true`, then keeps legacy JSON files as `.migrated.bak` copies.
 - When the migrated marker is already true, `StorageMigrator::migrate()` must still repair missing vault entries for SQLite `secret_ref` rows from `.migrated.bak` or legacy JSON when matching plaintext exists. It must not overwrite existing vault entries, recreate secrets for deleted SQLite rows, or synthesize secrets when no legacy plaintext is available.
@@ -464,6 +466,7 @@ credential:<credential_id>:private_key_passphrase
 | Expected secret is missing | `secret_missing` | true |
 | Empty master password when enabling/unlocking | `vault_password_missing` | true |
 | Wrong master password or local key cannot unlock a master-protected vault | `vault_unlock_failed` | true |
+| Existing local vault has no local key and cannot recover from legacy backup | `vault_local_key_missing` or `vault_unlock_failed` | true |
 | Enable/disable master-password protection while vault is locked | `vault_locked` | true |
 | SQLite migration write/query fails | `storage_migration_sqlite_failed` | true |
 | Legacy JSON backup after migration fails | `storage_migration_backup_failed` | true |
@@ -473,16 +476,18 @@ credential:<credential_id>:private_key_passphrase
 ### 5. Good / Base / Bad Cases
 
 - Good: default startup calls `secret_vault_unlock_local` before repository commands, so connection and credential lists load without a master-password prompt.
+- Good: a migrated install whose local key was regenerated recovers `secrets.enc` from `.migrated.bak`, keeps a `secrets.enc.recovered*.bak` copy of the old vault, and then allows SQLite connection rows to list normally.
 - Good: enabling or disabling master-password protection rekeys the vault and preserves an existing saved SSH password.
 - Good: a legacy inline-password connection migrates to a SQLite connection row with `inline_secret_ref`, while the password value is stored only in vault and `connection_list` returns no password.
 - Good: `terminal_connect`, SFTP, monitor, and tunnel start all call `resolve_saved_connection(...)`, which reads SQLite and vault through the same repository path.
 - Base: a new install with no JSON files initializes `mxterm.db`, treats migration as complete, and uses empty SQLite tables.
-- Bad: a command writes `connections.json` after Phase 2, stores a password/passphrase in SQLite, reads host keys from `known_hosts.json`, or silently falls back to plaintext storage when vault fails.
+- Bad: a command writes `connections.json` after Phase 2, stores a password/passphrase in SQLite, reads host keys from `known_hosts.json`, blindly creates a new local key for an existing vault, or silently falls back to plaintext storage when vault fails.
 
 ### 6. Tests Required
 
 - Unit-test stable secret account generation and fake secret store set/get/delete/error mapping.
 - Unit-test local-key unlock round-trips secrets across `VaultState` instances.
+- Unit-test regenerated/missing local-key recovery from `.migrated.bak`, including that the old vault is copied to `secrets.enc.recovered*.bak` and recovered secrets are readable from vault.
 - Unit-test local-key -> master-password -> local-key rekey preserves existing secrets and rejects local unlock while master protection is active.
 - Unit-test rekey commands reject locked state with `vault_locked` instead of creating an empty vault.
 - Unit-test migration of legacy inline password, inline private-key passphrase, saved credential password, saved credential private-key passphrase, known_hosts lowercase normalization, and tunnels round-trip.

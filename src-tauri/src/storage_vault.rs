@@ -11,6 +11,8 @@ use base64::engine::{general_purpose::STANDARD, Engine as _};
 use serde::{Deserialize, Serialize};
 
 use crate::app_error::AppError;
+use crate::connections::{ConnectionAuthKind, ConnectionStore};
+use crate::credentials::CredentialStore;
 
 pub const VAULT_SERVICE: &str = "mxterm";
 pub const VAULT_FILE_NAME: &str = "secrets.enc";
@@ -203,8 +205,13 @@ pub struct VaultState {
 impl VaultState {
     pub fn unlock_local(&self, root: impl AsRef<Path>) -> Result<VaultStatus, AppError> {
         let root = root.as_ref();
-        let master_password = local_master_password(root)?;
-        self.unlock(root, &master_password)
+        match self.unlock_local_strict(root) {
+            Ok(status) => Ok(status),
+            Err(error) if local_recovery_allowed(root, &error) => {
+                self.recover_local_vault_from_legacy(root)
+            }
+            Err(error) => Err(error),
+        }
     }
 
     pub fn unlock(
@@ -249,7 +256,7 @@ impl VaultState {
 
     pub fn disable_master_password(&self, root: impl AsRef<Path>) -> Result<VaultStatus, AppError> {
         let root = root.as_ref();
-        let master_password = local_master_password(root)?;
+        let master_password = local_master_password(root, true)?;
         self.rekey(root, &master_password)
     }
 
@@ -275,6 +282,30 @@ impl VaultState {
         Ok(store)
     }
 
+    fn unlock_local_strict(&self, root: &Path) -> Result<VaultStatus, AppError> {
+        let master_password = local_master_password(root, !VaultSecretStore::exists(root))?;
+        self.unlock(root, &master_password)
+    }
+
+    fn recover_local_vault_from_legacy(&self, root: &Path) -> Result<VaultStatus, AppError> {
+        let Some(plaintext) = legacy_vault_plaintext(root)? else {
+            return Err(vault_unlock_failed());
+        };
+        let master_password = local_master_password(root, true)?;
+        backup_existing_vault(root)?;
+        let store = Arc::new(VaultSecretStore::replace_with_plaintext(
+            root,
+            &master_password,
+            plaintext,
+        )?);
+        *self.store.lock().map_err(|_| {
+            secret_store_write_failed(VAULT_FILE_NAME, "vault state lock poisoned")
+        })? = Some(store);
+        Ok(VaultStatus {
+            initialized: true,
+            unlocked: true,
+        })
+    }
     fn rekey(
         &self,
         root: impl AsRef<Path>,
@@ -559,12 +590,16 @@ fn random_array<const N: usize>() -> Result<[u8; N], AppError> {
     Ok(bytes)
 }
 
-fn local_master_password(root: &Path) -> Result<String, AppError> {
+fn local_master_password(root: &Path, create_if_missing: bool) -> Result<String, AppError> {
     let path = root.join(LOCAL_KEY_FILE_NAME);
     if path.exists() {
         return fs::read_to_string(&path)
             .map(|value| value.trim().to_string())
             .map_err(|error| secret_store_read_failed(LOCAL_KEY_FILE_NAME, error));
+    }
+
+    if !create_if_missing {
+        return Err(vault_local_key_missing());
     }
 
     if let Some(parent) = path.parent() {
@@ -577,6 +612,139 @@ fn local_master_password(root: &Path) -> Result<String, AppError> {
     Ok(key)
 }
 
+fn local_recovery_allowed(root: &Path, error: &AppError) -> bool {
+    match error.code.as_str() {
+        "vault_local_key_missing" => true,
+        "vault_unlock_failed" => local_key_looks_regenerated(root),
+        _ => false,
+    }
+}
+
+fn local_key_looks_regenerated(root: &Path) -> bool {
+    let vault_modified = fs::metadata(root.join(VAULT_FILE_NAME))
+        .and_then(|metadata| metadata.modified())
+        .ok();
+    let key_modified = fs::metadata(root.join(LOCAL_KEY_FILE_NAME))
+        .and_then(|metadata| metadata.modified())
+        .ok();
+    matches!((vault_modified, key_modified), (Some(vault), Some(key)) if key > vault)
+}
+
+fn legacy_vault_plaintext(root: &Path) -> Result<Option<VaultPlaintext>, AppError> {
+    let connections_path = legacy_repair_path(root, "connections.json");
+    let credentials_path = legacy_repair_path(root, "credentials.json");
+    if !connections_path.exists() && !credentials_path.exists() {
+        return Ok(None);
+    }
+
+    let mut plaintext = VaultPlaintext {
+        version: VAULT_VERSION,
+        secrets: BTreeMap::new(),
+    };
+
+    for profile in ConnectionStore::load(connections_path)?.list() {
+        match profile.inline_auth_kind {
+            Some(ConnectionAuthKind::Password) => {
+                if let Some(secret) = non_empty_secret(profile.inline_password.as_deref()) {
+                    let reference =
+                        SecretReference::connection(&profile.id, SecretKind::InlinePassword);
+                    plaintext
+                        .secrets
+                        .insert(reference.account, secret.to_string());
+                }
+            }
+            Some(ConnectionAuthKind::PrivateKey) => {
+                if let Some(secret) =
+                    non_empty_secret(profile.inline_private_key_passphrase.as_deref())
+                {
+                    let reference = SecretReference::connection(
+                        &profile.id,
+                        SecretKind::InlinePrivateKeyPassphrase,
+                    );
+                    plaintext
+                        .secrets
+                        .insert(reference.account, secret.to_string());
+                }
+            }
+            None => {}
+        }
+    }
+
+    for credential in CredentialStore::load(credentials_path)?.list() {
+        match credential.kind {
+            ConnectionAuthKind::Password => {
+                if let Some(secret) = non_empty_secret(credential.password.as_deref()) {
+                    let reference =
+                        SecretReference::credential(&credential.id, SecretKind::Password);
+                    plaintext
+                        .secrets
+                        .insert(reference.account, secret.to_string());
+                }
+            }
+            ConnectionAuthKind::PrivateKey => {
+                if let Some(secret) = non_empty_secret(credential.private_key_passphrase.as_deref())
+                {
+                    let reference = SecretReference::credential(
+                        &credential.id,
+                        SecretKind::PrivateKeyPassphrase,
+                    );
+                    plaintext
+                        .secrets
+                        .insert(reference.account, secret.to_string());
+                }
+            }
+        }
+    }
+
+    Ok(Some(plaintext))
+}
+
+fn legacy_repair_path(root: &Path, file_name: &str) -> PathBuf {
+    let primary = root.join(file_name);
+    let migrated = migrated_backup_path(&primary);
+    if migrated.exists() {
+        migrated
+    } else {
+        primary
+    }
+}
+
+fn migrated_backup_path(path: &Path) -> PathBuf {
+    let mut backup = path.as_os_str().to_os_string();
+    backup.push(".migrated.bak");
+    PathBuf::from(backup)
+}
+
+fn non_empty_secret(secret: Option<&str>) -> Option<&str> {
+    secret.map(str::trim).filter(|value| !value.is_empty())
+}
+
+fn backup_existing_vault(root: &Path) -> Result<(), AppError> {
+    let source = root.join(VAULT_FILE_NAME);
+    if !source.exists() {
+        return Ok(());
+    }
+    let backup = next_vault_recovery_backup_path(root);
+    fs::copy(&source, backup).map_err(|error| secret_store_write_failed(VAULT_FILE_NAME, error))?;
+    Ok(())
+}
+
+fn next_vault_recovery_backup_path(root: &Path) -> PathBuf {
+    let first = root.join("secrets.enc.recovered.bak");
+    if !first.exists() {
+        return first;
+    }
+    for index in 1..1000 {
+        let candidate = root.join(format!("secrets.enc.recovered.{index}.bak"));
+        if !candidate.exists() {
+            return candidate;
+        }
+    }
+    root.join(format!(
+        "secrets.enc.recovered.{}.bak",
+        uuid::Uuid::new_v4()
+    ))
+}
 fn decode_base64(value: &str, label: &str) -> Result<Vec<u8>, AppError> {
     STANDARD
         .decode(value)
@@ -639,6 +807,15 @@ fn vault_unlock_failed() -> AppError {
         "vault_unlock_failed",
         "主密码不正确，无法解锁加密保险库。",
         "decrypt failed",
+        true,
+    )
+}
+
+fn vault_local_key_missing() -> AppError {
+    AppError::new(
+        "vault_local_key_missing",
+        "本机加密 key 缺失，无法自动解锁保险库。",
+        "local key is missing for existing vault",
         true,
     )
 }
@@ -828,5 +1005,101 @@ mod tests {
         let error = VaultSecretStore::open(&root, "wrong-password").unwrap_err();
 
         assert_eq!(error.code, "vault_unlock_failed");
+    }
+    #[test]
+    fn vault_state_recovers_local_vault_from_legacy_after_local_key_regenerated() {
+        let root = std::env::temp_dir().join(format!(
+            "mxterm-vault-recover-regenerated-key-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        write_legacy_vault_backup(&root);
+        let reference = SecretReference::connection("conn-json", SecretKind::InlinePassword);
+        let credential_reference = SecretReference::credential("cred-json", SecretKind::Password);
+
+        let state = VaultState::default();
+        state.unlock_local(&root).unwrap();
+        state
+            .secret_store()
+            .unwrap()
+            .set_secret(&reference, "old-secret")
+            .unwrap();
+        drop(state);
+
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::fs::write(root.join("secrets.local.key"), "regenerated-local-key").unwrap();
+
+        let recovered = VaultState::default();
+        let status = recovered.unlock_local(&root).unwrap();
+
+        assert!(status.unlocked);
+        assert!(root.join("secrets.enc.recovered.bak").exists());
+        assert_eq!(
+            recovered
+                .secret_store()
+                .unwrap()
+                .get_secret(&reference)
+                .unwrap(),
+            "inline-secret"
+        );
+        assert_eq!(
+            recovered
+                .secret_store()
+                .unwrap()
+                .get_secret(&credential_reference)
+                .unwrap(),
+            "credential-secret"
+        );
+    }
+
+    fn write_legacy_vault_backup(root: &std::path::Path) {
+        std::fs::write(
+            root.join("connections.json.migrated.bak"),
+            r#"{
+  "version": 2,
+  "profiles": [{
+    "id": "conn-json",
+    "name": "json connection",
+    "group": "Ops",
+    "host": "example.com",
+    "port": 22,
+    "username": "root",
+    "credential_mode": "inline",
+    "inline_auth_kind": "password",
+    "inline_password": "inline-secret",
+    "proxy": {"kind": "none"},
+    "jump": {"kind": "none"},
+    "advanced": {"connect_timeout_ms": 30000, "auth_timeout_ms": 45000, "keepalive_interval_ms": 20000, "terminal_encoding": "utf-8"},
+    "notes": null,
+    "is_favorite": true,
+    "last_connected_at": null,
+    "remote_os_id": null,
+    "remote_os_name": null,
+    "remote_os_version": null,
+    "created_at": "2026-06-20T00:00:00+08:00",
+    "updated_at": "2026-06-20T00:00:00+08:00"
+  }]
+}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("credentials.json.migrated.bak"),
+            r#"{
+  "version": 1,
+  "profiles": [{
+    "id": "cred-json",
+    "name": "json credential",
+    "username": "deploy",
+    "kind": "password",
+    "password": "credential-secret",
+    "private_key_path": null,
+    "private_key_passphrase": null,
+    "notes": null,
+    "created_at": "2026-06-20T00:00:00+08:00",
+    "updated_at": "2026-06-20T00:00:00+08:00"
+  }]
+}"#,
+        )
+        .unwrap();
     }
 }

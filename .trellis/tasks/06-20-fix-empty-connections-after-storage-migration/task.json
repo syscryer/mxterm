@@ -1,8 +1,8 @@
 {
-  "id": "storage-vault-migration",
-  "name": "storage-vault-migration",
-  "title": "Storage vault migration",
-  "description": "Migrate JSON storage to SQLite plus encrypted secrets.enc vault.",
+  "id": "fix-empty-connections-after-storage-migration",
+  "name": "fix-empty-connections-after-storage-migration",
+  "title": "Fix empty connections after storage migration",
+  "description": "",
   "status": "in_progress",
   "dev_type": null,
   "scope": null,
