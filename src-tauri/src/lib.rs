@@ -8,6 +8,7 @@ mod remote_files;
 mod remote_monitor;
 mod ssh_config;
 mod storage;
+pub mod storage_sqlite;
 mod terminal;
 mod tunnels;
 
