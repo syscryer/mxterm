@@ -116,9 +116,13 @@ pub struct ConnectionProfileInput {
     #[serde(default)]
     pub inline_password: Option<String>,
     #[serde(default)]
+    pub inline_password_touched: bool,
+    #[serde(default)]
     pub inline_private_key_path: Option<String>,
     #[serde(default)]
     pub inline_private_key_passphrase: Option<String>,
+    #[serde(default)]
+    pub inline_private_key_passphrase_touched: bool,
     #[serde(default)]
     pub prompt_auth_kind: Option<ConnectionAuthKind>,
     #[serde(default)]
@@ -161,8 +165,10 @@ pub struct ValidatedConnectionProfileInput {
     pub credential_id: Option<String>,
     pub inline_auth_kind: Option<ConnectionAuthKind>,
     pub inline_password: Option<String>,
+    pub inline_password_touched: bool,
     pub inline_private_key_path: Option<String>,
     pub inline_private_key_passphrase: Option<String>,
+    pub inline_private_key_passphrase_touched: bool,
     pub prompt_auth_kind: Option<ConnectionAuthKind>,
     pub proxy: ConnectionProxyConfig,
     pub jump: ConnectionJumpConfig,
@@ -535,15 +541,21 @@ pub fn validate_profile_input(
         .or_else(|| trim_optional(input.private_key_path.as_ref()));
     let inline_private_key_passphrase = trim_optional(input.inline_private_key_passphrase.as_ref())
         .or_else(|| trim_optional(input.private_key_passphrase.as_ref()));
+    let inline_password_touched = input.inline_password_touched || inline_password.is_some();
+    let inline_private_key_passphrase_touched =
+        input.inline_private_key_passphrase_touched || inline_private_key_passphrase.is_some();
     let credential_id = trim_optional(input.credential_id.as_ref());
     let prompt_auth_kind = input.prompt_auth_kind.clone();
+    let existing_profile_id = trim_optional(input.id.as_ref());
 
     let (
         credential_id,
         inline_auth_kind,
         inline_password,
+        inline_password_touched,
         inline_private_key_path,
         inline_private_key_passphrase,
+        inline_private_key_passphrase_touched,
         prompt_auth_kind,
     ) = match credential_mode {
         ConnectionCredentialMode::Saved => {
@@ -555,12 +567,24 @@ pub fn validate_profile_input(
                     true,
                 ));
             };
-            (Some(credential_id), None, None, None, None, None)
+            (
+                Some(credential_id),
+                None,
+                None,
+                false,
+                None,
+                None,
+                false,
+                None,
+            )
         }
         ConnectionCredentialMode::Inline => {
             let auth_kind = inline_auth_kind.unwrap_or(ConnectionAuthKind::Password);
             match auth_kind {
-                ConnectionAuthKind::Password if inline_password.is_none() => {
+                ConnectionAuthKind::Password
+                    if inline_password.is_none()
+                        && (inline_password_touched || existing_profile_id.is_none()) =>
+                {
                     return Err(AppError::new(
                         "connection_password_missing",
                         "请填写 SSH 密码。",
@@ -583,23 +607,27 @@ pub fn validate_profile_input(
                     None,
                     Some(ConnectionAuthKind::Password),
                     inline_password,
+                    inline_password_touched,
                     None,
                     None,
+                    false,
                     None,
                 ),
                 ConnectionAuthKind::PrivateKey => (
                     None,
                     Some(ConnectionAuthKind::PrivateKey),
                     None,
+                    false,
                     inline_private_key_path,
                     inline_private_key_passphrase,
+                    inline_private_key_passphrase_touched,
                     None,
                 ),
             }
         }
         ConnectionCredentialMode::Prompt => {
             let auth_kind = prompt_auth_kind.unwrap_or(ConnectionAuthKind::Password);
-            (None, None, None, None, None, Some(auth_kind))
+            (None, None, None, false, None, None, false, Some(auth_kind))
         }
     };
 
@@ -625,8 +653,10 @@ pub fn validate_profile_input(
         credential_id,
         inline_auth_kind,
         inline_password,
+        inline_password_touched,
         inline_private_key_path,
         inline_private_key_passphrase,
+        inline_private_key_passphrase_touched,
         prompt_auth_kind,
         proxy,
         jump,
@@ -925,8 +955,10 @@ mod tests {
             credential_id: None,
             inline_auth_kind: Some(ConnectionAuthKind::Password),
             inline_password: Some("secret".to_string()),
+            inline_password_touched: true,
             inline_private_key_path: None,
             inline_private_key_passphrase: None,
+            inline_private_key_passphrase_touched: false,
             prompt_auth_kind: None,
             proxy: ConnectionProxyConfig::default(),
             jump: ConnectionJumpConfig::default(),

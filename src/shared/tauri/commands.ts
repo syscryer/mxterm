@@ -7,6 +7,8 @@ import type {
   ConnectionProfile,
   ConnectionProfileInput,
   HostKeyInfo,
+  RevealedConnectionSecret,
+  RevealedCredentialSecret,
 } from "../../features/connections/connectionTypes";
 import type {
   LocalPathMetadataResult,
@@ -84,6 +86,10 @@ export function secretVaultUnlockLocal() {
   return invoke<SecretVaultStatus>("secret_vault_unlock_local");
 }
 
+export function secretVaultLock() {
+  return invoke<SecretVaultStatus>("secret_vault_lock");
+}
+
 export function secretVaultEnableMasterPassword(masterPassword: string) {
   return invoke<SecretVaultStatus>("secret_vault_enable_master_password", {
     request: {
@@ -124,6 +130,10 @@ export function connectionDelete(id: string) {
   return invoke<void>("connection_delete", { id });
 }
 
+export function connectionRevealInlineSecret(id: string) {
+  return invoke<RevealedConnectionSecret>("connection_reveal_inline_secret", { id });
+}
+
 export function credentialList() {
   return invoke<CredentialProfile[]>("credential_list");
 }
@@ -134,6 +144,10 @@ export function credentialUpsert(request: CredentialProfileInput) {
 
 export function credentialDelete(id: string) {
   return invoke<void>("credential_delete", { id });
+}
+
+export function credentialRevealSecret(id: string) {
+  return invoke<RevealedCredentialSecret>("credential_reveal_secret", { id });
 }
 
 export function connectionTest(request: ConnectionRuntimeCredentialRequest) {

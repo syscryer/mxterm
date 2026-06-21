@@ -17,6 +17,7 @@ import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 
 import { AppSelect } from "../../shared/ui/AppSelect";
 import { ConfirmDialog } from "../../shared/ui/ConfirmDialog";
+import { connectionRevealInlineSecret } from "../../shared/tauri/commands";
 import type {
   ConnectionAuthKind,
   ConnectionCredentialMode,
@@ -45,6 +46,7 @@ interface ConnectionDialogProps {
   credentials: CredentialProfile[];
   defaultGroup?: string | null;
   groups: ConnectionDialogGroup[];
+  allowPasswordReveal: boolean;
   open: boolean;
   onClose: () => void;
   onDelete: (connection: ConnectionProfile) => Promise<void>;
@@ -88,8 +90,10 @@ const emptyForm: ConnectionProfileInput = {
   credential_id: "",
   inline_auth_kind: "password",
   inline_password: "",
+  inline_password_touched: false,
   inline_private_key_path: "",
   inline_private_key_passphrase: "",
+  inline_private_key_passphrase_touched: false,
   prompt_auth_kind: "password",
   jump: defaultJumpConfig,
   proxy: defaultProxyConfig,
@@ -137,6 +141,7 @@ export function ConnectionDialog({
   credentials,
   defaultGroup,
   groups,
+  allowPasswordReveal,
   open,
   onClose,
   onDelete,
@@ -154,6 +159,7 @@ export function ConnectionDialog({
   const [showPassphrase, setShowPassphrase] = useState(false);
   const [showProxyPassword, setShowProxyPassword] = useState(false);
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
+  const [revealBusy, setRevealBusy] = useState(false);
   const busyRef = useRef(false);
   const groupOptions = useMemo(
     () => buildGroupOptions(groups, form.group || ""),
@@ -173,6 +179,7 @@ export function ConnectionDialog({
     setShowPassword(false);
     setShowPassphrase(false);
     setShowProxyPassword(false);
+    setRevealBusy(false);
     setDeleteConfirmOpen(false);
     setForm(connection ? formFromConnection(connection) : { ...emptyForm, group: defaultGroup || "" });
   }, [connection, defaultGroup, open]);
@@ -616,22 +623,33 @@ export function ConnectionDialog({
                       type={showPassword ? "text" : "password"}
                       value={form.inline_password || ""}
                       onChange={(event) =>
-                        setForm({ ...form, inline_password: event.target.value })
+                        setForm({
+                          ...form,
+                          inline_password: event.target.value,
+                          inline_password_touched: true,
+                        })
                       }
-                      placeholder="输入密码"
+                      placeholder={
+                        connection?.id && !form.inline_password
+                          ? "已保存，留空保留"
+                          : "输入密码"
+                      }
                     />
-                    <button
-                      className="field-toggle"
-                      type="button"
-                      aria-label={showPassword ? "隐藏密码" : "显示密码"}
-                      onClick={() => setShowPassword((value) => !value)}
-                    >
-                      {showPassword ? (
-                        <EyeOff className="ui-icon" aria-hidden="true" />
-                      ) : (
-                        <Eye className="ui-icon" aria-hidden="true" />
-                      )}
-                    </button>
+                    {allowPasswordReveal ? (
+                      <button
+                        className="field-toggle"
+                        type="button"
+                        disabled={revealBusy}
+                        aria-label={showPassword ? "隐藏密码" : "显示密码"}
+                        onClick={() => void toggleInlinePasswordVisibility()}
+                      >
+                        {showPassword ? (
+                          <EyeOff className="ui-icon" aria-hidden="true" />
+                        ) : (
+                          <Eye className="ui-icon" aria-hidden="true" />
+                        )}
+                      </button>
+                    ) : null}
                   </div>
                 </label>
               </div>
@@ -670,22 +688,30 @@ export function ConnectionDialog({
                         setForm({
                           ...form,
                           inline_private_key_passphrase: event.target.value,
+                          inline_private_key_passphrase_touched: true,
                         })
                       }
-                      placeholder="输入私钥口令"
+                      placeholder={
+                        connection?.id && !form.inline_private_key_passphrase
+                          ? "已保存，留空保留"
+                          : "输入私钥口令"
+                      }
                     />
-                    <button
-                      className="field-toggle"
-                      type="button"
-                      aria-label={showPassphrase ? "隐藏私钥口令" : "显示私钥口令"}
-                      onClick={() => setShowPassphrase((value) => !value)}
-                    >
-                      {showPassphrase ? (
-                        <EyeOff className="ui-icon" aria-hidden="true" />
-                      ) : (
-                        <Eye className="ui-icon" aria-hidden="true" />
-                      )}
-                    </button>
+                    {allowPasswordReveal ? (
+                      <button
+                        className="field-toggle"
+                        type="button"
+                        disabled={revealBusy}
+                        aria-label={showPassphrase ? "隐藏私钥口令" : "显示私钥口令"}
+                        onClick={() => void toggleInlinePassphraseVisibility()}
+                      >
+                        {showPassphrase ? (
+                          <EyeOff className="ui-icon" aria-hidden="true" />
+                        ) : (
+                          <Eye className="ui-icon" aria-hidden="true" />
+                        )}
+                      </button>
+                    ) : null}
                   </div>
                 </label>
               </>
@@ -1036,15 +1062,77 @@ export function ConnectionDialog({
         ? {
             ...form,
             inline_auth_kind: "password",
+            inline_password_touched: true,
             inline_private_key_path: "",
             inline_private_key_passphrase: "",
+            inline_private_key_passphrase_touched: false,
           }
         : {
             ...form,
             inline_auth_kind: "private_key",
             inline_password: "",
+            inline_password_touched: false,
+            inline_private_key_passphrase_touched: false,
           },
     );
+  }
+
+  async function toggleInlinePasswordVisibility() {
+    if (showPassword) {
+      setShowPassword(false);
+      return;
+    }
+    if (!form.inline_password && connection?.id) {
+      await revealInlineSecret("password");
+      return;
+    }
+    setShowPassword(true);
+  }
+
+  async function toggleInlinePassphraseVisibility() {
+    if (showPassphrase) {
+      setShowPassphrase(false);
+      return;
+    }
+    if (!form.inline_private_key_passphrase && connection?.id) {
+      await revealInlineSecret("private_key");
+      return;
+    }
+    setShowPassphrase(true);
+  }
+
+  async function revealInlineSecret(authKind: ConnectionAuthKind) {
+    if (!connection?.id) {
+      return;
+    }
+    setRevealBusy(true);
+    setFeedback(null);
+    try {
+      const secret = await connectionRevealInlineSecret(connection.id);
+      if (secret.auth_kind !== authKind) {
+        return;
+      }
+      if (authKind === "password") {
+        setForm((current) => ({
+          ...current,
+          inline_password: secret.password || "",
+          inline_password_touched: false,
+        }));
+        setShowPassword(true);
+      } else {
+        setForm((current) => ({
+          ...current,
+          inline_private_key_passphrase: secret.private_key_passphrase || "",
+          inline_private_key_passphrase_touched: false,
+        }));
+        setShowPassphrase(true);
+      }
+    } catch (nextError) {
+      setTestState("error");
+      setFeedback(describeDialogError(nextError));
+    } finally {
+      setRevealBusy(false);
+    }
   }
 }
 
@@ -1065,13 +1153,12 @@ function formFromConnection(connection: ConnectionProfile): ConnectionProfileInp
     credential_mode: credentialMode,
     credential_id: connection.credential_id || "",
     inline_auth_kind: inlineAuthKind,
-    inline_password: connection.inline_password || connection.password || "",
+    inline_password: "",
+    inline_password_touched: false,
     inline_private_key_path:
       connection.inline_private_key_path || connection.private_key_path || "",
-    inline_private_key_passphrase:
-      connection.inline_private_key_passphrase ||
-      connection.private_key_passphrase ||
-      "",
+    inline_private_key_passphrase: "",
+    inline_private_key_passphrase_touched: false,
     prompt_auth_kind: connection.prompt_auth_kind || inlineAuthKind || "password",
     jump: connection.jump || defaultJumpConfig,
     proxy: {

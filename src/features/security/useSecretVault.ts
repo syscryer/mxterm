@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   secretVaultDisableMasterPassword,
   secretVaultEnableMasterPassword,
+  secretVaultLock,
   secretVaultStatus,
   secretVaultUnlock,
   secretVaultUnlockLocal,
@@ -15,7 +16,13 @@ const previewStatus: SecretVaultStatus = {
   unlocked: true,
 };
 
-export function useSecretVault({ masterPasswordEnabled }: { masterPasswordEnabled: boolean }) {
+export function useSecretVault({
+  autoLockMinutes,
+  masterPasswordEnabled,
+}: {
+  autoLockMinutes: 0 | 5 | 15 | 30 | 60;
+  masterPasswordEnabled: boolean;
+}) {
   const isTauri = hasTauriRuntime();
   const [status, setStatus] = useState<SecretVaultStatus>(
     isTauri ? { initialized: false, unlocked: false } : previewStatus,
@@ -98,6 +105,23 @@ export function useSecretVault({ masterPasswordEnabled }: { masterPasswordEnable
     }
   }, [isTauri]);
 
+  const lock = useCallback(async () => {
+    if (!isTauri) {
+      setStatus(previewStatus);
+      return previewStatus;
+    }
+
+    setError(null);
+    try {
+      const nextStatus = await secretVaultLock();
+      setStatus(nextStatus);
+      return nextStatus;
+    } catch (nextError) {
+      setError(formatError(nextError));
+      return null;
+    }
+  }, [isTauri]);
+
   useEffect(() => {
     if (
       !isTauri ||
@@ -112,6 +136,32 @@ export function useSecretVault({ masterPasswordEnabled }: { masterPasswordEnable
     localAutoUnlockAttemptedRef.current = true;
     void unlockLocal();
   }, [isTauri, loading, masterPasswordEnabled, status.unlocked, unlockLocal, unlocking]);
+
+  useEffect(() => {
+    if (!isTauri || !masterPasswordEnabled || !status.unlocked || autoLockMinutes === 0) {
+      return;
+    }
+
+    let timer = window.setTimeout(() => {
+      void lock();
+    }, autoLockMinutes * 60 * 1000);
+
+    const resetTimer = () => {
+      window.clearTimeout(timer);
+      timer = window.setTimeout(() => {
+        void lock();
+      }, autoLockMinutes * 60 * 1000);
+    };
+    window.addEventListener("keydown", resetTimer);
+    window.addEventListener("pointerdown", resetTimer);
+    window.addEventListener("wheel", resetTimer);
+    return () => {
+      window.clearTimeout(timer);
+      window.removeEventListener("keydown", resetTimer);
+      window.removeEventListener("pointerdown", resetTimer);
+      window.removeEventListener("wheel", resetTimer);
+    };
+  }, [autoLockMinutes, isTauri, lock, masterPasswordEnabled, status.unlocked]);
 
   const enableMasterPassword = useCallback(
     async (masterPassword: string) => {
@@ -162,6 +212,7 @@ export function useSecretVault({ masterPasswordEnabled }: { masterPasswordEnable
       enableMasterPassword,
       error,
       loading,
+      lock,
       ready: !isTauri || status.unlocked,
       requiresUnlock: isTauri && !status.unlocked && (masterPasswordEnabled || Boolean(error)),
       refresh,
@@ -175,6 +226,7 @@ export function useSecretVault({ masterPasswordEnabled }: { masterPasswordEnable
       error,
       isTauri,
       loading,
+      lock,
       masterPasswordEnabled,
       refresh,
       status,

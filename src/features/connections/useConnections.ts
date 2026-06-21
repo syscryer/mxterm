@@ -337,6 +337,18 @@ export function normalizeConnectionInput(input: ConnectionProfileInput): Connect
   const promptAuthKind = input.prompt_auth_kind || input.auth_kind || "password";
   const proxyKind = input.proxy?.kind || "none";
   const trim = (value: string | undefined | null) => value?.trim() || undefined;
+  const inlinePassword = trim(input.inline_password || input.password);
+  const inlinePrivateKeyPassphrase = trim(
+    input.inline_private_key_passphrase || input.private_key_passphrase,
+  );
+  const inlinePasswordTouched =
+    typeof input.inline_password_touched === "boolean"
+      ? input.inline_password_touched
+      : Boolean(inlinePassword);
+  const inlinePrivateKeyPassphraseTouched =
+    typeof input.inline_private_key_passphrase_touched === "boolean"
+      ? input.inline_private_key_passphrase_touched
+      : Boolean(inlinePrivateKeyPassphrase);
 
   return {
     id: trim(input.id),
@@ -349,17 +361,27 @@ export function normalizeConnectionInput(input: ConnectionProfileInput): Connect
     credential_id: credentialMode === "saved" ? trim(input.credential_id) : undefined,
     inline_auth_kind: credentialMode === "inline" ? inlineAuthKind : undefined,
     inline_password:
-      credentialMode === "inline" && inlineAuthKind === "password"
-        ? trim(input.inline_password || input.password)
+      credentialMode === "inline" && inlineAuthKind === "password" && inlinePasswordTouched
+        ? inlinePassword
         : undefined,
+    inline_password_touched:
+      credentialMode === "inline" && inlineAuthKind === "password"
+        ? inlinePasswordTouched
+        : false,
     inline_private_key_path:
       credentialMode === "inline" && inlineAuthKind === "private_key"
         ? trim(input.inline_private_key_path || input.private_key_path)
         : undefined,
     inline_private_key_passphrase:
-      credentialMode === "inline" && inlineAuthKind === "private_key"
-        ? trim(input.inline_private_key_passphrase || input.private_key_passphrase)
+      credentialMode === "inline" &&
+      inlineAuthKind === "private_key" &&
+      inlinePrivateKeyPassphraseTouched
+        ? inlinePrivateKeyPassphrase
         : undefined,
+    inline_private_key_passphrase_touched:
+      credentialMode === "inline" && inlineAuthKind === "private_key"
+        ? inlinePrivateKeyPassphraseTouched
+        : false,
     prompt_auth_kind: credentialMode === "prompt" ? promptAuthKind : undefined,
     proxy:
       proxyKind === "none"

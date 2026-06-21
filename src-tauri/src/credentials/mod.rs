@@ -18,9 +18,13 @@ pub struct CredentialProfileInput {
     #[serde(default)]
     pub password: Option<String>,
     #[serde(default)]
+    pub password_touched: bool,
+    #[serde(default)]
     pub private_key_path: Option<String>,
     #[serde(default)]
     pub private_key_passphrase: Option<String>,
+    #[serde(default)]
+    pub private_key_passphrase_touched: bool,
     #[serde(default)]
     pub notes: Option<String>,
 }
@@ -32,8 +36,10 @@ pub struct ValidatedCredentialProfileInput {
     pub username: String,
     pub kind: ConnectionAuthKind,
     pub password: Option<String>,
+    pub password_touched: bool,
     pub private_key_path: Option<String>,
     pub private_key_passphrase: Option<String>,
+    pub private_key_passphrase_touched: bool,
     pub notes: Option<String>,
 }
 
@@ -199,9 +205,15 @@ pub fn validate_credential_input(
     let password = trim_optional(input.password.as_ref());
     let private_key_path = trim_optional(input.private_key_path.as_ref());
     let private_key_passphrase = trim_optional(input.private_key_passphrase.as_ref());
+    let password_touched = input.password_touched || password.is_some();
+    let private_key_passphrase_touched =
+        input.private_key_passphrase_touched || private_key_passphrase.is_some();
+    let existing_id = trim_optional(input.id.as_ref());
 
     match input.kind {
-        ConnectionAuthKind::Password if password.is_none() => {
+        ConnectionAuthKind::Password
+            if password.is_none() && (password_touched || existing_id.is_none()) =>
+        {
             return Err(AppError::new(
                 "credential_password_missing",
                 "请填写账号密码。",
@@ -220,19 +232,33 @@ pub fn validate_credential_input(
         _ => {}
     }
 
-    let (password, private_key_path, private_key_passphrase) = match input.kind {
-        ConnectionAuthKind::Password => (password, None, None),
-        ConnectionAuthKind::PrivateKey => (None, private_key_path, private_key_passphrase),
+    let (
+        password,
+        password_touched,
+        private_key_path,
+        private_key_passphrase,
+        private_key_passphrase_touched,
+    ) = match input.kind {
+        ConnectionAuthKind::Password => (password, password_touched, None, None, false),
+        ConnectionAuthKind::PrivateKey => (
+            None,
+            false,
+            private_key_path,
+            private_key_passphrase,
+            private_key_passphrase_touched,
+        ),
     };
 
     Ok(ValidatedCredentialProfileInput {
-        id: trim_optional(input.id.as_ref()),
+        id: existing_id,
         name,
         username,
         kind: input.kind.clone(),
         password,
+        password_touched,
         private_key_path,
         private_key_passphrase,
+        private_key_passphrase_touched,
         notes: trim_optional(input.notes.as_ref()),
     })
 }
@@ -259,8 +285,10 @@ mod tests {
             username: Some(" deploy ".to_string()),
             kind: ConnectionAuthKind::Password,
             password: Some(" secret ".to_string()),
+            password_touched: true,
             private_key_path: None,
             private_key_passphrase: None,
+            private_key_passphrase_touched: false,
             notes: Some(" 共享 ".to_string()),
         }
     }
@@ -319,6 +347,7 @@ mod tests {
             password: Some("old".to_string()),
             private_key_path: Some(" ~/.ssh/id_ed25519 ".to_string()),
             private_key_passphrase: Some(" phrase ".to_string()),
+            private_key_passphrase_touched: true,
             ..password_input()
         };
 

@@ -15,9 +15,11 @@
 - `connection_set_favorite(app: AppHandle, request: ConnectionFavoriteRequest) -> Result<ConnectionProfile, AppError>`
 - `connection_mark_connected(app: AppHandle, request: ConnectionActivityRequest) -> Result<ConnectionProfile, AppError>`
 - `connection_delete(app: AppHandle, id: String) -> Result<(), AppError>`
+- `connection_reveal_inline_secret(app: AppHandle, id: String) -> Result<RevealedConnectionSecret, AppError>`
 - `credential_list(app: AppHandle) -> Result<Vec<CredentialProfile>, AppError>`
 - `credential_upsert(app: AppHandle, request: CredentialProfileInput) -> Result<CredentialProfile, AppError>`
 - `credential_delete(app: AppHandle, id: String) -> Result<(), AppError>`
+- `credential_reveal_secret(app: AppHandle, id: String) -> Result<RevealedCredentialSecret, AppError>`
 - `known_host_trust(app: AppHandle, request: KnownHostTrustRequest) -> Result<(), AppError>`
 - `connection_test(app: AppHandle, request: ConnectionRuntimeCredentialRequest) -> Result<ConnectionStepResult, AppError>`
 - `connection_test_profile(app: AppHandle, request: ConnectionProfileInput) -> Result<ConnectionStepResult, AppError>`
@@ -42,8 +44,10 @@ credential_mode: ConnectionCredentialMode // "saved" | "inline" | "prompt"
 credential_id: Option<String>
 inline_auth_kind: Option<ConnectionAuthKind>
 inline_password: Option<String>
+inline_password_touched: bool
 inline_private_key_path: Option<String>
 inline_private_key_passphrase: Option<String>
+inline_private_key_passphrase_touched: bool
 prompt_auth_kind: Option<ConnectionAuthKind>
 proxy: ConnectionProxyConfig
 jump: ConnectionJumpConfig
@@ -100,9 +104,27 @@ name: Option<String>
 username: Option<String>
 kind: ConnectionAuthKind // "password" | "private_key"
 password: Option<String>
+password_touched: bool
 private_key_path: Option<String>
 private_key_passphrase: Option<String>
+private_key_passphrase_touched: bool
 notes: Option<String>
+```
+
+Reveal responses:
+
+```rust
+RevealedConnectionSecret {
+    auth_kind: ConnectionAuthKind,
+    password: Option<String>,
+    private_key_passphrase: Option<String>,
+}
+
+RevealedCredentialSecret {
+    kind: ConnectionAuthKind,
+    password: Option<String>,
+    private_key_passphrase: Option<String>,
+}
 ```
 
 `ConnectionRuntimeCredentialRequest` fields:
@@ -169,8 +191,12 @@ reachable: bool
 - `connection_mark_connected` updates only `last_connected_at`; recent views must not be derived from `updated_at`.
 - `credential_mode=saved` requires `credential_id` and clears inline secrets.
 - `credential_mode=inline` requires inline password or inline private key path depending on `inline_auth_kind`.
+- Existing inline connection edits use `inline_password_touched` / `inline_private_key_passphrase_touched` to distinguish "field not touched, preserve old vault reference" from "field touched, replace or validate the new secret". Reveal-only values must not force a replacement unless the user edits the field.
+- `connection_test_profile` may receive an existing connection `id` with an untouched blank inline secret. It must resolve the transient test by reading the existing inline vault secret, without persisting the profile or returning that secret through the profile payload.
 - `credential_mode=prompt` stores no password or private key passphrase; runtime prompt credentials must be supplied by `TerminalConnectRequest` or `ConnectionRuntimeCredentialRequest`.
 - Password auth clears private-key fields; private-key auth clears password fields.
+- Credential edits use `password_touched` / `private_key_passphrase_touched` to preserve existing vault references when the user did not modify the secret. Account management is the only UI surface that may call `credential_reveal_secret`.
+- `connection_reveal_inline_secret` must return only connection inline secrets. It must reject saved-credential or prompt connections with `connection_inline_secret_unavailable`; saved credential secrets are revealed only through `credential_reveal_secret`.
 - HTTP CONNECT and SOCKS5 proxy modes require proxy host and port. `none` clears proxy auth and proxy target fields.
 - SSH jump config is stored as `jump: ConnectionJumpConfig`. `jump.kind = "ssh_jump"` requires a non-empty `jump_connection_id`; `jump.kind = "none"` clears `jump_connection_id`.
 - SSH jump must resolve the saved jump connection, authenticate to the bastion first, then open a `direct-tcpip` channel to the target host for terminal, test, remote-file, and remote-monitor flows. Failures must not silently fall back to direct connection.
@@ -205,6 +231,8 @@ reachable: bool
 | `credential_mode == saved` and credential id is unknown | `credential_missing` | false |
 | `credential_mode == inline`, password auth, and password is blank | `connection_password_missing` | true |
 | `credential_mode == inline`, private-key auth, and private key path is blank | `connection_private_key_missing` | true |
+| Reveal inline secret for non-inline connection | `connection_inline_secret_unavailable` | true |
+| Reveal or resolve a missing vault secret | `secret_missing` | true |
 | Proxy mode requires proxy target but host is blank | `connection_proxy_host_missing` | true |
 | Proxy mode requires proxy target but port is blank / invalid | `connection_proxy_port_invalid` | true |
 | SSH jump mode has no saved jump connection id | `connection_jump_missing` | true |
@@ -247,6 +275,8 @@ reachable: bool
 ### 5. Good / Base / Bad Cases
 
 - Good: `connection_upsert` receives inline password auth, trims `host` and `username`, defaults `name`, clears private-key fields, persists the JSON store, and returns the saved profile.
+- Good: editing an existing inline-password connection sends `inline_password_touched=false` with no password; Rust preserves the existing vault `secret_ref`, and `connection_test_profile` can still test with the old secret.
+- Good: `connection_reveal_inline_secret` returns the inline password for an inline connection, while a saved-credential connection must be opened through account management and `credential_reveal_secret`.
 - Good: `connection_test_profile` receives the unsaved dialog form, validates it, resolves inline or saved credential material, opens and closes a test SSH session, and leaves `connections.json` unchanged.
 - Good: `terminal_connect` receives `connection_id` for a saved-credential connection plus stale frontend host fields; Rust loads the saved profile, resolves the credential, verifies the host key, carries the proxy/jump/timeout settings, and uses the saved values.
 - Base: `connection_test` receives prompt credentials, resolves the saved connection with those runtime credentials, opens a reusable exec session, closes it, and returns `{ ok: true }`.
@@ -258,6 +288,7 @@ reachable: bool
 - Unit-test SSH jump runtime validation and jump-auth error mapping in the shared terminal session connection path.
 - Unit-test terminal encoding validation plus SSH terminal output decode and input encode helpers.
 - Unit-test credential validation for blank name, missing password, missing private key, auth-field clearing, and JSON store round-trip/delete.
+- Unit-test untouched inline connection and credential secret preservation, reveal command behavior, and transient connection tests that reuse existing inline secrets without persisting.
 - Unit-test known-host store behavior for unknown, trusted, and changed fingerprints.
 - Unit-test saved connection resolution for saved, inline, prompt, missing credential, proxy, SSH jump round-trip, and advanced timeout behavior.
 - Unit-test shared JSON store behavior for missing primary files, atomic write backup creation, and `.bak` recovery when the primary JSON is corrupt.
@@ -427,6 +458,7 @@ CREATE TABLE credentials (
 - `secret_vault_status(app, vault_state) -> Result<VaultStatus, AppError>`
 - `secret_vault_unlock(app, vault_state, { master_password }) -> Result<VaultStatus, AppError>`
 - `secret_vault_unlock_local(app, vault_state) -> Result<VaultStatus, AppError>`
+- `secret_vault_lock(app, vault_state) -> Result<VaultStatus, AppError>`
 - `secret_vault_enable_master_password(app, vault_state, { master_password }) -> Result<VaultStatus, AppError>`
 - `secret_vault_disable_master_password(app, vault_state) -> Result<VaultStatus, AppError>`
 - `resolve_saved_connection(app, connection_id, prompt) -> Result<ResolvedSshConfig, AppError>`
@@ -446,7 +478,10 @@ credential:<credential_id>:private_key_passphrase
 - `StorageRepository::open_app` must initialize SQLite, run the idempotent JSON migration when needed, and then serve all production connection/credential/known-host/tunnel operations.
 - SQLite tables `connections` and `credentials` may contain only `secret_ref` and `secret_slot_id` for SSH login secrets. They must not contain plaintext password or passphrase columns.
 - `VaultSecretStore` stores secrets in app data `secrets.enc`, encrypted with Argon2id-derived AES-256-GCM. `VaultState` keeps the unlocked store in memory for the current run.
+- `VaultSecretStore` must persist `secrets.enc` through the shared atomic JSON writer: write a synced temp file, keep `secrets.enc.bak` when replacing an existing vault, and then atomically replace the primary file. Rekey and secret updates must not use direct `fs::write`.
 - Default master-password protection is off. In this mode `secret_vault_unlock_local` creates/reads app-data `secrets.local.key` and uses it as the vault password so app startup does not show an unlock gate while SSH secrets still avoid SQLite/JSON plaintext.
+- When master-password protection is enabled, app startup must require `secret_vault_unlock` before repository commands can read secrets. There is no separate "ask at startup" switch; startup unlock is inherent to master-password protection.
+- `secret_vault_lock` clears only the in-memory unlocked store and returns `unlocked=false`. It must not delete vault files, rotate keys, disconnect active SSH sessions, or mutate SQLite rows.
 - If `secrets.enc` already exists but `secrets.local.key` is missing, `secret_vault_unlock_local` must not blindly create a new local key and try to decrypt the old vault. It should report `vault_local_key_missing` or, when `.migrated.bak` / legacy JSON contains matching plaintext, rebuild an encrypted vault from those backups and preserve the old vault as `secrets.enc.recovered*.bak`.
 - If local-key decrypt fails and the local key file is newer than `secrets.enc`, treat it as a likely regenerated local key and allow the same legacy-backup recovery. If the local key is older than the vault, treat the vault as likely master-password protected and return `vault_unlock_failed` instead of bypassing the master-password model.
 - When users enable master-password protection, `secret_vault_enable_master_password` re-encrypts the current unlocked vault plaintext with the supplied master password. Disabling protection re-encrypts the same plaintext back to the local key. Existing secrets must survive both transitions. Rekey commands must fail with `vault_locked` when no unlocked store is present; they must not synthesize an empty vault as a fallback.
@@ -476,6 +511,9 @@ credential:<credential_id>:private_key_passphrase
 ### 5. Good / Base / Bad Cases
 
 - Good: default startup calls `secret_vault_unlock_local` before repository commands, so connection and credential lists load without a master-password prompt.
+- Good: master-password startup shows the vault gate, calls `secret_vault_unlock`, and enables storage hooks only after the returned status is unlocked.
+- Good: idle lock calls `secret_vault_lock`; existing SSH sessions continue running, but new secret reads require unlock again.
+- Good: updating a vault secret leaves a readable `secrets.enc.bak` containing the previous encrypted vault state.
 - Good: a migrated install whose local key was regenerated recovers `secrets.enc` from `.migrated.bak`, keeps a `secrets.enc.recovered*.bak` copy of the old vault, and then allows SQLite connection rows to list normally.
 - Good: enabling or disabling master-password protection rekeys the vault and preserves an existing saved SSH password.
 - Good: a legacy inline-password connection migrates to a SQLite connection row with `inline_secret_ref`, while the password value is stored only in vault and `connection_list` returns no password.
@@ -486,6 +524,7 @@ credential:<credential_id>:private_key_passphrase
 ### 6. Tests Required
 
 - Unit-test stable secret account generation and fake secret store set/get/delete/error mapping.
+- Unit-test vault atomic replacement behavior by verifying `secrets.enc.bak` exists after a second write and can be restored/read with the same password.
 - Unit-test local-key unlock round-trips secrets across `VaultState` instances.
 - Unit-test regenerated/missing local-key recovery from `.migrated.bak`, including that the old vault is copied to `secrets.enc.recovered*.bak` and recovered secrets are readable from vault.
 - Unit-test local-key -> master-password -> local-key rekey preserves existing secrets and rejects local unlock while master protection is active.

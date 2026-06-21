@@ -31,7 +31,9 @@ use crate::ssh_config::{
     load_connection_profile, resolve_saved_connection, resolve_transient_connection,
     ResolvedSshConfig, RuntimeCredentialInput,
 };
-use crate::storage_repository::StorageRepository;
+use crate::storage_repository::{
+    RevealedConnectionSecret, RevealedCredentialSecret, StorageRepository,
+};
 use crate::storage_vault::{VaultState, VaultStatus};
 use crate::terminal::local::list_profiles as list_local_profiles;
 pub use crate::terminal::local_profiles::{LocalTerminalProfile, LocalTerminalProfileInput};
@@ -422,6 +424,14 @@ pub fn secret_vault_unlock_local(
     vault_state: State<'_, VaultState>,
 ) -> Result<VaultStatus, AppError> {
     vault_state.unlock_local(app_data_dir(&app)?)
+}
+
+#[tauri::command]
+pub fn secret_vault_lock(
+    app: AppHandle,
+    vault_state: State<'_, VaultState>,
+) -> Result<VaultStatus, AppError> {
+    vault_state.lock(app_data_dir(&app)?)
 }
 
 #[tauri::command]
@@ -1441,6 +1451,14 @@ pub async fn connection_delete(app: AppHandle, id: String) -> Result<(), AppErro
 }
 
 #[tauri::command]
+pub async fn connection_reveal_inline_secret(
+    app: AppHandle,
+    id: String,
+) -> Result<RevealedConnectionSecret, AppError> {
+    StorageRepository::open_app(&app)?.connection_reveal_inline_secret(id.trim())
+}
+
+#[tauri::command]
 pub async fn credential_list(app: AppHandle) -> Result<Vec<CredentialProfile>, AppError> {
     StorageRepository::open_app(&app)?.credential_list()
 }
@@ -1469,6 +1487,14 @@ pub async fn credential_delete(app: AppHandle, id: String) -> Result<(), AppErro
     let _connection_guard = connection_store_lock().lock().await;
     let _credential_guard = credential_store_lock().lock().await;
     StorageRepository::open_app(&app)?.credential_delete(credential_id)
+}
+
+#[tauri::command]
+pub async fn credential_reveal_secret(
+    app: AppHandle,
+    id: String,
+) -> Result<RevealedCredentialSecret, AppError> {
+    StorageRepository::open_app(&app)?.credential_reveal_secret(id.trim())
 }
 
 #[tauri::command]

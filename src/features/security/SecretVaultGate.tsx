@@ -35,7 +35,7 @@ export function SecretVaultGate({
     event.preventDefault();
     const password = masterPassword.trim();
     if (!password) {
-      setLocalError("请输入主密码。");
+      setLocalError("请输入安全密码。");
       return;
     }
 
@@ -66,7 +66,7 @@ export function SecretVaultGate({
           </div>
         ) : (
           <label className="vault-gate-field">
-            <span>主密码</span>
+            <span>安全密码</span>
             <span className="vault-gate-secret-field">
               <input
                 ref={inputRef}
@@ -77,7 +77,7 @@ export function SecretVaultGate({
               />
               <button
                 type="button"
-                aria-label={showPassword ? "隐藏主密码" : "显示主密码"}
+                aria-label={showPassword ? "隐藏安全密码" : "显示安全密码"}
                 onClick={() => setShowPassword((visible) => !visible)}
               >
                 {showPassword ? <EyeOff className="ui-icon" /> : <Eye className="ui-icon" />}
@@ -86,7 +86,7 @@ export function SecretVaultGate({
           </label>
         )}
 
-        <p className="vault-gate-note">忘记主密码后无法恢复已保存的密码和口令。</p>
+        <p className="vault-gate-note">忘记安全密码后无法恢复已保存的密码和口令。</p>
 
         {localError || error ? (
           <p className="vault-gate-error" role="alert">

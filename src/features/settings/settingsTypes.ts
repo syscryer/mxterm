@@ -71,6 +71,8 @@ export interface AppearanceSettings {
 
 export interface SecuritySettings {
   masterPasswordEnabled: boolean;
+  allowPasswordReveal: boolean;
+  autoLockMinutes: 0 | 5 | 15 | 30 | 60;
 }
 
 export interface TerminalThemeSettings {
@@ -207,6 +209,8 @@ export const defaultSettings: MxtermSettings = {
   },
   security: {
     masterPasswordEnabled: false,
+    allowPasswordReveal: true,
+    autoLockMinutes: 15,
   },
   appearance: {
     accentColor: "blue",
@@ -311,6 +315,15 @@ export function normalizeSettings(value: unknown): MxtermSettings {
       masterPasswordEnabled: normalizeBoolean(
         security.masterPasswordEnabled,
         defaultSettings.security.masterPasswordEnabled,
+      ),
+      allowPasswordReveal: normalizeBoolean(
+        security.allowPasswordReveal,
+        defaultSettings.security.allowPasswordReveal,
+      ),
+      autoLockMinutes: normalizeNumber(
+        security.autoLockMinutes,
+        [0, 5, 15, 30, 60],
+        defaultSettings.security.autoLockMinutes,
       ),
     },
     appearance: {
