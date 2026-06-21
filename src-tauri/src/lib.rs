@@ -12,6 +12,7 @@ pub mod storage_migration;
 pub mod storage_repository;
 pub mod storage_sqlite;
 pub mod storage_vault;
+pub mod sync_snapshot;
 mod terminal;
 mod tunnels;
 use storage_vault::VaultState;

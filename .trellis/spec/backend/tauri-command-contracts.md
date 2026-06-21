@@ -1474,3 +1474,98 @@ windows = "0.61"
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.61", features = ["Win32_Foundation", "Win32_Graphics_Dwm", "Win32_UI_WindowsAndMessaging"] }
 ```
+
+## Scenario: Sync Snapshot Foundation
+
+### 1. Scope / Trigger
+
+- Trigger: backend code adds or changes local sync snapshot export/import, remote sync secret encryption, artifact validation, or backup behavior.
+- Source files: `src-tauri/src/sync_snapshot.rs`, `src-tauri/src/storage_repository.rs`, `src-tauri/src/storage_sqlite.rs`, `src-tauri/src/storage_vault.rs`, and future WebDAV transport code that uploads or downloads snapshot artifacts.
+- This is a storage/security contract. WebDAV transport must call the snapshot layer instead of serializing SQLite rows or vault files directly.
+
+### 2. Signatures
+
+- `SyncSnapshotService::export_bundle(repository, SyncExportOptions) -> Result<SyncSnapshotBundle, AppError>`
+- `SyncSnapshotService::import_bundle(repository, bundle, SyncImportOptions) -> Result<SyncImportResult, AppError>`
+- `SyncSnapshotService::decrypt_remote_secrets(manifest, data_json, secrets_enc, sync_password) -> Result<SyncSecretsPlaintext, AppError>`
+- `validate_bundle_artifacts(manifest, data_json, remote_secrets_enc) -> Result<(), AppError>`
+- `StorageRepository::export_sync_data() -> Result<SyncDataDocument, AppError>`
+- `StorageRepository::export_sync_secrets() -> Result<Vec<SyncSecretEntry>, AppError>`
+- `StorageRepository::replace_sync_data(document, restore_secret_refs) -> Result<SyncRepositoryImportStats, AppError>`
+- `StorageRepository::create_sync_backup() -> Result<(), AppError>`
+
+Snapshot artifacts:
+
+```text
+manifest.json
+data.json
+secrets.enc
+```
+
+### 3. Contracts
+
+- `manifest.json` uses `format="mxterm-sync"`, `protocol_version=1`, `db_schema_version`, and per-artifact `sha256` plus `size` metadata.
+- `data.json` stores non-sensitive sync data only: connections, credentials, known_hosts, tunnels, connection_groups, and a whitelisted settings object.
+- `data.json` may store cross-device `secret_slot_id`, but must not store local `secret_ref`, plaintext passwords, private-key passphrases, or the local vault account name.
+- Remote `secrets.enc` is not the local `secrets.enc` vault file. It is a sync artifact encrypted from `SyncSecretsPlaintext` using the user-supplied sync password.
+- Remote secret encryption is Argon2id + AES-256-GCM. AAD is `format|protocol_version|snapshot_id|data_hash`, binding `secrets.enc` to the manifest snapshot and `data.json` hash.
+- Import without a sync password imports `data.json`, skips secret restoration, returns `secrets_skipped=true`, and leaves local secret refs empty so connection resolution fails with existing `secret_missing` behavior instead of inventing credentials.
+- Import with a sync password decrypts `secrets.enc`, writes local vault entries by `secret_slot_id`, then restores SQLite secret refs from those slot ids.
+- Import creates local backups before replacing data. The current backup root is under app data `backups/sync/latest/` and contains `mxterm.db` plus local `secrets.enc` when present.
+- Snapshot import replaces the sync scope in a SQLite transaction. On failure, rollback must keep previous SQLite rows visible.
+- WebDAV v1 must upload/download the artifact set and must not sync `secrets.local.key`, terminal output, active transfer state, cache files, or private-key file contents.
+
+### 4. Validation & Error Matrix
+
+| Condition | Error code | Recoverable |
+| --- | --- | --- |
+| Unsupported format/protocol/schema or malformed data | `sync_snapshot_incompatible` | true |
+| Artifact byte length does not match manifest | `sync_snapshot_size_mismatch` | true |
+| Artifact SHA256 does not match manifest | `sync_snapshot_hash_mismatch` | true |
+| Remote `secrets.enc` cannot decrypt with provided sync password | `sync_snapshot_secret_decrypt_failed` | true |
+| Local backup directory or file copy fails | `sync_snapshot_backup_failed` | true |
+| SQLite replacement fails after backup | `sync_snapshot_import_failed` | true |
+| Snapshot serialization/encryption preparation fails | `sync_snapshot_serialize_failed` | true |
+
+### 5. Good / Base / Bad Cases
+
+- Good: exporting an inline-password connection produces `data.json` with the connection shape and `inline_secret_slot_id`, while `secrets.enc` does not contain the plaintext password as readable text.
+- Good: a wrong sync password returns `sync_snapshot_secret_decrypt_failed` and does not import half of the snapshot.
+- Good: importing with no sync password restores non-sensitive rows and reports `secrets_skipped=true`.
+- Good: importing with the sync password restores local vault secrets by `secret_slot_id`, then saved connection resolution reads the restored secret through `StorageRepository`.
+- Base: a snapshot may omit `secrets.enc` when the export intentionally contains data only.
+- Bad: WebDAV uploads the local vault file, syncs `secrets.local.key`, writes `secret_ref` into `data.json`, or hides a failed import by clearing the UI list.
+
+### 6. Tests Required
+
+- Unit-test that `data.json` excludes `secret_ref`, plaintext passwords, private-key passphrases, and local vault account strings.
+- Unit-test that remote `secrets.enc` does not contain plaintext secrets and rejects a wrong sync password.
+- Unit-test manifest size and SHA256 mismatch failures.
+- Unit-test import without sync password: rows import, secrets are skipped, and result reports `secrets_skipped=true`.
+- Unit-test import with sync password: local vault secrets restore by `secret_slot_id` and saved connection resolution succeeds.
+- Unit-test import failure after backup: previous SQLite rows remain available and a backup exists.
+- Run `cargo test --manifest-path src-tauri/Cargo.toml sync_snapshot --lib`, `cargo test --manifest-path src-tauri/Cargo.toml storage_repository --lib`, `cargo fmt --manifest-path src-tauri/Cargo.toml --check`, and `cargo check --manifest-path src-tauri/Cargo.toml` after changing this area.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```rust
+let remote_secrets = std::fs::read(app_data.join("secrets.enc"))?;
+webdav.put("secrets.enc", remote_secrets).await?;
+```
+
+This uploads the local vault artifact and risks coupling cloud sync to a device-local key model.
+
+#### Correct
+
+```rust
+let bundle = SyncSnapshotService::export_bundle(&repository, options)?;
+webdav.put("manifest.json", bundle.manifest_json).await?;
+webdav.put("data.json", bundle.data_json).await?;
+if let Some(secrets) = bundle.remote_secrets_enc {
+    webdav.put("secrets.enc", secrets).await?;
+}
+```
+
+The transport only moves snapshot artifacts produced by the sync layer; it never reads SQLite or vault files directly.
