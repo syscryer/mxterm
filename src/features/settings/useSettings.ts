@@ -8,6 +8,7 @@ import {
   type FileTransferSettings,
   type MxtermSettings,
   type SecuritySettings,
+  type ShortcutSettings,
   type TerminalThemeSettings,
 } from "./settingsTypes";
 import type { LocalTerminalSettings } from "../terminal/localTerminalTypes";
@@ -51,6 +52,18 @@ export function useSettings() {
         ...current,
         security: {
           ...current.security,
+          ...update,
+        },
+      }),
+    );
+  }, []);
+
+  const updateShortcuts = useCallback((update: Partial<ShortcutSettings>) => {
+    setSettings((current) =>
+      normalizeSettings({
+        ...current,
+        shortcuts: {
+          ...current.shortcuts,
           ...update,
         },
       }),
@@ -102,6 +115,7 @@ export function useSettings() {
     updateFileTransfer,
     updateLocalTerminal,
     updateSecurity,
+    updateShortcuts,
     updateTerminalTheme,
     reset,
   };

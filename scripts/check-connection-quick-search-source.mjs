@@ -143,7 +143,8 @@ try {
 
   const searchDialogSource = readFileSync("src/features/connections/ConnectionSearchDialog.tsx", "utf8");
   assert.match(searchDialogSource, /ConnectionSearchDialog/);
-  assert.match(searchDialogSource, /Ctrl\+\$\{index \+ 1\}/);
+  assert.match(searchDialogSource, /Keybinding/);
+  assert.match(searchDialogSource, /value=\{`Ctrl\+\$\{\(index \+ 1\)\.toString\(\)\}`\}/);
   assert.match(searchDialogSource, /handleOpenChange\(false\)/);
   assert.match(searchDialogSource, /onQueryChange\(""\)/);
 

@@ -42,6 +42,12 @@ const TERMINAL_OUTPUT_BATCH_MAX_WAIT_MS = 16;
 // where xterm and the shell disagree on cols/rows and output reflows wrongly.
 const TERMINAL_RESIZE_SYNC_DEBOUNCE_MS = 120;
 
+export interface TerminalSearchNavigationRequest {
+  direction: "next" | "previous";
+  id: number;
+  tabId: string;
+}
+
 interface TerminalPanelProps {
   active: boolean;
   connection: ConnectionProfile | null;
@@ -52,6 +58,7 @@ interface TerminalPanelProps {
   initialRequestId?: string;
   initialSessionId: string;
   searchCaseSensitive?: boolean;
+  searchNavigationRequest?: TerminalSearchNavigationRequest | null;
   searchOpen?: boolean;
   searchQuery?: string;
   onWarmupCaptureReady?: (tabId: string) => void;
@@ -82,6 +89,7 @@ export function TerminalPanel({
   onStatusChange,
   onWarmupCaptureReady,
   searchCaseSensitive = false,
+  searchNavigationRequest = null,
   searchOpen = false,
   searchQuery = "",
   tabId,
@@ -113,6 +121,7 @@ export function TerminalPanel({
   const pendingResizeTimerRef = useRef<number | null>(null);
   const activeRef = useRef(active);
   const initialWindowsPtyRef = useRef(windowsPty);
+  const lastSearchNavigationRequestIdRef = useRef<number | null>(null);
   const previousSearchOpenRef = useRef(searchOpen);
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [listenersReady, setListenersReady] = useState(!hasTauriRuntime());
@@ -445,6 +454,35 @@ export function TerminalPanel({
     }
     previousSearchOpenRef.current = searchOpen;
   }, [searchOpen]);
+
+  useEffect(() => {
+    if (
+      !searchNavigationRequest ||
+      searchNavigationRequest.tabId !== tabId ||
+      lastSearchNavigationRequestIdRef.current === searchNavigationRequest.id ||
+      !searchOpen
+    ) {
+      return;
+    }
+
+    lastSearchNavigationRequestIdRef.current = searchNavigationRequest.id;
+    if (searchNavigationRequest.direction === "previous") {
+      findPreviousTerminalSearch(
+        searchAddonRef.current,
+        searchQuery,
+        searchCaseSensitive,
+        setSearchResultLabel,
+      );
+      return;
+    }
+
+    findNextTerminalSearch(
+      searchAddonRef.current,
+      searchQuery,
+      searchCaseSensitive,
+      setSearchResultLabel,
+    );
+  }, [searchCaseSensitive, searchNavigationRequest, searchOpen, searchQuery, tabId]);
 
   useEffect(() => {
     const terminal = terminalRef.current;
