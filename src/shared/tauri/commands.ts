@@ -49,6 +49,15 @@ import type {
   TunnelRuleWithState,
   TunnelRuntimeCredentialInput,
 } from "../../features/tunnels/tunnelTypes";
+import type {
+  WebDavDownloadRequest,
+  WebDavRemoteInfo,
+  WebDavSettings,
+  WebDavSettingsInput,
+  WebDavSyncResult,
+  WebDavTestResult,
+  WebDavUploadRequest,
+} from "../../features/settings/webdavSyncTypes";
 
 export interface SecretVaultStatus {
   initialized: boolean;
@@ -555,4 +564,30 @@ export function tunnelStop(ruleId: string) {
 
 export function tunnelAutostart() {
   return invoke<TunnelRuleWithState[]>("tunnel_autostart");
+}
+
+export function webdavSettingsGet() {
+  return invoke<WebDavSettings>("webdav_settings_get");
+}
+
+export function webdavSettingsSave(request: WebDavSettingsInput) {
+  return invoke<WebDavSettings>("webdav_settings_save", { request });
+}
+
+export function webdavTestConnection(request?: WebDavSettingsInput) {
+  return invoke<WebDavTestResult>("webdav_test_connection", {
+    request: request ?? null,
+  });
+}
+
+export function webdavFetchRemoteInfo() {
+  return invoke<WebDavRemoteInfo>("webdav_fetch_remote_info");
+}
+
+export function webdavUploadSnapshot(request: WebDavUploadRequest) {
+  return invoke<WebDavSyncResult>("webdav_upload_snapshot", { request });
+}
+
+export function webdavDownloadSnapshot(request: WebDavDownloadRequest) {
+  return invoke<WebDavSyncResult>("webdav_download_snapshot", { request });
 }

@@ -15,6 +15,8 @@ pub mod storage_vault;
 pub mod sync_snapshot;
 mod terminal;
 mod tunnels;
+mod webdav;
+mod webdav_sync;
 use storage_vault::VaultState;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -26,6 +28,7 @@ pub fn run() {
         .manage(remote_files::RemoteFileManager::default())
         .manage(terminal::manager::TerminalManager::default())
         .manage(tunnels::TunnelManager::default())
+        .manage(webdav_sync::WebDavSyncManager::default())
         .manage(VaultState::default())
         .setup(|app| {
             #[cfg(windows)]
@@ -93,6 +96,12 @@ pub fn run() {
             commands::tunnel_start,
             commands::tunnel_stop,
             commands::tunnel_autostart,
+            commands::webdav_settings_get,
+            commands::webdav_settings_save,
+            commands::webdav_test_connection,
+            commands::webdav_fetch_remote_info,
+            commands::webdav_upload_snapshot,
+            commands::webdav_download_snapshot,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
