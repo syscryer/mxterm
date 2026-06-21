@@ -676,6 +676,186 @@ button {
   grid-column: 1 / -1;
 }
 
+.webdav-sync-section {
+  width: min(1040px, 100%);
+}
+
+.webdav-sync-state {
+  min-height: 28px;
+  border: 1px solid var(--mx-line);
+  border-radius: 999px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 11px;
+  color: var(--mx-muted);
+  background: var(--mx-panel-soft);
+  font-size: 12px;
+  font-weight: 560;
+  white-space: nowrap;
+}
+
+.webdav-sync-state.enabled {
+  border-color: color-mix(in srgb, var(--mx-success) 28%, var(--mx-line));
+  color: color-mix(in srgb, var(--mx-success) 84%, var(--mx-text));
+  background: color-mix(in srgb, var(--mx-success) 9%, var(--mx-panel));
+}
+
+.webdav-sync-form {
+  min-width: 0;
+  display: grid;
+}
+
+.webdav-sync-form-grid {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px 12px;
+  padding: 16px;
+}
+
+.webdav-sync-grid {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1.05fr) minmax(320px, 0.95fr);
+  align-items: start;
+  gap: 16px;
+}
+
+.webdav-remote-panel,
+.webdav-operation-panel,
+.webdav-sync-config-panel {
+  min-width: 0;
+}
+
+.webdav-remote-info {
+  min-width: 0;
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+}
+
+.webdav-remote-badge {
+  justify-self: start;
+  min-height: 24px;
+  border: 1px solid var(--mx-line);
+  border-radius: 999px;
+  display: inline-flex;
+  align-items: center;
+  padding: 0 10px;
+  color: var(--mx-muted);
+  background: var(--mx-panel-soft);
+  font-size: 12px;
+  font-weight: 560;
+}
+
+.webdav-remote-badge.ok {
+  border-color: color-mix(in srgb, var(--mx-success) 30%, var(--mx-line));
+  color: color-mix(in srgb, var(--mx-success) 84%, var(--mx-text));
+  background: color-mix(in srgb, var(--mx-success) 9%, var(--mx-panel));
+}
+
+.webdav-remote-badge.warn {
+  border-color: color-mix(in srgb, var(--mx-danger) 30%, var(--mx-line));
+  color: color-mix(in srgb, var(--mx-danger) 84%, var(--mx-text));
+  background: color-mix(in srgb, var(--mx-danger) 8%, var(--mx-panel));
+}
+
+.webdav-remote-info dl {
+  margin: 0;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.webdav-remote-info dl > div {
+  min-width: 0;
+  border: 1px solid var(--mx-line-soft);
+  border-radius: 8px;
+  display: grid;
+  gap: 4px;
+  padding: 9px 10px;
+  background: var(--mx-panel-soft);
+}
+
+.webdav-remote-info dt,
+.webdav-remote-info dd {
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.webdav-remote-info dt {
+  color: var(--mx-muted);
+  font-size: 11px;
+}
+
+.webdav-remote-info dd {
+  color: var(--mx-text);
+  font-size: 12px;
+  font-weight: 560;
+}
+
+.webdav-operation-body {
+  min-width: 0;
+  display: grid;
+  gap: 14px;
+  padding: 14px;
+}
+
+.webdav-operation-actions {
+  display: flex;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.webdav-sync-actions .primary-button {
+  border-color: color-mix(in srgb, var(--mx-primary) 82%, var(--mx-line));
+  color: #ffffff;
+  background: var(--mx-primary);
+}
+
+.webdav-sync-actions .primary-button:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--mx-primary) 88%, var(--mx-line-strong));
+  color: #ffffff;
+  background: color-mix(in srgb, var(--mx-primary) 90%, var(--mx-text));
+}
+
+.webdav-sync-message {
+  min-width: 0;
+  border: 1px solid color-mix(in srgb, var(--mx-success) 28%, var(--mx-line));
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  padding: 10px 12px;
+  color: color-mix(in srgb, var(--mx-success) 82%, var(--mx-text));
+  background: color-mix(in srgb, var(--mx-success) 8%, var(--mx-panel));
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.webdav-sync-message .ui-icon {
+  width: 15px;
+  height: 15px;
+  flex: 0 0 auto;
+}
+
+.form-error.webdav-sync-message {
+  border-color: color-mix(in srgb, var(--mx-danger) 30%, var(--mx-line));
+}
+
+@media (max-width: 920px) {
+  .webdav-sync-grid,
+  .webdav-sync-form-grid,
+  .webdav-remote-info dl {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
 .credential-settings-layout {
   min-height: 0;
   display: grid;

@@ -40,6 +40,13 @@ use crate::terminal::session::ExecProgressCallback;
 use crate::tunnels::{
     TunnelManager, TunnelRuleIdRequest, TunnelRuleInput, TunnelRuleWithState, TunnelStartRequest,
 };
+use crate::webdav::ensure_collection;
+use crate::webdav_sync::{
+    client_for_settings, fetch_remote_info_with_transport, import_downloaded_bundle,
+    prepare_upload_snapshot, remote_dir_segments, WebDavDownloadRequest, WebDavRemoteInfo,
+    WebDavSettings, WebDavSettingsInput, WebDavSyncManager, WebDavSyncResult, WebDavSyncService,
+    WebDavTestResult, WebDavUploadRequest,
+};
 
 static CONNECTION_STORE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 static CREDENTIAL_STORE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
@@ -626,6 +633,102 @@ pub async fn tunnel_autostart(
     manager: State<'_, TunnelManager>,
 ) -> Result<Vec<TunnelRuleWithState>, AppError> {
     manager.autostart(&app).await
+}
+
+#[tauri::command]
+pub fn webdav_settings_get(app: AppHandle) -> Result<WebDavSettings, AppError> {
+    let repository = StorageRepository::open_app(&app)?;
+    WebDavSyncService::load_settings(&repository, &now_timestamp()?)
+}
+
+#[tauri::command]
+pub fn webdav_settings_save(
+    app: AppHandle,
+    request: WebDavSettingsInput,
+) -> Result<WebDavSettings, AppError> {
+    let repository = StorageRepository::open_app(&app)?;
+    WebDavSyncService::save_settings(&repository, request, &now_timestamp()?)
+}
+
+#[tauri::command]
+pub async fn webdav_test_connection(
+    app: AppHandle,
+    request: Option<WebDavSettingsInput>,
+) -> Result<WebDavTestResult, AppError> {
+    let now = now_timestamp()?;
+    let (settings, client) = {
+        let repository = StorageRepository::open_app(&app)?;
+        let (settings, password_override) = match request {
+            Some(input) => WebDavSyncService::settings_from_input(&repository, input, &now)?,
+            None => (WebDavSyncService::load_settings(&repository, &now)?, None),
+        };
+        let client = client_for_settings(&repository, &settings, password_override)?;
+        (settings, client)
+    };
+    ensure_collection(&client, &remote_dir_segments(&settings)).await?;
+    Ok(WebDavTestResult {
+        ok: true,
+        message: "WebDAV 连接正常。".to_string(),
+    })
+}
+
+#[tauri::command]
+pub async fn webdav_fetch_remote_info(app: AppHandle) -> Result<WebDavRemoteInfo, AppError> {
+    let now = now_timestamp()?;
+    let (settings, client) = {
+        let repository = StorageRepository::open_app(&app)?;
+        let settings = WebDavSyncService::load_settings(&repository, &now)?;
+        let client = client_for_settings(&repository, &settings, None)?;
+        (settings, client)
+    };
+    fetch_remote_info_with_transport(&client, &settings).await
+}
+
+#[tauri::command]
+pub async fn webdav_upload_snapshot(
+    app: AppHandle,
+    manager: State<'_, WebDavSyncManager>,
+    request: WebDavUploadRequest,
+) -> Result<WebDavSyncResult, AppError> {
+    let now = now_timestamp()?;
+    let (settings, client, prepared) = {
+        let repository = StorageRepository::open_app(&app)?;
+        let settings = WebDavSyncService::load_settings(&repository, &now)?;
+        let client = client_for_settings(&repository, &settings, None)?;
+        let prepared = prepare_upload_snapshot(&repository, request, &now)?;
+        (settings, client, prepared)
+    };
+    let result = manager
+        .upload_prepared_snapshot(&client, &settings, prepared)
+        .await?;
+    {
+        let repository = StorageRepository::open_app(&app)?;
+        let _ = WebDavSyncService::record_sync_success(&repository, &settings, &result, &now)?;
+    }
+    Ok(result)
+}
+
+#[tauri::command]
+pub async fn webdav_download_snapshot(
+    app: AppHandle,
+    manager: State<'_, WebDavSyncManager>,
+    request: WebDavDownloadRequest,
+) -> Result<WebDavSyncResult, AppError> {
+    let now = now_timestamp()?;
+    let (settings, client) = {
+        let repository = StorageRepository::open_app(&app)?;
+        let settings = WebDavSyncService::load_settings(&repository, &now)?;
+        let client = client_for_settings(&repository, &settings, None)?;
+        (settings, client)
+    };
+    let bundle = manager.download_bundle(&client, &settings).await?;
+    let result = {
+        let mut repository = StorageRepository::open_app(&app)?;
+        let result = import_downloaded_bundle(&mut repository, &bundle, request)?;
+        let _ = WebDavSyncService::record_sync_success(&repository, &settings, &result, &now)?;
+        result
+    };
+    Ok(result)
 }
 #[tauri::command]
 pub async fn remote_file_read(

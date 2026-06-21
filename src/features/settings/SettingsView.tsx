@@ -4,6 +4,7 @@ import {
   ArrowLeft,
   Check,
   Clock3,
+  Cloud,
   Download,
   Eye,
   EyeOff,
@@ -92,6 +93,7 @@ import type {
   LocalTerminalSettings,
 } from "../terminal/localTerminalTypes";
 import { LocalTerminalIcon } from "../terminal/LocalTerminalIcons";
+import { WebDavSyncSettingsSection } from "./WebDavSyncSettingsSection";
 
 interface SettingsViewProps {
   credentials: CredentialProfile[];
@@ -127,6 +129,7 @@ const settingsSections: Array<{
   { id: "basic", label: "基础设置", description: "启动、连接与面板行为", icon: Settings },
   { id: "credentials", label: "账号管理", description: "复用登录账号（用户名+密码/私钥）", icon: Shield },
   { id: "security", label: "安全", description: "主密码与本机保护", icon: ShieldCheck },
+  { id: "sync", label: "同步", description: "WebDAV 手动同步", icon: Cloud },
   { id: "appearance", label: "外观", description: "字号、密度与强调色", icon: Palette },
   { id: "localTerminal", label: "本地终端", description: "默认 Shell 与 profile 管理", icon: HardDrive },
   { id: "terminalTheme", label: "终端配色", description: "终端 ANSI 主题方案", icon: Terminal },
@@ -260,6 +263,7 @@ export function SettingsView({
             onUpdate={onUpdateSecurity}
           />
         ) : null}
+        {activeSection === "sync" ? <WebDavSyncSettingsSection /> : null}
         {activeSection === "terminalTheme" ? (
           <TerminalThemeSettingsSection
             selectedScheme={selectedScheme}

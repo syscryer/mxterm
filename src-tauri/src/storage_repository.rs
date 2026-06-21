@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use rusqlite::{params, Connection, OptionalExtension};
+use serde::{de::DeserializeOwned, Serialize};
 use tauri::{AppHandle, Manager};
 
 use crate::app_error::AppError;
@@ -113,6 +114,73 @@ impl StorageRepository {
         Ok(())
     }
 
+    pub fn app_setting_get<T: DeserializeOwned>(&self, key: &str) -> Result<Option<T>, AppError> {
+        let value_json = self
+            .connection
+            .query_row(
+                "SELECT value_json FROM app_settings WHERE key = ?1",
+                params![key],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(sqlite_repository_error)?;
+        value_json
+            .map(|value| serde_json::from_str(&value).map_err(sqlite_serialize_error))
+            .transpose()
+    }
+
+    pub fn app_setting_set<T: Serialize>(
+        &self,
+        key: &str,
+        value: &T,
+        now: &str,
+    ) -> Result<(), AppError> {
+        let value_json = serde_json::to_string(value).map_err(sqlite_serialize_error)?;
+        self.connection
+            .execute(
+                "INSERT INTO app_settings(key, value_json, updated_at) VALUES (?1, ?2, ?3)
+                 ON CONFLICT(key) DO UPDATE SET
+                    value_json = excluded.value_json,
+                    updated_at = excluded.updated_at",
+                params![key, value_json, now],
+            )
+            .map_err(sqlite_repository_error)?;
+        Ok(())
+    }
+
+    pub fn secret_set(&self, reference: &SecretReference, secret: &str) -> Result<(), AppError> {
+        self.secret_store.set_secret(reference, secret)
+    }
+
+    pub fn secret_get(&self, reference: &SecretReference) -> Result<String, AppError> {
+        self.secret_store.get_secret(reference)
+    }
+
+    pub fn secret_delete(&self, reference: &SecretReference) -> Result<(), AppError> {
+        self.secret_store.delete_secret(reference)
+    }
+
+    pub fn secret_exists(&self, reference: &SecretReference) -> Result<bool, AppError> {
+        match self.secret_store.get_secret(reference) {
+            Ok(_) => Ok(true),
+            Err(error) if error.code == "secret_missing" => Ok(false),
+            Err(error) => Err(error),
+        }
+    }
+
+    pub fn sync_secret_count(&self) -> Result<usize, AppError> {
+        let count = self
+            .connection
+            .query_row(
+                "SELECT
+                    (SELECT COUNT(*) FROM connections WHERE inline_secret_ref IS NOT NULL AND inline_secret_slot_id IS NOT NULL) +
+                    (SELECT COUNT(*) FROM credentials WHERE secret_ref IS NOT NULL AND secret_slot_id IS NOT NULL)",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .map_err(sqlite_repository_error)?;
+        Ok(count.max(0) as usize)
+    }
     pub fn export_sync_data(&self) -> Result<SyncDataDocument, AppError> {
         Ok(SyncDataDocument {
             version: SYNC_PROTOCOL_VERSION,

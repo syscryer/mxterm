@@ -1019,3 +1019,62 @@ await setWindowMaterial(normalizeWindowMaterial(settings.appearance.windowMateri
   onChange={(windowMaterial) => onUpdate({ windowMaterial })}
 />
 ```
+
+## Scenario: WebDAV Sync Settings UI
+
+### 1. Scope / Trigger
+
+- Trigger: frontend code adds or changes WebDAV sync settings, manual upload/download controls, typed wrappers for `webdav_*` commands, or sync confirmation UI.
+- Source files: `src/shared/tauri/commands.ts`, `src/features/settings/webdavSyncTypes.ts`, `src/features/settings/WebDavSyncSettingsSection.tsx`, `src/features/settings/SettingsView.tsx`, `src/features/settings/settingsTypes.ts`, and `src/styles/app.css`.
+- This is a cross-layer command contract because React edits transient form state while Rust owns persistence, vault secrets, remote transport, snapshot validation, and import/export side effects.
+
+### 2. Signatures
+
+```ts
+webdavSettingsGet(): Promise<WebDavSettings>
+webdavSettingsSave(request: WebDavSettingsInput): Promise<WebDavSettings>
+webdavTestConnection(request?: WebDavSettingsInput): Promise<WebDavTestResult>
+webdavFetchRemoteInfo(): Promise<WebDavRemoteInfo>
+webdavUploadSnapshot(request: WebDavUploadRequest): Promise<WebDavSyncResult>
+webdavDownloadSnapshot(request: WebDavDownloadRequest): Promise<WebDavSyncResult>
+```
+
+Frontend payloads mirror Rust snake_case fields. `WebDavSettings.password_saved` is metadata only; there is no password field in the settings response.
+
+### 3. Contracts
+
+- Components must call typed wrappers in `src/shared/tauri/commands.ts`; do not call `invoke("webdav_*")` directly from UI code.
+- The Settings navigation owns the entry as `SettingsSectionId = "sync"`; WebDAV v1 is manual-only and default disabled.
+- WebDAV password fields stay in component state only. The UI must send `password` only when `password_touched=true`; untouched blank fields preserve the saved vault password.
+- A touched blank WebDAV password is intentional deletion and must be sent as `password_touched=true` with a blank value.
+- The sync master password stays in component state only and is sent only to upload/download commands. It must not be persisted into `MxtermSettings`, localStorage, or the WebDAV settings save request.
+- Upload and download require `ConfirmDialog` because upload overwrites remote latest and download overwrites the local sync scope after snapshot backup.
+- Remote info should render empty, compatible, incompatible, and error states without inventing success. Delivery success means the command completed, not that another device has already consumed the snapshot.
+- UI must use SettingsView layout, shared `SettingsRow`, `SettingsToggle`, `ConfirmDialog`, Lucide icons, and global `--mx-*` tokens. Do not use native `<select>` or feature-local dropdowns for WebDAV business controls.
+- Browser preview may show a static disabled layout, but real WebDAV operations must be disabled or explained when no Tauri runtime is present.
+
+### 4. Validation & Error Matrix
+
+| Condition | Frontend behavior |
+| --- | --- |
+| No Tauri runtime | Show the WebDAV layout, disable real operations, and explain that desktop mode is required. |
+| Save/test returns validation error | Keep the form open and show the Rust `AppError.message` near the WebDAV section. |
+| `webdav_password_missing` | Keep the password field visible and show the recoverable message; do not clear saved metadata locally. |
+| `webdav_sync_locked` | Show that another sync task is running and keep buttons disabled only for the active request lifecycle. |
+| Remote info `exists=false` | Show an empty remote state, not an error. |
+| Remote info `compatible=false` | Show an incompatible state and do not present it as safe to download. |
+| Upload/download succeeds | Show a short success summary with snapshot id/device and clear no persisted password fields. |
+
+### 5. Good / Base / Bad Cases
+
+- Good: the user saves URL/user/root/profile while leaving the password untouched; the payload omits `password` and sends `password_touched=false`.
+- Good: the user intentionally clears the WebDAV password; the payload sends `password_touched=true` and a blank `password`.
+- Good: upload/download confirmation uses the shared dialog and then calls typed wrappers with only `sync_password` plus optional device metadata.
+- Base: browser preview renders the sync section with deterministic defaults and disabled operations.
+- Bad: a component stores WebDAV or sync passwords in `MxtermSettings`, localStorage, logs, or a shared global store; calls `invoke` directly; or uses `window.confirm` / native `<select>`.
+
+### 6. Tests Required
+
+- Run `npm run check` after changing WebDAV sync types, command wrappers, settings navigation, or the sync settings component.
+- Cross-check TypeScript payload fields against Rust structs in `src-tauri/src/webdav_sync.rs` and command signatures in `src-tauri/src/commands.rs`.
+- Browser/desktop visual checks should cover disabled/off state, saved-password state, remote empty state, incompatible remote state, busy buttons, and dark theme token contrast.

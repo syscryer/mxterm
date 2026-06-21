@@ -1569,3 +1569,105 @@ if let Some(secrets) = bundle.remote_secrets_enc {
 ```
 
 The transport only moves snapshot artifacts produced by the sync layer; it never reads SQLite or vault files directly.
+
+## Scenario: WebDAV Sync Commands
+
+### 1. Scope / Trigger
+
+- Trigger: backend code adds or changes WebDAV sync settings, transport behavior, snapshot upload/download orchestration, or `webdav_*` Tauri commands.
+- Source files: `src-tauri/src/webdav.rs`, `src-tauri/src/webdav_sync.rs`, `src-tauri/src/sync_snapshot.rs`, `src-tauri/src/storage_repository.rs`, `src-tauri/src/commands.rs`, `src-tauri/src/lib.rs`, `src/shared/tauri/commands.ts`, and `src/features/settings/WebDavSyncSettingsSection.tsx`.
+- This is a cross-layer storage and secret boundary: Rust owns WebDAV credentials, snapshot artifacts, sync locking, and import/export validation; React owns form state and confirmation UI only.
+
+### 2. Signatures
+
+```rust
+webdav_settings_get(app: AppHandle) -> Result<WebDavSettings, AppError>
+webdav_settings_save(app: AppHandle, request: WebDavSettingsInput) -> Result<WebDavSettings, AppError>
+webdav_test_connection(app: AppHandle, request: Option<WebDavSettingsInput>) -> Result<WebDavTestResult, AppError>
+webdav_fetch_remote_info(app: AppHandle) -> Result<WebDavRemoteInfo, AppError>
+webdav_upload_snapshot(app: AppHandle, manager: State<WebDavSyncManager>, request: WebDavUploadRequest) -> Result<WebDavSyncResult, AppError>
+webdav_download_snapshot(app: AppHandle, manager: State<WebDavSyncManager>, request: WebDavDownloadRequest) -> Result<WebDavSyncResult, AppError>
+```
+
+Request fields:
+
+```rust
+WebDavSettingsInput {
+    enabled: bool,
+    base_url: String,
+    username: Option<String>,
+    password: Option<String>,
+    password_touched: bool,
+    remote_root: String,
+    profile: String,
+}
+
+WebDavUploadRequest {
+    sync_password: Option<String>,
+    device_id: Option<String>,
+    device_name: Option<String>,
+}
+
+WebDavDownloadRequest {
+    sync_password: Option<String>,
+}
+```
+
+### 3. Contracts
+
+- WebDAV settings are stored under `app_settings` key `webdav.sync.default`; the WebDAV login password is stored through the local vault reference `webdav:<profile>:password`.
+- `WebDavSettings.password_saved` is metadata only. Commands must never return the WebDAV password, sync password, SSH password, private-key passphrase, or a URL containing credentials/query secrets.
+- `password_touched=false` with a blank or omitted password preserves the existing vault password. `password_touched=true` with a blank password deletes the saved WebDAV password.
+- The sync master password is per upload/download request only. It must not be stored in `app_settings`, localStorage, logs, command responses, or the WebDAV settings password slot.
+- WebDAV transport moves only artifacts produced by `SyncSnapshotService`: `data.json`, optional `secrets.enc`, and `manifest.json`. It must not read SQLite tables directly or upload the local vault file.
+- Upload must ensure the remote collection first, then PUT `data.json`, optional `secrets.enc`, and `manifest.json` last.
+- Download must fetch and validate `manifest.json` before downloading data or secrets. Incompatible manifests return `sync_snapshot_incompatible` and must not call import.
+- Upload and download are mutually exclusive through `WebDavSyncManager`; a second operation returns `webdav_sync_locked`.
+- Tauri command handlers must not hold `StorageRepository` across `.await`; load settings / prepare artifacts before network awaits, then reopen the repository for import or success metadata.
+- `webdav_test_connection` may accept unsaved settings input for pre-save testing. It must still honor `password_touched` semantics and use a saved password only when the input does not override it.
+
+### 4. Validation & Error Matrix
+
+| Condition | Error code | Recoverable |
+| --- | --- | --- |
+| Enabled settings with blank `base_url` | `webdav_settings_invalid` | true |
+| Invalid profile path characters | `webdav_settings_invalid` | true |
+| Username is set but no WebDAV password is available | `webdav_password_missing` | true |
+| WebDAV request fails or returns an unexpected status | `webdav_connection_failed` / `webdav_http_status` | true |
+| Remote `manifest.json` is absent during download | `webdav_remote_empty` | true |
+| Upload/download already running | `webdav_sync_locked` | true |
+| Response body exceeds the configured artifact limit | `webdav_response_too_large` | true |
+| Upload contains secrets but no sync password was supplied | `webdav_sync_password_missing` | true |
+
+### 5. Good / Base / Bad Cases
+
+- Good: saving settings with an untouched password field updates URL/user/root/profile but keeps the existing vault password.
+- Good: uploading a snapshot with saved SSH secrets requires a sync master password, writes remote `secrets.enc`, and PUTs `manifest.json` last.
+- Good: downloading without a sync master password imports non-sensitive data and reports `secrets_skipped=true` through the snapshot layer.
+- Base: remote info returns `exists=false` when `manifest.json` is missing, allowing the UI to show an empty remote state.
+- Bad: WebDAV sync writes plaintext passwords into SQLite, uploads the local `secrets.enc` vault, logs full URLs with credentials, or lets two uploads/downloads run concurrently.
+
+### 6. Tests Required
+
+- Unit-test URL path encoding, URL redaction, Basic Auth header creation, MKCOL conflict verification, and oversized GET rejection in `webdav.rs`.
+- Unit-test `password_touched` preserve/delete behavior, upload PUT order, sync lock rejection, and incompatible manifest rejection in `webdav_sync.rs`.
+- Run `cargo test --manifest-path src-tauri/Cargo.toml webdav --lib`, `cargo test --manifest-path src-tauri/Cargo.toml webdav_sync --lib`, `cargo test --manifest-path src-tauri/Cargo.toml sync_snapshot --lib`, and `cargo check --manifest-path src-tauri/Cargo.toml` after changing this area.
+- Cross-check command registration in `src-tauri/src/lib.rs`, Rust command signatures in `src-tauri/src/commands.rs`, and typed wrappers in `src/shared/tauri/commands.ts` in the same task.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```rust
+let vault_file = app_data.join("secrets.enc");
+client.put(&["secrets.enc".to_string()], std::fs::read(vault_file)?, "application/octet-stream").await?;
+```
+
+#### Correct
+
+```rust
+let prepared = prepare_upload_snapshot(&repository, request, &now)?;
+manager.upload_prepared_snapshot(&client, &settings, prepared).await?;
+```
+
+The WebDAV layer transports snapshot artifacts only; the snapshot layer owns encryption, validation, and import/export behavior.

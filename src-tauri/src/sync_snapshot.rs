@@ -291,7 +291,7 @@ impl SyncSnapshotService {
         encrypted: &[u8],
         sync_password: &str,
     ) -> Result<SyncSecretsPlaintext, AppError> {
-        validate_manifest(manifest)?;
+        validate_manifest_summary(manifest)?;
         let envelope: RemoteSecretsEnvelope = serde_json::from_slice(encrypted)
             .map_err(|error| sync_snapshot_secret_decrypt_failed(error))?;
         validate_remote_secret_envelope(&envelope)?;
@@ -324,7 +324,7 @@ pub fn validate_bundle_artifacts(
     data_json: &[u8],
     remote_secrets_enc: Option<&[u8]>,
 ) -> Result<(), AppError> {
-    validate_manifest(manifest)?;
+    validate_manifest_summary(manifest)?;
     validate_artifact(manifest, DATA_ARTIFACT, data_json)?;
     match remote_secrets_enc {
         Some(bytes) => validate_artifact(manifest, SECRETS_ARTIFACT, bytes),
@@ -438,7 +438,7 @@ fn build_manifest(
     }
 }
 
-fn validate_manifest(manifest: &SyncManifest) -> Result<(), AppError> {
+pub fn validate_manifest_summary(manifest: &SyncManifest) -> Result<(), AppError> {
     if manifest.format != SYNC_FORMAT {
         return Err(sync_snapshot_incompatible(format!(
             "unsupported sync format {}",

@@ -14,6 +14,7 @@ export type SettingsSectionId =
   | "basic"
   | "credentials"
   | "security"
+  | "sync"
   | "appearance"
   | "terminalTheme"
   | "localTerminal";
