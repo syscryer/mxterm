@@ -43,7 +43,7 @@ import {
   selectLocalDownloadDirectory,
   selectLocalPrivateKeyFile,
 } from "../../shared/tauri/dialog";
-import { localTerminalListProfiles } from "../../shared/tauri/commands";
+import { credentialRevealSecret, localTerminalListProfiles } from "../../shared/tauri/commands";
 import { hasTauriRuntime } from "../../shared/tauri/runtime";
 import type {
   ConnectionAuthKind,
@@ -112,6 +112,7 @@ interface SettingsViewProps {
   secretVaultError?: string | null;
   onDisableMasterPassword: () => Promise<boolean>;
   onEnableMasterPassword: (masterPassword: string) => Promise<boolean>;
+  onUnlockSecuritySettings: (masterPassword: string) => Promise<boolean>;
   onUpdateAppearance: (update: Partial<AppearanceSettings>) => void;
   onUpdateBasic: (update: Partial<BasicSettings>) => void;
   onUpdateFileTransfer: (update: Partial<FileTransferSettings>) => void;
@@ -128,7 +129,7 @@ const settingsSections: Array<{
 }> = [
   { id: "basic", label: "基础设置", description: "启动、连接与面板行为", icon: Settings },
   { id: "credentials", label: "账号管理", description: "复用登录账号（用户名+密码/私钥）", icon: Shield },
-  { id: "security", label: "安全", description: "主密码与本机保护", icon: ShieldCheck },
+  { id: "security", label: "安全", description: "安全密码与本机保护", icon: ShieldCheck },
   { id: "sync", label: "同步", description: "WebDAV 手动同步", icon: Cloud },
   { id: "appearance", label: "外观", description: "字号、密度与强调色", icon: Palette },
   { id: "localTerminal", label: "本地终端", description: "默认 Shell 与 profile 管理", icon: HardDrive },
@@ -160,6 +161,7 @@ export function SettingsView({
   secretVaultError = null,
   onDisableMasterPassword,
   onEnableMasterPassword,
+  onUnlockSecuritySettings,
   onUpdateAppearance,
   onUpdateBasic,
   onUpdateFileTransfer,
@@ -169,6 +171,8 @@ export function SettingsView({
 }: SettingsViewProps) {
   const [activeSection, setActiveSection] = useState<SettingsSectionId>("basic");
   const [accentDraft, setAccentDraft] = useState(settings.appearance.accentColorCustom);
+  const effectiveAllowPasswordReveal =
+    !settings.security.masterPasswordEnabled || settings.security.allowPasswordReveal;
   const selectedScheme = useMemo(
     () =>
       terminalColorSchemes.find((scheme) => scheme.id === settings.terminalTheme.scheme) ||
@@ -246,6 +250,7 @@ export function SettingsView({
         ) : null}
         {activeSection === "credentials" ? (
           <CredentialSettingsSection
+            allowPasswordReveal={effectiveAllowPasswordReveal}
             credentials={credentials}
             error={credentialError || null}
             loading={credentialLoading}
@@ -260,6 +265,7 @@ export function SettingsView({
             settings={settings.security}
             onDisableMasterPassword={onDisableMasterPassword}
             onEnableMasterPassword={onEnableMasterPassword}
+            onUnlockSecuritySettings={onUnlockSecuritySettings}
             onUpdate={onUpdateSecurity}
           />
         ) : null}
@@ -282,6 +288,7 @@ function SecuritySettingsSection({
   settings,
   onDisableMasterPassword,
   onEnableMasterPassword,
+  onUnlockSecuritySettings,
   onUpdate,
 }: {
   busy: boolean;
@@ -289,22 +296,36 @@ function SecuritySettingsSection({
   settings: SecuritySettings;
   onDisableMasterPassword: () => Promise<boolean>;
   onEnableMasterPassword: (masterPassword: string) => Promise<boolean>;
+  onUnlockSecuritySettings: (masterPassword: string) => Promise<boolean>;
   onUpdate: (update: Partial<SecuritySettings>) => void;
 }) {
   const [enabling, setEnabling] = useState(false);
+  const [settingsUnlocked, setSettingsUnlocked] = useState(false);
   const [masterPassword, setMasterPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
+  const [unlockPassword, setUnlockPassword] = useState("");
+  const [changingPassword, setChangingPassword] = useState(false);
+  const [nextPassword, setNextPassword] = useState("");
+  const [nextConfirmPassword, setNextConfirmPassword] = useState("");
   const [localError, setLocalError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!settings.masterPasswordEnabled) {
+      setSettingsUnlocked(false);
+      setUnlockPassword("");
+      setChangingPassword(false);
+    }
+  }, [settings.masterPasswordEnabled]);
 
   async function submitEnable(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const password = masterPassword.trim();
     if (!password) {
-      setLocalError("请输入主密码。");
+      setLocalError("请输入安全密码。");
       return;
     }
     if (password !== confirmPassword.trim()) {
-      setLocalError("两次输入的主密码不一致。");
+      setLocalError("两次输入的安全密码不一致。");
       return;
     }
 
@@ -312,9 +333,45 @@ function SecuritySettingsSection({
     const ok = await onEnableMasterPassword(password);
     if (ok) {
       onUpdate({ masterPasswordEnabled: true });
+      setSettingsUnlocked(false);
       setMasterPassword("");
       setConfirmPassword("");
       setEnabling(false);
+    }
+  }
+
+  async function submitUnlock(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const password = unlockPassword.trim();
+    if (!password) {
+      setLocalError("请输入安全密码。");
+      return;
+    }
+    setLocalError(null);
+    const ok = await onUnlockSecuritySettings(password);
+    if (ok) {
+      setSettingsUnlocked(true);
+      setUnlockPassword("");
+    }
+  }
+
+  async function submitChangePassword(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const password = nextPassword.trim();
+    if (!password) {
+      setLocalError("请输入新的安全密码。");
+      return;
+    }
+    if (password !== nextConfirmPassword.trim()) {
+      setLocalError("两次输入的安全密码不一致。");
+      return;
+    }
+    setLocalError(null);
+    const ok = await onEnableMasterPassword(password);
+    if (ok) {
+      setChangingPassword(false);
+      setNextPassword("");
+      setNextConfirmPassword("");
     }
   }
 
@@ -324,44 +381,54 @@ function SecuritySettingsSection({
     if (ok) {
       onUpdate({ masterPasswordEnabled: false });
       setEnabling(false);
+      setSettingsUnlocked(false);
     }
   }
+
+  const autoLockOptions = [
+    { label: "不自动锁定", value: "0" },
+    { label: "5 分钟", value: "5" },
+    { label: "15 分钟", value: "15" },
+    { label: "30 分钟", value: "30" },
+    { label: "60 分钟", value: "60" },
+  ];
 
   return (
     <section className="settings-page-section">
       <header className="settings-section-head">
         <h1>安全</h1>
-        <p>控制本机保存的连接密码是否需要主密码解锁。</p>
+        <p>默认无打扰；需要更强保护时，可开启总安全密码。</p>
       </header>
 
       <div className="settings-panel">
         <SettingsRow
           icon={LockKeyhole}
-          title="启用主密码保护"
+          title="高级安全保护"
           description={
             settings.masterPasswordEnabled
-              ? "启动后需要输入主密码，才能读取已保存的 SSH 密码和私钥口令。"
-              : "默认使用本机自动加密保存密码，启动时不弹解锁页。"
+              ? "已开启。vault 使用安全密码加密，启动后必须解锁。"
+              : "默认关闭，适合个人使用；密码仍会加密保存到本机 vault。"
           }
         >
           <SettingsToggle
             checked={settings.masterPasswordEnabled}
-            label="启用主密码保护"
+            label="高级安全保护"
             onChange={(checked) => {
               if (checked) {
                 setEnabling(true);
                 setLocalError(null);
-              } else {
+              } else if (settingsUnlocked) {
                 void disableMasterPassword();
               }
             }}
+            disabled={settings.masterPasswordEnabled && !settingsUnlocked}
           />
         </SettingsRow>
 
-        {enabling ? (
+        {!settings.masterPasswordEnabled && enabling ? (
           <form className="settings-security-master-form" onSubmit={submitEnable}>
             <label className="credential-field">
-              <span>主密码</span>
+              <span>安全密码</span>
               <input
                 className="settings-input"
                 type="password"
@@ -371,7 +438,7 @@ function SecuritySettingsSection({
               />
             </label>
             <label className="credential-field">
-              <span>确认主密码</span>
+              <span>确认安全密码</span>
               <input
                 className="settings-input"
                 type="password"
@@ -401,8 +468,121 @@ function SecuritySettingsSection({
           </form>
         ) : null}
 
+        {settings.masterPasswordEnabled && !settingsUnlocked ? (
+          <form className="settings-security-master-form" onSubmit={submitUnlock}>
+            <label className="credential-field">
+              <span>安全密码</span>
+              <input
+                className="settings-input"
+                type="password"
+                autoComplete="current-password"
+                value={unlockPassword}
+                onChange={(event) => setUnlockPassword(event.currentTarget.value)}
+              />
+            </label>
+            <div className="settings-security-master-actions">
+              <button className="settings-action-button" type="submit" disabled={busy}>
+                解锁安全设置
+              </button>
+            </div>
+          </form>
+        ) : null}
+
+        {settings.masterPasswordEnabled && settingsUnlocked ? (
+          <>
+            <SettingsRow
+              icon={Clock3}
+              title="闲置自动锁定"
+              description="锁定后会清除内存中的 vault 解锁状态，需要重新输入安全密码。"
+            >
+              <AppSelect
+                ariaLabel="闲置自动锁定"
+                className="settings-select"
+                value={String(settings.autoLockMinutes)}
+                options={autoLockOptions}
+                onChange={(value) =>
+                  onUpdate({ autoLockMinutes: Number(value) as SecuritySettings["autoLockMinutes"] })
+                }
+              />
+            </SettingsRow>
+
+            <SettingsRow
+              icon={Eye}
+              title="允许查看已保存密码"
+              description="关闭后，连接编辑和账号管理不显示眼睛按钮，只能替换密码。"
+            >
+              <SettingsToggle
+                checked={settings.allowPasswordReveal}
+                label="允许查看已保存密码"
+                onChange={(allowPasswordReveal) => onUpdate({ allowPasswordReveal })}
+              />
+            </SettingsRow>
+
+            {changingPassword ? (
+              <form className="settings-security-master-form" onSubmit={submitChangePassword}>
+                <label className="credential-field">
+                  <span>新的安全密码</span>
+                  <input
+                    className="settings-input"
+                    type="password"
+                    autoComplete="new-password"
+                    value={nextPassword}
+                    onChange={(event) => setNextPassword(event.currentTarget.value)}
+                  />
+                </label>
+                <label className="credential-field">
+                  <span>确认安全密码</span>
+                  <input
+                    className="settings-input"
+                    type="password"
+                    autoComplete="new-password"
+                    value={nextConfirmPassword}
+                    onChange={(event) => setNextConfirmPassword(event.currentTarget.value)}
+                  />
+                </label>
+                <div className="settings-security-master-actions">
+                  <button className="settings-action-button" type="submit" disabled={busy}>
+                    保存新密码
+                  </button>
+                  <button
+                    className="settings-action-button"
+                    type="button"
+                    disabled={busy}
+                    onClick={() => {
+                      setChangingPassword(false);
+                      setNextPassword("");
+                      setNextConfirmPassword("");
+                    }}
+                  >
+                    取消
+                  </button>
+                </div>
+              </form>
+            ) : (
+              <div className="settings-security-master-actions">
+                <button
+                  className="settings-action-button"
+                  type="button"
+                  disabled={busy}
+                  onClick={() => setChangingPassword(true)}
+                >
+                  修改安全密码
+                </button>
+                <button
+                  className="danger-button credential-danger-button"
+                  type="button"
+                  disabled={busy}
+                  onClick={() => void disableMasterPassword()}
+                >
+                  关闭高级保护
+                </button>
+              </div>
+            )}
+          </>
+        ) : null}
+
         <p className="settings-note">
-          关闭时不会明文保存密码；开启后如果忘记主密码，已保存的密码和口令无法恢复。
+          高级保护关闭时不会明文保存密码；开启后如果忘记安全密码，已保存的密码和口令无法恢复。
         </p>
 
         {localError || error ? (
@@ -416,12 +596,14 @@ function SecuritySettingsSection({
 }
 
 function CredentialSettingsSection({
+  allowPasswordReveal,
   credentials,
   error,
   loading,
   onDelete,
   onSave,
 }: {
+  allowPasswordReveal: boolean;
   credentials: CredentialProfile[];
   error: string | null;
   loading: boolean;
@@ -471,8 +653,10 @@ function CredentialSettingsSection({
       name: credential.name,
       username: credential.username || "",
       notes: credential.notes || "",
-      password: credential.password || "",
-      private_key_passphrase: credential.private_key_passphrase || "",
+      password: "",
+      password_touched: false,
+      private_key_passphrase: "",
+      private_key_passphrase_touched: false,
       private_key_path: credential.private_key_path || "",
     });
     setFormError(null);
@@ -695,21 +879,30 @@ function CredentialSettingsSection({
                   <input
                     type={showSecret ? "text" : "password"}
                     value={form.password || ""}
-                    placeholder="输入账号密码"
+                    placeholder={editing ? "已保存，留空保留" : "输入账号密码"}
                     aria-label="账号密码"
-                    onChange={(event) => setForm({ ...form, password: event.currentTarget.value })}
+                    onChange={(event) =>
+                      setForm({
+                        ...form,
+                        password: event.currentTarget.value,
+                        password_touched: true,
+                      })
+                    }
                   />
-                  <button
-                    type="button"
-                    aria-label={showSecret ? "隐藏密码" : "显示密码"}
-                    onClick={() => setShowSecret((value) => !value)}
-                  >
-                    {showSecret ? (
-                      <EyeOff className="ui-icon" aria-hidden="true" />
-                    ) : (
-                      <Eye className="ui-icon" aria-hidden="true" />
-                    )}
-                  </button>
+                  {allowPasswordReveal ? (
+                    <button
+                      type="button"
+                      disabled={busy}
+                      aria-label={showSecret ? "隐藏密码" : "显示密码"}
+                      onClick={() => void toggleCredentialSecretVisibility()}
+                    >
+                      {showSecret ? (
+                        <EyeOff className="ui-icon" aria-hidden="true" />
+                      ) : (
+                        <Eye className="ui-icon" aria-hidden="true" />
+                      )}
+                    </button>
+                  ) : null}
                 </div>
               </label>
             ) : (
@@ -744,26 +937,30 @@ function CredentialSettingsSection({
                     <input
                       type={showPassphrase ? "text" : "password"}
                       value={form.private_key_passphrase || ""}
-                      placeholder="可选"
+                      placeholder={editing ? "已保存，留空保留" : "可选"}
                       aria-label="账号私钥口令"
                       onChange={(event) =>
                         setForm({
                           ...form,
                           private_key_passphrase: event.currentTarget.value,
+                          private_key_passphrase_touched: true,
                         })
                       }
                     />
-                    <button
-                      type="button"
-                      aria-label={showPassphrase ? "隐藏私钥口令" : "显示私钥口令"}
-                      onClick={() => setShowPassphrase((value) => !value)}
-                    >
-                      {showPassphrase ? (
-                        <EyeOff className="ui-icon" aria-hidden="true" />
-                      ) : (
-                        <Eye className="ui-icon" aria-hidden="true" />
-                      )}
-                    </button>
+                    {allowPasswordReveal ? (
+                      <button
+                        type="button"
+                        disabled={busy}
+                        aria-label={showPassphrase ? "隐藏私钥口令" : "显示私钥口令"}
+                        onClick={() => void toggleCredentialPassphraseVisibility()}
+                      >
+                        {showPassphrase ? (
+                          <EyeOff className="ui-icon" aria-hidden="true" />
+                        ) : (
+                          <Eye className="ui-icon" aria-hidden="true" />
+                        )}
+                      </button>
+                    ) : null}
                   </div>
                 </label>
               </>
@@ -828,6 +1025,63 @@ function CredentialSettingsSection({
       />
     </section>
   );
+
+  async function toggleCredentialSecretVisibility() {
+    if (showSecret) {
+      setShowSecret(false);
+      return;
+    }
+    if (!form.password && editing?.id) {
+      await revealCredentialSecret("password");
+      return;
+    }
+    setShowSecret(true);
+  }
+
+  async function toggleCredentialPassphraseVisibility() {
+    if (showPassphrase) {
+      setShowPassphrase(false);
+      return;
+    }
+    if (!form.private_key_passphrase && editing?.id) {
+      await revealCredentialSecret("private_key");
+      return;
+    }
+    setShowPassphrase(true);
+  }
+
+  async function revealCredentialSecret(kind: ConnectionAuthKind) {
+    if (!editing?.id) {
+      return;
+    }
+    setBusy(true);
+    setFormError(null);
+    try {
+      const secret = await credentialRevealSecret(editing.id);
+      if (secret.kind !== kind) {
+        return;
+      }
+      if (kind === "password") {
+        setForm((current) => ({
+          ...current,
+          password: secret.password || "",
+          password_touched: false,
+        }));
+        setShowSecret(true);
+      } else {
+        setForm((current) => ({
+          ...current,
+          private_key_passphrase: secret.private_key_passphrase || "",
+          private_key_passphrase_touched: false,
+        }));
+        setShowPassphrase(true);
+      }
+    } catch (nextError) {
+      setFormError(formatError(nextError));
+    } finally {
+      setBusy(false);
+    }
+  }
 }
 
 function emptyCredentialForm(
@@ -841,8 +1095,10 @@ function emptyCredentialForm(
     username: base?.username || "",
     notes: base?.notes || "",
     password: kind === "password" ? base?.password || "" : "",
+    password_touched: false,
     private_key_passphrase:
       kind === "private_key" ? base?.private_key_passphrase || "" : "",
+    private_key_passphrase_touched: false,
     private_key_path: kind === "private_key" ? base?.private_key_path || "" : "",
   };
 }

@@ -39,6 +39,20 @@ pub struct SyncRepositoryImportStats {
     pub tunnels: usize,
 }
 
+#[derive(Clone, Debug, Serialize)]
+pub struct RevealedConnectionSecret {
+    pub auth_kind: ConnectionAuthKind,
+    pub password: Option<String>,
+    pub private_key_passphrase: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct RevealedCredentialSecret {
+    pub kind: ConnectionAuthKind,
+    pub password: Option<String>,
+    pub private_key_passphrase: Option<String>,
+}
+
 struct ExistingConnectionMeta {
     created_at: String,
     is_favorite: bool,
@@ -667,24 +681,9 @@ impl StorageRepository {
             None => None,
         };
 
-        let (inline_secret_ref, inline_secret_slot_id) = match (
-            validated.inline_auth_kind.as_ref(),
-            validated.inline_password.as_ref(),
-            validated.inline_private_key_passphrase.as_ref(),
-        ) {
-            (Some(crate::connections::ConnectionAuthKind::Password), Some(password), _) => {
-                let reference = SecretReference::connection(&id, SecretKind::InlinePassword);
-                self.secret_store.set_secret(&reference, password)?;
-                (Some(reference.account), Some(reference.slot_id))
-            }
-            (Some(crate::connections::ConnectionAuthKind::PrivateKey), _, Some(passphrase)) => {
-                let reference =
-                    SecretReference::connection(&id, SecretKind::InlinePrivateKeyPassphrase);
-                self.secret_store.set_secret(&reference, passphrase)?;
-                (Some(reference.account), Some(reference.slot_id))
-            }
-            _ => (None, None),
-        };
+        let existing_stored_connection = self.stored_connection_optional(&id)?;
+        let (inline_secret_ref, inline_secret_slot_id) =
+            self.prepare_inline_secret(&id, &validated, existing_stored_connection.as_ref())?;
 
         let proxy_json = serde_json::to_string(&validated.proxy).map_err(sqlite_serialize_error)?;
         let jump_json = serde_json::to_string(&validated.jump).map_err(sqlite_serialize_error)?;
@@ -922,6 +921,60 @@ impl StorageRepository {
             .map_err(sqlite_repository_error)
     }
 
+    pub fn connection_reveal_inline_secret(
+        &self,
+        id: &str,
+    ) -> Result<RevealedConnectionSecret, AppError> {
+        let (profile, inline_secret_ref) = self.stored_connection(id)?;
+        if profile.credential_mode != ConnectionCredentialMode::Inline {
+            return Err(AppError::new(
+                "connection_inline_secret_unavailable",
+                "该连接未使用内置凭据。",
+                format!(
+                    "connection_id={id}, credential_mode={:?}",
+                    profile.credential_mode
+                ),
+                true,
+            ));
+        }
+        let auth_kind = profile.inline_auth_kind.ok_or_else(|| {
+            AppError::new(
+                "connection_inline_secret_unavailable",
+                "该连接未使用内置凭据。",
+                format!("connection_id={id}, inline_auth_kind is missing"),
+                true,
+            )
+        })?;
+        match auth_kind {
+            ConnectionAuthKind::Password => {
+                let reference = inline_secret_ref.ok_or_else(|| {
+                    AppError::new(
+                        "secret_missing",
+                        "加密保险库中不存在该凭据。",
+                        format!("connection_id={id}"),
+                        true,
+                    )
+                })?;
+                Ok(RevealedConnectionSecret {
+                    auth_kind,
+                    password: Some(self.secret_store.get_secret(&reference)?),
+                    private_key_passphrase: None,
+                })
+            }
+            ConnectionAuthKind::PrivateKey => {
+                let private_key_passphrase = inline_secret_ref
+                    .as_ref()
+                    .map(|reference| self.secret_store.get_secret(reference))
+                    .transpose()?;
+                Ok(RevealedConnectionSecret {
+                    auth_kind,
+                    password: None,
+                    private_key_passphrase,
+                })
+            }
+        }
+    }
+
     pub fn credential_upsert(
         &self,
         input: CredentialProfileInput,
@@ -943,19 +996,28 @@ impl StorageRepository {
             .map_err(sqlite_repository_error)?
             .unwrap_or_else(|| now.to_string());
 
+        let existing_stored_credential = self.stored_credential_optional(&id)?;
         let (secret_ref, secret_slot_id) = match validated.kind {
             ConnectionAuthKind::Password => {
                 let reference = SecretReference::credential(&id, SecretKind::Password);
-                let password = validated.password.as_deref().ok_or_else(|| {
-                    AppError::new(
-                        "credential_password_missing",
-                        "请填写账号密码。",
-                        "credential password is empty",
-                        true,
-                    )
-                })?;
-                self.secret_store.set_secret(&reference, password)?;
-                (Some(reference.account), Some(reference.slot_id))
+                match validated.password.as_deref() {
+                    Some(password) => {
+                        self.secret_store.set_secret(&reference, password)?;
+                        (Some(reference.account), Some(reference.slot_id))
+                    }
+                    None if !validated.password_touched => preserve_credential_secret(
+                        existing_stored_credential.as_ref(),
+                        &ConnectionAuthKind::Password,
+                    )?,
+                    None => {
+                        return Err(AppError::new(
+                            "credential_password_missing",
+                            "请填写账号密码。",
+                            "credential password is empty",
+                            true,
+                        ));
+                    }
+                }
             }
             ConnectionAuthKind::PrivateKey => match validated.private_key_passphrase.as_deref() {
                 Some(passphrase) => {
@@ -964,6 +1026,10 @@ impl StorageRepository {
                     self.secret_store.set_secret(&reference, passphrase)?;
                     (Some(reference.account), Some(reference.slot_id))
                 }
+                None if !validated.private_key_passphrase_touched => preserve_credential_secret(
+                    existing_stored_credential.as_ref(),
+                    &ConnectionAuthKind::PrivateKey,
+                )?,
                 None => (None, None),
             },
         };
@@ -1019,6 +1085,38 @@ impl StorageRepository {
             )
             .optional()
             .map_err(sqlite_repository_error)
+    }
+
+    pub fn credential_reveal_secret(&self, id: &str) -> Result<RevealedCredentialSecret, AppError> {
+        let (credential, secret_ref) = self.stored_credential(id)?;
+        match credential.kind {
+            ConnectionAuthKind::Password => {
+                let reference = secret_ref.ok_or_else(|| {
+                    AppError::new(
+                        "secret_missing",
+                        "加密保险库中不存在该凭据。",
+                        format!("credential_id={id}"),
+                        true,
+                    )
+                })?;
+                Ok(RevealedCredentialSecret {
+                    kind: credential.kind,
+                    password: Some(self.secret_store.get_secret(&reference)?),
+                    private_key_passphrase: None,
+                })
+            }
+            ConnectionAuthKind::PrivateKey => {
+                let private_key_passphrase = secret_ref
+                    .as_ref()
+                    .map(|reference| self.secret_store.get_secret(reference))
+                    .transpose()?;
+                Ok(RevealedCredentialSecret {
+                    kind: credential.kind,
+                    password: None,
+                    private_key_passphrase,
+                })
+            }
+        }
     }
 
     pub fn credential_list(&self) -> Result<Vec<CredentialProfile>, AppError> {
@@ -1107,7 +1205,10 @@ impl StorageRepository {
         input: ConnectionProfileInput,
     ) -> Result<ResolvedSshConfig, AppError> {
         let validated = validate_profile_input(&input)?;
-        let profile = ConnectionProfile {
+        let preserved_inline_connection_id = validated.id.clone();
+        let inline_password_touched = validated.inline_password_touched;
+        let inline_private_key_passphrase_touched = validated.inline_private_key_passphrase_touched;
+        let mut profile = ConnectionProfile {
             id: "__transient_connection_test__".to_string(),
             name: validated.name,
             group: validated.group,
@@ -1137,7 +1238,70 @@ impl StorageRepository {
             private_key_path: None,
             private_key_passphrase: None,
         };
+        self.apply_transient_preserved_inline_secret(
+            &mut profile,
+            preserved_inline_connection_id.as_deref(),
+            inline_password_touched,
+            inline_private_key_passphrase_touched,
+        )?;
         self.resolve_profile(profile, None)
+    }
+
+    fn apply_transient_preserved_inline_secret(
+        &self,
+        profile: &mut ConnectionProfile,
+        connection_id: Option<&str>,
+        inline_password_touched: bool,
+        inline_private_key_passphrase_touched: bool,
+    ) -> Result<(), AppError> {
+        if profile.credential_mode != ConnectionCredentialMode::Inline {
+            return Ok(());
+        }
+        let Some(connection_id) = connection_id else {
+            return Ok(());
+        };
+        match profile.inline_auth_kind {
+            Some(ConnectionAuthKind::Password)
+                if profile.inline_password.is_none() && !inline_password_touched =>
+            {
+                let Some((existing, reference)) = self.stored_connection_optional(connection_id)?
+                else {
+                    return Ok(());
+                };
+                if existing.credential_mode == ConnectionCredentialMode::Inline
+                    && existing.inline_auth_kind == Some(ConnectionAuthKind::Password)
+                {
+                    let reference = reference.ok_or_else(|| {
+                        AppError::new(
+                            "secret_missing",
+                            "系统凭据不存在。",
+                            format!("connection_id={}", existing.id),
+                            true,
+                        )
+                    })?;
+                    profile.inline_password = Some(self.secret_store.get_secret(&reference)?);
+                }
+            }
+            Some(ConnectionAuthKind::PrivateKey)
+                if profile.inline_private_key_passphrase.is_none()
+                    && !inline_private_key_passphrase_touched =>
+            {
+                let Some((existing, reference)) = self.stored_connection_optional(connection_id)?
+                else {
+                    return Ok(());
+                };
+                if existing.credential_mode == ConnectionCredentialMode::Inline
+                    && existing.inline_auth_kind == Some(ConnectionAuthKind::PrivateKey)
+                {
+                    profile.inline_private_key_passphrase = reference
+                        .as_ref()
+                        .map(|reference| self.secret_store.get_secret(reference))
+                        .transpose()?;
+                }
+            }
+            _ => {}
+        }
+        Ok(())
     }
 
     fn resolve_profile(
@@ -1250,6 +1414,20 @@ impl StorageRepository {
         &self,
         id: &str,
     ) -> Result<(ConnectionProfile, Option<SecretReference>), AppError> {
+        self.stored_connection_optional(id)?.ok_or_else(|| {
+            AppError::new(
+                "connection_missing",
+                "连接不存在。",
+                format!("connection_id={id}"),
+                false,
+            )
+        })
+    }
+
+    fn stored_connection_optional(
+        &self,
+        id: &str,
+    ) -> Result<Option<(ConnectionProfile, Option<SecretReference>)>, AppError> {
         self.connection
             .query_row(
                 "SELECT c.id, c.name, g.name, c.host, c.port, c.username,
@@ -1286,21 +1464,27 @@ impl StorageRepository {
                 },
             )
             .optional()
-            .map_err(sqlite_repository_error)?
-            .ok_or_else(|| {
-                AppError::new(
-                    "connection_missing",
-                    "连接不存在。",
-                    format!("connection_id={id}"),
-                    false,
-                )
-            })
+            .map_err(sqlite_repository_error)
     }
 
     fn stored_credential(
         &self,
         id: &str,
     ) -> Result<(CredentialProfile, Option<SecretReference>), AppError> {
+        self.stored_credential_optional(id)?.ok_or_else(|| {
+            AppError::new(
+                "credential_missing",
+                "连接引用的凭据不存在。",
+                format!("credential_id={id}"),
+                true,
+            )
+        })
+    }
+
+    fn stored_credential_optional(
+        &self,
+        id: &str,
+    ) -> Result<Option<(CredentialProfile, Option<SecretReference>)>, AppError> {
         self.connection
             .query_row(
                 "SELECT id, name, username, kind, private_key_path, notes, created_at,
@@ -1324,15 +1508,50 @@ impl StorageRepository {
                 },
             )
             .optional()
-            .map_err(sqlite_repository_error)?
-            .ok_or_else(|| {
-                AppError::new(
-                    "credential_missing",
-                    "连接引用的凭据不存在。",
-                    format!("credential_id={id}"),
-                    true,
-                )
-            })
+            .map_err(sqlite_repository_error)
+    }
+
+    fn prepare_inline_secret(
+        &self,
+        id: &str,
+        validated: &crate::connections::ValidatedConnectionProfileInput,
+        existing: Option<&(ConnectionProfile, Option<SecretReference>)>,
+    ) -> Result<(Option<String>, Option<String>), AppError> {
+        match validated.inline_auth_kind.as_ref() {
+            Some(ConnectionAuthKind::Password) => {
+                let reference = SecretReference::connection(id, SecretKind::InlinePassword);
+                match validated.inline_password.as_deref() {
+                    Some(password) => {
+                        self.secret_store.set_secret(&reference, password)?;
+                        Ok((Some(reference.account), Some(reference.slot_id)))
+                    }
+                    None if !validated.inline_password_touched => {
+                        preserve_inline_secret(existing, &ConnectionAuthKind::Password)
+                    }
+                    None => Err(AppError::new(
+                        "connection_password_missing",
+                        "请填写 SSH 密码。",
+                        "inline password is empty",
+                        true,
+                    )),
+                }
+            }
+            Some(ConnectionAuthKind::PrivateKey) => {
+                let reference =
+                    SecretReference::connection(id, SecretKind::InlinePrivateKeyPassphrase);
+                match validated.inline_private_key_passphrase.as_deref() {
+                    Some(passphrase) => {
+                        self.secret_store.set_secret(&reference, passphrase)?;
+                        Ok((Some(reference.account), Some(reference.slot_id)))
+                    }
+                    None if !validated.inline_private_key_passphrase_touched => {
+                        preserve_inline_secret(existing, &ConnectionAuthKind::PrivateKey)
+                    }
+                    None => Ok((None, None)),
+                }
+            }
+            None => Ok((None, None)),
+        }
     }
 
     pub fn known_host_trust(
@@ -1775,6 +1994,86 @@ fn trim_optional(value: Option<&String>) -> Option<String> {
         .map(ToOwned::to_owned)
 }
 
+fn preserve_inline_secret(
+    existing: Option<&(ConnectionProfile, Option<SecretReference>)>,
+    auth_kind: &ConnectionAuthKind,
+) -> Result<(Option<String>, Option<String>), AppError> {
+    let Some((profile, reference)) = existing else {
+        return missing_inline_secret_for_preserve(auth_kind);
+    };
+    if profile.credential_mode != ConnectionCredentialMode::Inline
+        || profile.inline_auth_kind.as_ref() != Some(auth_kind)
+    {
+        return missing_inline_secret_for_preserve(auth_kind);
+    }
+    match reference {
+        Some(reference) => Ok((
+            Some(reference.account.clone()),
+            Some(reference.slot_id.clone()),
+        )),
+        None if *auth_kind == ConnectionAuthKind::PrivateKey => Ok((None, None)),
+        None => Err(AppError::new(
+            "secret_missing",
+            "加密保险库中不存在该凭据。",
+            format!("connection_id={}", profile.id),
+            true,
+        )),
+    }
+}
+
+fn missing_inline_secret_for_preserve(
+    auth_kind: &ConnectionAuthKind,
+) -> Result<(Option<String>, Option<String>), AppError> {
+    match auth_kind {
+        ConnectionAuthKind::Password => Err(AppError::new(
+            "connection_password_missing",
+            "请填写 SSH 密码。",
+            "inline password is empty",
+            true,
+        )),
+        ConnectionAuthKind::PrivateKey => Ok((None, None)),
+    }
+}
+
+fn preserve_credential_secret(
+    existing: Option<&(CredentialProfile, Option<SecretReference>)>,
+    kind: &ConnectionAuthKind,
+) -> Result<(Option<String>, Option<String>), AppError> {
+    let Some((credential, reference)) = existing else {
+        return missing_credential_secret_for_preserve(kind);
+    };
+    if &credential.kind != kind {
+        return missing_credential_secret_for_preserve(kind);
+    }
+    match reference {
+        Some(reference) => Ok((
+            Some(reference.account.clone()),
+            Some(reference.slot_id.clone()),
+        )),
+        None if *kind == ConnectionAuthKind::PrivateKey => Ok((None, None)),
+        None => Err(AppError::new(
+            "secret_missing",
+            "加密保险库中不存在该凭据。",
+            format!("credential_id={}", credential.id),
+            true,
+        )),
+    }
+}
+
+fn missing_credential_secret_for_preserve(
+    kind: &ConnectionAuthKind,
+) -> Result<(Option<String>, Option<String>), AppError> {
+    match kind {
+        ConnectionAuthKind::Password => Err(AppError::new(
+            "credential_password_missing",
+            "请填写账号密码。",
+            "credential password is empty",
+            true,
+        )),
+        ConnectionAuthKind::PrivateKey => Ok((None, None)),
+    }
+}
+
 fn sync_secret_kind_from_db(kind: Option<&str>, inline: bool) -> Result<SecretKind, AppError> {
     match (inline, kind) {
         (true, Some("password")) => Ok(SecretKind::InlinePassword),
@@ -1896,6 +2195,141 @@ mod tests {
         assert_eq!(resolved.password, Some("secret".to_string()));
         assert_eq!(resolved.private_key_path, None);
     }
+
+    #[test]
+    fn connection_upsert_preserves_inline_password_when_secret_not_touched() {
+        let (repo, _db_path, _secrets) = temp_repository("inline-password-preserve");
+        let saved = repo
+            .connection_upsert(password_connection_input(), "2026-06-20T00:00:00+08:00")
+            .unwrap();
+
+        let updated = repo
+            .connection_upsert(
+                ConnectionProfileInput {
+                    id: Some(saved.id.clone()),
+                    name: Some("生产改名".to_string()),
+                    inline_password: None,
+                    inline_password_touched: false,
+                    ..password_connection_input()
+                },
+                "2026-06-20T00:01:00+08:00",
+            )
+            .unwrap();
+        let resolved = repo.resolve_saved_connection(&updated.id, None).unwrap();
+
+        assert_eq!(updated.inline_password, None);
+        assert_eq!(resolved.password, Some("secret".to_string()));
+    }
+
+    #[test]
+    fn transient_connection_test_reuses_untouched_inline_password() {
+        let (repo, _db_path, _secrets) = temp_repository("inline-password-transient-preserve");
+        let saved = repo
+            .connection_upsert(password_connection_input(), "2026-06-20T00:00:00+08:00")
+            .unwrap();
+
+        let resolved = repo
+            .resolve_transient_connection(ConnectionProfileInput {
+                id: Some(saved.id),
+                name: Some("生产改名".to_string()),
+                inline_password: None,
+                inline_password_touched: false,
+                ..password_connection_input()
+            })
+            .unwrap();
+
+        assert_eq!(resolved.connection_id, "__transient_connection_test__");
+        assert_eq!(resolved.password, Some("secret".to_string()));
+    }
+
+    #[test]
+    fn connection_reveal_inline_secret_returns_only_inline_secret() {
+        let (repo, _db_path, _secrets) = temp_repository("inline-password-reveal");
+        let saved = repo
+            .connection_upsert(password_connection_input(), "2026-06-20T00:00:00+08:00")
+            .unwrap();
+        let credential = repo
+            .credential_upsert(password_credential_input(), "2026-06-20T00:01:00+08:00")
+            .unwrap();
+        let saved_mode = repo
+            .connection_upsert(
+                ConnectionProfileInput {
+                    id: Some("conn-saved".to_string()),
+                    credential_mode: ConnectionCredentialMode::Saved,
+                    credential_id: Some(credential.id),
+                    inline_password: None,
+                    ..password_connection_input()
+                },
+                "2026-06-20T00:02:00+08:00",
+            )
+            .unwrap();
+
+        let revealed = repo.connection_reveal_inline_secret(&saved.id).unwrap();
+        let error = repo
+            .connection_reveal_inline_secret(&saved_mode.id)
+            .unwrap_err();
+
+        assert_eq!(revealed.auth_kind, ConnectionAuthKind::Password);
+        assert_eq!(revealed.password, Some("secret".to_string()));
+        assert_eq!(revealed.private_key_passphrase, None);
+        assert_eq!(error.code, "connection_inline_secret_unavailable");
+    }
+
+    #[test]
+    fn credential_upsert_preserves_password_when_secret_not_touched() {
+        let (repo, _db_path, _secrets) = temp_repository("credential-password-preserve");
+        let saved = repo
+            .credential_upsert(password_credential_input(), "2026-06-20T00:00:00+08:00")
+            .unwrap();
+
+        let updated = repo
+            .credential_upsert(
+                crate::credentials::CredentialProfileInput {
+                    id: Some(saved.id.clone()),
+                    name: Some("生产账号改名".to_string()),
+                    password: None,
+                    password_touched: false,
+                    ..password_credential_input()
+                },
+                "2026-06-20T00:01:00+08:00",
+            )
+            .unwrap();
+        let revealed = repo.credential_reveal_secret(&updated.id).unwrap();
+
+        assert_eq!(updated.password, None);
+        assert_eq!(revealed.kind, ConnectionAuthKind::Password);
+        assert_eq!(revealed.password, Some("secret".to_string()));
+        assert_eq!(revealed.private_key_passphrase, None);
+    }
+
+    #[test]
+    fn credential_reveal_secret_returns_private_key_passphrase() {
+        let (repo, _db_path, _secrets) = temp_repository("credential-private-key-reveal");
+        let saved = repo
+            .credential_upsert(
+                crate::credentials::CredentialProfileInput {
+                    id: Some("cred-key".to_string()),
+                    name: Some("生产私钥".to_string()),
+                    username: Some("deploy".to_string()),
+                    kind: ConnectionAuthKind::PrivateKey,
+                    password: None,
+                    password_touched: false,
+                    private_key_path: Some(" ~/.ssh/id_ed25519 ".to_string()),
+                    private_key_passphrase: Some(" phrase ".to_string()),
+                    private_key_passphrase_touched: true,
+                    notes: None,
+                },
+                "2026-06-20T00:00:00+08:00",
+            )
+            .unwrap();
+
+        let revealed = repo.credential_reveal_secret(&saved.id).unwrap();
+
+        assert_eq!(revealed.kind, ConnectionAuthKind::PrivateKey);
+        assert_eq!(revealed.password, None);
+        assert_eq!(revealed.private_key_passphrase, Some("phrase".to_string()));
+    }
+
     fn password_connection_input() -> ConnectionProfileInput {
         ConnectionProfileInput {
             id: Some("conn-001".to_string()),
@@ -1908,8 +2342,10 @@ mod tests {
             credential_id: None,
             inline_auth_kind: Some(ConnectionAuthKind::Password),
             inline_password: Some(" secret ".to_string()),
+            inline_password_touched: true,
             inline_private_key_path: None,
             inline_private_key_passphrase: None,
+            inline_private_key_passphrase_touched: false,
             prompt_auth_kind: None,
             proxy: ConnectionProxyConfig::default(),
             jump: ConnectionJumpConfig::default(),
@@ -1934,8 +2370,10 @@ mod tests {
             username: Some("deploy".to_string()),
             kind: ConnectionAuthKind::Password,
             password: Some(" secret ".to_string()),
+            password_touched: true,
             private_key_path: None,
             private_key_passphrase: None,
+            private_key_passphrase_touched: false,
             notes: None,
         }
     }

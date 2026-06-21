@@ -74,8 +74,10 @@ export interface ConnectionProfileInput {
   credential_id?: string;
   inline_auth_kind?: ConnectionAuthKind;
   inline_password?: string;
+  inline_password_touched?: boolean;
   inline_private_key_path?: string;
   inline_private_key_passphrase?: string;
+  inline_private_key_passphrase_touched?: boolean;
   prompt_auth_kind?: ConnectionAuthKind;
   proxy: ConnectionProxyConfig;
   jump: ConnectionJumpConfig;
@@ -111,9 +113,23 @@ export interface CredentialProfileInput {
   username?: string;
   kind: ConnectionAuthKind;
   password?: string;
+  password_touched?: boolean;
   private_key_path?: string;
   private_key_passphrase?: string;
+  private_key_passphrase_touched?: boolean;
   notes?: string;
+}
+
+export interface RevealedConnectionSecret {
+  auth_kind: ConnectionAuthKind;
+  password?: string | null;
+  private_key_passphrase?: string | null;
+}
+
+export interface RevealedCredentialSecret {
+  kind: ConnectionAuthKind;
+  password?: string | null;
+  private_key_passphrase?: string | null;
 }
 
 export interface ConnectionRuntimeCredentialRequest {

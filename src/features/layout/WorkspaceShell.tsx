@@ -408,9 +408,12 @@ export function WorkspaceShell() {
     updateTerminalTheme,
   } = useSettings();
   const secretVault = useSecretVault({
+    autoLockMinutes: settings.security.autoLockMinutes,
     masterPasswordEnabled: settings.security.masterPasswordEnabled,
   });
   const storageReady = secretVault.ready;
+  const effectiveAllowPasswordReveal =
+    !settings.security.masterPasswordEnabled || settings.security.allowPasswordReveal;
   const {
     connections,
     error,
@@ -4611,6 +4614,7 @@ export function WorkspaceShell() {
         ) : null}
 
         <ConnectionDialog
+          allowPasswordReveal={effectiveAllowPasswordReveal}
           connection={editingConnection}
           connections={connections}
           credentials={credentials}
@@ -4915,6 +4919,10 @@ export function WorkspaceShell() {
           }}
           onEnableMasterPassword={async (masterPassword) => {
             const nextStatus = await secretVault.enableMasterPassword(masterPassword);
+            return Boolean(nextStatus?.unlocked);
+          }}
+          onUnlockSecuritySettings={async (masterPassword) => {
+            const nextStatus = await secretVault.unlock(masterPassword);
             return Boolean(nextStatus?.unlocked);
           }}
           onReset={reset}

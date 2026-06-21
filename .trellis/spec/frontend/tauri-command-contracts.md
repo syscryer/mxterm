@@ -16,6 +16,7 @@
 secretVaultStatus(): Promise<SecretVaultStatus>
 secretVaultUnlock(masterPassword: string): Promise<SecretVaultStatus>
 secretVaultUnlockLocal(): Promise<SecretVaultStatus>
+secretVaultLock(): Promise<SecretVaultStatus>
 secretVaultEnableMasterPassword(masterPassword: string): Promise<SecretVaultStatus>
 secretVaultDisableMasterPassword(): Promise<SecretVaultStatus>
 connectionList(): Promise<ConnectionProfile[]>
@@ -23,9 +24,11 @@ connectionUpsert(request: ConnectionProfileInput): Promise<ConnectionProfile>
 connectionSetFavorite(connectionId: string, isFavorite: boolean): Promise<ConnectionProfile>
 connectionMarkConnected(connectionId: string): Promise<ConnectionProfile>
 connectionDelete(id: string): Promise<void>
+connectionRevealInlineSecret(id: string): Promise<RevealedConnectionSecret>
 credentialList(): Promise<CredentialProfile[]>
 credentialUpsert(request: CredentialProfileInput): Promise<CredentialProfile>
 credentialDelete(id: string): Promise<void>
+credentialRevealSecret(id: string): Promise<RevealedCredentialSecret>
 connectionTest(request: ConnectionRuntimeCredentialRequest): Promise<ConnectionStepResult>
 connectionTestProfile(request: ConnectionProfileInput): Promise<ConnectionStepResult>
 connectionProbeSystem(request: ConnectionRuntimeCredentialRequest): Promise<ConnectionProfile>
@@ -49,8 +52,10 @@ credential_mode: "saved" | "inline" | "prompt"
 credential_id?: string
 inline_auth_kind?: "password" | "private_key"
 inline_password?: string
+inline_password_touched?: boolean
 inline_private_key_path?: string
 inline_private_key_passphrase?: string
+inline_private_key_passphrase_touched?: boolean
 prompt_auth_kind?: "password" | "private_key"
 proxy: {
   kind: "none" | "http_connect" | "socks5"
@@ -90,9 +95,27 @@ name?: string
 username?: string
 kind: "password" | "private_key"
 password?: string
+password_touched?: boolean
 private_key_path?: string
 private_key_passphrase?: string
+private_key_passphrase_touched?: boolean
 notes?: string
+```
+
+Reveal responses:
+
+```ts
+type RevealedConnectionSecret = {
+  auth_kind: "password" | "private_key"
+  password?: string | null
+  private_key_passphrase?: string | null
+}
+
+type RevealedCredentialSecret = {
+  kind: "password" | "private_key"
+  password?: string | null
+  private_key_passphrase?: string | null
+}
 ```
 
 Runtime credential and host-key requests:
@@ -128,6 +151,12 @@ type HostKeyInfo = {
 - When opening a saved connection, the connection-preparation flow should pass `connection_id` plus prompt credentials only when `credential_mode === "prompt"`; Rust treats the saved profile as authoritative.
 - After a terminal connection succeeds, trigger `connectionProbeSystem(...)` in the background with the same runtime prompt credential payload when needed, then call `connectionMarkConnected(connection.id)` so the repository's recent views sort by real connection activity. Probe failures must not close or fail an already connected terminal. Favorite toggles must call `connectionSetFavorite(...)` and preserve repository metadata when editing or moving a connection.
 - `ConnectionDialog` must test the current form with `connectionTestProfile(input)`. It must not call `connectionUpsert`, `saveConnection`, or `connectionTest({ connection_id })` for unsaved dialog tests, because testing must not persist a profile or create a connection id. It must show validation and connection errors as dialog feedback instead of writing them into a terminal.
+- Editing an existing inline-secret connection must not prefill plaintext. The dialog shows a saved/blank placeholder, sends `inline_password_touched=false` or `inline_private_key_passphrase_touched=false` when unchanged, and calls `connectionRevealInlineSecret(id)` only when the eye button is visible and clicked.
+- `connectionRevealInlineSecret` is for connection-owned inline secrets only. When the connection uses saved account credentials, `ConnectionDialog` must show the credential picker and must not reveal the reusable credential secret across that boundary.
+- Editing saved account credentials in Settings must not prefill plaintext. Account management is the only UI surface that may call `credentialRevealSecret(id)`.
+- If a secret was revealed only for viewing, normalization must omit the secret value and preserve `*_touched=false` until the user actually types. Saving immediately after reveal must preserve the existing vault reference instead of rewriting or clearing the secret.
+- When advanced security is disabled, password reveal is effectively allowed even if an old saved `allowPasswordReveal=false` value exists. When advanced security is enabled and `allowPasswordReveal=false`, hide eye buttons but still allow users to replace secrets by typing new values.
+- Idle auto-lock calls `secretVaultLock()` and clears in-memory vault availability. It must not close SSH tabs or mark terminal sessions failed.
 - `ConnectionDialog` exposes network path settings under the `网络路径` tab. The connection method selector maps to exactly one persisted path: direct saves `proxy.kind = "none"` and `jump.kind = "none"`; network proxy saves HTTP CONNECT or SOCKS5 under `proxy` and clears `jump`; SSH jump saves `jump.kind = "ssh_jump"` plus `jump_connection_id` and clears `proxy`.
 - SSH jump represents a real bastion path. The frontend may describe it as "先登录跳板机，再访问目标主机", but it must still send only the saved `jump_connection_id`; Rust remains responsible for loading the jump profile, opening `direct-tcpip`, and surfacing runtime jump errors.
 - When `jump.kind === "ssh_jump"`, `ConnectionDialog` must require a saved connection id before save or test. Missing selection is shown as dialog feedback on the `网络路径` tab instead of silently downgrading the connection to direct.
@@ -154,6 +183,9 @@ type HostKeyInfo = {
 | Vault protection enabled and locked | Show `SecretVaultGate` and keep storage hooks disabled until unlock succeeds. |
 | Enabling master password from Settings | Require non-empty matching password fields, call `secretVaultEnableMasterPassword`, then persist the setting only on success. |
 | Disabling master password from Settings | Call `secretVaultDisableMasterPassword` and persist the setting only on success. |
+| Advanced protection is disabled | Security settings show only the advanced-protection switch; password reveal remains allowed for normal users. |
+| Advanced protection is enabled and Settings security is locked | Hide idle-lock, allow-reveal, change-password, and disable-protection controls until the security password unlock succeeds. |
+| Idle auto-lock timeout expires | Call `secretVaultLock()`, make storage hooks unavailable again, and keep already-open terminal sessions mounted. |
 | `connectionList` fails in a browser preview without Tauri | Show the static fallback profile from `useConnections` so the layout remains inspectable. |
 | `connectionUpsert` rejects validation | Surface the Rust `AppError.message` as user-facing form feedback. |
 | `connectionTestProfile` rejects validation or connection setup | Keep the dialog open, show the Rust `AppError.message`, and do not add or update the connection list. |
@@ -167,6 +199,9 @@ type HostKeyInfo = {
 | Latency probe returns `reachable: false` | Show a timeout/unreachable state in the latency cell without replacing the connection list error. |
 | Credential mode changes to `saved` | Clear inline secret fields before submit and require `credential_id`. |
 | Credential mode changes to `inline` | Clear `credential_id` and use inline auth kind fields. |
+| Existing inline secret is unchanged | Submit no plaintext and `inline_*_touched=false`; do not treat a reveal-only value as a replacement. |
+| Existing account credential secret is unchanged | Submit no plaintext and `*_touched=false`; do not clear or rewrite the vault entry. |
+| Reveal is disallowed by advanced security | Hide the eye button; keep secret replacement fields usable. |
 | Credential mode changes to `prompt` | Clear saved/inline secrets and collect runtime credentials only on the connection step. |
 | Auth kind changes to `password` | Clear private-key fields in form state. |
 | Auth kind changes to `private_key` | Clear password in form state. |
@@ -179,15 +214,18 @@ type HostKeyInfo = {
 ### 5. Good / Base / Bad Cases
 
 - Good: `ConnectionDialog` holds editable strings, clears fields when credential or auth mode changes, and delegates normalization to `useConnections` before saving.
+- Good: `ConnectionDialog` reveals only inline connection secrets; saved credential secrets remain behind account management.
+- Good: account management reveal sets the local form value for viewing, but leaves `*_touched=false` until the user types, so saving immediately preserves the old secret.
 - Good: `ConnectionDialog` tests the current unsaved form through `connectionTestProfile(input)`, leaving the connection repository unchanged until the user clicks save.
 - Good: `SettingsView` edits saved login-account records through `useCredentials`; it asks for username plus password or private key material, and never asks for host or port in account management.
-- Good: `SettingsView` security section enables master-password protection only after vault rekey succeeds, and default startup keeps the workspace usable without an unlock prompt.
+- Good: `SettingsView` security section enables master-password protection only after vault rekey succeeds; when enabled, the section is locked until the security password is entered, then shows idle lock, allow reveal, change password, and disable protection.
 - Base: `ConnectionPane` displays `username@host:port`, calls `onOpen(connection)`, and does not know about Tauri details.
 - Bad: A component calls `invoke("connection_upsert", ...)` directly, tests an unsaved dialog form by saving/upserting it first, stores runtime session ids inside `ConnectionProfile`, or sends raw passwords to remote-file commands.
 
 ### 6. Tests Required
 
 - Run `pnpm check` after changing command wrappers, connection types, credential types, terminal request types, or component props that carry command payloads.
+- Run focused Rust repository/vault tests after changing reveal, touched-preserve, or vault lock wrappers because TypeScript cannot prove secret persistence semantics.
 - Run `node scripts/check-connection-jump-source.mjs` after changing SSH jump profile fields, network path UI, connection normalization, or backend jump persistence.
 - Run `node scripts/check-connection-terminal-encoding-source.mjs` after changing terminal encoding profile fields, advanced-tab UI, connection normalization, or backend terminal encoding behavior.
 - Run `node scripts/check-connection-dialog-host-key-feedback.mjs` after changing `ConnectionDialog`, host-key error parsing, or connection-test feedback styles.

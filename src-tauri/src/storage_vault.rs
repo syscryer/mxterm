@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 use crate::app_error::AppError;
 use crate::connections::{ConnectionAuthKind, ConnectionStore};
 use crate::credentials::CredentialStore;
+use crate::storage::{write_json_document, JsonStoreErrorLabels};
 
 pub const VAULT_SERVICE: &str = "mxterm";
 pub const VAULT_FILE_NAME: &str = "secrets.enc";
@@ -222,7 +223,7 @@ impl VaultState {
         if master_password.trim().is_empty() {
             return Err(AppError::new(
                 "vault_password_missing",
-                "请输入主密码。",
+                "请输入安全密码。",
                 "master password is empty",
                 true,
             ));
@@ -246,7 +247,7 @@ impl VaultState {
         if master_password.trim().is_empty() {
             return Err(AppError::new(
                 "vault_password_missing",
-                "请输入主密码。",
+                "请输入安全密码。",
                 "master password is empty",
                 true,
             ));
@@ -269,6 +270,16 @@ impl VaultState {
         Ok(VaultStatus {
             initialized: VaultSecretStore::exists(root),
             unlocked,
+        })
+    }
+
+    pub fn lock(&self, root: impl AsRef<Path>) -> Result<VaultStatus, AppError> {
+        *self.store.lock().map_err(|_| {
+            secret_store_write_failed(VAULT_FILE_NAME, "vault state lock poisoned")
+        })? = None;
+        Ok(VaultStatus {
+            initialized: VaultSecretStore::exists(root),
+            unlocked: false,
         })
     }
 
@@ -470,11 +481,22 @@ impl VaultSecretStore {
             nonce: STANDARD.encode(nonce),
             ciphertext: STANDARD.encode(ciphertext),
         };
-        let envelope_text = serde_json::to_string_pretty(&envelope)
-            .map_err(|error| secret_store_write_failed(VAULT_FILE_NAME, error))?;
-        fs::write(&self.path, envelope_text)
-            .map_err(|error| secret_store_write_failed(VAULT_FILE_NAME, error))?;
-        Ok(())
+        write_json_document(
+            &self.path,
+            &envelope,
+            JsonStoreErrorLabels {
+                create_dir_code: "secret_store_write_failed",
+                create_dir_message: "加密保险库写入失败。",
+                parse_code: "secret_store_read_failed",
+                parse_message: "加密保险库读取失败。",
+                read_code: "secret_store_read_failed",
+                read_message: "加密保险库读取失败。",
+                serialize_code: "secret_store_write_failed",
+                serialize_message: "加密保险库写入失败。",
+                write_code: "secret_store_write_failed",
+                write_message: "加密保险库写入失败。",
+            },
+        )
     }
 }
 
@@ -576,7 +598,7 @@ fn decrypt_bytes(
     cipher.decrypt(&nonce, ciphertext).map_err(|error| {
         AppError::new(
             "vault_unlock_failed",
-            "主密码不正确，无法解锁加密保险库。",
+            "安全密码不正确，无法解锁加密保险库。",
             error,
             true,
         )
@@ -805,7 +827,7 @@ fn vault_locked() -> AppError {
 fn vault_unlock_failed() -> AppError {
     AppError::new(
         "vault_unlock_failed",
-        "主密码不正确，无法解锁加密保险库。",
+        "安全密码不正确，无法解锁加密保险库。",
         "decrypt failed",
         true,
     )
@@ -823,7 +845,7 @@ fn vault_local_key_missing() -> AppError {
 fn vault_unlock_raw_failed(raw: impl ToString) -> AppError {
     AppError::new(
         "vault_unlock_failed",
-        "主密码不正确，无法解锁加密保险库。",
+        "安全密码不正确，无法解锁加密保险库。",
         raw,
         true,
     )
@@ -886,6 +908,26 @@ mod tests {
 
         let reopened = VaultSecretStore::open(&root, "master-password").unwrap();
         assert_eq!(reopened.get_secret(&reference).unwrap(), "ssh-secret");
+    }
+
+    #[test]
+    fn vault_secret_store_keeps_backup_when_updating() {
+        let root =
+            std::env::temp_dir().join(format!("mxterm-vault-backup-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let reference = SecretReference::connection("conn-001", SecretKind::InlinePassword);
+
+        let store = VaultSecretStore::open(&root, "master-password").unwrap();
+        store.set_secret(&reference, "first-secret").unwrap();
+        store.set_secret(&reference, "second-secret").unwrap();
+        drop(store);
+
+        let backup = root.join("secrets.enc.bak");
+        assert!(backup.exists());
+        std::fs::copy(&backup, root.join("secrets.enc")).unwrap();
+        let reopened = VaultSecretStore::open(&root, "master-password").unwrap();
+
+        assert_eq!(reopened.get_secret(&reference).unwrap(), "first-secret");
     }
 
     #[test]

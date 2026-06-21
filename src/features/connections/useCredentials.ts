@@ -115,17 +115,30 @@ export function useCredentials(options: { enabled?: boolean } = {}) {
 }
 function normalizeCredentialInput(input: CredentialProfileInput): CredentialProfileInput {
   const trim = (value: string | undefined | null) => value?.trim() || undefined;
+  const password = trim(input.password);
+  const privateKeyPassphrase = trim(input.private_key_passphrase);
+  const passwordTouched =
+    typeof input.password_touched === "boolean" ? input.password_touched : Boolean(password);
+  const privateKeyPassphraseTouched =
+    typeof input.private_key_passphrase_touched === "boolean"
+      ? input.private_key_passphrase_touched
+      : Boolean(privateKeyPassphrase);
   return {
     id: trim(input.id),
     kind: input.kind,
     name: trim(input.name),
     username: trim(input.username),
     notes: trim(input.notes),
-    password: input.kind === "password" ? trim(input.password) : undefined,
+    password: input.kind === "password" && passwordTouched ? password : undefined,
+    password_touched: input.kind === "password" ? passwordTouched : false,
     private_key_path:
       input.kind === "private_key" ? trim(input.private_key_path) : undefined,
     private_key_passphrase:
-      input.kind === "private_key" ? trim(input.private_key_passphrase) : undefined,
+      input.kind === "private_key" && privateKeyPassphraseTouched
+        ? privateKeyPassphrase
+        : undefined,
+    private_key_passphrase_touched:
+      input.kind === "private_key" ? privateKeyPassphraseTouched : false,
   };
 }
 
