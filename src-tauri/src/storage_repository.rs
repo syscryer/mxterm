@@ -1,4 +1,6 @@
-use std::path::Path;
+use std::collections::BTreeMap;
+use std::fs;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use rusqlite::{params, Connection, OptionalExtension};
@@ -14,12 +16,26 @@ use crate::known_hosts::{HostKeyInfo, KnownHostCheck, KnownHostEntry};
 use crate::ssh_config::{ResolvedSshConfig, RuntimeCredentialInput};
 use crate::storage_migration::StorageMigrator;
 use crate::storage_sqlite::{normalize_known_host_host, SqliteStore};
-use crate::storage_vault::{SecretKind, SecretReference, SecretStore, VaultState, VAULT_SERVICE};
+use crate::storage_vault::{
+    SecretKind, SecretReference, SecretStore, VaultState, VAULT_FILE_NAME, VAULT_SERVICE,
+};
+use crate::sync_snapshot::{
+    SyncConnectionGroup, SyncConnectionRecord, SyncCredentialRecord, SyncDataDocument,
+    SyncSecretEntry, SyncSecretsPlaintext, SYNC_PROTOCOL_VERSION,
+};
 use crate::tunnels::{validate_tunnel_rule_input, TunnelRule, TunnelRuleInput};
 
 pub struct StorageRepository {
     connection: Connection,
     secret_store: Arc<dyn SecretStore>,
+    db_path: PathBuf,
+}
+
+pub struct SyncRepositoryImportStats {
+    pub connections: usize,
+    pub credentials: usize,
+    pub known_hosts: usize,
+    pub tunnels: usize,
 }
 
 struct ExistingConnectionMeta {
@@ -47,6 +63,7 @@ impl StorageRepository {
         Ok(Self {
             connection,
             secret_store,
+            db_path,
         })
     }
 
@@ -69,6 +86,478 @@ impl StorageRepository {
         let root = root.as_ref().to_path_buf();
         StorageMigrator::new(root.clone(), Arc::clone(&secret_store)).migrate()?;
         Self::open(root.join("mxterm.db"), secret_store)
+    }
+    pub fn root_dir(&self) -> PathBuf {
+        self.db_path
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| PathBuf::from("."))
+    }
+
+    pub fn sync_backup_root(&self) -> PathBuf {
+        self.root_dir().join("backups").join("sync").join("latest")
+    }
+
+    pub fn create_sync_backup(&self) -> Result<(), AppError> {
+        let backup_root = self.sync_backup_root();
+        fs::create_dir_all(&backup_root).map_err(sync_snapshot_backup_failed)?;
+        if self.db_path.exists() {
+            fs::copy(&self.db_path, backup_root.join("mxterm.db"))
+                .map_err(sync_snapshot_backup_failed)?;
+        }
+        let local_vault = self.root_dir().join(VAULT_FILE_NAME);
+        if local_vault.exists() {
+            fs::copy(local_vault, backup_root.join(VAULT_FILE_NAME))
+                .map_err(sync_snapshot_backup_failed)?;
+        }
+        Ok(())
+    }
+
+    pub fn export_sync_data(&self) -> Result<SyncDataDocument, AppError> {
+        Ok(SyncDataDocument {
+            version: SYNC_PROTOCOL_VERSION,
+            connection_groups: self.export_sync_groups()?,
+            credentials: self.export_sync_credentials()?,
+            connections: self.export_sync_connections()?,
+            known_hosts: self.export_sync_known_hosts()?,
+            tunnels: self.tunnel_list()?,
+            settings: self.export_sync_settings()?,
+        })
+    }
+
+    pub fn export_sync_secrets(&self) -> Result<Vec<SyncSecretEntry>, AppError> {
+        let mut rows = Vec::new();
+        {
+            let mut statement = self
+                .connection
+                .prepare(
+                    "SELECT inline_secret_ref, inline_secret_slot_id, inline_auth_kind, updated_at
+                       FROM connections
+                      WHERE inline_secret_ref IS NOT NULL AND inline_secret_slot_id IS NOT NULL",
+                )
+                .map_err(sqlite_repository_error)?;
+            let items = statement
+                .query_map([], |row| {
+                    let account: String = row.get(0)?;
+                    let slot_id: String = row.get(1)?;
+                    let auth_kind: Option<String> = row.get(2)?;
+                    let updated_at: String = row.get(3)?;
+                    Ok((account, slot_id, auth_kind, updated_at, true))
+                })
+                .map_err(sqlite_repository_error)?;
+            for item in items {
+                rows.push(item.map_err(sqlite_repository_error)?);
+            }
+        }
+        {
+            let mut statement = self
+                .connection
+                .prepare(
+                    "SELECT secret_ref, secret_slot_id, kind, updated_at
+                       FROM credentials
+                      WHERE secret_ref IS NOT NULL AND secret_slot_id IS NOT NULL",
+                )
+                .map_err(sqlite_repository_error)?;
+            let items = statement
+                .query_map([], |row| {
+                    let account: String = row.get(0)?;
+                    let slot_id: String = row.get(1)?;
+                    let kind: String = row.get(2)?;
+                    let updated_at: String = row.get(3)?;
+                    Ok((account, slot_id, Some(kind), updated_at, false))
+                })
+                .map_err(sqlite_repository_error)?;
+            for item in items {
+                rows.push(item.map_err(sqlite_repository_error)?);
+            }
+        }
+
+        rows.into_iter()
+            .map(|(account, slot_id, kind, updated_at, inline)| {
+                let secret_kind = sync_secret_kind_from_db(kind.as_deref(), inline)?;
+                let reference = SecretReference {
+                    service: VAULT_SERVICE,
+                    account,
+                    slot_id: slot_id.clone(),
+                    kind: secret_kind,
+                };
+                Ok(SyncSecretEntry {
+                    slot_id,
+                    kind: sync_secret_kind_label(secret_kind).to_string(),
+                    value: self.secret_store.get_secret(&reference)?,
+                    updated_at,
+                })
+            })
+            .collect()
+    }
+
+    pub fn import_sync_secrets(&self, plaintext: &SyncSecretsPlaintext) -> Result<(), AppError> {
+        for secret in &plaintext.secrets {
+            let reference = SecretReference {
+                service: VAULT_SERVICE,
+                account: secret.slot_id.clone(),
+                slot_id: secret.slot_id.clone(),
+                kind: sync_secret_kind_from_label(&secret.kind)?,
+            };
+            self.secret_store.set_secret(&reference, &secret.value)?;
+        }
+        Ok(())
+    }
+
+    pub fn replace_sync_data(
+        &mut self,
+        data: &SyncDataDocument,
+        restore_secret_refs: bool,
+    ) -> Result<SyncRepositoryImportStats, AppError> {
+        let result = self.replace_sync_data_inner(data, restore_secret_refs);
+        if let Err(error) = result {
+            let _ = self.connection.execute_batch("ROLLBACK;");
+            return Err(AppError::new(
+                "sync_snapshot_import_failed",
+                "同步快照导入失败，本地数据未替换。",
+                error.raw_message,
+                true,
+            ));
+        }
+        result
+    }
+
+    fn replace_sync_data_inner(
+        &mut self,
+        data: &SyncDataDocument,
+        restore_secret_refs: bool,
+    ) -> Result<SyncRepositoryImportStats, AppError> {
+        self.connection
+            .execute_batch("BEGIN IMMEDIATE;")
+            .map_err(sqlite_repository_error)?;
+        self.connection
+            .execute_batch(
+                "DELETE FROM tunnels;
+                 DELETE FROM connections;
+                 DELETE FROM credentials;
+                 DELETE FROM connection_groups;
+                 DELETE FROM known_hosts;
+                 DELETE FROM app_settings;",
+            )
+            .map_err(sqlite_repository_error)?;
+
+        for group in &data.connection_groups {
+            self.connection
+                .execute(
+                    "INSERT INTO connection_groups(id, name, sort_order, created_at, updated_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5)",
+                    params![
+                        group.id,
+                        group.name,
+                        group.sort_order,
+                        group.created_at,
+                        group.updated_at,
+                    ],
+                )
+                .map_err(sqlite_repository_error)?;
+        }
+
+        for credential in &data.credentials {
+            let secret_ref = if restore_secret_refs {
+                credential.secret_slot_id.clone()
+            } else {
+                None
+            };
+            self.connection
+                .execute(
+                    "INSERT INTO credentials(
+                        id, name, username, kind, secret_ref, secret_slot_id,
+                        private_key_path, notes, created_at, updated_at
+                    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                    params![
+                        credential.id,
+                        credential.name,
+                        credential.username,
+                        enum_value(&credential.kind)?,
+                        secret_ref,
+                        credential.secret_slot_id,
+                        credential.private_key_path,
+                        credential.notes,
+                        credential.created_at,
+                        credential.updated_at,
+                    ],
+                )
+                .map_err(sqlite_repository_error)?;
+        }
+
+        for connection in &data.connections {
+            let inline_secret_ref = if restore_secret_refs {
+                connection.inline_secret_slot_id.clone()
+            } else {
+                None
+            };
+            let proxy_json =
+                serde_json::to_string(&connection.proxy).map_err(sqlite_serialize_error)?;
+            let jump_json =
+                serde_json::to_string(&connection.jump).map_err(sqlite_serialize_error)?;
+            let advanced_json =
+                serde_json::to_string(&connection.advanced).map_err(sqlite_serialize_error)?;
+            self.connection
+                .execute(
+                    "INSERT INTO connections(
+                        id, name, group_id, host, port, username, credential_mode, credential_id,
+                        inline_auth_kind, inline_secret_ref, inline_secret_slot_id,
+                        inline_private_key_path, prompt_auth_kind, proxy_json, jump_json,
+                        advanced_json, notes, is_favorite, last_connected_at, remote_os_id,
+                        remote_os_name, remote_os_version, created_at, updated_at
+                    ) VALUES (
+                        ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12,
+                        ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24
+                    )",
+                    params![
+                        connection.id,
+                        connection.name,
+                        connection.group_id,
+                        connection.host,
+                        connection.port,
+                        connection.username,
+                        enum_value(&connection.credential_mode)?,
+                        connection.credential_id,
+                        optional_enum_value(&connection.inline_auth_kind)?,
+                        inline_secret_ref,
+                        connection.inline_secret_slot_id,
+                        connection.inline_private_key_path,
+                        optional_enum_value(&connection.prompt_auth_kind)?,
+                        proxy_json,
+                        jump_json,
+                        advanced_json,
+                        connection.notes,
+                        if connection.is_favorite { 1 } else { 0 },
+                        connection.last_connected_at,
+                        connection.remote_os_id,
+                        connection.remote_os_name,
+                        connection.remote_os_version,
+                        connection.created_at,
+                        connection.updated_at,
+                    ],
+                )
+                .map_err(sqlite_repository_error)?;
+        }
+
+        for entry in &data.known_hosts {
+            self.connection
+                .execute(
+                    "INSERT INTO known_hosts(
+                        host, port, key_algorithm, fingerprint_sha256, public_key,
+                        first_trusted_at, last_seen_at
+                    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                    params![
+                        normalize_known_host_host(&entry.host),
+                        entry.port,
+                        entry.key_algorithm,
+                        entry.fingerprint_sha256,
+                        entry.public_key,
+                        entry.trusted_at,
+                        entry.updated_at,
+                    ],
+                )
+                .map_err(sqlite_repository_error)?;
+        }
+
+        for tunnel in &data.tunnels {
+            self.connection
+                .execute(
+                    "INSERT INTO tunnels(
+                        id, name, kind, connection_id, local_host, local_port,
+                        remote_host, remote_port, auto_start, created_at, updated_at
+                    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                    params![
+                        tunnel.id,
+                        tunnel.name,
+                        enum_value(&tunnel.kind)?,
+                        tunnel.connection_id,
+                        tunnel.local_host,
+                        tunnel.local_port,
+                        tunnel.remote_host,
+                        tunnel.remote_port,
+                        if tunnel.auto_start { 1 } else { 0 },
+                        tunnel.created_at,
+                        tunnel.updated_at,
+                    ],
+                )
+                .map_err(sqlite_repository_error)?;
+        }
+
+        for (key, value) in &data.settings {
+            self.connection
+                .execute(
+                    "INSERT INTO app_settings(key, value_json, updated_at) VALUES (?1, ?2, ?3)",
+                    params![key, value.to_string(), current_timestamp()],
+                )
+                .map_err(sqlite_repository_error)?;
+        }
+
+        self.connection
+            .execute_batch("COMMIT;")
+            .map_err(sqlite_repository_error)?;
+        Ok(SyncRepositoryImportStats {
+            connections: data.connections.len(),
+            credentials: data.credentials.len(),
+            known_hosts: data.known_hosts.len(),
+            tunnels: data.tunnels.len(),
+        })
+    }
+
+    fn export_sync_groups(&self) -> Result<Vec<SyncConnectionGroup>, AppError> {
+        let mut statement = self
+            .connection
+            .prepare(
+                "SELECT id, name, sort_order, created_at, updated_at
+                   FROM connection_groups ORDER BY sort_order ASC, created_at ASC, name ASC",
+            )
+            .map_err(sqlite_repository_error)?;
+        let rows = statement
+            .query_map([], |row| {
+                Ok(SyncConnectionGroup {
+                    id: row.get(0)?,
+                    name: row.get(1)?,
+                    sort_order: row.get(2)?,
+                    created_at: row.get(3)?,
+                    updated_at: row.get(4)?,
+                })
+            })
+            .map_err(sqlite_repository_error)?;
+        collect_rows(rows)
+    }
+
+    fn export_sync_credentials(&self) -> Result<Vec<SyncCredentialRecord>, AppError> {
+        let mut statement = self
+            .connection
+            .prepare(
+                "SELECT id, name, username, kind, secret_slot_id, private_key_path, notes,
+                        created_at, updated_at
+                   FROM credentials ORDER BY created_at ASC, name ASC",
+            )
+            .map_err(sqlite_repository_error)?;
+        let rows = statement
+            .query_map([], |row| {
+                let kind: String = row.get(3)?;
+                Ok(SyncCredentialRecord {
+                    id: row.get(0)?,
+                    name: row.get(1)?,
+                    username: row.get(2)?,
+                    kind: serde_json::from_value(serde_json::Value::String(kind))
+                        .map_err(from_serde_row_error)?,
+                    secret_slot_id: row.get(4)?,
+                    private_key_path: row.get(5)?,
+                    notes: row.get(6)?,
+                    created_at: row.get(7)?,
+                    updated_at: row.get(8)?,
+                })
+            })
+            .map_err(sqlite_repository_error)?;
+        collect_rows(rows)
+    }
+
+    fn export_sync_connections(&self) -> Result<Vec<SyncConnectionRecord>, AppError> {
+        let mut statement = self
+            .connection
+            .prepare(
+                "SELECT id, name, group_id, host, port, username, credential_mode, credential_id,
+                        inline_auth_kind, inline_secret_slot_id, inline_private_key_path,
+                        prompt_auth_kind, proxy_json, jump_json, advanced_json, notes,
+                        is_favorite, last_connected_at, remote_os_id, remote_os_name,
+                        remote_os_version, created_at, updated_at
+                   FROM connections ORDER BY created_at ASC, name ASC",
+            )
+            .map_err(sqlite_repository_error)?;
+        let rows = statement
+            .query_map([], |row| {
+                let credential_mode: String = row.get(6)?;
+                let inline_auth_kind: Option<String> = row.get(8)?;
+                let prompt_auth_kind: Option<String> = row.get(11)?;
+                let proxy_json: String = row.get(12)?;
+                let jump_json: String = row.get(13)?;
+                let advanced_json: String = row.get(14)?;
+                let mut proxy: crate::connections::ConnectionProxyConfig =
+                    serde_json::from_str(&proxy_json).map_err(from_serde_row_error)?;
+                proxy.password = None;
+                Ok(SyncConnectionRecord {
+                    id: row.get(0)?,
+                    name: row.get(1)?,
+                    group_id: row.get(2)?,
+                    host: row.get(3)?,
+                    port: row.get(4)?,
+                    username: row.get(5)?,
+                    credential_mode: serde_json::from_value(serde_json::Value::String(
+                        credential_mode,
+                    ))
+                    .map_err(from_serde_row_error)?,
+                    credential_id: row.get(7)?,
+                    inline_auth_kind: optional_enum_from_string(inline_auth_kind)?,
+                    inline_secret_slot_id: row.get(9)?,
+                    inline_private_key_path: row.get(10)?,
+                    prompt_auth_kind: optional_enum_from_string(prompt_auth_kind)?,
+                    proxy,
+                    jump: serde_json::from_str(&jump_json).map_err(from_serde_row_error)?,
+                    advanced: serde_json::from_str(&advanced_json).map_err(from_serde_row_error)?,
+                    notes: row.get(15)?,
+                    is_favorite: row.get::<_, i64>(16)? != 0,
+                    last_connected_at: row.get(17)?,
+                    remote_os_id: row.get(18)?,
+                    remote_os_name: row.get(19)?,
+                    remote_os_version: row.get(20)?,
+                    created_at: row.get(21)?,
+                    updated_at: row.get(22)?,
+                })
+            })
+            .map_err(sqlite_repository_error)?;
+        collect_rows(rows)
+    }
+
+    fn export_sync_known_hosts(&self) -> Result<Vec<KnownHostEntry>, AppError> {
+        let mut statement = self
+            .connection
+            .prepare(
+                "SELECT host, port, key_algorithm, fingerprint_sha256, public_key,
+                        first_trusted_at, last_seen_at
+                   FROM known_hosts ORDER BY host ASC, port ASC, key_algorithm ASC",
+            )
+            .map_err(sqlite_repository_error)?;
+        let rows = statement
+            .query_map([], |row| {
+                let host: String = row.get(0)?;
+                let port: u16 = row.get(1)?;
+                let key_algorithm: String = row.get(2)?;
+                Ok(KnownHostEntry {
+                    id: format!("{host}:{port}:{key_algorithm}"),
+                    host,
+                    port,
+                    key_algorithm,
+                    fingerprint_sha256: row.get(3)?,
+                    public_key: row.get(4)?,
+                    trusted_at: row.get(5)?,
+                    updated_at: row.get(6)?,
+                })
+            })
+            .map_err(sqlite_repository_error)?;
+        collect_rows(rows)
+    }
+
+    fn export_sync_settings(&self) -> Result<BTreeMap<String, serde_json::Value>, AppError> {
+        let mut statement = self
+            .connection
+            .prepare("SELECT key, value_json FROM app_settings ORDER BY key ASC")
+            .map_err(sqlite_repository_error)?;
+        let rows = statement
+            .query_map([], |row| {
+                let key: String = row.get(0)?;
+                let value_json: String = row.get(1)?;
+                let value = serde_json::from_str(&value_json).map_err(from_serde_row_error)?;
+                Ok((key, value))
+            })
+            .map_err(sqlite_repository_error)?;
+        let mut settings = BTreeMap::new();
+        for row in rows {
+            let (key, value) = row.map_err(sqlite_repository_error)?;
+            settings.insert(key, value);
+        }
+        Ok(settings)
     }
     pub fn connection_upsert(
         &self,
@@ -1218,6 +1707,62 @@ fn trim_optional(value: Option<&String>) -> Option<String> {
         .map(ToOwned::to_owned)
 }
 
+fn sync_secret_kind_from_db(kind: Option<&str>, inline: bool) -> Result<SecretKind, AppError> {
+    match (inline, kind) {
+        (true, Some("password")) => Ok(SecretKind::InlinePassword),
+        (true, Some("private_key")) => Ok(SecretKind::InlinePrivateKeyPassphrase),
+        (false, Some("password")) => Ok(SecretKind::Password),
+        (false, Some("private_key")) => Ok(SecretKind::PrivateKeyPassphrase),
+        _ => Err(AppError::new(
+            "sync_snapshot_incompatible",
+            "同步快照凭据类型不兼容。",
+            format!("kind={:?}, inline={inline}", kind),
+            true,
+        )),
+    }
+}
+
+fn sync_secret_kind_from_label(kind: &str) -> Result<SecretKind, AppError> {
+    match kind {
+        "password" => Ok(SecretKind::Password),
+        "private_key_passphrase" => Ok(SecretKind::PrivateKeyPassphrase),
+        "inline_password" => Ok(SecretKind::InlinePassword),
+        "inline_private_key_passphrase" => Ok(SecretKind::InlinePrivateKeyPassphrase),
+        _ => Err(AppError::new(
+            "sync_snapshot_incompatible",
+            "同步快照凭据类型不兼容。",
+            format!("kind={kind}"),
+            true,
+        )),
+    }
+}
+
+fn sync_secret_kind_label(kind: SecretKind) -> &'static str {
+    match kind {
+        SecretKind::Password => "password",
+        SecretKind::PrivateKeyPassphrase => "private_key_passphrase",
+        SecretKind::InlinePassword => "inline_password",
+        SecretKind::InlinePrivateKeyPassphrase => "inline_private_key_passphrase",
+    }
+}
+
+fn sync_snapshot_backup_failed(error: impl ToString) -> AppError {
+    AppError::new(
+        "sync_snapshot_backup_failed",
+        "同步导入备份创建失败。",
+        error,
+        true,
+    )
+}
+
+fn current_timestamp() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs().to_string())
+        .unwrap_or_else(|_| "0".to_string())
+}
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
