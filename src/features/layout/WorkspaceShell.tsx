@@ -94,6 +94,7 @@ import {
   resolveSettingsStyle,
   resolveTerminalFontFamily,
   type FileTransferTimestampFormat,
+  type SettingsSectionId,
   type WindowMaterialMode,
 } from "../settings/settingsTypes";
 import { useSettings } from "../settings/useSettings";
@@ -105,7 +106,11 @@ import {
   parseHostKeyError,
   type HostKeyDecision,
 } from "../connections/hostKeyErrors";
-import { TerminalPanel } from "../terminal/TerminalPanel";
+import {
+  TerminalPanel,
+  type TerminalSearchNavigationRequest,
+} from "../terminal/TerminalPanel";
+import { useShortcutManager, type ShortcutHandler } from "../shortcuts/useShortcutManager";
 import type { TerminalOutputEvent } from "../terminal/terminalTypes";
 import { ConfirmDialog } from "../../shared/ui/ConfirmDialog";
 import { AppSelect } from "../../shared/ui/AppSelect";
@@ -405,6 +410,7 @@ export function WorkspaceShell() {
     updateFileTransfer,
     updateLocalTerminal,
     updateSecurity,
+    updateShortcuts,
     updateTerminalTheme,
   } = useSettings();
   const secretVault = useSecretVault({
@@ -437,7 +443,7 @@ export function WorkspaceShell() {
   const [activeTabByConnectionId, setActiveTabByConnectionId] = useState<Record<string, string>>({});
   const [activeView, setActiveView] = useState<"workspace" | "settings">("workspace");
   const [settingsSectionRequest, setSettingsSectionRequest] =
-    useState<"basic" | "credentials" | "security" | "appearance" | "localTerminal" | "terminalTheme" | undefined>();
+    useState<SettingsSectionId | undefined>();
   const [dialogOpen, setDialogOpen] = useState(false);
   const [connectionSearchOpen, setConnectionSearchOpen] = useState(false);
   const [connectionSearchQuery, setConnectionSearchQuery] = useState("");
@@ -458,6 +464,8 @@ export function WorkspaceShell() {
     useState<Record<string, { message?: string; status: CommandSenderDeliveryStatus }>>({});
   const [terminalSearchByTabId, setTerminalSearchByTabId] =
     useState<Record<string, TerminalSearchState>>({});
+  const [terminalSearchNavigationRequest, setTerminalSearchNavigationRequest] =
+    useState<TerminalSearchNavigationRequest | null>(null);
   const [localTerminalTabs, setLocalTerminalTabs] = useState<LocalTerminalTab[]>([]);
   const localTerminalTabsRef = useRef<LocalTerminalTab[]>([]);
   const [localTerminalProfiles, setLocalTerminalProfiles] = useState<LocalTerminalProfile[]>([]);
@@ -624,6 +632,13 @@ export function WorkspaceShell() {
   const activeLocalTerminalSearch = activeLocalTerminalTab
     ? terminalSearchByTabId[activeLocalTerminalTab.id]
     : null;
+  const activeShortcutTerminalTabId =
+    activeWorkspaceMode === "local"
+      ? activeLocalTerminalTab?.id || null
+      : activeConnectedTerminalTab?.id || null;
+  const activeShortcutTerminalSearch = activeShortcutTerminalTabId
+    ? terminalSearchByTabId[activeShortcutTerminalTabId]
+    : null;
   const commandSenderTargets = useMemo(
     () =>
       buildCommandSenderTargets({
@@ -660,6 +675,80 @@ export function WorkspaceShell() {
     () => isCommandSenderRisky(commandSenderInput),
     [commandSenderInput],
   );
+  const shortcutHandlers = useMemo<Partial<Record<string, ShortcutHandler>>>(
+    () => ({
+      "commandSender.toggle": {
+        enabled: () => commandSenderTargets.length > 0,
+        run: openCommandSender,
+      },
+      "connection.quickOpen": {
+        run: () => {
+          setConnectionSearchOpen(true);
+        },
+      },
+      "settings.open": {
+        run: () => {
+          setSettingsSectionRequest(undefined);
+          setActiveView("settings");
+        },
+      },
+      "terminal.closeTab": {
+        enabled: () =>
+          activeWorkspaceMode === "local"
+            ? Boolean(activeLocalTerminalTab)
+            : Boolean(activeTerminalTab),
+        run: () => {
+          if (activeWorkspaceMode === "local" && activeLocalTerminalTab) {
+            closeLocalTerminal(activeLocalTerminalTab.id);
+            return;
+          }
+          if (activeTerminalTab) {
+            closeTerminal(activeTerminalTab.id);
+          }
+        },
+      },
+      "terminal.newTab": {
+        enabled: () =>
+          activeWorkspaceMode === "local" || Boolean(activeConnection),
+        run: () => {
+          if (activeWorkspaceMode === "local") {
+            void openLocalTerminalByProfile(resolveDefaultLocalTerminalProfile());
+            return;
+          }
+          openTerminalInActiveConnection();
+        },
+      },
+      "terminal.search.next": {
+        enabled: () =>
+          Boolean(activeShortcutTerminalTabId && activeShortcutTerminalSearch?.query.trim()),
+        run: () => requestTerminalSearchNavigation("next"),
+      },
+      "terminal.search.previous": {
+        enabled: () =>
+          Boolean(activeShortcutTerminalTabId && activeShortcutTerminalSearch?.query.trim()),
+        run: () => requestTerminalSearchNavigation("previous"),
+      },
+      "terminal.search.toggle": {
+        enabled: () => Boolean(activeShortcutTerminalTabId),
+        run: () => toggleTerminalSearch(activeShortcutTerminalTabId),
+      },
+    }),
+    [
+      activeConnectedTerminalTab,
+      activeConnection,
+      activeLocalTerminalTab,
+      activeShortcutTerminalSearch,
+      activeShortcutTerminalTabId,
+      activeTerminalTab,
+      activeWorkspaceMode,
+      commandSenderTargets.length,
+    ],
+  );
+
+  useShortcutManager({
+    bindings: settings.shortcuts.bindings,
+    handlers: shortcutHandlers,
+  });
 
   useEffect(() => {
     const availableKeys = new Set(commandSenderTargets.map((target) => target.key));
@@ -2664,6 +2753,32 @@ export function WorkspaceShell() {
     });
   }
 
+  function requestTerminalSearchNavigation(direction: TerminalSearchNavigationRequest["direction"]) {
+    if (!activeShortcutTerminalTabId) {
+      return;
+    }
+
+    setTerminalSearchByTabId((states) => {
+      const current = states[activeShortcutTerminalTabId] || {
+        caseSensitive: false,
+        open: true,
+        query: "",
+      };
+      return {
+        ...states,
+        [activeShortcutTerminalTabId]: {
+          ...current,
+          open: true,
+        },
+      };
+    });
+    setTerminalSearchNavigationRequest({
+      direction,
+      id: Date.now(),
+      tabId: activeShortcutTerminalTabId,
+    });
+  }
+
   function closeTerminalSearch(tabId: string) {
     setTerminalSearchByTabId((states) => {
       const current = states[tabId];
@@ -4136,6 +4251,7 @@ export function WorkspaceShell() {
                         onStatusChange={updateTabStatus}
                         onWarmupCaptureReady={stopTerminalWarmupCapture}
                         searchCaseSensitive={Boolean(terminalSearchByTabId[tab.id]?.caseSensitive)}
+                        searchNavigationRequest={terminalSearchNavigationRequest}
                         searchOpen={Boolean(terminalSearchByTabId[tab.id]?.open)}
                         searchQuery={terminalSearchByTabId[tab.id]?.query || ""}
                         tabId={tab.id}
@@ -4520,6 +4636,7 @@ export function WorkspaceShell() {
                           onStatusChange={updateLocalTerminalTabStatus}
                           onWarmupCaptureReady={stopTerminalWarmupCapture}
                           searchCaseSensitive={Boolean(terminalSearchByTabId[tab.id]?.caseSensitive)}
+                          searchNavigationRequest={terminalSearchNavigationRequest}
                           searchOpen={Boolean(terminalSearchByTabId[tab.id]?.open)}
                           searchQuery={terminalSearchByTabId[tab.id]?.query || ""}
                           tabId={tab.id}
@@ -4933,6 +5050,7 @@ export function WorkspaceShell() {
           onUpdateFileTransfer={updateFileTransfer}
           onUpdateLocalTerminal={updateLocalTerminal}
           onUpdateSecurity={updateSecurity}
+          onUpdateShortcuts={updateShortcuts}
           onUpdateTerminalTheme={updateTerminalTheme}
         />
     </div>

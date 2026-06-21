@@ -36,6 +36,29 @@ Ant Design, Mantine, or similar libraries just to fix one modal or button.
   (dialog shell, confirm dialog, button variants, tooltip wrappers) in
   `src/shared/ui/`.
 
+## Keyboard Shortcut Infrastructure
+
+- Application-level keyboard shortcuts must use `src/features/shortcuts/`.
+  Define action metadata and default bindings in `shortcutRegistry.ts`, parse
+  and format bindings through `shortcutKeys.ts`, and validate conflicts /
+  reserved terminal keys through `shortcutValidation.ts`.
+- Runtime shortcut handling should be wired through `useShortcutManager`.
+  Feature components should provide action handlers, while the shortcut module
+  owns key matching and terminal/input focus guards. Do not add new scattered
+  `window.addEventListener("keydown", ...)` handlers for application commands.
+- Persist user shortcut overrides through `settings.shortcuts.bindings`.
+  `null` means the user intentionally disabled that action, so UI and runtime
+  code must not fall back to the default binding when a binding key exists with
+  a `null` value.
+- Display shortcut labels with the shared `src/shared/ui/Keybinding.tsx`
+  component. Do not hand-roll separate `<kbd>` styling in feature components;
+  extend the shared component or global keybinding classes when a new compact
+  variant is needed.
+- Terminal focus is a special boundary. Shortcuts that run while xterm is
+  focused must be explicitly marked `allowInTerminal`; ordinary shell/readline
+  combinations such as `Ctrl+C`, `Ctrl+L`, or `Ctrl+A` must remain reserved for
+  the terminal and rejected by shortcut validation.
+
 ---
 
 ## Props Conventions

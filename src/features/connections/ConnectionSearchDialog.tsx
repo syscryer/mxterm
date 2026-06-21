@@ -11,6 +11,7 @@ import { Search, Star, X } from "lucide-react";
 import { ConnectionSystemLogo } from "./ConnectionSystemLogo";
 import type { ConnectionProfile } from "./connectionTypes";
 import { buildConnectionSearchEntries, type ConnectionSearchEntry } from "./connectionSearch";
+import { Keybinding } from "../../shared/ui/Keybinding";
 
 interface ConnectionSearchDialogProps {
   activeConnectionId: string | null;
@@ -174,7 +175,11 @@ export function ConnectionSearchDialog({
                   ) : null}
                   <span className="connection-search-result-meta">{entry.metaLabel}</span>
                   {index < 9 ? (
-                    <kbd className="connection-search-shortcut">{`Ctrl+${index + 1}`}</kbd>
+                    <Keybinding
+                      compact
+                      className="connection-search-shortcut"
+                      value={`Ctrl+${(index + 1).toString()}`}
+                    />
                   ) : null}
                 </span>
               </button>

@@ -1586,6 +1586,207 @@ button {
   font-size: 12px;
 }
 
+.keybinding {
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 4px;
+  color: var(--mx-text);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.keybinding.empty {
+  color: var(--mx-subtle);
+  font-family: var(--font-ui);
+}
+
+.keybinding-part {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.keybinding kbd,
+.keybinding-compact {
+  min-height: 22px;
+  border: 1px solid color-mix(in srgb, var(--mx-line-strong) 74%, transparent);
+  border-radius: 6px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 7px;
+  color: var(--mx-text);
+  background: var(--mx-panel-soft);
+  font: inherit;
+  box-shadow: inset 0 -1px 0 color-mix(in srgb, var(--mx-line-strong) 42%, transparent);
+}
+
+.keybinding-plus {
+  color: var(--mx-subtle);
+}
+
+.keybinding-compact {
+  min-height: 20px;
+  border-color: color-mix(in srgb, var(--mx-glass-border) 76%, transparent);
+  border-radius: 999px;
+  padding: 0 7px;
+  color: var(--mx-muted);
+  background: var(--mx-glass-bg);
+  font-size: 10px;
+  font-weight: 500;
+}
+
+.shortcut-toolbar {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+}
+
+.shortcut-search {
+  min-width: 0;
+  width: min(520px, 100%);
+  height: 32px;
+  border: 1px solid var(--mx-line);
+  border-radius: 8px;
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  padding: 0 10px;
+  color: var(--mx-subtle);
+  background: var(--mx-panel);
+}
+
+.shortcut-search:focus-within {
+  border-color: var(--mx-primary);
+  box-shadow: 0 0 0 3px rgb(37 99 235 / 12%);
+}
+
+.shortcut-search > .ui-icon {
+  width: 15px;
+  height: 15px;
+  color: var(--mx-subtle);
+}
+
+.shortcut-search input {
+  min-width: 0;
+  width: 100%;
+  border: 0;
+  padding: 0;
+  color: var(--mx-text);
+  background: transparent;
+  font-size: 12px;
+}
+
+.shortcut-search input:focus {
+  outline: none;
+  box-shadow: none;
+}
+
+.shortcut-group {
+  overflow: hidden;
+}
+
+.shortcut-group-title {
+  height: 34px;
+  border-bottom: 1px solid var(--mx-line-soft);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 14px;
+  color: var(--mx-muted);
+  font-size: 12px;
+  font-weight: 560;
+}
+
+.shortcut-group-title .ui-icon {
+  color: var(--mx-subtle);
+}
+
+.shortcut-list {
+  display: grid;
+}
+
+.shortcut-row {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 14px;
+  padding: 11px 14px;
+  border-bottom: 1px solid var(--mx-line-soft);
+}
+
+.shortcut-row:last-child {
+  border-bottom: 0;
+}
+
+.shortcut-row-copy {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+
+.shortcut-row-copy strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--mx-text);
+  font-size: 13px;
+  font-weight: 560;
+}
+
+.shortcut-row-copy small,
+.shortcut-row-error {
+  color: var(--mx-muted);
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.shortcut-row-control {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 7px;
+}
+
+.shortcut-icon-action {
+  width: 28px;
+  padding: 0;
+}
+
+.shortcut-capture-button {
+  height: 28px;
+  border: 1px solid color-mix(in srgb, var(--mx-primary) 52%, var(--mx-line));
+  border-radius: 7px;
+  padding: 0 10px;
+  color: var(--mx-text);
+  background: color-mix(in srgb, var(--mx-primary) 10%, var(--mx-panel));
+  font-size: 12px;
+  font-weight: 520;
+}
+
+.shortcut-capture-button:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--mx-primary) 46%, transparent);
+  outline-offset: 2px;
+}
+
+.shortcut-row-error {
+  grid-column: 1 / -1;
+  color: var(--mx-danger);
+}
+
+.shortcut-empty {
+  padding: 18px;
+  color: var(--mx-muted);
+  font-size: 12px;
+}
+
 .settings-path-control {
   width: min(560px, 52vw);
   min-width: 360px;

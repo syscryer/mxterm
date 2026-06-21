@@ -12,6 +12,7 @@ import {
   Folder,
   FolderOpen,
   HardDrive,
+  Keyboard,
   KeyRound,
   Layers,
   LockKeyhole,
@@ -74,6 +75,7 @@ import {
   type MxtermSettings,
   type SecuritySettings,
   type SettingsSectionId,
+  type ShortcutSettings,
   type TerminalThemeSettings,
   type TerminalFontPreset,
   type UiFontPreset,
@@ -94,6 +96,7 @@ import type {
 } from "../terminal/localTerminalTypes";
 import { LocalTerminalIcon } from "../terminal/LocalTerminalIcons";
 import { WebDavSyncSettingsSection } from "./WebDavSyncSettingsSection";
+import { ShortcutSettingsSection } from "./ShortcutSettingsSection";
 
 interface SettingsViewProps {
   credentials: CredentialProfile[];
@@ -118,6 +121,7 @@ interface SettingsViewProps {
   onUpdateFileTransfer: (update: Partial<FileTransferSettings>) => void;
   onUpdateLocalTerminal: (update: Partial<LocalTerminalSettings>) => void;
   onUpdateSecurity: (update: Partial<SecuritySettings>) => void;
+  onUpdateShortcuts: (update: Partial<ShortcutSettings>) => void;
   onUpdateTerminalTheme: (update: Partial<TerminalThemeSettings>) => void;
 }
 
@@ -131,6 +135,7 @@ const settingsSections: Array<{
   { id: "credentials", label: "账号管理", description: "复用登录账号（用户名+密码/私钥）", icon: Shield },
   { id: "security", label: "安全", description: "安全密码与本机保护", icon: ShieldCheck },
   { id: "sync", label: "同步", description: "WebDAV 手动同步", icon: Cloud },
+  { id: "shortcuts", label: "快捷键", description: "应用内键盘操作与冲突管理", icon: Keyboard },
   { id: "appearance", label: "外观", description: "字号、密度与强调色", icon: Palette },
   { id: "localTerminal", label: "本地终端", description: "默认 Shell 与 profile 管理", icon: HardDrive },
   { id: "terminalTheme", label: "终端配色", description: "终端 ANSI 主题方案", icon: Terminal },
@@ -167,6 +172,7 @@ export function SettingsView({
   onUpdateFileTransfer,
   onUpdateLocalTerminal,
   onUpdateSecurity,
+  onUpdateShortcuts,
   onUpdateTerminalTheme,
 }: SettingsViewProps) {
   const [activeSection, setActiveSection] = useState<SettingsSectionId>("basic");
@@ -270,6 +276,12 @@ export function SettingsView({
           />
         ) : null}
         {activeSection === "sync" ? <WebDavSyncSettingsSection /> : null}
+        {activeSection === "shortcuts" ? (
+          <ShortcutSettingsSection
+            settings={settings.shortcuts}
+            onUpdate={onUpdateShortcuts}
+          />
+        ) : null}
         {activeSection === "terminalTheme" ? (
           <TerminalThemeSettingsSection
             selectedScheme={selectedScheme}
