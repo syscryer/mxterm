@@ -911,3 +911,37 @@ Fixed empty connection list after SQLite/vault migration by recovering encrypted
 ### Next Steps
 
 - None - task complete
+
+
+## Session 28: Sync Snapshot Foundation
+
+**Date**: 2026-06-21
+**Task**: Sync Snapshot Foundation
+**Branch**: `master`
+
+### Summary
+
+Implemented local sync snapshot export/import foundation with encrypted remote secrets, artifact validation, repository import/export support, tests, and backend contract documentation.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `a1b7678` | (see git log) |
+| `5082aaf` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete

@@ -8,8 +8,8 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 27
-- **Last Active**: 2026-06-20
+- **Total Sessions**: 28
+- **Last Active**: 2026-06-21
 <!-- @@@/auto:current-status -->
 
 ---
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~913 | Active |
+| `journal-1.md` | ~947 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 28 | 2026-06-21 | Sync Snapshot Foundation | `a1b7678`, `5082aaf` | `master` |
 | 27 | 2026-06-20 | Fix empty connections after storage migration | `225f01b` | `master` |
 | 26 | 2026-06-20 | Storage vault migration | `d3f5df9` | `master` |
 | 25 | 2026-06-20 | SQLite storage foundation | `8f3cf2f` | `master` |
