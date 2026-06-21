@@ -878,3 +878,36 @@ Completed SQLite plus encrypted secrets.enc vault migration, verified vault test
 ### Next Steps
 
 - None - task complete
+
+
+## Session 27: Fix empty connections after storage migration
+
+**Date**: 2026-06-20
+**Task**: Fix empty connections after storage migration
+**Branch**: `master`
+
+### Summary
+
+Fixed empty connection list after SQLite/vault migration by recovering encrypted vault when the local auto-unlock key is missing or regenerated; verified user connection list restored after restart.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `225f01b` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete

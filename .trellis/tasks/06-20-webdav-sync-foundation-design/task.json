@@ -1,0 +1,28 @@
+{
+  "id": "webdav-sync-foundation-design",
+  "name": "webdav-sync-foundation-design",
+  "title": "WebDAV sync foundation design",
+  "description": "",
+  "status": "planning",
+  "dev_type": null,
+  "scope": null,
+  "package": null,
+  "priority": "P2",
+  "creator": "MNL",
+  "assignee": "MNL",
+  "createdAt": "2026-06-20",
+  "completedAt": null,
+  "branch": null,
+  "base_branch": "master",
+  "worktree_path": null,
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [
+    "06-20-sync-snapshot-foundation"
+  ],
+  "parent": null,
+  "relatedFiles": [],
+  "notes": "",
+  "meta": {}
+}

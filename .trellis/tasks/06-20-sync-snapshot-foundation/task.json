@@ -1,7 +1,7 @@
 {
-  "id": "fix-empty-connections-after-storage-migration",
-  "name": "fix-empty-connections-after-storage-migration",
-  "title": "Fix empty connections after storage migration",
+  "id": "sync-snapshot-foundation",
+  "name": "sync-snapshot-foundation",
+  "title": "Sync Snapshot Foundation",
   "description": "",
   "status": "in_progress",
   "dev_type": null,
@@ -19,7 +19,7 @@
   "pr_url": null,
   "subtasks": [],
   "children": [],
-  "parent": null,
+  "parent": "06-20-webdav-sync-foundation-design",
   "relatedFiles": [],
   "notes": "",
   "meta": {}
