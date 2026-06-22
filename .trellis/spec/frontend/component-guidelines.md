@@ -229,6 +229,10 @@ Ant Design, Mantine, or similar libraries just to fix one modal or button.
   as a grid row gap between `.terminal-subtabs` and `.terminal-stack`. Do not
   add decorative padding directly to `.terminal-host` or `.terminal-panel`
   unless the FitAddon measurement is explicitly adjusted for it.
+- Terminal content gutters should live on `.terminal-host .xterm`, not on
+  `.terminal-host` or `.xterm-screen`. FitAddon subtracts padding on the xterm
+  element when proposing cols, so this preserves the left visual inset without
+  desynchronizing the canvas, cursor, helper textarea, or IME coordinates.
 - Local terminal creation controls in the subtab strip should use a compact
   split control: `+` opens the configured default profile, and the adjacent
   icon-only chevron opens a profile menu. Do not put a wide profile select or

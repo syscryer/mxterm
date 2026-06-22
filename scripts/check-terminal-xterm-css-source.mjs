@@ -29,6 +29,11 @@ assertIncludes(
   "xterm helper textarea must be protected from global input/textarea styles.",
 );
 
+assertIncludes(
+  ".terminal-host .xterm {\n  height: 100%;\n  padding-left: var(--mx-terminal-gutter-x);",
+  "terminal left gutter must live on the xterm element so FitAddon subtracts it from measured columns.",
+);
+
 assertExcludes(
   "padding-left: var(--mx-terminal-content-inset-x)",
   "xterm screen must not use parent-only padding because it desynchronizes cursor and IME coordinates.",
