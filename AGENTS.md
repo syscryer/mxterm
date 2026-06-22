@@ -9,6 +9,8 @@
 - 实现前使用 `.agents/skills/trellis-before-dev` 读取 `.trellis/spec/` 规范。
 - `.trellis/`、`.codex/`、`.agents/` 是 Trellis 项目文件，应随项目维护；不要提交 `.trellis/.runtime/`、`.trellis/.developer`、Python 缓存或敏感配置。
 - 不要提交 `.superpowers/`、`.learnings/` 或敏感配置文件。
+- 调研其他项目时，内部可以参考产品思路、交互流程和实现结构，但提交到仓库的文档、注释和用户可见文案中不要明显写“借鉴/参考某某项目”这类表述；确实需要保留调研记录时，使用中性描述并避免给人直接复制外部产品的观感。
+- 复用外部代码前必须注意开源协议：MIT、Apache-2.0、BSD 等宽松协议代码可以在遵守原协议、保留必要许可信息的前提下复用；GPL、AGPL、LGPL 等强 copyleft 或协议不清晰的项目不要直接复制代码，只能吸收思路、交互和架构经验后自行实现。
 - 本仓库允许直接在 `master` 分支开发，不强制创建隔离 worktree。
 - 前端 UI 开发必须保持风格统一和组件复用；优先基于现有 Radix + Lucide + 项目共享组件封装实现，不要在各个 feature 里零散手写一套弹窗、按钮、确认框或表单样式。
 - 前端视觉实现必须严格使用全局 token 体系：颜色、背景、边框、状态、阴影、材质优先使用 `src/styles/tokens.css` 中的 `--mx-*` token，并通过 `src/styles/app.css` 的共享样式落地；除非确有业务语义且先说明原因，不要在业务组件里随意写硬编码颜色、孤立渐变、一次性阴影或脱离主题的状态色。

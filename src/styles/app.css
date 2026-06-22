@@ -6642,6 +6642,7 @@ button {
 }
 
 .terminal-host {
+  --mx-terminal-gutter-x: 6px;
   min-height: 0;
   overflow: hidden;
   background: var(--mx-terminal);
@@ -6649,6 +6650,7 @@ button {
 
 .terminal-host .xterm {
   height: 100%;
+  padding-left: var(--mx-terminal-gutter-x);
 }
 
 .terminal-host .xterm,
