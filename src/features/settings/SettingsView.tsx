@@ -71,6 +71,7 @@ import {
   type AccentColor,
   type AppearanceSettings,
   type BasicSettings,
+  type CommandSettings,
   type FontSettingMode,
   type MxtermSettings,
   type SecuritySettings,
@@ -118,6 +119,7 @@ interface SettingsViewProps {
   onUnlockSecuritySettings: (masterPassword: string) => Promise<boolean>;
   onUpdateAppearance: (update: Partial<AppearanceSettings>) => void;
   onUpdateBasic: (update: Partial<BasicSettings>) => void;
+  onUpdateCommand: (update: Partial<CommandSettings>) => void;
   onUpdateFileTransfer: (update: Partial<FileTransferSettings>) => void;
   onUpdateLocalTerminal: (update: Partial<LocalTerminalSettings>) => void;
   onUpdateSecurity: (update: Partial<SecuritySettings>) => void;
@@ -169,6 +171,7 @@ export function SettingsView({
   onUnlockSecuritySettings,
   onUpdateAppearance,
   onUpdateBasic,
+  onUpdateCommand,
   onUpdateFileTransfer,
   onUpdateLocalTerminal,
   onUpdateSecurity,
@@ -231,9 +234,11 @@ export function SettingsView({
       <div className="settings-content">
         {activeSection === "basic" ? (
           <BasicSettingsSection
+            commandSettings={settings.command}
             fileTransferSettings={settings.fileTransfer}
             settings={settings.basic}
             onUpdate={onUpdateBasic}
+            onUpdateCommand={onUpdateCommand}
             onUpdateFileTransfer={onUpdateFileTransfer}
           />
         ) : null}
@@ -1132,13 +1137,17 @@ function formatError(error: unknown) {
 
 function BasicSettingsSection({
   fileTransferSettings,
+  commandSettings,
   settings,
   onUpdate,
+  onUpdateCommand,
   onUpdateFileTransfer,
 }: {
+  commandSettings: CommandSettings;
   fileTransferSettings: FileTransferSettings;
   settings: BasicSettings;
   onUpdate: (update: Partial<BasicSettings>) => void;
+  onUpdateCommand: (update: Partial<CommandSettings>) => void;
   onUpdateFileTransfer: (update: Partial<FileTransferSettings>) => void;
 }) {
   const [downloadRootError, setDownloadRootError] = useState<string | null>(null);
@@ -1222,6 +1231,22 @@ function BasicSettingsSection({
             value={settings.recentConnectionLimit}
             values={[5, 10, 15, 20, 30, 50] as const}
             onChange={(recentConnectionLimit) => onUpdate({ recentConnectionLimit })}
+          />
+        </SettingsRow>
+      </div>
+
+      <div className="settings-panel">
+        <SettingsRow
+          icon={Terminal}
+          title="记录终端输入"
+          description="开启后，将普通回车命令保存到历史；控制序列、Tab 和疑似敏感输入会丢弃。"
+        >
+          <SettingsToggle
+            checked={commandSettings.recordTerminalInputHistory}
+            label="记录终端输入"
+            onChange={(recordTerminalInputHistory) =>
+              onUpdateCommand({ recordTerminalInputHistory })
+            }
           />
         </SettingsRow>
       </div>

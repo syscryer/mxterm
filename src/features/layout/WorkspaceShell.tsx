@@ -104,8 +104,14 @@ import { useConnections } from "../connections/useConnections";
 import { useCredentials } from "../connections/useCredentials";
 import type {
   CommandHistoryEntry,
+  CommandHistoryScope,
   CommandSnippet,
 } from "../commands/commandLibraryTypes";
+import {
+  CommandLibraryPanel,
+  type CommandHistoryScopeOption,
+} from "../commands/CommandLibraryPanel";
+import { compareCommandLibraryTimestampsDesc } from "../commands/commandLibraryTime";
 import {
   parseHostKeyError,
   type HostKeyDecision,
@@ -199,6 +205,7 @@ interface TerminalTab {
 }
 
 type CommandSenderDeliveryStatus = "idle" | "sent" | "failed";
+type CommandSenderTargetKind = "ssh" | "local";
 
 interface CommandSenderTargetTabOption {
   label: string;
@@ -212,7 +219,9 @@ interface CommandSenderTarget {
   deliveryStatus: CommandSenderDeliveryStatus;
   description: string;
   key: string;
+  kind: CommandSenderTargetKind;
   label: string;
+  historyScope: CommandHistoryScope | null;
   sessionId: string;
   tabId: string;
   tabs: CommandSenderTargetTabOption[];
@@ -223,9 +232,18 @@ interface CommandSnippetDraft {
   command: string;
   description: string;
   favorite: boolean;
+  group: string;
   id?: string;
   tagsText: string;
   title: string;
+}
+
+interface CommandSnippetGroupDialogState {
+  error?: string | null;
+  mode: "create" | "rename";
+  originalName?: string;
+  selectAfterSave?: boolean;
+  value: string;
 }
 
 interface TerminalSearchState {
@@ -280,6 +298,7 @@ interface ConnectionGroupCatalog {
 }
 
 interface RemoteFileRefreshRequest {
+  connectionId: string;
   id: number;
   path: string;
 }
@@ -406,6 +425,13 @@ const maxRightPaneWidth = 560;
 const minCenterPaneWidth = 520;
 const paneKeyboardResizeStep = 16;
 const defaultEditorTerminalSplitPercent = 44;
+const commandSnippetRootGroup = "";
+const commandSnippetRootGroupLabel = "根目录";
+const legacyCommandSnippetGroup = "未分组";
+const localCommandSenderTargetId = "__local_terminal__";
+const commandHistoryAllScopeKey = "all";
+const commandHistorySshScopePrefix = "ssh:";
+const commandHistoryLocalScopePrefix = "local:";
 const connectionPromptAuthKindOptions: Array<{
   label: string;
   value: ConnectionAuthKind;
@@ -428,6 +454,7 @@ export function WorkspaceShell() {
     settings,
     updateAppearance,
     updateBasic,
+    updateCommand,
     updateFileTransfer,
     updateLocalTerminal,
     updateSecurity,
@@ -483,13 +510,20 @@ export function WorkspaceShell() {
     useState<string | null>(null);
   const [selectedCommandSnippetId, setSelectedCommandSnippetId] = useState<string | null>(null);
   const [selectedCommandHistoryId, setSelectedCommandHistoryId] = useState<string | null>(null);
+  const [commandHistoryScopeKey, setCommandHistoryScopeKey] =
+    useState(commandHistoryAllScopeKey);
+  const [commandSnippetLocalGroups, setCommandSnippetLocalGroups] = useState<string[]>([]);
   const [commandSnippetDialogOpen, setCommandSnippetDialogOpen] = useState(false);
   const [commandSnippetDraft, setCommandSnippetDraft] = useState<CommandSnippetDraft>(
     () => buildCommandSnippetDraft(""),
   );
+  const [commandSnippetGroupDialog, setCommandSnippetGroupDialog] =
+    useState<CommandSnippetGroupDialogState | null>(null);
   const [commandSnippetFormError, setCommandSnippetFormError] = useState<string | null>(null);
   const [pendingCommandSnippetDelete, setPendingCommandSnippetDelete] =
     useState<CommandSnippet | null>(null);
+  const [pendingCommandSnippetGroupDelete, setPendingCommandSnippetGroupDelete] =
+    useState<string | null>(null);
   const [pendingCommandHistoryDelete, setPendingCommandHistoryDelete] =
     useState<CommandHistoryEntry | null>(null);
   const [commandHistoryClearOpen, setCommandHistoryClearOpen] = useState(false);
@@ -567,7 +601,7 @@ export function WorkspaceShell() {
     try {
       const [snippets, history] = await Promise.all([
         commandSnippetList(),
-        commandHistoryList(50),
+        commandHistoryList(50, commandHistoryScopeFromKey(commandHistoryScopeKey)),
       ]);
       setCommandSnippets(snippets);
       setCommandHistoryEntries(history);
@@ -583,7 +617,7 @@ export function WorkspaceShell() {
     } finally {
       setCommandLibraryLoading(false);
     }
-  }, [storageReady]);
+  }, [commandHistoryScopeKey, storageReady]);
 
   useEffect(() => {
     terminalTabsRef.current = terminalTabs;
@@ -707,6 +741,47 @@ export function WorkspaceShell() {
   const activeLocalTerminalSearch = activeLocalTerminalTab
     ? terminalSearchByTabId[activeLocalTerminalTab.id]
     : null;
+  const defaultCommandHistoryScopeKey = useMemo(
+    () =>
+      commandHistoryDefaultScopeKey({
+        activeConnectionId,
+        activeLocalTerminalTab,
+        activeWorkspaceMode,
+      }),
+    [activeConnectionId, activeLocalTerminalTab, activeWorkspaceMode],
+  );
+  const commandHistoryScopeOptions = useMemo(
+    () =>
+      buildCommandHistoryScopeOptions({
+        activeConnection,
+        activeLocalTerminalTab,
+        activeWorkspaceMode,
+        connections,
+        defaultScopeKey: defaultCommandHistoryScopeKey,
+        localTerminalProfiles,
+      }),
+    [
+      activeConnection,
+      activeLocalTerminalTab,
+      activeWorkspaceMode,
+      connections,
+      defaultCommandHistoryScopeKey,
+      localTerminalProfiles,
+    ],
+  );
+  useEffect(() => {
+    setCommandHistoryScopeKey(defaultCommandHistoryScopeKey);
+  }, [defaultCommandHistoryScopeKey]);
+
+  useEffect(() => {
+    if (
+      commandHistoryScopeOptions.length > 0 &&
+      !commandHistoryScopeOptions.some((option) => option.value === commandHistoryScopeKey)
+    ) {
+      setCommandHistoryScopeKey(defaultCommandHistoryScopeKey);
+    }
+  }, [commandHistoryScopeKey, commandHistoryScopeOptions, defaultCommandHistoryScopeKey]);
+
   const activeShortcutTerminalTabId =
     activeWorkspaceMode === "local"
       ? activeLocalTerminalTab?.id || null
@@ -714,20 +789,37 @@ export function WorkspaceShell() {
   const activeShortcutTerminalSearch = activeShortcutTerminalTabId
     ? terminalSearchByTabId[activeShortcutTerminalTabId]
     : null;
+  const commandSnippetGroups = useMemo(
+    () => buildCommandSnippetGroupCatalog(commandSnippets, commandSnippetLocalGroups),
+    [commandSnippetLocalGroups, commandSnippets],
+  );
+  const commandSnippetGroupOptions = useMemo(
+    () => [
+      { label: commandSnippetRootGroupLabel, value: commandSnippetRootGroup },
+      ...commandSnippetGroups.map((group) => ({ label: group, value: group })),
+    ],
+    [commandSnippetGroups],
+  );
   const commandSenderTargets = useMemo(
     () =>
       buildCommandSenderTargets({
         activeTabByConnectionId,
+        activeLocalTerminalTabId,
         connectionById,
         deliveryByKey: commandSenderDeliveryByKey,
+        localTerminalProfiles,
+        localTerminalTabs,
         selectedTabByConnectionId: commandSenderTargetTabByConnectionId,
         terminalTabs,
       }),
     [
       activeTabByConnectionId,
+      activeLocalTerminalTabId,
       commandSenderDeliveryByKey,
       commandSenderTargetTabByConnectionId,
       connectionById,
+      localTerminalProfiles,
+      localTerminalTabs,
       terminalTabs,
     ],
   );
@@ -749,50 +841,6 @@ export function WorkspaceShell() {
   const commandSenderRisky = useMemo(
     () => isCommandSenderRisky(commandSenderInput),
     [commandSenderInput],
-  );
-  const selectedCommandSnippet = selectedCommandSnippetId
-    ? commandSnippets.find((snippet) => snippet.id === selectedCommandSnippetId) || null
-    : null;
-  const selectedCommandHistory = selectedCommandHistoryId
-    ? commandHistoryEntries.find((entry) => entry.id === selectedCommandHistoryId) || null
-    : null;
-  const commandSnippetOptions = useMemo(
-    () => [
-      {
-        disabled: true,
-        label: (
-          <span className="command-select-label">
-            <List className="ui-icon" aria-hidden="true" />
-            <span>{commandSnippets.length > 0 ? "命令片段" : "暂无片段"}</span>
-          </span>
-        ),
-        value: "",
-      },
-      ...commandSnippets.map((snippet) => ({
-        label: commandSnippetSelectLabel(snippet),
-        value: snippet.id,
-      })),
-    ],
-    [commandSnippets],
-  );
-  const commandHistoryOptions = useMemo(
-    () => [
-      {
-        disabled: true,
-        label: (
-          <span className="command-select-label">
-            <Clock3 className="ui-icon" aria-hidden="true" />
-            <span>{commandHistoryEntries.length > 0 ? "历史命令" : "暂无历史"}</span>
-          </span>
-        ),
-        value: "",
-      },
-      ...commandHistoryEntries.map((entry) => ({
-        label: commandHistorySelectLabel(entry),
-        value: entry.id,
-      })),
-    ],
-    [commandHistoryEntries],
   );
   const shortcutHandlers = useMemo<Partial<Record<string, ShortcutHandler>>>(
     () => ({
@@ -929,6 +977,7 @@ export function WorkspaceShell() {
   const showingHome = activeWorkspaceMode === "home" || (!hasSessionWorkspace && homeActive);
   const showingLocalTerminal = activeWorkspaceMode === "local";
   const showSessionWorkspace = !showingHome && activeWorkspaceMode === "ssh" && hasSessionWorkspace;
+  const showWorkspaceToolPane = !showingHome && hasSessionWorkspace;
   const activeConnectionSelectionId =
     activeWorkspaceMode === "ssh" ? activeConnectionId : null;
   const activeTerminalDirectory = activeConnectedTerminalTab
@@ -1078,6 +1127,7 @@ export function WorkspaceShell() {
     settings.fileTransfer.conflictPolicyDefault,
     settings.fileTransfer.keepArchives,
     showSessionWorkspace,
+    showWorkspaceToolPane,
   ]);
 
   const updateTabStatus = useCallback((tabId: string, status: string) => {
@@ -1109,8 +1159,9 @@ export function WorkspaceShell() {
     setRemoteFileTabs((tabs) => tabs.map((tab) => (tab.id === tabId ? updater(tab) : tab)));
   }
 
-  function triggerRemoteFileRefresh(path: string) {
+  function triggerRemoteFileRefresh(connectionId: string, path: string) {
     setRemoteFileRefreshRequest((request) => ({
+      connectionId,
       id: (request?.id || 0) + 1,
       path: normalizeRemotePath(path),
     }));
@@ -1667,7 +1718,7 @@ export function WorkspaceShell() {
           saveState: "saved",
           statusMessage: "已保存",
         }));
-        triggerRemoteFileRefresh(remotePathParent(tab.path));
+        triggerRemoteFileRefresh(tab.connectionId, remotePathParent(tab.path));
       })
       .catch((error: unknown) => {
         if (isRemoteFileConflict(error)) {
@@ -1860,7 +1911,7 @@ export function WorkspaceShell() {
         const metadata = hasTauriRuntime()
           ? await remoteFileCreateFile(action.connectionId, path)
           : previewRemoteFileMetadata(path);
-        triggerRemoteFileRefresh(remotePathParent(metadata.path));
+        triggerRemoteFileRefresh(action.connectionId, remotePathParent(metadata.path));
         if (activeConnection) {
           openRemoteFile({
             name: metadata.name,
@@ -1873,7 +1924,7 @@ export function WorkspaceShell() {
         if (hasTauriRuntime()) {
           await remoteFileCreateDirectory(action.connectionId, path);
         }
-        triggerRemoteFileRefresh(action.parentPath);
+        triggerRemoteFileRefresh(action.connectionId, action.parentPath);
       } else {
         const newPath = joinRemotePath(remotePathParent(action.entry.path), value);
         if (hasTauriRuntime()) {
@@ -1884,8 +1935,8 @@ export function WorkspaceShell() {
           });
         }
         renameRemoteFileTabs(action.connectionId, action.entry.path, newPath);
-        triggerRemoteFileRefresh(remotePathParent(action.entry.path));
-        triggerRemoteFileRefresh(remotePathParent(newPath));
+        triggerRemoteFileRefresh(action.connectionId, remotePathParent(action.entry.path));
+        triggerRemoteFileRefresh(action.connectionId, remotePathParent(newPath));
       }
       setRemoteFileTextAction(null);
       setRemoteFileTextValue("");
@@ -1935,7 +1986,7 @@ export function WorkspaceShell() {
         recursive: target.entry.type === "directory",
       });
     }
-    triggerRemoteFileRefresh(remotePathParent(target.entry.path));
+    triggerRemoteFileRefresh(target.connectionId, remotePathParent(target.entry.path));
     const nextRemoteFileTabs = remoteFileTabs.filter(
       (tab) => !isRemoteFileTabUnderEntry(tab, target.connectionId, target.entry.path),
     );
@@ -2162,7 +2213,7 @@ export function WorkspaceShell() {
         path: uploadPath,
         transferId,
       });
-      finishUploadTransfer(transferId, result);
+      finishUploadTransfer(transferId, connection.id, result);
     } catch (error) {
       failTransfer(transferId, "上传失败", error);
     }
@@ -2233,7 +2284,7 @@ export function WorkspaceShell() {
         targetDir: normalizedParentPath,
         transferId,
       });
-      finishArchiveUploadTransfer(transferId, result);
+      finishArchiveUploadTransfer(transferId, connection.id, result);
     } catch (error) {
       failTransfer(transferId, "目录上传失败", error);
     }
@@ -2276,7 +2327,7 @@ export function WorkspaceShell() {
         stopPulse();
         return previewRemoteFileUploadResult(uploadPath, item.file.size);
       });
-      finishUploadTransfer(transferId, result);
+      finishUploadTransfer(transferId, connection.id, result);
       return;
     }
 
@@ -2329,7 +2380,7 @@ export function WorkspaceShell() {
         path: uploadPath,
         transferId,
       });
-      finishUploadTransfer(transferId, result);
+      finishUploadTransfer(transferId, connection.id, result);
     } catch (error) {
       failTransfer(transferId, "上传失败", error);
     } finally {
@@ -2377,7 +2428,7 @@ export function WorkspaceShell() {
         stopPulse();
         return previewRemoteFileArchiveUploadResult(remotePath);
       });
-      finishArchiveUploadTransfer(transferId, result);
+      finishArchiveUploadTransfer(transferId, connection.id, result);
       return;
     }
 
@@ -2445,7 +2496,7 @@ export function WorkspaceShell() {
         targetDir: normalizedParentPath,
         transferId,
       }).finally(stopPulse);
-      finishArchiveUploadTransfer(transferId, result);
+      finishArchiveUploadTransfer(transferId, connection.id, result);
     } catch (error) {
       failTransfer(transferId, "目录上传失败", error);
     } finally {
@@ -2455,7 +2506,11 @@ export function WorkspaceShell() {
     }
   }
 
-  function finishUploadTransfer(transferId: string, result: RemoteFileUploadResult) {
+  function finishUploadTransfer(
+    transferId: string,
+    connectionId: string,
+    result: RemoteFileUploadResult,
+  ) {
     updateRemoteFileTransfer(transferId, {
       name: result.name,
       progress: 100,
@@ -2466,10 +2521,14 @@ export function WorkspaceShell() {
       stage: result.skipped ? "已跳过" : "上传完成",
       status: result.skipped ? "skipped" : "success",
     });
-    triggerRemoteFileRefresh(remotePathParent(result.path));
+    triggerRemoteFileRefresh(connectionId, remotePathParent(result.path));
   }
 
-  function finishArchiveUploadTransfer(transferId: string, result: RemoteFileArchiveUploadResult) {
+  function finishArchiveUploadTransfer(
+    transferId: string,
+    connectionId: string,
+    result: RemoteFileArchiveUploadResult,
+  ) {
     updateRemoteFileTransfer(transferId, {
       name: result.name,
       progress: 100,
@@ -2480,7 +2539,7 @@ export function WorkspaceShell() {
       stage: result.skipped ? "已跳过" : "目录上传完成",
       status: result.skipped ? "skipped" : "success",
     });
-    triggerRemoteFileRefresh(remotePathParent(result.path));
+    triggerRemoteFileRefresh(connectionId, remotePathParent(result.path));
   }
 
   function downloadRemoteFile(entry: RemoteFileEntry) {
@@ -2966,26 +3025,120 @@ export function WorkspaceShell() {
     setSelectedCommandHistoryId(null);
   }
 
-  function applyCommandSnippet(snippetId: string) {
-    const snippet = commandSnippets.find((item) => item.id === snippetId);
-    if (!snippet) {
-      return;
-    }
+  function prepareCommandSenderTargets() {
+    void loadCommandLibrary();
+    const availableKeys = commandSenderTargets.map((target) => target.key);
+    const availableKeySet = new Set(availableKeys);
+    const retainedKeys = selectedCommandTargetKeys.filter((key) => availableKeySet.has(key));
+    const nextKeys = retainedKeys.length > 0 ? retainedKeys : availableKeys;
+    const nextKeySet = new Set(nextKeys);
 
+    setSelectedCommandTargetKeys((keys) => {
+      const retainedKeys = keys.filter((key) => availableKeySet.has(key));
+      return retainedKeys.length > 0 ? retainedKeys : availableKeys;
+    });
+
+    return commandSenderTargets.filter((target) => nextKeySet.has(target.key));
+  }
+
+  function openCommandSenderAndPrepareTargets() {
+    setCommandSenderOpen(true);
+    return prepareCommandSenderTargets();
+  }
+
+  function insertCommandSnippet(snippet: CommandSnippet) {
     setCommandSenderInput(snippet.command);
     setSelectedCommandSnippetId(snippet.id);
     setSelectedCommandHistoryId(null);
+    return openCommandSenderAndPrepareTargets();
   }
 
-  function applyCommandHistoryEntry(historyId: string) {
-    const entry = commandHistoryEntries.find((item) => item.id === historyId);
-    if (!entry) {
-      return;
-    }
-
+  function insertCommandHistoryEntry(entry: CommandHistoryEntry) {
     setCommandSenderInput(entry.command);
     setSelectedCommandHistoryId(entry.id);
     setSelectedCommandSnippetId(null);
+    return openCommandSenderAndPrepareTargets();
+  }
+
+  async function runCommandSnippet(snippet: CommandSnippet) {
+    const targets = prepareCommandSenderTargets();
+    if (targets.length === 0) {
+      setCommandSenderLastSentLabel("上次发送：请选择目标后再执行片段");
+      return;
+    }
+    await sendCommandTextToTargets(snippet.command, true, snippet.id, targets, {
+      clearInput: false,
+    });
+  }
+
+  async function runCommandHistoryEntry(entry: CommandHistoryEntry) {
+    const targets = prepareCommandSenderTargets();
+    if (targets.length === 0) {
+      setCommandSenderLastSentLabel("上次发送：请选择目标后再执行历史命令");
+      return;
+    }
+    await sendCommandTextToTargets(entry.command, true, null, targets, {
+      clearInput: false,
+    });
+  }
+
+  function saveHistoryAsSnippet(entry: CommandHistoryEntry) {
+    setCommandSnippetDraft(buildCommandSnippetDraft(entry.command));
+    setCommandSnippetFormError(null);
+    setCommandSnippetDialogOpen(true);
+  }
+
+  async function copyCommandLibraryText(command: string, label: string) {
+    try {
+      await copyText(command);
+      setCommandSenderLastSentLabel(`上次操作：已复制${label}`);
+      setCommandLibraryError(null);
+    } catch (error) {
+      setCommandLibraryError(`复制失败：${formatError(error)}`);
+    }
+  }
+
+  async function recordTerminalInputHistoryCommand(tabId: string, command: string) {
+    if (!settings.command.recordTerminalInputHistory || !hasTauriRuntime()) {
+      return;
+    }
+
+    const scope = commandHistoryScopeForTerminalTab(tabId);
+    try {
+      const historyEntry = await commandHistoryRecord({
+        append_enter: true,
+        command,
+        scopes: scope ? [scope] : [],
+        source: "terminal_input",
+        target_count: 1,
+      });
+      await loadCommandLibrary();
+      setSelectedCommandHistoryId(historyEntry.id);
+      setCommandLibraryError(null);
+      setCommandLibraryUnavailableReason(null);
+    } catch (error) {
+      handleCommandLibraryOperationError(error);
+    }
+  }
+
+  function commandHistoryScopeForTerminalTab(tabId: string): CommandHistoryScope | null {
+    const localTab = localTerminalTabs.find((tab) => tab.id === tabId);
+    if (localTab) {
+      return {
+        scope_kind: "local_profile",
+        scope_id: localTab.profileId,
+      };
+    }
+
+    const sshTab = terminalTabs.find((tab) => tab.id === tabId);
+    if (sshTab) {
+      return {
+        scope_kind: "ssh_connection",
+        scope_id: sshTab.connectionId,
+      };
+    }
+
+    return null;
   }
 
   function clearCommandSenderInput() {
@@ -2994,12 +3147,114 @@ export function WorkspaceShell() {
     setSelectedCommandHistoryId(null);
   }
 
-  function openCommandSnippetDialog(snippet?: CommandSnippet | null) {
+  function openCommandSnippetDialog(snippet?: CommandSnippet | null, defaultGroup?: string) {
     setCommandSnippetDraft(
-      snippet ? commandSnippetToDraft(snippet) : buildCommandSnippetDraft(commandSenderInput),
+      snippet
+        ? commandSnippetToDraft(snippet)
+        : buildCommandSnippetDraft(commandSenderInput, defaultGroup),
     );
     setCommandSnippetFormError(null);
     setCommandSnippetDialogOpen(true);
+  }
+
+  function openCommandSnippetGroupCreateDialog(selectAfterSave = false) {
+    setCommandSnippetGroupDialog({
+      mode: "create",
+      selectAfterSave,
+      value: "",
+    });
+  }
+
+  function openCommandSnippetGroupRenameDialog(groupName: string) {
+    setCommandSnippetGroupDialog({
+      mode: "rename",
+      originalName: normalizeCommandSnippetGroupValue(groupName),
+      value: normalizeCommandSnippetGroupValue(groupName),
+    });
+  }
+
+  async function saveCommandSnippetGroupDialog(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!commandSnippetGroupDialog) {
+      return;
+    }
+
+    const nextGroup = normalizeCommandSnippetGroupValue(commandSnippetGroupDialog.value);
+    const originalGroup = normalizeCommandSnippetGroupValue(commandSnippetGroupDialog.originalName);
+    if (!nextGroup) {
+      setCommandSnippetGroupDialog((state) =>
+        state ? { ...state, error: "请填写分组名称。" } : state,
+      );
+      return;
+    }
+    if (
+      commandSnippetGroups.some(
+        (group) => group === nextGroup && group !== originalGroup,
+      )
+    ) {
+      setCommandSnippetGroupDialog((state) =>
+        state ? { ...state, error: "分组名称已存在。" } : state,
+      );
+      return;
+    }
+
+    if (commandSnippetGroupDialog.mode === "create") {
+      setCommandSnippetLocalGroups((groups) => appendCommandSnippetLocalGroup(groups, nextGroup));
+      if (commandSnippetGroupDialog.selectAfterSave) {
+        setCommandSnippetDraft((draft) => ({ ...draft, group: nextGroup }));
+      }
+      setCommandSnippetGroupDialog(null);
+      return;
+    }
+
+    if (!originalGroup || originalGroup === nextGroup) {
+      setCommandSnippetGroupDialog(null);
+      return;
+    }
+
+    const affectedSnippets = commandSnippets.filter(
+      (snippet) => normalizeCommandSnippetGroupValue(snippet.group) === originalGroup,
+    );
+    try {
+      const savedSnippets = await Promise.all(
+        affectedSnippets.map((snippet) =>
+          commandSnippetUpsert(commandSnippetToInput(snippet, nextGroup)),
+        ),
+      );
+      const affectedIds = new Set(affectedSnippets.map((snippet) => snippet.id));
+      setCommandSnippets((snippets) =>
+        [
+          ...snippets.filter((snippet) => !affectedIds.has(snippet.id)),
+          ...savedSnippets,
+        ].sort(compareCommandSnippets),
+      );
+      setCommandSnippetLocalGroups((groups) =>
+        appendCommandSnippetLocalGroup(
+          groups.filter((group) => group !== originalGroup),
+          nextGroup,
+        ),
+      );
+      setCommandSnippetDraft((draft) =>
+        normalizeCommandSnippetGroupValue(draft.group) === originalGroup
+          ? { ...draft, group: nextGroup }
+          : draft,
+      );
+      setCommandSnippetGroupDialog(null);
+      setCommandLibraryError(null);
+      setCommandLibraryUnavailableReason(null);
+    } catch (error) {
+      if (isCommandLibraryCommandMissingError(error)) {
+        const message = commandLibraryRestartMessage();
+        setCommandLibraryUnavailableReason(message);
+        setCommandSnippetGroupDialog((state) =>
+          state ? { ...state, error: message } : state,
+        );
+      } else {
+        setCommandSnippetGroupDialog((state) =>
+          state ? { ...state, error: formatError(error) } : state,
+        );
+      }
+    }
   }
 
   async function saveCommandSnippetDraft(event: FormEvent<HTMLFormElement>) {
@@ -3021,6 +3276,7 @@ export function WorkspaceShell() {
         command: commandSnippetDraft.command,
         description: commandSnippetDraft.description || null,
         favorite: commandSnippetDraft.favorite,
+        group: normalizeCommandSnippetGroupValue(commandSnippetDraft.group) || null,
         id: commandSnippetDraft.id,
         tags: parseCommandSnippetTags(commandSnippetDraft.tagsText),
         title: commandSnippetDraft.title,
@@ -3032,6 +3288,7 @@ export function WorkspaceShell() {
       setCommandSnippetDraft(commandSnippetToDraft(saved));
       setCommandLibraryError(null);
       setCommandLibraryUnavailableReason(null);
+      setCommandSnippetDialogOpen(false);
     } catch (error) {
       if (isCommandLibraryCommandMissingError(error)) {
         const message = commandLibraryRestartMessage();
@@ -3040,6 +3297,46 @@ export function WorkspaceShell() {
       } else {
         setCommandSnippetFormError(formatError(error));
       }
+    }
+  }
+
+  async function confirmDeleteCommandSnippetGroup() {
+    const groupName = normalizeCommandSnippetGroupValue(pendingCommandSnippetGroupDelete);
+    if (!groupName) {
+      return;
+    }
+
+    const snippetsInGroup = commandSnippets.filter(
+      (snippet) => normalizeCommandSnippetGroupValue(snippet.group) === groupName,
+    );
+
+    try {
+      await Promise.all(
+        snippetsInGroup.map((snippet) =>
+          commandSnippetDelete(snippet.id),
+        ),
+      );
+      const deletedIds = new Set(snippetsInGroup.map((snippet) => snippet.id));
+      setCommandSnippets((snippets) =>
+        snippets.filter((snippet) => !deletedIds.has(snippet.id)),
+      );
+      setCommandSnippetLocalGroups((groups) => groups.filter((group) => group !== groupName));
+      if (selectedCommandSnippetId && deletedIds.has(selectedCommandSnippetId)) {
+        setSelectedCommandSnippetId(null);
+      }
+      if (
+        commandSnippetDraft.id &&
+        deletedIds.has(commandSnippetDraft.id)
+      ) {
+        setCommandSnippetDraft(buildCommandSnippetDraft(commandSenderInput));
+      } else if (normalizeCommandSnippetGroupValue(commandSnippetDraft.group) === groupName) {
+        setCommandSnippetDraft((draft) => ({ ...draft, group: commandSnippetRootGroup }));
+      }
+      setPendingCommandSnippetGroupDelete(null);
+      setCommandLibraryError(null);
+      setCommandLibraryUnavailableReason(null);
+    } catch (error) {
+      handleCommandLibraryOperationError(error);
     }
   }
 
@@ -3114,15 +3411,7 @@ export function WorkspaceShell() {
     setCommandSenderOpen((open) => {
       const nextOpen = !open;
       if (nextOpen) {
-        void loadCommandLibrary();
-        const availableKeys = commandSenderTargets.map((target) => target.key);
-        setSelectedCommandTargetKeys((keys) => {
-          if (keys.length > 0) {
-            const availableKeySet = new Set(availableKeys);
-            return keys.filter((key) => availableKeySet.has(key));
-          }
-          return availableKeys;
-        });
+        prepareCommandSenderTargets();
       }
       return nextOpen;
     });
@@ -3161,22 +3450,34 @@ export function WorkspaceShell() {
   }
 
   function activateCommandSenderTarget(target: CommandSenderTarget) {
+    if (target.kind === "local") {
+      const tab = localTerminalTabs.find((item) => item.id === target.tabId);
+      if (tab) {
+        activateLocalTerminalTab(tab);
+      }
+      return;
+    }
+
     const tab = terminalTabs.find((item) => item.id === target.tabId);
     if (tab) {
       activateTerminalTab(tab);
     }
   }
 
-  async function sendCommandToTargets(appendEnter: boolean) {
-    if (!commandSenderCanSend) {
+  async function sendCommandTextToTargets(
+    command: string,
+    appendEnter: boolean,
+    snippetId: string | null,
+    targetsOverride?: CommandSenderTarget[],
+    options: { clearInput?: boolean } = {},
+  ) {
+    const historyCommand = command.trim();
+    const targets = targetsOverride ?? selectedCommandTargets;
+    if (!historyCommand || targets.length === 0) {
       return;
     }
 
-    const command = commandSenderInput;
-    const historyCommand = command.trim();
-    const snippetId = selectedCommandSnippetId;
     const payload = appendEnter ? `${command}\r` : command;
-    const targets = selectedCommandTargets;
 
     setCommandSenderDeliveryByKey((deliveryByKey) => {
       const nextDeliveryByKey = { ...deliveryByKey };
@@ -3186,7 +3487,7 @@ export function WorkspaceShell() {
       return nextDeliveryByKey;
     });
 
-    const results: boolean[] = [];
+    const successfulTargets: CommandSenderTarget[] = [];
     for (const target of targets) {
       try {
         if (!hasTauriRuntime()) {
@@ -3197,33 +3498,40 @@ export function WorkspaceShell() {
           ...deliveryByKey,
           [target.key]: { status: "sent" },
         }));
-        results.push(true);
+        successfulTargets.push(target);
       } catch (error) {
         setCommandSenderDeliveryByKey((deliveryByKey) => ({
           ...deliveryByKey,
           [target.key]: { message: formatError(error), status: "failed" },
         }));
-        results.push(false);
       }
     }
-    const successCount = results.filter(Boolean).length;
-    const failedCount = results.length - successCount;
+    const successCount = successfulTargets.length;
+    const failedCount = targets.length - successCount;
     setCommandSenderLastSentLabel(
       failedCount > 0
         ? `上次发送：写入 ${successCount.toString()}，失败 ${failedCount.toString()}`
         : `上次发送：已写入 ${successCount.toString()} 个目标`,
     );
-    clearCommandSenderInput();
+    if (options.clearInput ?? true) {
+      clearCommandSenderInput();
+    }
 
     if (successCount > 0 && historyCommand && hasTauriRuntime()) {
       try {
         const historyEntry = await commandHistoryRecord({
           append_enter: appendEnter,
           command: historyCommand,
+          scopes: uniqueCommandHistoryScopes(
+            successfulTargets
+              .map((target) => target.historyScope)
+              .filter((scope): scope is CommandHistoryScope => Boolean(scope)),
+          ),
           source: "command_sender",
           target_count: successCount,
         });
-        setCommandHistoryEntries((entries) => upsertCommandHistoryEntry(entries, historyEntry));
+        await loadCommandLibrary();
+        setSelectedCommandHistoryId(historyEntry.id);
 
         if (snippetId) {
           const snippet = await commandSnippetMarkUsed(snippetId);
@@ -3239,6 +3547,14 @@ export function WorkspaceShell() {
         }
       }
     }
+  }
+
+  async function sendCommandToTargets(appendEnter: boolean) {
+    if (!commandSenderCanSend) {
+      return;
+    }
+
+    await sendCommandTextToTargets(commandSenderInput, appendEnter, selectedCommandSnippetId);
   }
 
   function handleCommandSenderInputKeyDown(event: ReactKeyboardEvent<HTMLTextAreaElement>) {
@@ -3997,7 +4313,7 @@ export function WorkspaceShell() {
     if (side === "left" && leftPaneCollapsed) {
       return;
     }
-    if (side === "right" && (rightPaneCollapsed || !showSessionWorkspace)) {
+    if (side === "right" && (rightPaneCollapsed || !showWorkspaceToolPane)) {
       return;
     }
 
@@ -4005,7 +4321,7 @@ export function WorkspaceShell() {
     const startX = event.clientX;
     const startWidth = side === "left" ? leftPaneWidth : rightPaneWidth;
     const oppositeWidth = side === "left"
-      ? (showSessionWorkspace && !rightPaneCollapsed ? rightPaneWidth : 0)
+      ? (showWorkspaceToolPane && !rightPaneCollapsed ? rightPaneWidth : 0)
       : (leftPaneCollapsed ? 0 : leftPaneWidth);
 
     document.body.style.cursor = "col-resize";
@@ -4088,7 +4404,7 @@ export function WorkspaceShell() {
     const containerWidth = getWorkspaceWidth(workspaceShellRef.current);
 
     if (side === "left") {
-      const oppositeWidth = showSessionWorkspace && !rightPaneCollapsed ? rightPaneWidth : 0;
+      const oppositeWidth = showWorkspaceToolPane && !rightPaneCollapsed ? rightPaneWidth : 0;
       setLeftPaneWidth((width) => clampPaneWidth("left", width + delta, containerWidth, oppositeWidth));
       return;
     }
@@ -4173,6 +4489,214 @@ export function WorkspaceShell() {
     const direction = event.key === "ArrowDown" ? 1 : -1;
     setEditorTerminalSplitPercent((percent) =>
       clampEditorTerminalSplitPercent(percent + (direction * editorTerminalKeyboardResizeStep)),
+    );
+  }
+
+  function renderCommandSenderPanel() {
+    if (!commandSenderOpen) {
+      return null;
+    }
+
+    return (
+      <section className="command-sender-panel" aria-label="命令操作台">
+        <div className="command-sender-console">
+          <header className="command-sender-console-head">
+            <div className="command-sender-title">
+              <span>命令操作台</span>
+            </div>
+            <div className="command-select-row">
+              <AppSelect
+                ariaLabel="发送模式"
+                className="command-toolbar-app-select command-send-mode-select"
+                value="sequential"
+                options={[
+                  {
+                    label: (
+                      <span className="command-select-label">
+                        <Send className="ui-icon" aria-hidden="true" />
+                        <span>逐条发送</span>
+                      </span>
+                    ),
+                    value: "sequential",
+                  },
+                ]}
+                onChange={() => undefined}
+              />
+            </div>
+            <span />
+            <div className="command-sender-head-actions">
+              <span className="command-last-sent">{commandSenderLastSentLabel}</span>
+              <button
+                className="command-console-toggle command-sender-close"
+                type="button"
+                aria-label="关闭命令操作台"
+                onClick={() => setCommandSenderOpen(false)}
+              >
+                <X className="ui-icon" aria-hidden="true" />
+                <span className="command-close-text">关闭</span>
+              </button>
+            </div>
+          </header>
+
+          <div className="command-sender-console-body">
+            <aside className="command-sender-block command-target-pane" aria-label="投递目标">
+              <div className="command-sender-label">
+                <span className="command-target-title">
+                  <span>目标</span>
+                  <span className="command-target-count">
+                    已选 {commandSenderSelectedCount.toString()} / {commandSenderTargets.length.toString()}
+                  </span>
+                </span>
+                <span className="command-target-tools">
+                  <label
+                    className="command-target-select-all"
+                    data-state={
+                      commandSenderAllSelected
+                        ? "checked"
+                        : commandSenderPartiallySelected
+                          ? "mixed"
+                          : "unchecked"
+                    }
+                  >
+                    <input
+                      type="checkbox"
+                      checked={commandSenderAllSelected}
+                      onChange={toggleCommandSenderAllTargets}
+                    />
+                    <span>{commandSenderAllSelected ? "取消全选" : "全选"}</span>
+                  </label>
+                </span>
+              </div>
+
+              <div className="command-target-list">
+                {commandSenderTargets.length === 0 ? (
+                  <p className="command-sender-empty">暂无可写入的终端。</p>
+                ) : (
+                  commandSenderTargets.map((target) => {
+                    const selected = selectedCommandTargetKeySet.has(target.key);
+                    const hasDelivery = target.deliveryStatus !== "idle";
+                    return (
+                      <div
+                        className={`command-target command-sender-target ${
+                          selected ? "selected" : ""
+                        } ${hasDelivery ? "has-delivery" : ""} ${
+                          target.deliveryStatus === "failed" ? "has-failed-delivery" : ""
+                        }`}
+                        data-delivery={target.deliveryStatus}
+                        key={target.connectionId}
+                      >
+                        <label className="command-target-select">
+                          <input
+                            className="command-target-checkbox"
+                            type="checkbox"
+                            checked={selected}
+                            onChange={() => toggleCommandSenderTarget(target)}
+                          />
+                          <span className="command-target-copy">
+                            <strong>{target.label}</strong>
+                            <span>{target.description}</span>
+                          </span>
+                        </label>
+                        <span className="command-target-meta">
+                          <span className="command-target-terminal-shell">
+                            <SquareTerminal className="ui-icon" aria-hidden="true" />
+                            <AppSelect
+                              ariaLabel={`${target.label} 子 tab`}
+                              className="command-target-terminal-select"
+                              menuMinWidth={176}
+                              value={target.tabId}
+                              options={target.tabs.map((tab) => ({
+                                label: tab.label,
+                                value: tab.tabId,
+                              }))}
+                              onChange={(tabId) => selectCommandSenderTargetTab(target, tabId)}
+                            />
+                          </span>
+                          <span className="command-target-state">在线</span>
+                          <button
+                            className={`command-target-delivery command-sender-status ${target.deliveryStatus}`}
+                            type="button"
+                            title={target.deliveryMessage || "点击查看对应终端"}
+                            onClick={() => activateCommandSenderTarget(target)}
+                          >
+                            {commandSenderDeliveryLabel(target.deliveryStatus)}
+                          </button>
+                        </span>
+                      </div>
+                    );
+                  })
+                )}
+              </div>
+            </aside>
+
+            <section className="command-sender-block command-compose-pane" aria-label="命令编辑">
+              <div className="command-compose-label">命令</div>
+              <textarea
+                className="command-input command-sender-input"
+                value={commandSenderInput}
+                placeholder="输入要投递到目标终端的命令"
+                spellCheck={false}
+                onChange={(event) =>
+                  handleCommandSenderInputChange(event.currentTarget.value)
+                }
+                onKeyDown={handleCommandSenderInputKeyDown}
+              />
+              {commandLibraryError ? (
+                <div className="command-library-error" role="status">
+                  {commandLibraryError}
+                </div>
+              ) : null}
+              {commandLibraryUnavailableReason ? (
+                <div className="command-library-notice" role="status">
+                  {commandLibraryUnavailableReason}
+                </div>
+              ) : null}
+              {commandSenderRisky ? (
+                <div className="command-risk-warning command-sender-risk-warning show" role="status">
+                  检测到高风险片段，请确认目标机器和命令内容。
+                </div>
+              ) : null}
+              <div className="command-compose-footer command-sender-actions">
+                <div className="command-send-result">
+                  {commandSenderInput.trim()
+                    ? commandSenderSelectedCount > 0
+                      ? `${commandSenderSelectedCount.toString()} 个目标待发送。`
+                      : "请选择至少一个目标。"
+                    : "等待输入命令。"}
+                </div>
+                <div className="command-actions">
+                  <button
+                    className="primary-button command-sender-primary"
+                    type="button"
+                    disabled={!commandSenderCanSend}
+                    onClick={() => void sendCommandToTargets(true)}
+                  >
+                    <CornerDownLeft className="ui-icon" aria-hidden="true" />
+                    <span>发送并回车</span>
+                  </button>
+                  <button
+                    className="secondary-button command-sender-secondary"
+                    type="button"
+                    disabled={!commandSenderCanSend}
+                    onClick={() => void sendCommandToTargets(false)}
+                  >
+                    发送不回车
+                  </button>
+                  <button
+                    className="secondary-button clear-command-button command-sender-secondary"
+                    type="button"
+                    disabled={!commandSenderInput}
+                    onClick={clearCommandSenderInput}
+                  >
+                    <Trash2 className="ui-icon" aria-hidden="true" />
+                    <span>清空</span>
+                  </button>
+                </div>
+              </div>
+            </section>
+          </div>
+        </div>
+      </section>
     );
   }
 
@@ -4556,6 +5080,11 @@ export function WorkspaceShell() {
                         onSearchCaseSensitiveToggle={toggleTerminalSearchCaseSensitive}
                         onSearchQueryChange={updateTerminalSearchQuery}
                         onStatusChange={updateTabStatus}
+                        onTerminalInputCommand={
+                          settings.command.recordTerminalInputHistory
+                            ? (tabId, command) => void recordTerminalInputHistoryCommand(tabId, command)
+                            : undefined
+                        }
                         onWarmupCaptureReady={stopTerminalWarmupCapture}
                         searchCaseSensitive={Boolean(terminalSearchByTabId[tab.id]?.caseSensitive)}
                         searchNavigationRequest={terminalSearchNavigationRequest}
@@ -4601,88 +5130,6 @@ export function WorkspaceShell() {
                             ]}
                             onChange={() => undefined}
                           />
-                          <div className="command-library-group">
-                            <AppSelect
-                              ariaLabel="命令片段"
-                              className="command-toolbar-app-select command-snippet-select"
-                              disabled={
-                                commandSnippets.length === 0 ||
-                                Boolean(commandLibraryUnavailableReason)
-                              }
-                              menuMinWidth={260}
-                              value={selectedCommandSnippetId || ""}
-                              options={commandSnippetOptions}
-                              onChange={(snippetId) => {
-                                if (snippetId) {
-                                  applyCommandSnippet(snippetId);
-                                }
-                              }}
-                            />
-                            <button
-                              className="command-library-button"
-                              type="button"
-                              aria-label="保存当前命令为片段"
-                              disabled={
-                                !commandSenderInput.trim() ||
-                                Boolean(commandLibraryUnavailableReason)
-                              }
-                              onClick={() => openCommandSnippetDialog(null)}
-                            >
-                              <Plus className="ui-icon" aria-hidden="true" />
-                            </button>
-                            <button
-                              className="command-library-button"
-                              type="button"
-                              aria-label="管理命令片段"
-                              disabled={Boolean(commandLibraryUnavailableReason)}
-                              onClick={() => openCommandSnippetDialog(selectedCommandSnippet)}
-                            >
-                              <Pencil className="ui-icon" aria-hidden="true" />
-                            </button>
-                          </div>
-                          <div className="command-library-group">
-                            <AppSelect
-                              ariaLabel="历史命令"
-                              className="command-toolbar-app-select command-history-select"
-                              disabled={
-                                commandHistoryEntries.length === 0 ||
-                                Boolean(commandLibraryUnavailableReason)
-                              }
-                              menuMinWidth={320}
-                              value={selectedCommandHistoryId || ""}
-                              options={commandHistoryOptions}
-                              onChange={(historyId) => {
-                                if (historyId) {
-                                  applyCommandHistoryEntry(historyId);
-                                }
-                              }}
-                            />
-                            <button
-                              className="command-library-button"
-                              type="button"
-                              aria-label="删除所选历史命令"
-                              disabled={!selectedCommandHistory || Boolean(commandLibraryUnavailableReason)}
-                              onClick={() => {
-                                if (selectedCommandHistory) {
-                                  setPendingCommandHistoryDelete(selectedCommandHistory);
-                                }
-                              }}
-                            >
-                              <Trash2 className="ui-icon" aria-hidden="true" />
-                            </button>
-                            <button
-                              className="command-library-button"
-                              type="button"
-                              aria-label="清空历史命令"
-                              disabled={
-                                commandHistoryEntries.length === 0 ||
-                                Boolean(commandLibraryUnavailableReason)
-                              }
-                              onClick={() => setCommandHistoryClearOpen(true)}
-                            >
-                              <X className="ui-icon" aria-hidden="true" />
-                            </button>
-                          </div>
                         </div>
                         <span />
                         <div className="command-sender-head-actions">
@@ -4731,7 +5178,7 @@ export function WorkspaceShell() {
 
                           <div className="command-target-list">
                             {commandSenderTargets.length === 0 ? (
-                              <p className="command-sender-empty">暂无可写入的 SSH 终端。</p>
+                              <p className="command-sender-empty">暂无可写入的终端。</p>
                             ) : (
                               commandSenderTargets.map((target) => {
                                 const selected = selectedCommandTargetKeySet.has(target.key);
@@ -4862,7 +5309,9 @@ export function WorkspaceShell() {
               </section>
 
               <section
-                className={`terminal-workbench-pane ${showingLocalTerminal ? "" : "is-hidden"}`}
+                className={`terminal-workbench-pane ${commandSenderOpen ? "command-sender-open" : ""} ${
+                  showingLocalTerminal ? "" : "is-hidden"
+                }`}
                 data-terminal-tone={terminalTone}
                 aria-label="本地终端区"
                 aria-hidden={!showingLocalTerminal}
@@ -4962,6 +5411,19 @@ export function WorkspaceShell() {
                         </button>
                       </Tooltip>
                     ) : null}
+                    {commandSenderTargets.length > 0 ? (
+                      <Tooltip label="Command Sender">
+                        <button
+                          className={`add-subtab command-sender-toggle ${commandSenderOpen ? "active" : ""}`}
+                          type="button"
+                          aria-label="打开命令操作台 Command Sender"
+                          aria-expanded={commandSenderOpen}
+                          onClick={openCommandSender}
+                        >
+                          <Send className="ui-icon" aria-hidden="true" />
+                        </button>
+                      </Tooltip>
+                    ) : null}
                     <Tooltip label={rightPaneCollapsed ? "展开右侧面板" : "收起右侧面板"}>
                       <button
                         className="add-subtab terminal-subtab-panel-toggle"
@@ -5007,6 +5469,11 @@ export function WorkspaceShell() {
                           onSearchCaseSensitiveToggle={toggleTerminalSearchCaseSensitive}
                           onSearchQueryChange={updateTerminalSearchQuery}
                           onStatusChange={updateLocalTerminalTabStatus}
+                          onTerminalInputCommand={
+                            settings.command.recordTerminalInputHistory
+                              ? (tabId, command) => void recordTerminalInputHistoryCommand(tabId, command)
+                              : undefined
+                          }
                           onWarmupCaptureReady={stopTerminalWarmupCapture}
                           searchCaseSensitive={Boolean(terminalSearchByTabId[tab.id]?.caseSensitive)}
                           searchNavigationRequest={terminalSearchNavigationRequest}
@@ -5036,12 +5503,13 @@ export function WorkspaceShell() {
                     )
                   )}
                 </section>
+                {showingLocalTerminal ? renderCommandSenderPanel() : null}
               </section>
             </section>
           ) : null}
         </section>
 
-        {showSessionWorkspace && !rightPaneCollapsed ? (
+        {showWorkspaceToolPane && !rightPaneCollapsed ? (
           <div
             className="pane-resizer right-pane-resizer"
             role="separator"
@@ -5057,9 +5525,10 @@ export function WorkspaceShell() {
           />
         ) : null}
 
-        {showSessionWorkspace ? (
+        {showWorkspaceToolPane ? (
           <RemoteFilePanel
             activeTool={rightTool}
+            availableTools={activeWorkspaceMode === "local" ? ["commands"] : undefined}
             connection={remoteFileConnection}
             key={remoteFilePanelKey}
             refreshRequest={remoteFileRefreshRequest}
@@ -5070,6 +5539,38 @@ export function WorkspaceShell() {
               <MonitorPanel
                 active={showSessionWorkspace && !rightPaneCollapsed && rightTool === "monitor"}
                 connection={remoteFileConnection}
+              />
+            }
+            commandPanel={
+              <CommandLibraryPanel
+                activeHistoryId={selectedCommandHistoryId}
+                activeSnippetId={selectedCommandSnippetId}
+                error={commandLibraryError}
+                historyEntries={commandHistoryEntries}
+                historyScopeOptions={commandHistoryScopeOptions}
+                historyScopeValue={commandHistoryScopeKey}
+                loading={commandLibraryLoading}
+                groups={commandSnippetGroups}
+                snippets={commandSnippets}
+                unavailableReason={commandLibraryUnavailableReason}
+                onClearHistory={() => setCommandHistoryClearOpen(true)}
+                onCopyHistory={(entry) => void copyCommandLibraryText(entry.command, "历史命令")}
+                onCopySnippet={(snippet) =>
+                  void copyCommandLibraryText(snippet.command, `片段“${snippet.title}”`)
+                }
+                onCreateGroup={() => openCommandSnippetGroupCreateDialog()}
+                onCreateSnippet={(group) => openCommandSnippetDialog(null, group)}
+                onDeleteGroup={(group) => setPendingCommandSnippetGroupDelete(group)}
+                onDeleteHistory={setPendingCommandHistoryDelete}
+                onDeleteSnippet={setPendingCommandSnippetDelete}
+                onEditSnippet={openCommandSnippetDialog}
+                onHistoryToSnippet={saveHistoryAsSnippet}
+                onHistoryScopeChange={setCommandHistoryScopeKey}
+                onInsertHistory={insertCommandHistoryEntry}
+                onInsertSnippet={insertCommandSnippet}
+                onRenameGroup={openCommandSnippetGroupRenameDialog}
+                onRunHistory={(entry) => void runCommandHistoryEntry(entry)}
+                onRunSnippet={(snippet) => void runCommandSnippet(snippet)}
               />
             }
             tunnelPanel={
@@ -5149,10 +5650,10 @@ export function WorkspaceShell() {
             <header className="command-snippet-dialog-head">
               <div>
                 <Dialog.Title asChild>
-                  <h2>命令片段</h2>
+                  <h2>{commandSnippetDraft.id ? "编辑命令片段" : "保存命令片段"}</h2>
                 </Dialog.Title>
                 <Dialog.Description className="dialog-subtitle">
-                  保存常用命令，并在命令操作台快速回填。
+                  保存后可在右侧命令面板快速复制、插入或发送。
                 </Dialog.Description>
               </div>
               <Dialog.Close asChild>
@@ -5163,60 +5664,35 @@ export function WorkspaceShell() {
             </header>
 
             <div className="command-snippet-dialog-body">
-              <aside className="command-snippet-list-pane" aria-label="命令片段列表">
-                <div className="command-snippet-list-head">
-                  <span>{commandLibraryLoading ? "加载中" : `${commandSnippets.length.toString()} 个片段`}</span>
-                  <button
-                    className="secondary-button command-snippet-new"
-                    type="button"
-                    onClick={() => setCommandSnippetDraft(buildCommandSnippetDraft(""))}
-                  >
-                    <Plus className="ui-icon" aria-hidden="true" />
-                    <span>新建</span>
-                  </button>
-                </div>
-                <div className="command-snippet-list">
-                  {commandSnippets.length === 0 ? (
-                    <p className="command-sender-empty">暂无命令片段。</p>
-                  ) : (
-                    commandSnippets.map((snippet) => (
-                      <div
-                        className={`command-snippet-row ${
-                          commandSnippetDraft.id === snippet.id ? "active" : ""
-                        }`}
-                        key={snippet.id}
-                      >
-                        <button
-                          className="command-snippet-row-main"
-                          type="button"
-                          onClick={() => setCommandSnippetDraft(commandSnippetToDraft(snippet))}
-                        >
-                          <span className="command-snippet-row-title">
-                            {snippet.favorite ? (
-                              <Star className="ui-icon filled" aria-hidden="true" />
-                            ) : null}
-                            <strong>{snippet.title}</strong>
-                          </span>
-                          <span className="command-snippet-row-command">{snippet.command}</span>
-                          <span className="command-snippet-row-meta">
-                            使用 {snippet.use_count.toString()} 次
-                          </span>
-                        </button>
-                        <button
-                          className="command-snippet-row-delete"
-                          type="button"
-                          aria-label={`删除片段 ${snippet.title}`}
-                          onClick={() => setPendingCommandSnippetDelete(snippet)}
-                        >
-                          <Trash2 className="ui-icon" aria-hidden="true" />
-                        </button>
-                      </div>
-                    ))
-                  )}
-                </div>
-              </aside>
-
               <form className="command-snippet-form" onSubmit={(event) => void saveCommandSnippetDraft(event)}>
+                <label className="command-snippet-field">
+                  <span>文件夹</span>
+                  <div className="command-snippet-group-control">
+                    <AppSelect
+                      ariaLabel="命令片段文件夹"
+                      className="command-snippet-group-select"
+                      menuMinWidth={180}
+                      options={commandSnippetGroupOptions}
+                      value={commandSnippetDraft.group}
+                      onChange={(group) =>
+                        setCommandSnippetDraft((draft) => ({
+                          ...draft,
+                          group,
+                        }))
+                      }
+                    />
+                    <Tooltip label="新增分组">
+                      <button
+                        className="command-snippet-group-add"
+                        type="button"
+                        aria-label="新增命令片段分组"
+                        onClick={() => openCommandSnippetGroupCreateDialog(true)}
+                      >
+                        <Plus className="ui-icon" aria-hidden="true" />
+                      </button>
+                    </Tooltip>
+                  </div>
+                </label>
                 <label className="command-snippet-field">
                   <span>标题</span>
                   <input
@@ -5299,6 +5775,73 @@ export function WorkspaceShell() {
         </Dialog.Portal>
       </Dialog.Root>
 
+      <Dialog.Root
+        open={Boolean(commandSnippetGroupDialog)}
+        onOpenChange={(open) => {
+          if (!open) {
+            setCommandSnippetGroupDialog(null);
+          }
+        }}
+      >
+        <Dialog.Portal>
+          <Dialog.Overlay className="dialog-backdrop" />
+          <Dialog.Content
+            className="command-snippet-group-dialog"
+            onInteractOutside={(event) => event.preventDefault()}
+            onPointerDownOutside={(event) => event.preventDefault()}
+          >
+            <header className="command-snippet-dialog-head">
+              <div>
+                <Dialog.Title asChild>
+                  <h2>
+                    {commandSnippetGroupDialog?.mode === "rename"
+                      ? "重命名片段分组"
+                      : "新增片段分组"}
+                  </h2>
+                </Dialog.Title>
+                <Dialog.Description className="dialog-subtitle">
+                  分组只保留一层，用来整理右侧命令片段。
+                </Dialog.Description>
+              </div>
+              <Dialog.Close asChild>
+                <button className="icon-button" type="button" aria-label="关闭片段分组">
+                  <X className="ui-icon" aria-hidden="true" />
+                </button>
+              </Dialog.Close>
+            </header>
+
+            <form className="command-snippet-group-form" onSubmit={(event) => void saveCommandSnippetGroupDialog(event)}>
+              <label className="command-snippet-field">
+                <span>分组名称</span>
+                <input
+                  autoFocus
+                  value={commandSnippetGroupDialog?.value || ""}
+                  onChange={(event) =>
+                    setCommandSnippetGroupDialog((state) =>
+                      state
+                        ? { ...state, error: null, value: event.currentTarget.value }
+                        : state,
+                    )
+                  }
+                />
+              </label>
+              {commandSnippetGroupDialog?.error ? (
+                <p className="command-snippet-form-error">{commandSnippetGroupDialog.error}</p>
+              ) : null}
+              <footer className="command-snippet-form-actions">
+                <Dialog.Close asChild>
+                  <button className="secondary-button" type="button">取消</button>
+                </Dialog.Close>
+                <button className="primary-button" type="submit">
+                  <CheckCircle2 className="ui-icon" aria-hidden="true" />
+                  <span>保存</span>
+                </button>
+              </footer>
+            </form>
+          </Dialog.Content>
+        </Dialog.Portal>
+      </Dialog.Root>
+
       <ConfirmDialog
         confirmLabel="删除"
         description={
@@ -5312,6 +5855,29 @@ export function WorkspaceShell() {
         onOpenChange={(open) => {
           if (!open) {
             setPendingCommandSnippetDelete(null);
+          }
+        }}
+      />
+
+      <ConfirmDialog
+        confirmLabel="删除"
+        description={
+          pendingCommandSnippetGroupDelete
+            ? `将删除“${pendingCommandSnippetGroupDelete}”分组，以及其中 ${commandSnippets
+                .filter(
+                  (snippet) =>
+                    normalizeCommandSnippetGroupValue(snippet.group) ===
+                    normalizeCommandSnippetGroupValue(pendingCommandSnippetGroupDelete),
+                )
+                .length.toString()} 条命令片段。此操作不可撤销。`
+            : ""
+        }
+        open={Boolean(pendingCommandSnippetGroupDelete)}
+        title="删除片段分组"
+        onConfirm={confirmDeleteCommandSnippetGroup}
+        onOpenChange={(open) => {
+          if (!open) {
+            setPendingCommandSnippetGroupDelete(null);
           }
         }}
       />
@@ -5632,6 +6198,7 @@ export function WorkspaceShell() {
           onSaveCredential={saveCredentialFromSettings}
           onUpdateAppearance={updateAppearance}
           onUpdateBasic={updateBasic}
+          onUpdateCommand={updateCommand}
           onUpdateFileTransfer={updateFileTransfer}
           onUpdateLocalTerminal={updateLocalTerminal}
           onUpdateSecurity={updateSecurity}
@@ -7585,12 +8152,16 @@ function toLocalTerminalProfileInput(profile: LocalTerminalProfile): LocalTermin
   };
 }
 
-function buildCommandSnippetDraft(command: string): CommandSnippetDraft {
+function buildCommandSnippetDraft(
+  command: string,
+  group = commandSnippetRootGroup,
+): CommandSnippetDraft {
   const normalizedCommand = command.trim();
   return {
     command: normalizedCommand,
     description: "",
     favorite: false,
+    group: normalizeCommandSnippetGroupValue(group),
     tagsText: "",
     title: commandSnippetTitleFromCommand(normalizedCommand),
   };
@@ -7601,10 +8172,56 @@ function commandSnippetToDraft(snippet: CommandSnippet): CommandSnippetDraft {
     command: snippet.command,
     description: snippet.description || "",
     favorite: snippet.favorite,
+    group: normalizeCommandSnippetGroupValue(snippet.group),
     id: snippet.id,
     tagsText: snippet.tags.join(", "),
     title: snippet.title,
   };
+}
+
+function commandSnippetToInput(snippet: CommandSnippet, group: string) {
+  return {
+    command: snippet.command,
+    description: snippet.description || null,
+    favorite: snippet.favorite,
+    group: normalizeCommandSnippetGroupValue(group) || null,
+    id: snippet.id,
+    tags: snippet.tags,
+    title: snippet.title,
+  };
+}
+
+function normalizeCommandSnippetGroupValue(group?: string | null) {
+  const normalizedGroup = group?.trim() || commandSnippetRootGroup;
+  return normalizedGroup === legacyCommandSnippetGroup ? commandSnippetRootGroup : normalizedGroup;
+}
+
+function buildCommandSnippetGroupCatalog(
+  snippets: CommandSnippet[],
+  localGroups: string[],
+) {
+  const groups = new Set<string>();
+  snippets.forEach((snippet) => {
+    const group = normalizeCommandSnippetGroupValue(snippet.group);
+    if (group) {
+      groups.add(group);
+    }
+  });
+  localGroups.forEach((groupName) => {
+    const group = normalizeCommandSnippetGroupValue(groupName);
+    if (group) {
+      groups.add(group);
+    }
+  });
+  return Array.from(groups).sort((left, right) => left.localeCompare(right, "zh-Hans"));
+}
+
+function appendCommandSnippetLocalGroup(groups: string[], groupName: string) {
+  const normalizedGroup = normalizeCommandSnippetGroupValue(groupName);
+  if (!normalizedGroup || groups.includes(normalizedGroup)) {
+    return groups;
+  }
+  return [...groups, normalizedGroup].sort((left, right) => left.localeCompare(right, "zh-Hans"));
 }
 
 function commandSnippetTitleFromCommand(command: string) {
@@ -7620,26 +8237,6 @@ function parseCommandSnippetTags(value: string) {
     .split(/[,，]/)
     .map((tag) => tag.trim())
     .filter(Boolean);
-}
-
-function commandSnippetSelectLabel(snippet: CommandSnippet) {
-  return (
-    <span className="command-select-label command-library-select-label">
-      {snippet.favorite ? <Star className="ui-icon filled" aria-hidden="true" /> : <List className="ui-icon" aria-hidden="true" />}
-      <span>{snippet.title}</span>
-      <small>{snippet.use_count.toString()}</small>
-    </span>
-  );
-}
-
-function commandHistorySelectLabel(entry: CommandHistoryEntry) {
-  return (
-    <span className="command-select-label command-library-select-label">
-      <Clock3 className="ui-icon" aria-hidden="true" />
-      <span>{truncateCommandLabel(entry.command, 64)}</span>
-      <small>{entry.use_count.toString()}</small>
-    </span>
-  );
 }
 
 function truncateCommandLabel(value: string, maxLength: number) {
@@ -7659,49 +8256,15 @@ function upsertCommandSnippet(
   ].sort(compareCommandSnippets);
 }
 
-function upsertCommandHistoryEntry(
-  entries: CommandHistoryEntry[],
-  entry: CommandHistoryEntry,
-): CommandHistoryEntry[] {
-  return [
-    entry,
-    ...entries.filter((item) => item.id !== entry.id && item.command !== entry.command),
-  ]
-    .sort(compareCommandHistoryEntries)
-    .slice(0, 50);
-}
-
 function compareCommandSnippets(left: CommandSnippet, right: CommandSnippet) {
   if (left.favorite !== right.favorite) {
     return left.favorite ? -1 : 1;
   }
   return (
-    compareTimestampDesc(left.last_used_at, right.last_used_at) ||
-    compareTimestampDesc(left.updated_at, right.updated_at) ||
+    compareCommandLibraryTimestampsDesc(left.last_used_at, right.last_used_at) ||
+    compareCommandLibraryTimestampsDesc(left.updated_at, right.updated_at) ||
     left.title.localeCompare(right.title, "zh-Hans")
   );
-}
-
-function compareCommandHistoryEntries(left: CommandHistoryEntry, right: CommandHistoryEntry) {
-  return compareTimestampDesc(left.last_used_at, right.last_used_at);
-}
-
-function compareTimestampDesc(left?: string | null, right?: string | null) {
-  return timestampSortValue(right) - timestampSortValue(left);
-}
-
-function timestampSortValue(value?: string | null) {
-  if (!value) {
-    return 0;
-  }
-
-  const parsedNumber = Number(value);
-  if (Number.isFinite(parsedNumber)) {
-    return parsedNumber;
-  }
-
-  const parsedDate = Date.parse(value);
-  return Number.isFinite(parsedDate) ? parsedDate : 0;
 }
 
 function commandLibraryRestartMessage() {
@@ -7736,16 +8299,158 @@ function formatConnectionAddress(connection: ConnectionProfile) {
   return `${connection.username}@${connection.host}:${connection.port.toString()}`;
 }
 
+function commandHistoryKeyForScope(scope: CommandHistoryScope | null) {
+  if (!scope) {
+    return commandHistoryAllScopeKey;
+  }
+  return scope.scope_kind === "ssh_connection"
+    ? `${commandHistorySshScopePrefix}${scope.scope_id}`
+    : `${commandHistoryLocalScopePrefix}${scope.scope_id}`;
+}
+
+function commandHistoryScopeFromKey(key: string): CommandHistoryScope | null {
+  if (key.startsWith(commandHistorySshScopePrefix)) {
+    return {
+      scope_kind: "ssh_connection",
+      scope_id: key.slice(commandHistorySshScopePrefix.length),
+    };
+  }
+
+  if (key.startsWith(commandHistoryLocalScopePrefix)) {
+    return {
+      scope_kind: "local_profile",
+      scope_id: key.slice(commandHistoryLocalScopePrefix.length),
+    };
+  }
+
+  return null;
+}
+
+function commandHistoryDefaultScopeKey({
+  activeConnectionId,
+  activeLocalTerminalTab,
+  activeWorkspaceMode,
+}: {
+  activeConnectionId: string | null;
+  activeLocalTerminalTab: LocalTerminalTab | null;
+  activeWorkspaceMode: WorkspaceMode;
+}) {
+  if (activeWorkspaceMode === "local" && activeLocalTerminalTab?.profileId) {
+    return commandHistoryKeyForScope({
+      scope_kind: "local_profile",
+      scope_id: activeLocalTerminalTab.profileId,
+    });
+  }
+
+  if (activeWorkspaceMode === "ssh" && activeConnectionId) {
+    return commandHistoryKeyForScope({
+      scope_kind: "ssh_connection",
+      scope_id: activeConnectionId,
+    });
+  }
+
+  return commandHistoryAllScopeKey;
+}
+
+function buildCommandHistoryScopeOptions({
+  activeConnection,
+  activeLocalTerminalTab,
+  activeWorkspaceMode,
+  connections,
+  defaultScopeKey,
+  localTerminalProfiles,
+}: {
+  activeConnection: ConnectionProfile | null;
+  activeLocalTerminalTab: LocalTerminalTab | null;
+  activeWorkspaceMode: WorkspaceMode;
+  connections: ConnectionProfile[];
+  defaultScopeKey: string;
+  localTerminalProfiles: LocalTerminalProfile[];
+}): CommandHistoryScopeOption[] {
+  const options: CommandHistoryScopeOption[] = [];
+  const seen = new Set<string>();
+
+  const addOption = (option: CommandHistoryScopeOption) => {
+    if (seen.has(option.value)) {
+      return;
+    }
+    seen.add(option.value);
+    options.push(option);
+  };
+
+  if (activeWorkspaceMode === "local" && activeLocalTerminalTab) {
+    const activeProfile = localTerminalProfiles.find(
+      (profile) => profile.id === activeLocalTerminalTab.profileId,
+    );
+    addOption({
+      badge: "本地",
+      label: `当前终端（${activeProfile?.name || activeLocalTerminalTab.title}）`,
+      value: defaultScopeKey,
+    });
+  } else if (activeWorkspaceMode === "ssh" && activeConnection) {
+    addOption({
+      badge: "SSH",
+      label: `当前连接（${activeConnection.name}）`,
+      value: defaultScopeKey,
+    });
+  }
+
+  connections.forEach((connection) => {
+    addOption({
+      badge: "SSH",
+      label: connection.name,
+      value: commandHistoryKeyForScope({
+        scope_kind: "ssh_connection",
+        scope_id: connection.id,
+      }),
+    });
+  });
+
+  localTerminalProfiles
+    .filter((profile) => !profile.hidden || profile.id === activeLocalTerminalTab?.profileId)
+    .forEach((profile) => {
+      addOption({
+        badge: "本地",
+        label: profile.name,
+        value: commandHistoryKeyForScope({
+          scope_kind: "local_profile",
+          scope_id: profile.id,
+        }),
+      });
+    });
+
+  addOption({
+    label: "全部历史",
+    value: commandHistoryAllScopeKey,
+  });
+
+  return options;
+}
+
+function uniqueCommandHistoryScopes(scopes: CommandHistoryScope[]) {
+  const unique = new Map<string, CommandHistoryScope>();
+  scopes.forEach((scope) => {
+    unique.set(commandHistoryKeyForScope(scope), scope);
+  });
+  return Array.from(unique.values());
+}
+
 function buildCommandSenderTargets({
   activeTabByConnectionId,
+  activeLocalTerminalTabId,
   connectionById,
   deliveryByKey,
+  localTerminalProfiles,
+  localTerminalTabs,
   selectedTabByConnectionId,
   terminalTabs,
 }: {
   activeTabByConnectionId: Record<string, string>;
+  activeLocalTerminalTabId: string | null;
   connectionById: Map<string, ConnectionProfile>;
   deliveryByKey: Record<string, { message?: string; status: CommandSenderDeliveryStatus }>;
+  localTerminalProfiles: LocalTerminalProfile[];
+  localTerminalTabs: LocalTerminalTab[];
   selectedTabByConnectionId: Record<string, string>;
   terminalTabs: TerminalTab[];
 }): CommandSenderTarget[] {
@@ -7762,7 +8467,7 @@ function buildCommandSenderTargets({
     tabsByConnection.set(tab.connectionId, tabs);
   });
 
-  return Array.from(tabsByConnection.entries()).map(([connectionId, tabs]) => {
+  const targets = Array.from(tabsByConnection.entries()).map(([connectionId, tabs]) => {
     const selectedTabId =
       selectedTabByConnectionId[connectionId] || activeTabByConnectionId[connectionId];
     const selectedTab = tabs.find((tab) => tab.id === selectedTabId) || tabs[0];
@@ -7779,7 +8484,12 @@ function buildCommandSenderTargets({
         ? `${formatConnectionAddress(connection)} · ${tabCountText}`
         : `当前连接 · ${tabCountText}`,
       key,
+      kind: "ssh" as const,
       label: connection?.name || selectedTab.title,
+      historyScope: {
+        scope_kind: "ssh_connection" as const,
+        scope_id: connectionId,
+      },
       sessionId: selectedTab.sessionId,
       tabId: selectedTab.id,
       tabs: tabs.map((tab) => ({
@@ -7790,6 +8500,50 @@ function buildCommandSenderTargets({
       tabTitle: selectedTab.title,
     };
   });
+
+  const connectedLocalTabs = localTerminalTabs.filter(
+    (tab): tab is LocalTerminalTab & { sessionId: string } => Boolean(tab.sessionId),
+  );
+  if (connectedLocalTabs.length === 0) {
+    return targets;
+  }
+
+  const selectedLocalTabId =
+    selectedTabByConnectionId[localCommandSenderTargetId] || activeLocalTerminalTabId;
+  const selectedLocalTab =
+    connectedLocalTabs.find((tab) => tab.id === selectedLocalTabId) || connectedLocalTabs[0];
+  const profile = localTerminalProfiles.find((item) => item.id === selectedLocalTab.profileId) || null;
+  const key = commandSenderTargetKey(localCommandSenderTargetId, selectedLocalTab.id);
+  const delivery = deliveryByKey[key];
+  const tabCountText =
+    connectedLocalTabs.length > 1
+      ? `${connectedLocalTabs.length.toString()} 个本地 tab`
+      : "1 个本地 tab";
+
+  return [
+    ...targets,
+    {
+      connectionId: localCommandSenderTargetId,
+      deliveryMessage: delivery?.message,
+      deliveryStatus: delivery?.status || "idle",
+      description: `${profile?.name || selectedLocalTab.title} · ${tabCountText}`,
+      key,
+      kind: "local" as const,
+      label: "本地终端",
+      historyScope: {
+        scope_kind: "local_profile" as const,
+        scope_id: selectedLocalTab.profileId,
+      },
+      sessionId: selectedLocalTab.sessionId,
+      tabId: selectedLocalTab.id,
+      tabs: connectedLocalTabs.map((tab) => ({
+        label: tab.title,
+        sessionId: tab.sessionId,
+        tabId: tab.id,
+      })),
+      tabTitle: selectedLocalTab.title,
+    },
+  ];
 }
 
 function commandSenderTargetKey(connectionId: string, tabId: string) {

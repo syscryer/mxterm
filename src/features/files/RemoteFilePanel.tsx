@@ -13,6 +13,7 @@ import {
   Folder,
   FolderPlus,
   Info,
+  ListTree,
   Network,
   PanelRightClose,
   Pencil,
@@ -47,7 +48,7 @@ import {
 } from "./remoteFilePaths";
 import type { RemoteFileEntry } from "./remoteFileTypes";
 
-export type RemoteFileTool = "files" | "transfers" | "monitor" | "tunnels";
+export type RemoteFileTool = "files" | "transfers" | "monitor" | "tunnels" | "commands";
 
 export interface RemoteFileUploadItem {
   file: File;
@@ -56,6 +57,7 @@ export interface RemoteFileUploadItem {
 
 interface RemoteFilePanelProps {
   activeTool: RemoteFileTool;
+  availableTools?: RemoteFileTool[];
   connection: ConnectionProfile | null;
   refreshRequest?: RemoteFileRefreshRequest | null;
   transferAttention?: boolean;
@@ -63,6 +65,7 @@ interface RemoteFilePanelProps {
   transferPanel?: ReactNode;
   nativeDropTargetPath?: string | null;
   monitorPanel?: ReactNode;
+  commandPanel?: ReactNode;
   onCopyPath?: (path: string) => void;
   onCreateDirectory?: (parentPath: string) => void;
   onCreateFile?: (parentPath: string) => void;
@@ -81,6 +84,7 @@ interface RemoteFilePanelProps {
 }
 
 interface RemoteFileRefreshRequest {
+  connectionId: string;
   id: number;
   path: string;
 }
@@ -132,9 +136,11 @@ const previewDirectoryEntries: Record<string, RemoteFileEntry[]> = {
 
 const defaultRemotePath = "/";
 const loadingIndicatorDelayMs = 180;
+const defaultRemoteFileTools: RemoteFileTool[] = ["files", "transfers", "monitor", "tunnels", "commands"];
 
 export function RemoteFilePanel({
   activeTool,
+  availableTools,
   connection,
   refreshRequest,
   transferAttention = false,
@@ -142,6 +148,7 @@ export function RemoteFilePanel({
   transferPanel,
   nativeDropTargetPath = null,
   monitorPanel,
+  commandPanel,
   onCopyPath,
   onCreateDirectory,
   onCreateFile,
@@ -172,6 +179,8 @@ export function RemoteFilePanel({
   const [error, setError] = useState<string | null>(null);
   const loadingIndicatorTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const connectionLoadScopeRef = useRef(0);
+  const directoryLoadRequestRef = useRef(0);
+  const directoryEntriesRef = useRef<Record<string, RemoteFileEntry[]>>({});
 
   const entries = useMemo(
     () => visibleEntries(directoryEntries[currentPath] || [], showHidden),
@@ -184,6 +193,8 @@ export function RemoteFilePanel({
 
   useEffect(() => {
     connectionLoadScopeRef.current += 1;
+    directoryLoadRequestRef.current += 1;
+    directoryEntriesRef.current = {};
     setDirectoryEntries({});
     setExpandedDirectories({});
     setLocatedDirectoryPath(null);
@@ -193,6 +204,7 @@ export function RemoteFilePanel({
     setActiveDirectoryPath(defaultRemotePath);
     setLoadingPath(null);
     setVisibleLoadingPath(null);
+    setError(null);
     clearLoadingIndicatorTimer();
   }, [connection?.id]);
 
@@ -201,11 +213,11 @@ export function RemoteFilePanel({
   }, [connection?.id, currentPath]);
 
   useEffect(() => {
-    if (!refreshRequest || !connection) {
+    if (!refreshRequest || !connection || refreshRequest.connectionId !== connection.id) {
       return;
     }
     void loadDirectory(refreshRequest.path, true);
-  }, [connection?.id, refreshRequest?.id, refreshRequest?.path]);
+  }, [connection?.id, refreshRequest?.connectionId, refreshRequest?.id, refreshRequest?.path]);
 
   useEffect(
     () => () => {
@@ -218,26 +230,31 @@ export function RemoteFilePanel({
   const showCurrentPathLoading = visibleLoadingPath === currentPath;
   const disabled = !connection;
   const effectiveDropTargetPath = dropTargetPath || nativeDropTargetPath;
+  const visibleTools = availableTools?.length ? availableTools : defaultRemoteFileTools;
+  const effectiveActiveTool = visibleTools.includes(activeTool) ? activeTool : visibleTools[0] || "commands";
 
   return (
     <aside className="tool-pane" aria-label="右侧工具面板">
       <FilePanelTabs
-        activeTool={activeTool}
+        activeTool={effectiveActiveTool}
+        availableTools={visibleTools}
         transferAttention={transferAttention}
         transferCount={transferCount}
         onToolChange={onToolChange}
         onToggleRightPane={onToggleRightPane}
       />
-      {activeTool === "transfers" ? (
+      {effectiveActiveTool === "transfers" ? (
         <div className="transfer-tool-body">
           {transferPanel || <p className="file-panel-empty">还没有传输任务。</p>}
         </div>
-      ) : activeTool === "monitor" ? (
+      ) : effectiveActiveTool === "monitor" ? (
         <div className="monitor-tool-body">
           {monitorPanel || <p className="file-panel-empty">打开一个 SSH 会话后显示监控。</p>}
         </div>
-      ) : activeTool === "tunnels" ? (
+      ) : effectiveActiveTool === "tunnels" ? (
         tunnelPanel || <p className="file-panel-empty">还没有隧道规则。</p>
+      ) : effectiveActiveTool === "commands" ? (
+        commandPanel || <p className="file-panel-empty">还没有命令片段。</p>
       ) : (
         <FilePanelShell
           disabled={disabled}
@@ -356,17 +373,23 @@ export function RemoteFilePanel({
 
   async function loadDirectory(path: string, force = false) {
     const normalizedPath = normalizeRemotePath(path);
-    if (!connection || (!force && directoryEntries[normalizedPath])) {
+    if (!connection) {
+      return;
+    }
+    if (!force && directoryEntriesRef.current[normalizedPath]) {
+      setError(null);
       return;
     }
 
     const requestLoadScope = connectionLoadScopeRef.current;
+    const requestId = directoryLoadRequestRef.current + 1;
+    directoryLoadRequestRef.current = requestId;
     clearLoadingIndicatorTimer();
     setLoadingPath(normalizedPath);
     setVisibleLoadingPath(null);
     setError(null);
     loadingIndicatorTimerRef.current = setTimeout(() => {
-      if (connectionLoadScopeRef.current !== requestLoadScope) {
+      if (!isLatestDirectoryLoadRequest(requestLoadScope, requestId)) {
         return;
       }
       setVisibleLoadingPath((current) => current ?? normalizedPath);
@@ -381,23 +404,34 @@ export function RemoteFilePanel({
         return;
       }
 
-      setDirectoryEntries((current) => ({
-        ...current,
-        [normalizedPath]: sortRemoteFileEntries(nextEntries),
-      }));
+      setDirectoryEntries((current) => {
+        const next = {
+          ...current,
+          [normalizedPath]: sortRemoteFileEntries(nextEntries),
+        };
+        directoryEntriesRef.current = next;
+        return next;
+      });
+      if (isLatestDirectoryLoadRequest(requestLoadScope, requestId)) {
+        setError(null);
+      }
     } catch (error) {
-      if (connectionLoadScopeRef.current !== requestLoadScope) {
+      if (!isLatestDirectoryLoadRequest(requestLoadScope, requestId)) {
         return;
       }
       setError(formatError(error));
     } finally {
-      if (connectionLoadScopeRef.current !== requestLoadScope) {
+      if (!isLatestDirectoryLoadRequest(requestLoadScope, requestId)) {
         return;
       }
       clearLoadingIndicatorTimer();
       setLoadingPath((path) => (path === normalizedPath ? null : path));
       setVisibleLoadingPath((path) => (path === normalizedPath ? null : path));
     }
+  }
+
+  function isLatestDirectoryLoadRequest(scope: number, requestId: number) {
+    return connectionLoadScopeRef.current === scope && directoryLoadRequestRef.current === requestId;
   }
 
   async function loadRevealPath(paths: string[]) {
@@ -720,12 +754,14 @@ export function RemoteFilePanel({
 
 function FilePanelTabs({
   activeTool,
+  availableTools,
   transferAttention,
   transferCount,
   onToolChange,
   onToggleRightPane,
 }: {
   activeTool: RemoteFileTool;
+  availableTools: RemoteFileTool[];
   transferAttention: boolean;
   transferCount: number;
   onToolChange?: (tool: RemoteFileTool) => void;
@@ -733,27 +769,41 @@ function FilePanelTabs({
 }) {
   return (
     <nav className="tool-tabs" aria-label="工具标签">
-      <button className={activeTool === "files" ? "active" : ""} type="button" onClick={() => onToolChange?.("files")}>
-        <Folder className="ui-icon" aria-hidden="true" />
-        文件
-      </button>
-      <button
-        className={`${activeTool === "transfers" ? "active" : ""} ${transferAttention ? "attention" : ""}`}
-        type="button"
-        onClick={() => onToolChange?.("transfers")}
-      >
-        <Upload className="ui-icon" aria-hidden="true" />
-        传输
-        {transferCount > 0 ? <span className="tool-tab-badge">{transferCount.toString()}</span> : null}
-      </button>
-      <button className={activeTool === "monitor" ? "active" : ""} type="button" onClick={() => onToolChange?.("monitor")}>
-        <Activity className="ui-icon" aria-hidden="true" />
-        监控
-      </button>
-      <button className={activeTool === "tunnels" ? "active" : ""} type="button" onClick={() => onToolChange?.("tunnels")}>
-        <Network className="ui-icon" aria-hidden="true" />
-        隧道
-      </button>
+      {availableTools.includes("files") ? (
+        <button className={activeTool === "files" ? "active" : ""} type="button" onClick={() => onToolChange?.("files")}>
+          <Folder className="ui-icon" aria-hidden="true" />
+          文件
+        </button>
+      ) : null}
+      {availableTools.includes("transfers") ? (
+        <button
+          className={`${activeTool === "transfers" ? "active" : ""} ${transferAttention ? "attention" : ""}`}
+          type="button"
+          onClick={() => onToolChange?.("transfers")}
+        >
+          <Upload className="ui-icon" aria-hidden="true" />
+          传输
+          {transferCount > 0 ? <span className="tool-tab-badge">{transferCount.toString()}</span> : null}
+        </button>
+      ) : null}
+      {availableTools.includes("monitor") ? (
+        <button className={activeTool === "monitor" ? "active" : ""} type="button" onClick={() => onToolChange?.("monitor")}>
+          <Activity className="ui-icon" aria-hidden="true" />
+          监控
+        </button>
+      ) : null}
+      {availableTools.includes("tunnels") ? (
+        <button className={activeTool === "tunnels" ? "active" : ""} type="button" onClick={() => onToolChange?.("tunnels")}>
+          <Network className="ui-icon" aria-hidden="true" />
+          隧道
+        </button>
+      ) : null}
+      {availableTools.includes("commands") ? (
+        <button className={activeTool === "commands" ? "active" : ""} type="button" onClick={() => onToolChange?.("commands")}>
+          <ListTree className="ui-icon" aria-hidden="true" />
+          命令
+        </button>
+      ) : null}
       {onToggleRightPane ? (
         <Tooltip label="收起右侧面板">
           <button

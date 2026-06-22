@@ -96,9 +96,14 @@ export interface ShortcutSettings {
   bindings: Record<string, string | null>;
 }
 
+export interface CommandSettings {
+  recordTerminalInputHistory: boolean;
+}
+
 export interface MxtermSettings {
   appearance: AppearanceSettings;
   basic: BasicSettings;
+  command: CommandSettings;
   fileTransfer: FileTransferSettings;
   localTerminal: LocalTerminalSettings;
   security: SecuritySettings;
@@ -223,6 +228,9 @@ export const defaultSettings: MxtermSettings = {
   shortcuts: {
     bindings: { ...defaultShortcutBindings },
   },
+  command: {
+    recordTerminalInputHistory: false,
+  },
   appearance: {
     accentColor: "blue",
     accentColorCustom: "#2374C6",
@@ -250,6 +258,7 @@ export function normalizeSettings(value: unknown): MxtermSettings {
   const basic = isRecord(record.basic) ? record.basic : {};
   const fileTransfer = isRecord(record.fileTransfer) ? record.fileTransfer : {};
   const localTerminal = isRecord(record.localTerminal) ? record.localTerminal : {};
+  const command = isRecord(record.command) ? record.command : {};
   const security = isRecord(record.security) ? record.security : {};
   const shortcuts = isRecord(record.shortcuts) ? record.shortcuts : {};
   const appearance = isRecord(record.appearance) ? record.appearance : {};
@@ -321,6 +330,12 @@ export function normalizeSettings(value: unknown): MxtermSettings {
       reopenLastLocalWorkspace: normalizeBoolean(
         localTerminal.reopenLastLocalWorkspace,
         defaultSettings.localTerminal.reopenLastLocalWorkspace,
+      ),
+    },
+    command: {
+      recordTerminalInputHistory: normalizeBoolean(
+        command.recordTerminalInputHistory,
+        defaultSettings.command.recordTerminalInputHistory,
       ),
     },
     security: {

@@ -178,6 +178,14 @@ Ant Design, Mantine, or similar libraries just to fix one modal or button.
   owns the path input, toolbar actions, blank-area context menu, and blank-area
   drag/drop upload target. Expanding or locating a directory should update the
   active directory without forcing the tree root to navigate into that child.
+- Remote file directory loads may overlap during startup, refresh handoff, and
+  locate actions. Keep a current entries ref in sync with state, and do not let
+  a stale non-forced auto-load failure display a global error after another
+  concurrent request has already populated that same path. Forced refresh
+  failures should still surface because they represent the user's latest
+  explicit action. Refresh handoff payloads must be scoped by connection id, and
+  `RemoteFilePanel` must ignore refresh requests from any connection other than
+  the one it is currently rendering.
 - Remote file icons must be local UI, not network-loaded assets. Keep file and
   folder type mapping in `src/features/files/remoteFileIcons.ts`, render icons
   as local SVG/component markup in `RemoteFilePanel`, and run
@@ -192,10 +200,13 @@ Ant Design, Mantine, or similar libraries just to fix one modal or button.
   request-matched output into the tab's `warmupOutput` buffer for a short
   grace period. Stopping the listener immediately after `terminalConnect`
   resolves can drop the remote shell banner or prompt before the mounted xterm
-  listener is ready, leaving newly added terminals blank. Stop the warmup
-  capture as soon as the mounted `TerminalPanel` reports that its output
-  listener is ready; otherwise the same late bytes can be written once through
-  the live listener and again through `warmupOutput`.
+  listener is ready, leaving newly added terminals blank. During the brief
+  startup buffer, the mounted `TerminalPanel` must ignore live
+  `initialRequestId` output so those bytes have a single owner: the warmup
+  `initialOutput` path. Stop warmup capture only after both conditions are true:
+  the startup buffer has flushed and the mounted output listener is ready;
+  otherwise the same late bytes can be written once through the live listener
+  and again through `warmupOutput`.
 - SSH and local terminals may share `terminal:output` events, but their runtime
   tab stores are separate. Late handoff output for a local terminal must append
   to `localTerminalTabs`, not the SSH `terminalTabs` store; otherwise the shell
@@ -305,10 +316,17 @@ Ant Design, Mantine, or similar libraries just to fix one modal or button.
   target terminal input stream; it must not claim remote command execution
   success, inspect remote output as proof, store session ids on
   `ConnectionProfile`, or log full command payloads.
-- Command Sender snippets and history are assistance around active sends only.
-  History may record a command after at least one `terminalWrite` target
-  succeeds, but it must not listen to ordinary xterm input, parse shell history,
-  record passwords/TUI keystrokes, or store target session ids / connection ids.
+- Command Sender snippets and history are assistance around terminal input
+  streams. Active sends may record history after at least one `terminalWrite`
+  target succeeds. Optional terminal input history must default to disabled and
+  may only record successful Enter-submitted printable lines after conservative
+  filtering; it must not parse shell history, inject shell hooks, record
+  passwords/TUI keystrokes, or store target session ids / connection ids.
+- Command history filtering should use persisted scope metadata, not runtime tab
+  ids. SSH history scopes are connection ids, local terminal scopes are profile
+  ids. The right-pane history view may show a flat scope selector, but the
+  terminal-input recording switch belongs in Settings so it remains a global
+  behavior rather than a per-pane toggle.
 - Command Sender's terminal-subtab toolbar entry should live in the far-right
   terminal action group alongside the right-pane open/close button. Keep future
   terminal-level utility buttons in the same action group instead of using

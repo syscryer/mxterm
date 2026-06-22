@@ -1253,7 +1253,7 @@
       min-width: 0;
       min-height: 0;
       display: grid;
-      grid-template-rows: 34px 42px 38px minmax(0, 1fr);
+      grid-template-rows: 34px minmax(0, 1fr);
       border-left: 1px solid var(--mx-line);
       background: var(--mx-panel-soft);
     }
@@ -1319,6 +1319,677 @@
       overflow: auto;
       padding: 6px;
       background: var(--mx-panel-soft);
+    }
+
+    .tool-tab-strip {
+      min-width: 0;
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      padding: 0 8px;
+      overflow: hidden;
+    }
+
+    .tool-tab-strip .file-panel-tab {
+      padding: 0 8px;
+      font-size: 12px;
+    }
+
+    .tool-tab-strip .file-panel-tab.active {
+      font-weight: 700;
+    }
+
+    .tool-pane-spacer {
+      flex: 1 1 auto;
+      min-width: 10px;
+    }
+
+    .command-library-pane {
+      min-width: 0;
+      min-height: 0;
+      display: grid;
+      grid-template-rows: auto auto minmax(0, 1fr) auto;
+      background: var(--mx-panel-soft);
+    }
+
+    .command-library-head {
+      min-width: 0;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      align-items: center;
+      gap: 8px;
+      padding: 10px 10px 8px;
+      border-bottom: 1px solid var(--mx-line-soft);
+      background: linear-gradient(180deg, #fbfcfe, #f7f9fc);
+    }
+
+    .command-library-title {
+      min-width: 0;
+      display: grid;
+      gap: 3px;
+    }
+
+    .command-library-title strong {
+      color: var(--mx-text);
+      font-size: 13px;
+      font-weight: 700;
+    }
+
+    .command-library-title span {
+      color: var(--mx-subtle);
+      font-size: 11px;
+      line-height: 1.35;
+    }
+
+    .command-library-segments {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      padding: 4px;
+      border: 1px solid var(--mx-line);
+      border-radius: 9px;
+      background: rgba(255, 255, 255, 0.86);
+    }
+
+    .command-segment {
+      height: 28px;
+      border: 0;
+      border-radius: 7px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      padding: 0 12px;
+      color: var(--mx-muted);
+      background: transparent;
+      font-size: 12px;
+      font-weight: 650;
+    }
+
+    .command-segment.active,
+    .command-segment:hover {
+      color: var(--mx-text);
+      background: rgba(148, 163, 184, 0.14);
+    }
+
+    .command-library-search-row {
+      min-width: 0;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 10px;
+      border-bottom: 1px solid var(--mx-line-soft);
+      background: var(--mx-panel-soft);
+    }
+
+    .command-library-search {
+      min-width: 0;
+      height: 30px;
+      border: 1px solid var(--mx-line);
+      border-radius: 8px;
+      display: grid;
+      grid-template-columns: 14px minmax(0, 1fr);
+      align-items: center;
+      gap: 7px;
+      padding: 0 9px;
+      color: var(--mx-muted);
+      background: rgba(255, 255, 255, 0.9);
+    }
+
+    .command-library-search input {
+      min-width: 0;
+      border: 0;
+      padding: 0;
+      color: var(--mx-text);
+      background: transparent;
+      font-size: 12px;
+    }
+
+    .command-library-search input:focus {
+      outline: none;
+    }
+
+    .command-library-result-meta {
+      color: var(--mx-subtle);
+      font-size: 11px;
+      font-weight: 600;
+      white-space: nowrap;
+    }
+
+    .command-library-body {
+      min-width: 0;
+      min-height: 0;
+      overflow: auto;
+      padding: 10px;
+      display: grid;
+      align-content: start;
+      gap: 10px;
+      background: var(--mx-panel-soft);
+    }
+
+    .command-group {
+      min-width: 0;
+      display: grid;
+      gap: 7px;
+    }
+
+    .command-group-head {
+      min-width: 0;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      padding: 0 2px;
+    }
+
+    .command-group-head strong {
+      color: var(--mx-text);
+      font-size: 12px;
+      font-weight: 700;
+    }
+
+    .command-group-head span {
+      color: var(--mx-subtle);
+      font-size: 11px;
+      font-weight: 600;
+    }
+
+    .command-library-list {
+      display: grid;
+      gap: 7px;
+    }
+
+    .command-snippet-filter {
+      min-width: 0;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      overflow-x: auto;
+      padding: 0 1px 2px;
+    }
+
+    .command-filter-chip,
+    .command-group-choice {
+      height: 26px;
+      border: 1px solid var(--mx-line);
+      border-radius: 999px;
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      padding: 0 9px;
+      color: var(--mx-muted);
+      background: rgba(255, 255, 255, 0.86);
+      font-size: 11px;
+      font-weight: 650;
+      white-space: nowrap;
+    }
+
+    .command-filter-chip.active,
+    .command-group-choice.active {
+      border-color: rgba(37, 99, 235, 0.2);
+      color: #1d4ed8;
+      background: rgba(37, 99, 235, 0.075);
+    }
+
+    .command-item {
+      min-width: 0;
+      border: 1px solid var(--mx-line-soft);
+      border-radius: 8px;
+      display: grid;
+      gap: 8px;
+      padding: 9px;
+      background: rgba(255, 255, 255, 0.92);
+    }
+
+    .command-item:hover {
+      border-color: var(--mx-line);
+      background: #ffffff;
+    }
+
+    .command-item-title {
+      min-width: 0;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .command-item-title strong {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      color: var(--mx-text);
+      font-size: 12px;
+      font-weight: 700;
+    }
+
+    .command-item-badge {
+      height: 18px;
+      border-radius: 999px;
+      display: inline-flex;
+      align-items: center;
+      padding: 0 6px;
+      color: var(--mx-primary);
+      background: rgba(37, 99, 235, 0.1);
+      font-size: 10px;
+      font-weight: 700;
+    }
+
+    .command-item-note {
+      color: var(--mx-subtle);
+      font-size: 11px;
+      line-height: 1.45;
+    }
+
+    .command-item-code {
+      margin: 0;
+      border: 1px solid rgba(226, 232, 240, 0.7);
+      border-radius: 7px;
+      padding: 7px 8px;
+      color: #1f2937;
+      background: #f8fafc;
+      font-family: var(--font-mono);
+      font-size: 11px;
+      line-height: 1.5;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+
+    .command-item-meta {
+      min-width: 0;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      color: var(--mx-subtle);
+      font-size: 11px;
+      line-height: 1.35;
+      flex-wrap: wrap;
+    }
+
+    .command-item-actions {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .command-history-list {
+      border-top: 1px solid var(--mx-line-soft);
+      border-bottom: 1px solid var(--mx-line-soft);
+      display: grid;
+      background: rgba(255, 255, 255, 0.72);
+    }
+
+    .command-history-row {
+      min-width: 0;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 2px 8px 8px;
+      border-bottom: 1px solid var(--mx-line-soft);
+    }
+
+    .command-history-row:last-child {
+      border-bottom: 0;
+    }
+
+    .command-history-row:hover {
+      background: rgba(15, 23, 42, 0.035);
+    }
+
+    .command-history-main {
+      min-width: 0;
+      display: grid;
+      gap: 4px;
+    }
+
+    .command-history-code {
+      min-width: 0;
+      overflow: hidden;
+      color: #1f2937;
+      font-family: var(--font-mono);
+      font-size: 12px;
+      line-height: 1.45;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .command-history-meta {
+      min-width: 0;
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      color: var(--mx-subtle);
+      font-size: 11px;
+      line-height: 1.3;
+      white-space: nowrap;
+    }
+
+    .command-history-actions {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      padding-right: 4px;
+    }
+
+    .command-history-actions .command-mini-button {
+      height: 24px;
+      padding: 0 7px;
+      font-size: 11px;
+    }
+
+    .command-mini-button {
+      height: 28px;
+      border: 1px solid var(--mx-line);
+      border-radius: 7px;
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      padding: 0 9px;
+      color: var(--mx-muted);
+      background: rgba(255, 255, 255, 0.92);
+      font-size: 12px;
+      font-weight: 650;
+    }
+
+    .command-mini-button:hover {
+      color: var(--mx-text);
+      background: #ffffff;
+    }
+
+    .command-mini-button.primary {
+      border-color: rgba(37, 99, 235, 0.16);
+      color: #1d4ed8;
+      background: rgba(37, 99, 235, 0.075);
+    }
+
+    .command-mini-button.primary:hover {
+      border-color: rgba(37, 99, 235, 0.24);
+      background: rgba(37, 99, 235, 0.11);
+    }
+
+    .command-library-footer {
+      min-width: 0;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      padding: 10px;
+      border-top: 1px solid var(--mx-line-soft);
+      background: linear-gradient(180deg, rgba(248, 250, 252, 0.85), #fbfcfe);
+    }
+
+    .command-library-footer-status {
+      color: var(--mx-subtle);
+      font-size: 11px;
+      line-height: 1.35;
+    }
+
+    .command-library-footer-actions {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .command-library-empty {
+      min-height: 180px;
+      border: 1px dashed var(--mx-line);
+      border-radius: 9px;
+      display: grid;
+      place-items: center;
+      padding: 18px;
+      color: var(--mx-subtle);
+      background: rgba(255, 255, 255, 0.62);
+      text-align: center;
+      font-size: 12px;
+      line-height: 1.55;
+    }
+
+    .command-dialog-backdrop {
+      position: fixed;
+      inset: 0;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      padding: 28px;
+      background: rgba(15, 23, 42, 0.18);
+      backdrop-filter: blur(5px);
+    }
+
+    .command-dialog-backdrop.open {
+      display: flex;
+    }
+
+    .command-dialog {
+      width: min(720px, calc(100vw - 56px));
+      max-height: min(740px, calc(100vh - 56px));
+      border: 1px solid var(--mx-line);
+      border-radius: 12px;
+      display: grid;
+      grid-template-rows: auto minmax(0, 1fr) auto;
+      overflow: hidden;
+      background: rgba(255, 255, 255, 0.96);
+      box-shadow: 0 18px 40px rgba(15, 23, 42, 0.16);
+    }
+
+    .command-dialog-head,
+    .command-dialog-foot {
+      min-width: 0;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      padding: 14px 16px;
+      background: #fbfcfe;
+    }
+
+    .command-dialog-head {
+      border-bottom: 1px solid var(--mx-line-soft);
+    }
+
+    .command-dialog-foot {
+      border-top: 1px solid var(--mx-line-soft);
+    }
+
+    .command-dialog-head strong {
+      color: var(--mx-text);
+      font-size: 16px;
+      font-weight: 720;
+    }
+
+    .command-dialog-title-area {
+      min-width: 0;
+      display: grid;
+      gap: 8px;
+    }
+
+    .command-dialog-tabs {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      padding: 3px;
+      border: 1px solid var(--mx-line-soft);
+      border-radius: 8px;
+      background: rgba(248, 250, 252, 0.9);
+    }
+
+    .command-dialog-tab {
+      height: 24px;
+      border: 0;
+      border-radius: 6px;
+      padding: 0 10px;
+      color: var(--mx-muted);
+      background: transparent;
+      font-size: 12px;
+      font-weight: 650;
+    }
+
+    .command-dialog-tab.active,
+    .command-dialog-tab:hover {
+      color: var(--mx-text);
+      background: rgba(148, 163, 184, 0.14);
+    }
+
+    .command-dialog-body {
+      min-width: 0;
+      min-height: 0;
+      overflow: auto;
+      padding: 16px;
+      display: grid;
+      gap: 14px;
+      background: #ffffff;
+    }
+
+    .command-manager-body {
+      padding: 0;
+      gap: 0;
+    }
+
+    .command-dialog-panel {
+      min-width: 0;
+      display: grid;
+      gap: 14px;
+      padding: 16px;
+    }
+
+    .command-dialog-panel[hidden] {
+      display: none;
+    }
+
+    .command-form-row {
+      display: grid;
+      gap: 7px;
+    }
+
+    .command-form-row label {
+      color: var(--mx-text);
+      font-size: 12px;
+      font-weight: 700;
+    }
+
+    .command-form-row input,
+    .command-form-row textarea,
+    .command-form-row select {
+      width: 100%;
+      min-width: 0;
+      border: 1px solid var(--mx-line);
+      border-radius: 8px;
+      padding: 0 10px;
+      color: var(--mx-text);
+      background: #ffffff;
+      font-size: 13px;
+    }
+
+    .command-form-row input,
+    .command-form-row select {
+      height: 36px;
+    }
+
+    .command-form-row textarea {
+      min-height: 110px;
+      padding-top: 9px;
+      padding-bottom: 9px;
+      resize: vertical;
+      font-family: var(--font-mono);
+      line-height: 1.55;
+    }
+
+    .command-form-help {
+      color: var(--mx-subtle);
+      font-size: 11px;
+      line-height: 1.45;
+    }
+
+    .command-form-group-pills {
+      min-width: 0;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+    }
+
+    .command-group-manager {
+      display: grid;
+      gap: 12px;
+    }
+
+    .command-group-editor {
+      min-width: 0;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto auto;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .command-group-editor input {
+      height: 34px;
+      border: 1px solid var(--mx-line);
+      border-radius: 8px;
+      padding: 0 10px;
+      color: var(--mx-text);
+      background: #ffffff;
+      font-size: 13px;
+    }
+
+    .command-group-manager-list {
+      border: 1px solid var(--mx-line-soft);
+      border-radius: 9px;
+      display: grid;
+      overflow: hidden;
+      background: rgba(248, 250, 252, 0.78);
+    }
+
+    .command-group-manager-row {
+      min-width: 0;
+      display: grid;
+      grid-template-columns: 22px minmax(0, 1fr) auto auto;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 9px;
+      border-bottom: 1px solid var(--mx-line-soft);
+      background: rgba(255, 255, 255, 0.82);
+    }
+
+    .command-group-manager-row:last-child {
+      border-bottom: 0;
+    }
+
+    .command-group-grip {
+      color: var(--mx-subtle);
+      font-family: var(--font-mono);
+      font-size: 12px;
+    }
+
+    .command-group-manager-name {
+      min-width: 0;
+      overflow: hidden;
+      color: var(--mx-text);
+      font-size: 13px;
+      font-weight: 700;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .command-group-manager-count {
+      color: var(--mx-subtle);
+      font-size: 11px;
+      white-space: nowrap;
+    }
+
+    .command-group-manager-actions {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+    }
+
+    .command-group-manager-actions .command-mini-button {
+      height: 24px;
+      padding: 0 7px;
+      font-size: 11px;
+    }
+
+    .command-dialog-foot .primary-button,
+    .command-dialog-foot .secondary-button {
+      min-width: 84px;
     }
 
     .empty-workspace {
@@ -1996,6 +2667,9 @@
             <button class="terminal-tool-button" id="commandSenderToggle" type="button" aria-label="命令发送器" title="命令发送器" aria-pressed="false" aria-controls="commandSenderPanel">
               <svg class="ui-icon" viewBox="0 0 16 16"><path d="M2.8 4.2h10.4v7.6H2.8z"/><path d="m5 6.5 1.7 1.5L5 9.5"/><path d="M8.4 9.5h2.8"/></svg>
             </button>
+            <button class="terminal-tool-button active" id="commandLibraryToggle" type="button" aria-label="命令库" title="命令库" aria-pressed="true" aria-controls="commandLibraryPane">
+              <svg class="ui-icon" viewBox="0 0 16 16"><path d="M3.4 3.2h3.1v9.6H3.4z"/><path d="M6.8 3.2h5.8v9.6H6.8z"/><path d="M8.6 5.3h2.2M8.6 8h2.7M8.6 10.7h2"/></svg>
+            </button>
           </nav>
 
           <section class="terminal-preview" aria-label="终端预览">
@@ -2402,67 +3076,128 @@ SSH 认证中...</pre>
         </section>
       </section>
 
-      <aside class="right-file-pane" aria-label="远程文件">
+      <aside class="right-file-pane" aria-label="右侧工具面板">
         <header class="file-panel-tabs">
-          <button class="file-panel-tab active" type="button">
-            <svg class="ui-icon" viewBox="0 0 16 16"><path d="M2.8 4.5h4l1.1 1.4h5.3v7H2.8z"/></svg>
-            <span>文件</span>
-          </button>
-          <button class="right-collapse-button" type="button" aria-label="收起右侧文件面板">
-            <svg class="ui-icon" viewBox="0 0 16 16"><rect x="3.3" y="3.4" width="9.4" height="9.2" rx="1.5"/><path d="M9.8 3.6v8.8"/></svg>
-          </button>
+          <div class="tool-tab-strip" aria-label="右侧工具">
+            <button class="file-panel-tab" type="button" data-tool-tab="files">
+              <svg class="ui-icon" viewBox="0 0 16 16"><path d="M2.8 4.5h4l1.1 1.4h5.3v7H2.8z"/></svg>
+              <span>文件</span>
+            </button>
+            <button class="file-panel-tab" type="button" data-tool-tab="transfers">
+              <svg class="ui-icon" viewBox="0 0 16 16"><path d="M8 2.8v7.7"/><path d="m5.6 7.8 2.4 2.7 2.4-2.7"/><path d="M3.4 12.5h9.2"/></svg>
+              <span>传输</span>
+            </button>
+            <button class="file-panel-tab" type="button" data-tool-tab="monitor">
+              <svg class="ui-icon" viewBox="0 0 16 16"><path d="M2.8 11.8h10.4"/><path d="M4.3 9.2 6.1 7l1.7 1.6 3-3.6"/></svg>
+              <span>监控</span>
+            </button>
+            <button class="file-panel-tab" type="button" data-tool-tab="tunnels">
+              <svg class="ui-icon" viewBox="0 0 16 16"><path d="M5.1 5.2a2.3 2.3 0 1 0 0 5.6"/><path d="M10.9 5.2a2.3 2.3 0 1 1 0 5.6"/><path d="M5.9 8h4.2"/></svg>
+              <span>隧道</span>
+            </button>
+            <button class="file-panel-tab active" type="button" data-tool-tab="command">
+              <svg class="ui-icon" viewBox="0 0 16 16"><path d="M2.8 4.2h10.4v7.6H2.8z"/><path d="m5 6.5 1.7 1.5L5 9.5"/><path d="M8.4 9.5h2.8"/></svg>
+              <span>命令</span>
+            </button>
+            <span class="tool-pane-spacer"></span>
+            <button class="right-collapse-button" type="button" aria-label="收起右侧工具面板">
+              <svg class="ui-icon" viewBox="0 0 16 16"><rect x="3.3" y="3.4" width="9.4" height="9.2" rx="1.5"/><path d="M9.8 3.6v8.8"/></svg>
+            </button>
+          </div>
         </header>
 
-        <div class="file-path-row">
-          <input class="file-path-input" aria-label="远程路径" value="/" readonly>
-        </div>
+        <section class="command-library-pane" id="commandLibraryPane" aria-label="命令">
+          <div class="command-library-head">
+            <div class="command-library-title">
+              <strong>命令</strong>
+              <span>右侧收纳片段与主动发送历史，保持终端左侧连接区干净。</span>
+            </div>
+            <div class="command-library-segments" aria-label="命令视图切换">
+              <button class="command-segment active" type="button" data-command-mode="snippets">片段</button>
+              <button class="command-segment" type="button" data-command-mode="history">历史</button>
+            </div>
+          </div>
 
-        <div class="file-panel-actions" aria-label="文件操作">
-          <button class="mini-action" type="button" aria-label="定位到终端目录">
-            <svg class="ui-icon" viewBox="0 0 16 16"><path d="M8 2.8v2"/><path d="M8 11.2v2"/><path d="M2.8 8h2"/><path d="M11.2 8h2"/><circle cx="8" cy="8" r="3.2"/></svg>
-          </button>
-          <button class="mini-action" type="button" aria-label="显示隐藏文件">
-            <svg class="ui-icon" viewBox="0 0 16 16"><path d="M2.5 8s2-3.5 5.5-3.5S13.5 8 13.5 8s-2 3.5-5.5 3.5S2.5 8 2.5 8z"/><circle cx="8" cy="8" r="1.6"/></svg>
-          </button>
-          <button class="mini-action" type="button" aria-label="收起目录">
-            <svg class="ui-icon" viewBox="0 0 16 16"><path d="m5 9 3-3 3 3"/><path d="m5 12 3-3 3 3"/></svg>
-          </button>
-          <span style="flex: 1"></span>
-          <button class="mini-action" type="button" aria-label="刷新文件列表">
-            <svg class="ui-icon" viewBox="0 0 16 16"><path d="M13 8a5 5 0 1 1-1.45-3.55"/><path d="M13 3.7v3.2H9.8"/></svg>
-          </button>
-        </div>
+          <div class="command-library-search-row">
+            <label class="command-library-search" aria-label="搜索命令">
+              <svg class="ui-icon" viewBox="0 0 16 16"><circle cx="7" cy="7" r="4"/><path d="m10 10 3 3"/></svg>
+              <input id="commandLibrarySearchInput" placeholder="搜索标题、命令或备注" spellcheck="false">
+            </label>
+            <span class="command-library-result-meta" id="commandLibraryResultMeta">3 条片段</span>
+          </div>
 
-        <section class="file-tree" aria-label="远程文件树">
-          <button class="tree-folder-row">
-            <svg class="ui-icon" viewBox="0 0 16 16"><path d="M2.8 4.5h4l1.1 1.4h5.3v7H2.8z"/></svg>
-            <span>bin.usr-is-merged</span>
-            <span class="count">dir</span>
-          </button>
-          <button class="tree-folder-row">
-            <svg class="ui-icon" viewBox="0 0 16 16"><path d="M2.8 4.5h4l1.1 1.4h5.3v7H2.8z"/></svg>
-            <span>boot</span>
-            <span class="count">dir</span>
-          </button>
-          <button class="tree-folder-row">
-            <svg class="ui-icon" viewBox="0 0 16 16"><path d="M2.8 4.5h4l1.1 1.4h5.3v7H2.8z"/></svg>
-            <span>etc</span>
-            <span class="count">dir</span>
-          </button>
-          <button class="file-row">
-            <svg class="ui-icon" viewBox="0 0 16 16"><path d="M4.2 2.8h5.4l2.2 2.2v8.2H4.2z"/><path d="M9.5 2.9v2.3h2.3"/></svg>
-            <span>README</span>
-            <span class="count">file</span>
-          </button>
+          <div class="command-library-body" id="commandLibraryBody"></div>
+
+          <div class="command-library-footer">
+            <span class="command-library-footer-status" id="commandLibraryFooterStatus">插入会写入下方命令操作台，执行会直接模拟投递到当前终端。</span>
+            <div class="command-library-footer-actions">
+              <button class="command-mini-button" id="commandManageButton" type="button">管理</button>
+              <button class="command-mini-button primary" id="commandNewSnippetButton" type="button">新建片段</button>
+            </div>
+          </div>
         </section>
       </aside>
     </main>
   </div>
+  <div class="command-dialog-backdrop" id="commandDialogBackdrop" aria-hidden="true">
+    <section class="command-dialog" role="dialog" aria-modal="true" aria-labelledby="commandDialogTitle">
+      <div class="command-dialog-head">
+        <div class="command-dialog-title-area">
+          <strong id="commandDialogTitle">新建命令片段</strong>
+          <div class="command-dialog-tabs" aria-label="命令管理类型">
+            <button class="command-dialog-tab active" type="button" data-command-dialog-mode="snippet">片段</button>
+            <button class="command-dialog-tab" type="button" data-command-dialog-mode="groups">分组</button>
+          </div>
+        </div>
+        <button class="command-mini-button" id="commandDialogCloseButton" type="button">关闭</button>
+      </div>
+      <div class="command-dialog-body command-manager-body">
+        <section class="command-dialog-panel" id="commandSnippetFormPanel">
+          <div class="command-form-row">
+            <label>分组</label>
+            <div class="command-form-group-pills" id="commandSnippetGroupChoices"></div>
+            <input id="commandSnippetGroupInput" type="hidden">
+          </div>
+          <div class="command-form-row">
+            <label for="commandSnippetTitleInput">名称 *</label>
+            <input id="commandSnippetTitleInput" placeholder="例如：查看集群 Pod">
+          </div>
+          <div class="command-form-row">
+            <label for="commandSnippetCommandInput">命令 *</label>
+            <textarea id="commandSnippetCommandInput" placeholder="输入命令内容"></textarea>
+            <span class="command-form-help">这里先按纯文本片段处理，不引入变量模板。</span>
+          </div>
+          <div class="command-form-row">
+            <label for="commandSnippetNoteInput">备注</label>
+            <textarea id="commandSnippetNoteInput" placeholder="记录用途、环境或执行前提醒"></textarea>
+          </div>
+        </section>
+
+        <section class="command-dialog-panel" id="commandGroupPanel" hidden>
+          <div class="command-group-manager">
+            <div class="command-group-editor">
+              <input id="commandGroupNameInput" placeholder="输入分组名称">
+              <button class="command-mini-button primary" id="commandGroupSaveButton" type="button">新建分组</button>
+              <button class="command-mini-button" id="commandGroupCancelButton" type="button">取消</button>
+            </div>
+            <div class="command-group-manager-list" id="commandGroupList"></div>
+            <span class="command-form-help">删除分组只会把片段移动到未分组，不会删除片段本身。</span>
+          </div>
+        </section>
+      </div>
+      <div class="command-dialog-foot">
+        <button class="secondary-button" id="commandDialogCancelButton" type="button">取消</button>
+        <button class="primary-button" id="commandDialogSaveButton" type="button">保存</button>
+      </div>
+    </section>
+  </div>
   <script>
     const commandSenderToggle = document.getElementById("commandSenderToggle");
+    const commandLibraryToggle = document.getElementById("commandLibraryToggle");
     const commandSenderPanelToggle = document.getElementById("commandSenderPanelToggle");
     const commandSenderPanel = document.getElementById("commandSenderPanel");
     const sessionTabs = Array.from(document.querySelectorAll(".session-tab[data-session-target]"));
+    const rightToolTabs = Array.from(document.querySelectorAll("[data-tool-tab]"));
     const terminalOutput = document.getElementById("terminalOutput");
     const commandTargetCheckboxes = Array.from(document.querySelectorAll(".command-target-checkbox"));
     const commandTargetTerminalSelects = Array.from(document.querySelectorAll(".command-target-terminal"));
@@ -2481,9 +3216,104 @@ SSH 认证中...</pre>
     const syncInputToggleLabel = document.getElementById("syncInputToggleLabel");
     const syncInputBanner = document.getElementById("syncInputBanner");
     const syncInputBannerText = document.getElementById("syncInputBannerText");
+    const commandModeButtons = Array.from(document.querySelectorAll("[data-command-mode]"));
+    const commandLibrarySearchInput = document.getElementById("commandLibrarySearchInput");
+    const commandLibraryBody = document.getElementById("commandLibraryBody");
+    const commandLibraryResultMeta = document.getElementById("commandLibraryResultMeta");
+    const commandLibraryFooterStatus = document.getElementById("commandLibraryFooterStatus");
+    const commandManageButton = document.getElementById("commandManageButton");
+    const commandNewSnippetButton = document.getElementById("commandNewSnippetButton");
+    const commandDialogBackdrop = document.getElementById("commandDialogBackdrop");
+    const commandDialogTitle = document.getElementById("commandDialogTitle");
+    const commandDialogCloseButton = document.getElementById("commandDialogCloseButton");
+    const commandDialogCancelButton = document.getElementById("commandDialogCancelButton");
+    const commandDialogSaveButton = document.getElementById("commandDialogSaveButton");
+    const commandDialogModeButtons = Array.from(document.querySelectorAll("[data-command-dialog-mode]"));
+    const commandSnippetFormPanel = document.getElementById("commandSnippetFormPanel");
+    const commandGroupPanel = document.getElementById("commandGroupPanel");
+    const commandSnippetGroupChoices = document.getElementById("commandSnippetGroupChoices");
+    const commandSnippetGroupInput = document.getElementById("commandSnippetGroupInput");
+    const commandSnippetTitleInput = document.getElementById("commandSnippetTitleInput");
+    const commandSnippetCommandInput = document.getElementById("commandSnippetCommandInput");
+    const commandSnippetNoteInput = document.getElementById("commandSnippetNoteInput");
+    const commandGroupNameInput = document.getElementById("commandGroupNameInput");
+    const commandGroupSaveButton = document.getElementById("commandGroupSaveButton");
+    const commandGroupCancelButton = document.getElementById("commandGroupCancelButton");
+    const commandGroupList = document.getElementById("commandGroupList");
     let syncInputEnabled = false;
     let sendCount = 0;
     let activeSessionTarget = "192.168.10.75[Harbor] / 终端 2";
+    let activeCommandMode = "snippets";
+    let activeSnippetGroup = "all";
+    let activeDialogMode = "snippet";
+    let editingSnippetId = null;
+    let editingGroupName = null;
+    let footerStatusOverride = "";
+
+    function minutesAgo(minutes) {
+      return new Date(Date.now() - minutes * 60 * 1000).toISOString();
+    }
+
+    let commandSnippetGroups = [
+      { name: "常用巡检" },
+      { name: "K8s" },
+      { name: "日志" },
+    ];
+
+    let commandSnippets = [
+      {
+        id: "snippet-1",
+        group: "常用巡检",
+        title: "查看磁盘与负载",
+        command: "uptime && df -h",
+        note: "适合先看整机压力与磁盘使用。",
+        favorite: true,
+        useCount: 18,
+        lastUsedAt: minutesAgo(42),
+        updatedAt: minutesAgo(42),
+      },
+      {
+        id: "snippet-2",
+        group: "K8s",
+        title: "查看全部 Pod",
+        command: "kubectl get pods -A -o wide",
+        note: "排查集群状态时常用。",
+        favorite: false,
+        useCount: 9,
+        lastUsedAt: minutesAgo(170),
+        updatedAt: minutesAgo(170),
+      },
+      {
+        id: "snippet-3",
+        group: "日志",
+        title: "追踪 Nginx 错误日志",
+        command: "tail -n 120 /var/log/nginx/error.log",
+        note: "快速确认最近一轮错误。",
+        favorite: false,
+        useCount: 5,
+        lastUsedAt: minutesAgo(420),
+        updatedAt: minutesAgo(420),
+      },
+    ];
+
+    let commandHistory = [
+      {
+        id: "history-1",
+        command: "systemctl status nginx",
+        note: "最近从 Harbor 终端发送",
+        useCount: 6,
+        lastUsedAt: minutesAgo(18),
+        sourceLabel: "主动发送",
+      },
+      {
+        id: "history-2",
+        command: "journalctl -u docker --since '10 min ago'",
+        note: "最近从 App-01 shell 发送",
+        useCount: 2,
+        lastUsedAt: minutesAgo(95),
+        sourceLabel: "主动发送",
+      },
+    ];
 
     const terminalOutputByTarget = {
       "192.168.10.75[Harbor] / 终端 2": "连接 root@192.168.10.75:22 ...\n\n正在建立 SSH TCP 连接...\n\nSSH TCP 已连接。\n\nSSH 认证中...",
@@ -2491,6 +3321,556 @@ SSH 认证中...</pre>
       "192.168.10.70 / 终端": "root@192.168.10.70:~#\n最近输出：uptime && df -h\n等待新的批量命令...",
       "App-01 / shell": "deploy@203.0.113.70:~#\n会话已断开，命令无法写入。\n请重新连接后再发送。",
     };
+
+    const terminalPromptByTarget = {
+      "192.168.10.75[Harbor] / 终端 2": "root@192.168.10.75:~#",
+      "192.168.10.75[Harbor] / 终端": "root@192.168.10.75:~#",
+      "192.168.10.70 / 终端": "root@192.168.10.70:~#",
+      "App-01 / shell": "deploy@203.0.113.70:~#",
+    };
+
+    function escapeHtml(value) {
+      return String(value)
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;")
+        .replaceAll("\"", "&quot;")
+        .replaceAll("'", "&#39;");
+    }
+
+    function parseTime(value) {
+      const time = Date.parse(value || "");
+      return Number.isFinite(time) ? time : 0;
+    }
+
+    function formatDateTime(value) {
+      if (!value) {
+        return "未使用";
+      }
+      return new Date(value).toLocaleString("zh-CN", {
+        month: "2-digit",
+        day: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit",
+        hour12: false,
+      });
+    }
+
+    function deriveSnippetTitle(command) {
+      const firstLine = command.split(/\r?\n/).find((line) => line.trim()) || "未命名片段";
+      return firstLine.trim().slice(0, 32);
+    }
+
+    function normalizeSnippetGroupName(value) {
+      return value.trim() || "未分组";
+    }
+
+    function orderedSnippetGroups(includeUngrouped = true) {
+      const ordered = commandSnippetGroups.map((group) => group.name);
+      commandSnippets.forEach((snippet) => {
+        const groupName = normalizeSnippetGroupName(snippet.group || "");
+        if (groupName !== "未分组" && !ordered.includes(groupName)) {
+          ordered.push(groupName);
+        }
+      });
+      if (includeUngrouped && !ordered.includes("未分组")) {
+        ordered.push("未分组");
+      }
+      return ordered;
+    }
+
+    function snippetCountByGroup(groupName, snippets = commandSnippets) {
+      return snippets.filter((snippet) => normalizeSnippetGroupName(snippet.group || "") === groupName).length;
+    }
+
+    function ensureActiveSnippetGroup() {
+      if (activeSnippetGroup === "all") {
+        return;
+      }
+      if (!orderedSnippetGroups(true).includes(activeSnippetGroup)) {
+        activeSnippetGroup = "all";
+      }
+    }
+
+    function setSnippetFormGroup(groupName) {
+      const normalized = normalizeSnippetGroupName(groupName || "");
+      commandSnippetGroupInput.value = normalized;
+      renderSnippetGroupChoices(normalized);
+    }
+
+    function renderSnippetGroupChoices(selectedGroup = commandSnippetGroupInput.value || "未分组") {
+      const selected = normalizeSnippetGroupName(selectedGroup || "");
+      commandSnippetGroupInput.value = selected;
+      commandSnippetGroupChoices.innerHTML = orderedSnippetGroups(true)
+        .map((groupName) => `
+          <button class="command-group-choice ${groupName === selected ? "active" : ""}" type="button" data-snippet-form-group="${escapeHtml(groupName)}">
+            ${escapeHtml(groupName)}
+          </button>
+        `)
+        .join("");
+    }
+
+    function renderSnippetFilters(snippetsAfterSearch) {
+      const groups = orderedSnippetGroups(true);
+      const allCount = snippetsAfterSearch.length;
+      const groupButtons = groups
+        .map((groupName) => {
+          const count = snippetCountByGroup(groupName, snippetsAfterSearch);
+          return `
+            <button class="command-filter-chip ${activeSnippetGroup === groupName ? "active" : ""}" type="button" data-snippet-filter="${escapeHtml(groupName)}">
+              <span>${escapeHtml(groupName)}</span>
+              <span>${count}</span>
+            </button>
+          `;
+        })
+        .join("");
+      return `
+        <div class="command-snippet-filter" aria-label="片段分组筛选">
+          <button class="command-filter-chip ${activeSnippetGroup === "all" ? "active" : ""}" type="button" data-snippet-filter="all">
+            <span>全部</span>
+            <span>${allCount}</span>
+          </button>
+          ${groupButtons}
+        </div>
+      `;
+    }
+
+    function compareSnippets(left, right) {
+      if (left.favorite !== right.favorite) {
+        return left.favorite ? -1 : 1;
+      }
+      return parseTime(right.lastUsedAt || right.updatedAt) - parseTime(left.lastUsedAt || left.updatedAt);
+    }
+
+    function compareHistory(left, right) {
+      return parseTime(right.lastUsedAt) - parseTime(left.lastUsedAt);
+    }
+
+    function setFooterStatus(message, duration = 0) {
+      footerStatusOverride = message;
+      renderCommandLibraryFooterStatus();
+      if (duration > 0) {
+        window.clearTimeout(setFooterStatus.timer);
+        setFooterStatus.timer = window.setTimeout(() => {
+          footerStatusOverride = "";
+          renderCommandLibraryFooterStatus();
+        }, duration);
+      }
+    }
+
+    function renderCommandLibraryFooterStatus() {
+      if (footerStatusOverride) {
+        commandLibraryFooterStatus.textContent = footerStatusOverride;
+        return;
+      }
+      commandLibraryFooterStatus.textContent = activeCommandMode === "snippets"
+        ? "插入会写入下方命令操作台，执行会直接模拟投递到当前终端。"
+        : "历史来自命令面板执行或命令操作台成功发送，不监听普通终端输入。";
+    }
+
+    function commandSearchQuery() {
+      return commandLibrarySearchInput.value.trim().toLowerCase();
+    }
+
+    function snippetMatchesQuery(item, query) {
+      if (!query) {
+        return true;
+      }
+      return [item.group, item.title, item.command, item.note]
+        .filter(Boolean)
+        .some((field) => field.toLowerCase().includes(query));
+    }
+
+    function historyMatchesQuery(item, query) {
+      if (!query) {
+        return true;
+      }
+      return [item.command, item.note, item.sourceLabel]
+        .filter(Boolean)
+        .some((field) => field.toLowerCase().includes(query));
+    }
+
+    function groupedSnippets(snippets) {
+      const groups = new Map();
+      snippets.forEach((item) => {
+        const group = item.group || "未分组";
+        if (!groups.has(group)) {
+          groups.set(group, []);
+        }
+        groups.get(group).push(item);
+      });
+      return Array.from(groups.entries());
+    }
+
+    function renderSnippetItem(item) {
+      return `
+        <article class="command-item">
+          <div class="command-item-title">
+            <strong title="${escapeHtml(item.title)}">${escapeHtml(item.title)}</strong>
+            ${item.favorite ? '<span class="command-item-badge">常用</span>' : ""}
+          </div>
+          <div class="command-item-note">${escapeHtml(item.note || "未填写备注")}</div>
+          <pre class="command-item-code">${escapeHtml(item.command)}</pre>
+          <div class="command-item-meta">
+            <span>使用 ${item.useCount} 次</span>
+            <span>最近 ${escapeHtml(formatDateTime(item.lastUsedAt || item.updatedAt))}</span>
+          </div>
+          <div class="command-item-actions">
+            <button class="command-mini-button" type="button" data-command-action="insert-snippet" data-command-id="${item.id}">插入</button>
+            <button class="command-mini-button primary" type="button" data-command-action="run-snippet" data-command-id="${item.id}">执行</button>
+            <button class="command-mini-button" type="button" data-command-action="edit-snippet" data-command-id="${item.id}">编辑</button>
+          </div>
+        </article>
+      `;
+    }
+
+    function renderHistoryItem(item) {
+      return `
+        <article class="command-history-row">
+          <div class="command-history-main">
+            <code class="command-history-code" title="${escapeHtml(item.command)}">${escapeHtml(item.command)}</code>
+            <div class="command-history-meta">
+              <span>${escapeHtml(item.sourceLabel)}</span>
+              <span>发送 ${item.useCount} 次</span>
+              <span>${escapeHtml(formatDateTime(item.lastUsedAt))}</span>
+            </div>
+          </div>
+          <div class="command-history-actions">
+            <button class="command-mini-button" type="button" data-command-action="insert-history" data-command-id="${item.id}">插入</button>
+            <button class="command-mini-button primary" type="button" data-command-action="run-history" data-command-id="${item.id}">执行</button>
+            <button class="command-mini-button" type="button" data-command-action="history-to-snippet" data-command-id="${item.id}">存为片段</button>
+          </div>
+        </article>
+      `;
+    }
+
+    function renderCommandLibrary() {
+      const query = commandSearchQuery();
+      commandModeButtons.forEach((button) => {
+        button.classList.toggle("active", button.dataset.commandMode === activeCommandMode);
+      });
+
+      if (activeCommandMode === "snippets") {
+        ensureActiveSnippetGroup();
+        const snippetsAfterSearch = [...commandSnippets]
+          .sort(compareSnippets)
+          .filter((item) => snippetMatchesQuery(item, query));
+        const snippets = activeSnippetGroup === "all"
+          ? snippetsAfterSearch
+          : snippetsAfterSearch.filter((item) => normalizeSnippetGroupName(item.group || "") === activeSnippetGroup);
+        const snippetFilters = renderSnippetFilters(snippetsAfterSearch);
+        commandLibraryResultMeta.textContent = activeSnippetGroup === "all"
+          ? `${snippets.length} 条片段`
+          : `${activeSnippetGroup} · ${snippets.length} 条`;
+
+        if (snippets.length === 0) {
+          commandLibraryBody.innerHTML = `${snippetFilters}<div class="command-library-empty">没有匹配到片段。<br>可以直接新建一个常用命令片段。</div>`;
+          renderCommandLibraryFooterStatus();
+          return;
+        }
+
+        commandLibraryBody.innerHTML = snippetFilters + groupedSnippets(snippets)
+          .map(([group, items]) => `
+            <section class="command-group">
+              <div class="command-group-head">
+                <strong>${escapeHtml(group)}</strong>
+                <span>${items.length} 条</span>
+              </div>
+              <div class="command-library-list">
+                ${items.map(renderSnippetItem).join("")}
+              </div>
+            </section>
+          `)
+          .join("");
+      } else {
+        const history = [...commandHistory]
+          .sort(compareHistory)
+          .filter((item) => historyMatchesQuery(item, query));
+        commandLibraryResultMeta.textContent = `${history.length} 条历史`;
+
+        if (history.length === 0) {
+          commandLibraryBody.innerHTML = '<div class="command-library-empty">还没有主动发送历史。<br>执行片段或通过命令操作台发送后，这里会出现记录。</div>';
+          renderCommandLibraryFooterStatus();
+          return;
+        }
+
+        commandLibraryBody.innerHTML = `
+          <section class="command-group">
+            <div class="command-group-head">
+              <strong>最近发送</strong>
+              <span>仅主动发送</span>
+            </div>
+            <div class="command-history-list">
+              ${history.map(renderHistoryItem).join("")}
+            </div>
+          </section>
+        `;
+      }
+
+      renderCommandLibraryFooterStatus();
+    }
+
+    function setCommandDialogMode(mode) {
+      activeDialogMode = mode;
+      const isSnippetMode = mode === "snippet";
+      commandDialogModeButtons.forEach((button) => {
+        button.classList.toggle("active", button.dataset.commandDialogMode === mode);
+      });
+      commandSnippetFormPanel.hidden = !isSnippetMode;
+      commandGroupPanel.hidden = isSnippetMode;
+      commandDialogSaveButton.hidden = !isSnippetMode;
+      commandDialogTitle.textContent = isSnippetMode
+        ? (editingSnippetId ? "编辑命令片段" : "新建命令片段")
+        : "管理片段分组";
+      if (!isSnippetMode) {
+        renderGroupManager();
+        commandGroupNameInput.focus();
+      }
+    }
+
+    function resetGroupEditor() {
+      editingGroupName = null;
+      commandGroupNameInput.value = "";
+      commandGroupSaveButton.textContent = "新建分组";
+      commandGroupCancelButton.hidden = true;
+    }
+
+    function renderGroupManager() {
+      const groups = orderedSnippetGroups(true);
+      commandGroupList.innerHTML = groups
+        .map((groupName, index) => {
+          const isUngrouped = groupName === "未分组";
+          const managedIndex = commandSnippetGroups.findIndex((group) => group.name === groupName);
+          const canMoveUp = managedIndex > 0;
+          const canMoveDown = managedIndex >= 0 && managedIndex < commandSnippetGroups.length - 1;
+          const disabledAttr = isUngrouped ? "disabled" : "";
+          return `
+            <div class="command-group-manager-row" data-group-name="${escapeHtml(groupName)}">
+              <span class="command-group-grip">::</span>
+              <span class="command-group-manager-name" title="${escapeHtml(groupName)}">${escapeHtml(groupName)}</span>
+              <span class="command-group-manager-count">${snippetCountByGroup(groupName)} 条片段</span>
+              <span class="command-group-manager-actions">
+                <button class="command-mini-button" type="button" data-group-action="up" ${canMoveUp ? "" : "disabled"}>上移</button>
+                <button class="command-mini-button" type="button" data-group-action="down" ${canMoveDown ? "" : "disabled"}>下移</button>
+                <button class="command-mini-button" type="button" data-group-action="rename" ${disabledAttr}>重命名</button>
+                <button class="command-mini-button" type="button" data-group-action="delete" ${disabledAttr}>删除</button>
+              </span>
+            </div>
+          `;
+        })
+        .join("");
+    }
+
+    function saveGroupFromEditor() {
+      const nextName = normalizeSnippetGroupName(commandGroupNameInput.value);
+      if (nextName === "未分组") {
+        setFooterStatus("未分组是系统默认分组，不能作为自定义分组名称。", 2600);
+        commandGroupNameInput.focus();
+        return;
+      }
+
+      const duplicate = commandSnippetGroups.some((group) => group.name === nextName);
+      if (!editingGroupName && duplicate) {
+        setFooterStatus("这个分组已经存在。", 2200);
+        commandGroupNameInput.focus();
+        return;
+      }
+
+      if (editingGroupName) {
+        if (nextName !== editingGroupName && duplicate) {
+          setFooterStatus("这个分组已经存在。", 2200);
+          commandGroupNameInput.focus();
+          return;
+        }
+        commandSnippetGroups = commandSnippetGroups.map((group) =>
+          group.name === editingGroupName ? { name: nextName } : group
+        );
+        commandSnippets.forEach((snippet) => {
+          if (normalizeSnippetGroupName(snippet.group || "") === editingGroupName) {
+            snippet.group = nextName;
+          }
+        });
+        if (activeSnippetGroup === editingGroupName) {
+          activeSnippetGroup = nextName;
+        }
+        setFooterStatus("分组已重命名。", 2200);
+      } else {
+        commandSnippetGroups.push({ name: nextName });
+        setFooterStatus("分组已新建。", 2200);
+      }
+
+      resetGroupEditor();
+      renderGroupManager();
+      renderSnippetGroupChoices(commandSnippetGroupInput.value || "未分组");
+      renderCommandLibrary();
+    }
+
+    function moveGroup(groupName, direction) {
+      const index = commandSnippetGroups.findIndex((group) => group.name === groupName);
+      const nextIndex = index + direction;
+      if (index < 0 || nextIndex < 0 || nextIndex >= commandSnippetGroups.length) {
+        return;
+      }
+      const nextGroups = [...commandSnippetGroups];
+      const [group] = nextGroups.splice(index, 1);
+      nextGroups.splice(nextIndex, 0, group);
+      commandSnippetGroups = nextGroups;
+      renderGroupManager();
+      renderCommandLibrary();
+    }
+
+    function deleteGroup(groupName) {
+      if (groupName === "未分组") {
+        return;
+      }
+      commandSnippetGroups = commandSnippetGroups.filter((group) => group.name !== groupName);
+      commandSnippets.forEach((snippet) => {
+        if (normalizeSnippetGroupName(snippet.group || "") === groupName) {
+          snippet.group = "未分组";
+        }
+      });
+      if (activeSnippetGroup === groupName) {
+        activeSnippetGroup = "all";
+      }
+      resetGroupEditor();
+      renderGroupManager();
+      renderSnippetGroupChoices(commandSnippetGroupInput.value || "未分组");
+      renderCommandLibrary();
+      setFooterStatus("分组已删除，片段已移动到未分组。", 2600);
+    }
+
+    function openSnippetDialog(snippet = null, initialMode = "snippet") {
+      editingSnippetId = snippet?.id || null;
+      resetGroupEditor();
+      commandSnippetTitleInput.value = snippet?.title || "";
+      commandSnippetCommandInput.value = snippet?.command || "";
+      commandSnippetNoteInput.value = snippet?.note || "";
+      renderSnippetGroupChoices(snippet?.group || (activeSnippetGroup !== "all" ? activeSnippetGroup : "未分组"));
+      commandDialogBackdrop.classList.add("open");
+      commandDialogBackdrop.setAttribute("aria-hidden", "false");
+      setCommandDialogMode(initialMode);
+      if (initialMode === "snippet") {
+        commandSnippetTitleInput.focus();
+      }
+    }
+
+    function closeSnippetDialog() {
+      commandDialogBackdrop.classList.remove("open");
+      commandDialogBackdrop.setAttribute("aria-hidden", "true");
+      editingSnippetId = null;
+    }
+
+    function findSnippetById(id) {
+      return commandSnippets.find((item) => item.id === id) || null;
+    }
+
+    function findHistoryById(id) {
+      return commandHistory.find((item) => item.id === id) || null;
+    }
+
+    function insertCommandIntoComposer(command, sourceLabel) {
+      commandInput.value = command;
+      setCommandSenderExpanded(true);
+      updateCommandSenderState();
+      commandSendResult.textContent = `已将 ${sourceLabel} 写入命令操作台，可继续编辑后发送。`;
+      commandInput.focus();
+      setFooterStatus(`已把 ${sourceLabel} 插入到下方命令操作台。`, 2200);
+    }
+
+    function markSnippetUsed(snippet) {
+      const now = new Date().toISOString();
+      snippet.useCount += 1;
+      snippet.lastUsedAt = now;
+      snippet.updatedAt = now;
+    }
+
+    function recordHistory(command, sourceLabel) {
+      const normalized = command.trim();
+      if (!normalized) {
+        return;
+      }
+      const now = new Date().toISOString();
+      const existing = commandHistory.find((item) => item.command === normalized);
+      if (existing) {
+        existing.useCount += 1;
+        existing.lastUsedAt = now;
+        existing.note = `最近从 ${activeSessionTarget} 发送`;
+        existing.sourceLabel = sourceLabel;
+        return;
+      }
+      commandHistory.unshift({
+        id: `history-${Math.random().toString(36).slice(2, 8)}`,
+        command: normalized,
+        note: `最近从 ${activeSessionTarget} 发送`,
+        useCount: 1,
+        lastUsedAt: now,
+        sourceLabel,
+      });
+    }
+
+    function appendCommandToTerminal(command, sourceLabel) {
+      const prompt = terminalPromptByTarget[activeSessionTarget] || `${activeSessionTarget} $`;
+      const current = terminalOutputByTarget[activeSessionTarget] || `${prompt}\n等待终端输出...`;
+      terminalOutputByTarget[activeSessionTarget] = `${current}\n\n${prompt} ${command}\n# ${sourceLabel} 已模拟投递`;
+      activateSession(activeSessionTarget);
+    }
+
+    function executeLibraryCommand(command, label, sourceLabel) {
+      appendCommandToTerminal(command, sourceLabel);
+      recordHistory(command, "主动发送");
+      commandLastSent.textContent = `上次执行：${new Date().toLocaleTimeString("zh-CN", { hour12: false })}`;
+      commandSendResult.textContent = `${label} 已模拟投递到当前终端：${activeSessionTarget}`;
+      setFooterStatus(`${label} 已执行，历史列表已更新。`, 2400);
+      renderCommandLibrary();
+    }
+
+    function saveSnippetFromDialog() {
+      const group = commandSnippetGroupInput.value.trim();
+      const title = commandSnippetTitleInput.value.trim();
+      const command = commandSnippetCommandInput.value.trim();
+      const note = commandSnippetNoteInput.value.trim();
+
+      if (!title || !command) {
+        setFooterStatus("名称和命令为必填项。", 2600);
+        if (!title) {
+          commandSnippetTitleInput.focus();
+        } else {
+          commandSnippetCommandInput.focus();
+        }
+        return;
+      }
+
+      const now = new Date().toISOString();
+      if (editingSnippetId) {
+        const snippet = findSnippetById(editingSnippetId);
+        if (!snippet) {
+          closeSnippetDialog();
+          return;
+        }
+        snippet.group = group || "未分组";
+        snippet.title = title;
+        snippet.command = command;
+        snippet.note = note;
+        snippet.updatedAt = now;
+      } else {
+        commandSnippets.unshift({
+          id: `snippet-${Math.random().toString(36).slice(2, 8)}`,
+          group: group || "未分组",
+          title,
+          command,
+          note,
+          favorite: false,
+          useCount: 0,
+          lastUsedAt: "",
+          updatedAt: now,
+        });
+      }
+
+      closeSnippetDialog();
+      activeCommandMode = "snippets";
+      renderCommandLibrary();
+      setFooterStatus("命令片段已保存。", 2200);
+    }
 
     function commandTargetForCheckbox(checkbox) {
       const row = checkbox.closest(".command-target");
@@ -2602,6 +3982,15 @@ SSH 认证中...</pre>
       setCommandSenderExpanded(false);
     });
 
+    commandLibraryToggle.addEventListener("click", () => {
+      rightToolTabs.forEach((button) => {
+        button.classList.toggle("active", button.dataset.toolTab === "command");
+      });
+      commandLibraryToggle.classList.add("active");
+      setFooterStatus("命令面板入口保留在终端工具区，正文集中在右侧。", 2200);
+      commandLibrarySearchInput.focus();
+    });
+
     commandTargetCheckboxes.forEach((checkbox) => {
       checkbox.addEventListener("change", updateCommandSenderState);
     });
@@ -2644,6 +4033,7 @@ SSH 认证中...</pre>
 
     function simulateCommandSend(appendEnter) {
       const selectedTargets = selectedCommandTargets();
+      const command = commandInput.value.trim();
       const now = new Date();
       const time = now.toLocaleTimeString("zh-CN", { hour12: false });
       sendCount += 1;
@@ -2657,6 +4047,10 @@ SSH 认证中...</pre>
         const target = commandTargetForCheckbox(checkbox);
         updateDeliveryBadgeForCheckbox(checkbox, deliveryResultForTarget(target));
       });
+      if (successCount > 0) {
+        recordHistory(command, "主动发送");
+        renderCommandLibrary();
+      }
     }
 
     sendCommandButton.addEventListener("click", () => {
@@ -2681,7 +4075,185 @@ SSH 认证中...</pre>
       });
     });
 
+    rightToolTabs.forEach((button) => {
+      button.addEventListener("click", () => {
+        const tab = button.dataset.toolTab || "command";
+        if (tab !== "command") {
+          rightToolTabs.forEach((item) => {
+            item.classList.toggle("active", item.dataset.toolTab === "command");
+          });
+          setFooterStatus("这个原型阶段先只展开“命令”面板，其余工具保留现有入口布局。", 2600);
+          return;
+        }
+        rightToolTabs.forEach((item) => {
+          item.classList.toggle("active", item === button);
+        });
+      });
+    });
+
+    commandModeButtons.forEach((button) => {
+      button.addEventListener("click", () => {
+        activeCommandMode = button.dataset.commandMode || "snippets";
+        renderCommandLibrary();
+      });
+    });
+
+    commandLibrarySearchInput.addEventListener("input", renderCommandLibrary);
+
+    commandLibraryBody.addEventListener("click", (event) => {
+      const filterTrigger = event.target.closest("[data-snippet-filter]");
+      if (filterTrigger) {
+        activeSnippetGroup = filterTrigger.dataset.snippetFilter || "all";
+        renderCommandLibrary();
+        return;
+      }
+
+      const trigger = event.target.closest("[data-command-action]");
+      if (!trigger) {
+        return;
+      }
+      const action = trigger.dataset.commandAction;
+      const id = trigger.dataset.commandId;
+
+      if (action === "insert-snippet") {
+        const snippet = findSnippetById(id);
+        if (snippet) {
+          insertCommandIntoComposer(snippet.command, `片段“${snippet.title}”`);
+        }
+        return;
+      }
+
+      if (action === "run-snippet") {
+        const snippet = findSnippetById(id);
+        if (snippet) {
+          markSnippetUsed(snippet);
+          executeLibraryCommand(snippet.command, `片段“${snippet.title}”`, "片段执行");
+        }
+        return;
+      }
+
+      if (action === "edit-snippet") {
+        const snippet = findSnippetById(id);
+        if (snippet) {
+          openSnippetDialog(snippet);
+        }
+        return;
+      }
+
+      if (action === "insert-history") {
+        const historyItem = findHistoryById(id);
+        if (historyItem) {
+          insertCommandIntoComposer(historyItem.command, "历史命令");
+        }
+        return;
+      }
+
+      if (action === "run-history") {
+        const historyItem = findHistoryById(id);
+        if (historyItem) {
+          executeLibraryCommand(historyItem.command, "历史命令", "主动发送");
+        }
+        return;
+      }
+
+      if (action === "history-to-snippet") {
+        const historyItem = findHistoryById(id);
+        if (historyItem) {
+          openSnippetDialog({
+            group: "未分组",
+            title: deriveSnippetTitle(historyItem.command),
+            command: historyItem.command,
+            note: historyItem.note,
+          });
+        }
+      }
+    });
+
+    commandManageButton.addEventListener("click", () => {
+      openSnippetDialog(null, "groups");
+    });
+
+    commandNewSnippetButton.addEventListener("click", () => {
+      openSnippetDialog({
+        group: "",
+        title: deriveSnippetTitle(commandInput.value.trim() || "新建片段"),
+        command: commandInput.value.trim(),
+        note: "",
+      });
+    });
+
+    commandDialogCloseButton.addEventListener("click", closeSnippetDialog);
+    commandDialogCancelButton.addEventListener("click", closeSnippetDialog);
+    commandDialogSaveButton.addEventListener("click", saveSnippetFromDialog);
+
+    commandDialogModeButtons.forEach((button) => {
+      button.addEventListener("click", () => {
+        setCommandDialogMode(button.dataset.commandDialogMode || "snippet");
+      });
+    });
+
+    commandSnippetGroupChoices.addEventListener("click", (event) => {
+      const trigger = event.target.closest("[data-snippet-form-group]");
+      if (!trigger) {
+        return;
+      }
+      setSnippetFormGroup(trigger.dataset.snippetFormGroup || "未分组");
+    });
+
+    commandGroupSaveButton.addEventListener("click", saveGroupFromEditor);
+
+    commandGroupCancelButton.addEventListener("click", () => {
+      resetGroupEditor();
+      commandGroupNameInput.focus();
+    });
+
+    commandGroupList.addEventListener("click", (event) => {
+      const trigger = event.target.closest("[data-group-action]");
+      if (!trigger) {
+        return;
+      }
+      const row = trigger.closest("[data-group-name]");
+      const groupName = row?.dataset.groupName || "";
+      const action = trigger.dataset.groupAction;
+      if (!groupName) {
+        return;
+      }
+
+      if (action === "up") {
+        moveGroup(groupName, -1);
+        return;
+      }
+      if (action === "down") {
+        moveGroup(groupName, 1);
+        return;
+      }
+      if (action === "rename") {
+        editingGroupName = groupName;
+        commandGroupNameInput.value = groupName;
+        commandGroupSaveButton.textContent = "保存名称";
+        commandGroupCancelButton.hidden = false;
+        commandGroupNameInput.focus();
+        return;
+      }
+      if (action === "delete") {
+        deleteGroup(groupName);
+      }
+    });
+
+    commandDialogBackdrop.addEventListener("click", (event) => {
+      if (event.target === commandDialogBackdrop) {
+        closeSnippetDialog();
+      }
+    });
+
+    document.addEventListener("keydown", (event) => {
+      if (event.key === "Escape" && commandDialogBackdrop.classList.contains("open")) {
+        closeSnippetDialog();
+      }
+    });
+
     updateCommandSenderState();
+    renderCommandLibrary();
   </script>
 </body>
 </html>

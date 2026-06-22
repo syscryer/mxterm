@@ -115,6 +115,7 @@ CREATE TABLE IF NOT EXISTS command_snippets (
     title TEXT NOT NULL,
     command TEXT NOT NULL,
     description TEXT,
+    group_name TEXT NOT NULL DEFAULT '',
     tags_json TEXT NOT NULL,
     favorite INTEGER NOT NULL DEFAULT 0,
     use_count INTEGER NOT NULL DEFAULT 0,
@@ -139,6 +140,23 @@ CREATE TABLE IF NOT EXISTS command_history (
 
 CREATE INDEX IF NOT EXISTS idx_command_history_last_used_at
     ON command_history(last_used_at DESC);
+
+CREATE TABLE IF NOT EXISTS command_history_scopes (
+    history_id TEXT NOT NULL,
+    scope_kind TEXT NOT NULL,
+    scope_id TEXT NOT NULL,
+    source TEXT NOT NULL,
+    target_count INTEGER NOT NULL DEFAULT 0,
+    append_enter INTEGER NOT NULL DEFAULT 1,
+    use_count INTEGER NOT NULL DEFAULT 1,
+    last_used_at TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY(history_id, scope_kind, scope_id),
+    FOREIGN KEY(history_id) REFERENCES command_history(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_command_history_scopes_scope
+    ON command_history_scopes(scope_kind, scope_id, last_used_at DESC);
 "#;
 
 pub struct SqliteStore {
@@ -183,6 +201,8 @@ impl SqliteStore {
                 true,
             )
         })?;
+        self.ensure_command_snippet_group_column()?;
+        self.ensure_command_history_scope_columns()?;
         self.connection
             .execute(
                 "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (?1, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",
@@ -203,6 +223,142 @@ impl SqliteStore {
             .flatten()
             .unwrap_or(0);
         Ok(version)
+    }
+
+    fn ensure_command_snippet_group_column(&self) -> Result<(), AppError> {
+        if !self.column_exists("command_snippets", "group_name")? {
+            self.connection
+                .execute(
+                    "ALTER TABLE command_snippets
+                     ADD COLUMN group_name TEXT NOT NULL DEFAULT ''",
+                    [],
+                )
+                .map_err(sqlite_query_error)?;
+        }
+
+        self.connection
+            .execute(
+                "UPDATE command_snippets SET group_name = '' WHERE TRIM(group_name) = '未分组'",
+                [],
+            )
+            .map_err(sqlite_query_error)?;
+
+        self.connection
+            .execute(
+                "CREATE INDEX IF NOT EXISTS idx_command_snippets_group
+                    ON command_snippets(group_name, favorite DESC, last_used_at DESC, updated_at DESC)",
+                [],
+            )
+            .map_err(sqlite_query_error)?;
+        Ok(())
+    }
+
+    fn ensure_command_history_scope_columns(&self) -> Result<(), AppError> {
+        let source_added = self.add_column_if_missing(
+            "command_history_scopes",
+            "source",
+            "ALTER TABLE command_history_scopes
+             ADD COLUMN source TEXT NOT NULL DEFAULT 'command_sender'",
+        )?;
+        let target_count_added = self.add_column_if_missing(
+            "command_history_scopes",
+            "target_count",
+            "ALTER TABLE command_history_scopes
+             ADD COLUMN target_count INTEGER NOT NULL DEFAULT 0",
+        )?;
+        let append_enter_added = self.add_column_if_missing(
+            "command_history_scopes",
+            "append_enter",
+            "ALTER TABLE command_history_scopes
+             ADD COLUMN append_enter INTEGER NOT NULL DEFAULT 1",
+        )?;
+
+        if source_added {
+            self.connection
+                .execute(
+                    "UPDATE command_history_scopes
+                     SET source = COALESCE(
+                        (SELECT command_history.source
+                         FROM command_history
+                         WHERE command_history.id = command_history_scopes.history_id),
+                        source
+                     )",
+                    [],
+                )
+                .map_err(sqlite_query_error)?;
+        }
+
+        if target_count_added {
+            self.connection
+                .execute(
+                    "UPDATE command_history_scopes
+                     SET target_count = COALESCE(
+                        (SELECT command_history.target_count
+                         FROM command_history
+                         WHERE command_history.id = command_history_scopes.history_id),
+                        target_count
+                     )",
+                    [],
+                )
+                .map_err(sqlite_query_error)?;
+        }
+
+        if append_enter_added {
+            self.connection
+                .execute(
+                    "UPDATE command_history_scopes
+                     SET append_enter = COALESCE(
+                        (SELECT command_history.append_enter
+                         FROM command_history
+                         WHERE command_history.id = command_history_scopes.history_id),
+                        append_enter
+                     )",
+                    [],
+                )
+                .map_err(sqlite_query_error)?;
+        }
+
+        self.connection
+            .execute(
+                "CREATE INDEX IF NOT EXISTS idx_command_history_scopes_scope
+                    ON command_history_scopes(scope_kind, scope_id, last_used_at DESC)",
+                [],
+            )
+            .map_err(sqlite_query_error)?;
+        Ok(())
+    }
+
+    fn add_column_if_missing(
+        &self,
+        table_name: &str,
+        column_name: &str,
+        alter_sql: &str,
+    ) -> Result<bool, AppError> {
+        if self.column_exists(table_name, column_name)? {
+            return Ok(false);
+        }
+
+        self.connection
+            .execute(alter_sql, [])
+            .map_err(sqlite_query_error)?;
+        Ok(true)
+    }
+
+    fn column_exists(&self, table_name: &str, column_name: &str) -> Result<bool, AppError> {
+        let mut statement = self
+            .connection
+            .prepare("SELECT name FROM pragma_table_info(?1)")
+            .map_err(sqlite_query_error)?;
+        let rows = statement
+            .query_map(params![table_name], |row| row.get::<_, String>(0))
+            .map_err(sqlite_query_error)?;
+
+        for row in rows {
+            if row.map_err(sqlite_query_error)? == column_name {
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
 
     #[cfg(test)]
@@ -233,6 +389,19 @@ impl SqliteStore {
             columns.push(row.map_err(sqlite_query_error)?);
         }
         Ok(columns)
+    }
+
+    #[cfg(test)]
+    fn index_exists(&self, index_name: &str) -> Result<bool, AppError> {
+        let exists = self
+            .connection
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type = 'index' AND name = ?1)",
+                params![index_name],
+                |row| row.get::<_, i64>(0),
+            )
+            .map_err(sqlite_query_error)?;
+        Ok(exists == 1)
     }
 }
 
@@ -268,7 +437,7 @@ mod tests {
 
     use super::{normalize_known_host_host, SqliteStore, SQLITE_SCHEMA_VERSION};
 
-    const CORE_TABLES: [&str; 10] = [
+    const CORE_TABLES: [&str; 11] = [
         "schema_migrations",
         "app_meta",
         "app_settings",
@@ -279,6 +448,7 @@ mod tests {
         "tunnels",
         "command_snippets",
         "command_history",
+        "command_history_scopes",
     ];
 
     #[test]
@@ -332,6 +502,111 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn initialize_migrates_legacy_command_snippets_without_group_name() {
+        let store = open_temp_store("legacy-command-snippets-group");
+        store
+            .connection
+            .execute_batch(
+                r#"
+                CREATE TABLE command_snippets (
+                    id TEXT PRIMARY KEY,
+                    title TEXT NOT NULL,
+                    command TEXT NOT NULL,
+                    description TEXT,
+                    tags_json TEXT NOT NULL,
+                    favorite INTEGER NOT NULL DEFAULT 0,
+                    use_count INTEGER NOT NULL DEFAULT 0,
+                    last_used_at TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                "#,
+            )
+            .unwrap();
+
+        store.initialize().unwrap();
+
+        let columns = store.table_columns("command_snippets").unwrap();
+        assert!(columns.iter().any(|column| column == "group_name"));
+        assert!(store.index_exists("idx_command_snippets_group").unwrap());
+    }
+
+    #[test]
+    fn initialize_migrates_legacy_command_history_scopes_without_metadata_columns() {
+        let store = open_temp_store("legacy-command-history-scopes");
+        store
+            .connection
+            .execute_batch(
+                r#"
+                CREATE TABLE command_history (
+                    id TEXT PRIMARY KEY,
+                    command TEXT NOT NULL UNIQUE,
+                    source TEXT NOT NULL,
+                    target_count INTEGER NOT NULL DEFAULT 0,
+                    append_enter INTEGER NOT NULL DEFAULT 1,
+                    use_count INTEGER NOT NULL DEFAULT 1,
+                    last_used_at TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                );
+
+                CREATE TABLE command_history_scopes (
+                    history_id TEXT NOT NULL,
+                    scope_kind TEXT NOT NULL,
+                    scope_id TEXT NOT NULL,
+                    use_count INTEGER NOT NULL DEFAULT 1,
+                    last_used_at TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    PRIMARY KEY(history_id, scope_kind, scope_id)
+                );
+
+                INSERT INTO command_history (
+                    id, command, source, target_count, append_enter,
+                    use_count, last_used_at, created_at
+                ) VALUES (
+                    'history-1', 'pwd', 'terminal_input', 3, 0,
+                    5, '2026-06-22T00:00:00Z', '2026-06-22T00:00:00Z'
+                );
+
+                INSERT INTO command_history_scopes (
+                    history_id, scope_kind, scope_id, use_count, last_used_at, created_at
+                ) VALUES (
+                    'history-1', 'ssh_connection', 'connection-1',
+                    2, '2026-06-22T00:00:00Z', '2026-06-22T00:00:00Z'
+                );
+                "#,
+            )
+            .unwrap();
+
+        store.initialize().unwrap();
+
+        let columns = store.table_columns("command_history_scopes").unwrap();
+        assert!(columns.iter().any(|column| column == "source"));
+        assert!(columns.iter().any(|column| column == "target_count"));
+        assert!(columns.iter().any(|column| column == "append_enter"));
+        assert!(store
+            .index_exists("idx_command_history_scopes_scope")
+            .unwrap());
+
+        let migrated = store
+            .connection
+            .query_row(
+                "SELECT source, target_count, append_enter
+                 FROM command_history_scopes
+                 WHERE history_id = 'history-1'",
+                [],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, i64>(1)?,
+                        row.get::<_, i64>(2)?,
+                    ))
+                },
+            )
+            .unwrap();
+        assert_eq!(migrated, ("terminal_input".to_string(), 3, 0));
     }
 
     fn open_temp_store(name: &str) -> SqliteStore {
