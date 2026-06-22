@@ -6609,24 +6609,6 @@ button {
   background: color-mix(in srgb, var(--mx-panel-soft) 82%, var(--mx-panel));
 }
 
-.command-snippet-form-actions button {
-  min-width: 86px;
-  height: 30px;
-  border-radius: 7px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 7px;
-  padding: 0 12px;
-  font-size: 13px;
-  font-weight: 650;
-}
-
-.command-snippet-form-actions .ui-icon {
-  width: 14px;
-  height: 14px;
-}
-
 .local-terminal-launcher {
   min-width: 0;
   display: flex;
@@ -8722,7 +8704,8 @@ button {
 }
 
 .dialog-actions button,
-.confirm-dialog-actions button {
+.confirm-dialog-actions button,
+.command-snippet-form-actions button {
   height: 30px;
   border: 1px solid var(--mx-line);
   border-radius: 6px;
@@ -8766,7 +8749,8 @@ button {
 }
 
 .dialog-actions .ui-icon,
-.confirm-dialog-actions .ui-icon {
+.confirm-dialog-actions .ui-icon,
+.command-snippet-form-actions .ui-icon {
   width: 14px;
   height: 14px;
   stroke-width: 1.55;
@@ -8786,34 +8770,39 @@ button {
 }
 
 .dialog-actions button:hover,
-.confirm-dialog-actions button:hover {
+.confirm-dialog-actions button:hover,
+.command-snippet-form-actions button:hover {
   border-color: var(--mx-line-strong);
   background: #f7f9fc;
   box-shadow: 0 3px 8px rgb(15 23 42 / 7%);
 }
 
 .dialog-actions button:active,
-.confirm-dialog-actions button:active {
+.confirm-dialog-actions button:active,
+.command-snippet-form-actions button:active {
   transform: translateY(1px);
   box-shadow: 0 1px 2px rgb(15 23 42 / 6%);
 }
 
 .dialog-actions button:disabled,
-.confirm-dialog-actions button:disabled {
+.confirm-dialog-actions button:disabled,
+.command-snippet-form-actions button:disabled {
   color: var(--mx-subtle);
   background: #f2f3f5;
   box-shadow: none;
   cursor: default;
 }
 
-.dialog-actions .primary-button {
+.dialog-actions .primary-button,
+.command-snippet-form-actions .primary-button {
   border-color: #2563eb;
   color: #ffffff;
   background: #2563eb;
   box-shadow: 0 4px 10px rgb(37 99 235 / 20%);
 }
 
-.dialog-actions .primary-button:hover {
+.dialog-actions .primary-button:hover,
+.command-snippet-form-actions .primary-button:hover {
   border-color: #1d4ed8;
   color: #ffffff;
   background: #1d4ed8;
@@ -9039,7 +9028,8 @@ button {
   .transfer-panel-head button,
   .transfer-item button,
   .dialog-actions button,
-  .confirm-dialog-actions button
+  .confirm-dialog-actions button,
+  .command-snippet-form-actions button
 ) {
   border-color: var(--mx-line);
 }
@@ -9057,7 +9047,8 @@ button {
   .transfer-panel-head button:hover:not(:disabled),
   .transfer-item button:hover,
   .dialog-actions button:hover,
-  .confirm-dialog-actions button:hover
+  .confirm-dialog-actions button:hover,
+  .command-snippet-form-actions button:hover
 ) {
   color: var(--mx-text);
   background: var(--mx-active);
@@ -9096,7 +9087,8 @@ button {
   .local-terminal-status-actions .primary-button,
   .connection-prompt-form .primary-button,
   .host-key-confirm .primary-button,
-  .repository-primary-button
+  .repository-primary-button,
+  .command-snippet-form-actions .primary-button
 ) {
   border-color: color-mix(in srgb, var(--mx-primary) 82%, #1e40af);
   color: #ffffff;
@@ -9109,7 +9101,8 @@ button {
   .local-terminal-status-actions .primary-button:hover:not(:disabled),
   .connection-prompt-form .primary-button:hover,
   .host-key-confirm .primary-button:hover,
-  .repository-primary-button:hover
+  .repository-primary-button:hover,
+  .command-snippet-form-actions .primary-button:hover
 ) {
   border-color: color-mix(in srgb, var(--mx-primary) 88%, #1e3a8a);
   color: #ffffff;
