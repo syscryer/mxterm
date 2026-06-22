@@ -7324,9 +7324,9 @@ button {
 }
 
 .tool-tabs {
-  flex: 0 0 var(--terminal-glassbar-height);
-  min-height: var(--terminal-glassbar-height);
-  height: var(--terminal-glassbar-height);
+  flex: 0 0 34px;
+  min-height: 34px;
+  height: 34px;
   padding: 0 8px;
 }
 
@@ -7516,15 +7516,47 @@ button {
   background: var(--mx-active);
 }
 
+.remote-file-row:focus {
+  outline: none;
+}
+
+.remote-file-row:focus-visible {
+  outline: none;
+  color: var(--mx-text);
+  background: color-mix(in srgb, var(--mx-primary) 9%, var(--mx-panel));
+  box-shadow:
+    inset 0 0 0 1px color-mix(in srgb, var(--mx-primary) 38%, transparent),
+    0 0 0 2px color-mix(in srgb, var(--mx-primary) 10%, transparent);
+}
+
 .remote-file-row.is-active-directory {
   color: var(--mx-text);
   background: color-mix(in srgb, var(--mx-primary) 8%, var(--mx-panel));
+}
+
+.remote-file-row.is-selected {
+  color: var(--mx-text);
+  background: color-mix(in srgb, var(--mx-primary) 14%, var(--mx-panel));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--mx-primary) 30%, transparent);
+}
+
+.remote-file-row.is-selected:focus-visible {
+  background: color-mix(in srgb, var(--mx-primary) 16%, var(--mx-panel));
+  box-shadow:
+    inset 0 0 0 1px color-mix(in srgb, var(--mx-primary) 40%, transparent),
+    0 0 0 2px color-mix(in srgb, var(--mx-primary) 10%, transparent);
 }
 
 .remote-file-row.is-drop-target {
   color: var(--mx-text);
   background: color-mix(in srgb, var(--mx-primary) 10%, var(--mx-panel));
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--mx-primary) 44%, transparent);
+}
+
+.remote-file-row.is-drop-target:focus-visible {
+  box-shadow:
+    inset 0 0 0 1px color-mix(in srgb, var(--mx-primary) 48%, transparent),
+    0 0 0 2px color-mix(in srgb, var(--mx-primary) 10%, transparent);
 }
 
 .transfer-tool-body {
@@ -9196,6 +9228,7 @@ button {
   .connection-prompt-form header > .ui-icon,
   .host-key-confirm header > .ui-icon,
   .remote-file-row.is-active-directory,
+  .remote-file-row.is-selected,
   .remote-file-row.is-drop-target,
   .file-list.is-drop-target
 ) {
@@ -9273,6 +9306,7 @@ button {
     .connection-prompt-form header > .ui-icon,
     .host-key-confirm header > .ui-icon,
     .remote-file-row.is-active-directory,
+    .remote-file-row.is-selected,
     .remote-file-row.is-drop-target,
     .file-list.is-drop-target
   ) {

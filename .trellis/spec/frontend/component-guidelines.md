@@ -178,6 +178,12 @@ Ant Design, Mantine, or similar libraries just to fix one modal or button.
   owns the path input, toolbar actions, blank-area context menu, and blank-area
   drag/drop upload target. Expanding or locating a directory should update the
   active directory without forcing the tree root to navigate into that child.
+- Remote file selection should stay compatible with the tree's directory
+  navigation model. Plain directory-row clicks expand/collapse and update the
+  active directory; selection uses Explorer-style modifiers (`Ctrl` / `Meta` to
+  toggle, `Shift` to range-select visible rows). Bulk selection actions belong
+  in the selected row context menu, not in a persistent toolbar/action bar,
+  unless the product explicitly changes the right-pane interaction model.
 - Remote file directory loads may overlap during startup, refresh handoff, and
   locate actions. Keep a current entries ref in sync with state, and do not let
   a stale non-forced auto-load failure display a global error after another
