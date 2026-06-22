@@ -945,3 +945,36 @@ Implemented local sync snapshot export/import foundation with encrypted remote s
 ### Next Steps
 
 - None - task complete
+
+
+## Session 29: Remote file multi-select bulk actions
+
+**Date**: 2026-06-22
+**Task**: Remote file multi-select bulk actions
+**Branch**: `master`
+
+### Summary
+
+Implemented remote file tree multi-selection, context-menu-only bulk download/delete, selected-row focus styling, and pushed the work to origin/master.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `b99505e` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
