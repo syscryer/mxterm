@@ -1422,6 +1422,13 @@
       background: var(--mx-panel-soft);
     }
 
+    .command-library-toolbar-actions {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      white-space: nowrap;
+    }
+
     .command-library-search {
       min-width: 0;
       height: 30px;
@@ -1499,36 +1506,168 @@
       gap: 7px;
     }
 
-    .command-snippet-filter {
+    .command-snippet-tree {
+      min-width: 0;
+      border: 1px solid var(--mx-line-soft);
+      border-radius: 9px;
+      overflow: hidden;
+      background: rgba(255, 255, 255, 0.72);
+    }
+
+    .command-tree-group {
+      min-width: 0;
+      border-bottom: 1px solid var(--mx-line-soft);
+    }
+
+    .command-tree-group:last-child {
+      border-bottom: 0;
+    }
+
+    .command-tree-group-head {
+      width: 100%;
+      min-width: 0;
+      height: 34px;
+      border: 0;
+      display: grid;
+      grid-template-columns: 16px minmax(0, 1fr) auto;
+      align-items: center;
+      gap: 6px;
+      padding: 0 9px;
+      color: var(--mx-text);
+      background: rgba(248, 250, 252, 0.88);
+      text-align: left;
+    }
+
+    .command-tree-group-head:hover {
+      background: rgba(241, 245, 249, 0.96);
+    }
+
+    .command-tree-caret {
+      color: var(--mx-subtle);
+      font-size: 11px;
+      line-height: 1;
+    }
+
+    .command-tree-group-title {
+      min-width: 0;
+      overflow: hidden;
+      color: var(--mx-text);
+      font-size: 12px;
+      font-weight: 700;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .command-tree-group-count {
+      color: var(--mx-subtle);
+      font-size: 11px;
+      font-weight: 650;
+    }
+
+    .command-tree-list {
+      display: grid;
+      background: rgba(255, 255, 255, 0.82);
+    }
+
+    .command-tree-row {
+      position: relative;
+      min-width: 0;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 7px 8px 26px;
+      border-top: 1px solid var(--mx-line-soft);
+      background: transparent;
+    }
+
+    .command-tree-row:hover {
+      background: rgba(15, 23, 42, 0.035);
+    }
+
+    .command-tree-main {
+      min-width: 0;
+      display: grid;
+      gap: 4px;
+    }
+
+    .command-tree-title-line {
       min-width: 0;
       display: flex;
       align-items: center;
       gap: 6px;
-      overflow-x: auto;
-      padding: 0 1px 2px;
     }
 
-    .command-filter-chip,
-    .command-group-choice {
-      height: 26px;
-      border: 1px solid var(--mx-line);
-      border-radius: 999px;
-      display: inline-flex;
-      align-items: center;
-      gap: 5px;
-      padding: 0 9px;
-      color: var(--mx-muted);
-      background: rgba(255, 255, 255, 0.86);
-      font-size: 11px;
-      font-weight: 650;
+    .command-tree-title-line strong {
+      min-width: 0;
+      overflow: hidden;
+      color: var(--mx-text);
+      font-size: 12px;
+      font-weight: 700;
+      text-overflow: ellipsis;
       white-space: nowrap;
     }
 
-    .command-filter-chip.active,
-    .command-group-choice.active {
-      border-color: rgba(37, 99, 235, 0.2);
-      color: #1d4ed8;
+    .command-tree-code {
+      min-width: 0;
+      overflow: hidden;
+      color: #334155;
+      font-family: var(--font-mono);
+      font-size: 11px;
+      line-height: 1.35;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .command-tree-meta {
+      min-width: 0;
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      color: var(--mx-subtle);
+      font-size: 11px;
+      line-height: 1.3;
+      white-space: nowrap;
+    }
+
+    .command-tree-actions {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding-right: 2px;
+    }
+
+    .command-icon-button {
+      width: 30px;
+      height: 30px;
+      border: 1px solid var(--mx-line);
+      border-radius: 8px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      color: var(--mx-muted);
+      background: rgba(255, 255, 255, 0.92);
+    }
+
+    .command-icon-button:hover {
+      color: var(--mx-text);
+      border-color: rgba(100, 116, 139, 0.24);
+      background: #ffffff;
+    }
+
+    .command-icon-button.primary:hover {
+      color: var(--mx-primary);
+      border-color: rgba(37, 99, 235, 0.22);
       background: rgba(37, 99, 235, 0.075);
+    }
+
+    .command-icon-button.danger {
+      color: var(--mx-danger);
+    }
+
+    .command-icon-button.danger:hover {
+      border-color: rgba(239, 68, 68, 0.22);
+      background: rgba(239, 68, 68, 0.075);
     }
 
     .command-item {
@@ -1761,7 +1900,7 @@
     }
 
     .command-dialog {
-      width: min(720px, calc(100vw - 56px));
+      width: min(520px, calc(100vw - 56px));
       max-height: min(740px, calc(100vh - 56px));
       border: 1px solid var(--mx-line);
       border-radius: 12px;
@@ -1797,39 +1936,6 @@
       font-weight: 720;
     }
 
-    .command-dialog-title-area {
-      min-width: 0;
-      display: grid;
-      gap: 8px;
-    }
-
-    .command-dialog-tabs {
-      display: inline-flex;
-      align-items: center;
-      gap: 4px;
-      padding: 3px;
-      border: 1px solid var(--mx-line-soft);
-      border-radius: 8px;
-      background: rgba(248, 250, 252, 0.9);
-    }
-
-    .command-dialog-tab {
-      height: 24px;
-      border: 0;
-      border-radius: 6px;
-      padding: 0 10px;
-      color: var(--mx-muted);
-      background: transparent;
-      font-size: 12px;
-      font-weight: 650;
-    }
-
-    .command-dialog-tab.active,
-    .command-dialog-tab:hover {
-      color: var(--mx-text);
-      background: rgba(148, 163, 184, 0.14);
-    }
-
     .command-dialog-body {
       min-width: 0;
       min-height: 0;
@@ -1840,16 +1946,10 @@
       background: #ffffff;
     }
 
-    .command-manager-body {
-      padding: 0;
-      gap: 0;
-    }
-
     .command-dialog-panel {
       min-width: 0;
       display: grid;
       gap: 14px;
-      padding: 16px;
     }
 
     .command-dialog-panel[hidden] {
@@ -1900,11 +2000,112 @@
       line-height: 1.45;
     }
 
-    .command-form-group-pills {
+    .command-form-inline {
       min-width: 0;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .command-group-select {
+      position: relative;
+      min-width: 0;
+    }
+
+    .command-group-select-trigger {
+      width: 100%;
+      height: 34px;
+      border: 1px solid var(--mx-line);
+      border-radius: 8px;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      align-items: center;
+      gap: 8px;
+      padding: 0 10px;
+      color: var(--mx-text);
+      background: #ffffff;
+      font-size: 13px;
+      text-align: left;
+    }
+
+    .command-group-select-trigger:hover,
+    .command-group-select-trigger.active {
+      border-color: rgba(37, 99, 235, 0.24);
+      background: #fbfcfe;
+    }
+
+    .command-group-select-label {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .command-group-select-caret {
+      color: var(--mx-subtle);
+      font-size: 11px;
+    }
+
+    .command-group-select-menu {
+      position: absolute;
+      z-index: 30;
+      top: calc(100% + 4px);
+      left: 0;
+      right: 0;
+      max-height: 176px;
+      border: 1px solid var(--mx-line);
+      border-radius: 8px;
+      padding: 4px;
+      overflow: auto;
+      background: rgba(255, 255, 255, 0.98);
+      box-shadow: 0 12px 28px rgba(15, 23, 42, 0.14);
+    }
+
+    .command-group-select-menu[hidden] {
+      display: none;
+    }
+
+    .command-group-option {
+      width: 100%;
+      height: 28px;
+      border: 0;
+      border-radius: 6px;
       display: flex;
-      flex-wrap: wrap;
-      gap: 6px;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      padding: 0 8px;
+      color: var(--mx-muted);
+      background: transparent;
+      font-size: 12px;
+      text-align: left;
+    }
+
+    .command-group-option:hover,
+    .command-group-option.active {
+      color: var(--mx-text);
+      background: rgba(37, 99, 235, 0.075);
+    }
+
+    .command-group-option-mark {
+      color: var(--mx-primary);
+      font-size: 11px;
+    }
+
+    .command-form-check {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      color: var(--mx-muted);
+      font-size: 12px;
+      font-weight: 650;
+    }
+
+    .command-form-check input {
+      width: 14px;
+      height: 14px;
+      min-width: 14px;
     }
 
     .command-group-manager {
@@ -3123,17 +3324,17 @@ SSH 认证中...</pre>
               <svg class="ui-icon" viewBox="0 0 16 16"><circle cx="7" cy="7" r="4"/><path d="m10 10 3 3"/></svg>
               <input id="commandLibrarySearchInput" placeholder="搜索标题、命令或备注" spellcheck="false">
             </label>
-            <span class="command-library-result-meta" id="commandLibraryResultMeta">3 条片段</span>
+            <div class="command-library-toolbar-actions">
+              <span class="command-library-result-meta" id="commandLibraryResultMeta">3 条片段</span>
+              <button class="command-mini-button primary" id="commandNewSnippetButton" type="button">+ 命令</button>
+              <button class="command-mini-button" id="commandNewGroupButton" type="button">+ 分组</button>
+            </div>
           </div>
 
           <div class="command-library-body" id="commandLibraryBody"></div>
 
           <div class="command-library-footer">
             <span class="command-library-footer-status" id="commandLibraryFooterStatus">插入会写入下方命令操作台，执行会直接模拟投递到当前终端。</span>
-            <div class="command-library-footer-actions">
-              <button class="command-mini-button" id="commandManageButton" type="button">管理</button>
-              <button class="command-mini-button primary" id="commandNewSnippetButton" type="button">新建片段</button>
-            </div>
           </div>
         </section>
       </aside>
@@ -3142,20 +3343,23 @@ SSH 认证中...</pre>
   <div class="command-dialog-backdrop" id="commandDialogBackdrop" aria-hidden="true">
     <section class="command-dialog" role="dialog" aria-modal="true" aria-labelledby="commandDialogTitle">
       <div class="command-dialog-head">
-        <div class="command-dialog-title-area">
-          <strong id="commandDialogTitle">新建命令片段</strong>
-          <div class="command-dialog-tabs" aria-label="命令管理类型">
-            <button class="command-dialog-tab active" type="button" data-command-dialog-mode="snippet">片段</button>
-            <button class="command-dialog-tab" type="button" data-command-dialog-mode="groups">分组</button>
-          </div>
-        </div>
+        <strong id="commandDialogTitle">新建命令</strong>
         <button class="command-mini-button" id="commandDialogCloseButton" type="button">关闭</button>
       </div>
-      <div class="command-dialog-body command-manager-body">
+      <div class="command-dialog-body">
         <section class="command-dialog-panel" id="commandSnippetFormPanel">
           <div class="command-form-row">
             <label>分组</label>
-            <div class="command-form-group-pills" id="commandSnippetGroupChoices"></div>
+            <div class="command-form-inline">
+              <div class="command-group-select" id="commandSnippetGroupSelect">
+                <button class="command-group-select-trigger" id="commandSnippetGroupTrigger" type="button" aria-expanded="false">
+                  <span class="command-group-select-label" id="commandSnippetGroupLabel">未分组</span>
+                  <span class="command-group-select-caret">v</span>
+                </button>
+                <div class="command-group-select-menu" id="commandSnippetGroupMenu" hidden></div>
+              </div>
+              <button class="command-mini-button" id="commandInlineNewGroupButton" type="button">+</button>
+            </div>
             <input id="commandSnippetGroupInput" type="hidden">
           </div>
           <div class="command-form-row">
@@ -3171,17 +3375,17 @@ SSH 认证中...</pre>
             <label for="commandSnippetNoteInput">备注</label>
             <textarea id="commandSnippetNoteInput" placeholder="记录用途、环境或执行前提醒"></textarea>
           </div>
+          <label class="command-form-check">
+            <input id="commandSnippetFavoriteInput" type="checkbox">
+            <span>收藏置顶</span>
+          </label>
         </section>
 
         <section class="command-dialog-panel" id="commandGroupPanel" hidden>
-          <div class="command-group-manager">
-            <div class="command-group-editor">
-              <input id="commandGroupNameInput" placeholder="输入分组名称">
-              <button class="command-mini-button primary" id="commandGroupSaveButton" type="button">新建分组</button>
-              <button class="command-mini-button" id="commandGroupCancelButton" type="button">取消</button>
-            </div>
-            <div class="command-group-manager-list" id="commandGroupList"></div>
-            <span class="command-form-help">删除分组只会把片段移动到未分组，不会删除片段本身。</span>
+          <div class="command-form-row">
+            <label for="commandGroupNameInput">分组名称</label>
+            <input id="commandGroupNameInput" placeholder="例如：日志排查">
+            <span class="command-form-help">当前原型只做一层文件夹分组；真正存在片段后会在树里显示。</span>
           </div>
         </section>
       </div>
@@ -3221,33 +3425,35 @@ SSH 认证中...</pre>
     const commandLibraryBody = document.getElementById("commandLibraryBody");
     const commandLibraryResultMeta = document.getElementById("commandLibraryResultMeta");
     const commandLibraryFooterStatus = document.getElementById("commandLibraryFooterStatus");
-    const commandManageButton = document.getElementById("commandManageButton");
     const commandNewSnippetButton = document.getElementById("commandNewSnippetButton");
+    const commandNewGroupButton = document.getElementById("commandNewGroupButton");
     const commandDialogBackdrop = document.getElementById("commandDialogBackdrop");
     const commandDialogTitle = document.getElementById("commandDialogTitle");
     const commandDialogCloseButton = document.getElementById("commandDialogCloseButton");
     const commandDialogCancelButton = document.getElementById("commandDialogCancelButton");
     const commandDialogSaveButton = document.getElementById("commandDialogSaveButton");
-    const commandDialogModeButtons = Array.from(document.querySelectorAll("[data-command-dialog-mode]"));
     const commandSnippetFormPanel = document.getElementById("commandSnippetFormPanel");
     const commandGroupPanel = document.getElementById("commandGroupPanel");
-    const commandSnippetGroupChoices = document.getElementById("commandSnippetGroupChoices");
+    const commandSnippetGroupSelect = document.getElementById("commandSnippetGroupSelect");
+    const commandSnippetGroupTrigger = document.getElementById("commandSnippetGroupTrigger");
+    const commandSnippetGroupLabel = document.getElementById("commandSnippetGroupLabel");
+    const commandSnippetGroupMenu = document.getElementById("commandSnippetGroupMenu");
     const commandSnippetGroupInput = document.getElementById("commandSnippetGroupInput");
+    const commandInlineNewGroupButton = document.getElementById("commandInlineNewGroupButton");
     const commandSnippetTitleInput = document.getElementById("commandSnippetTitleInput");
     const commandSnippetCommandInput = document.getElementById("commandSnippetCommandInput");
     const commandSnippetNoteInput = document.getElementById("commandSnippetNoteInput");
+    const commandSnippetFavoriteInput = document.getElementById("commandSnippetFavoriteInput");
     const commandGroupNameInput = document.getElementById("commandGroupNameInput");
-    const commandGroupSaveButton = document.getElementById("commandGroupSaveButton");
-    const commandGroupCancelButton = document.getElementById("commandGroupCancelButton");
-    const commandGroupList = document.getElementById("commandGroupList");
     let syncInputEnabled = false;
     let sendCount = 0;
     let activeSessionTarget = "192.168.10.75[Harbor] / 终端 2";
     let activeCommandMode = "snippets";
-    let activeSnippetGroup = "all";
-    let activeDialogMode = "snippet";
+    let commandDialogMode = "snippet";
     let editingSnippetId = null;
-    let editingGroupName = null;
+    let groupDialogReturnToSnippet = false;
+    let groupSelectOpen = false;
+    let collapsedCommandGroups = new Set(["日志"]);
     let footerStatusOverride = "";
 
     function minutesAgo(minutes) {
@@ -3383,56 +3589,35 @@ SSH 认证中...</pre>
       return snippets.filter((snippet) => normalizeSnippetGroupName(snippet.group || "") === groupName).length;
     }
 
-    function ensureActiveSnippetGroup() {
-      if (activeSnippetGroup === "all") {
-        return;
-      }
-      if (!orderedSnippetGroups(true).includes(activeSnippetGroup)) {
-        activeSnippetGroup = "all";
-      }
-    }
-
     function setSnippetFormGroup(groupName) {
       const normalized = normalizeSnippetGroupName(groupName || "");
       commandSnippetGroupInput.value = normalized;
-      renderSnippetGroupChoices(normalized);
+      renderSnippetGroupSelect(normalized);
     }
 
-    function renderSnippetGroupChoices(selectedGroup = commandSnippetGroupInput.value || "未分组") {
+    function ensureSnippetGroupExists(groupName) {
+      const normalized = normalizeSnippetGroupName(groupName || "");
+      if (normalized !== "未分组" && !commandSnippetGroups.some((group) => group.name === normalized)) {
+        commandSnippetGroups.push({ name: normalized });
+      }
+      return normalized;
+    }
+
+    function renderSnippetGroupSelect(selectedGroup = commandSnippetGroupInput.value || "未分组") {
       const selected = normalizeSnippetGroupName(selectedGroup || "");
       commandSnippetGroupInput.value = selected;
-      commandSnippetGroupChoices.innerHTML = orderedSnippetGroups(true)
+      commandSnippetGroupLabel.textContent = selected;
+      commandSnippetGroupTrigger.classList.toggle("active", groupSelectOpen);
+      commandSnippetGroupTrigger.setAttribute("aria-expanded", String(groupSelectOpen));
+      commandSnippetGroupMenu.hidden = !groupSelectOpen;
+      commandSnippetGroupMenu.innerHTML = orderedSnippetGroups(true)
         .map((groupName) => `
-          <button class="command-group-choice ${groupName === selected ? "active" : ""}" type="button" data-snippet-form-group="${escapeHtml(groupName)}">
-            ${escapeHtml(groupName)}
+          <button class="command-group-option ${groupName === selected ? "active" : ""}" type="button" data-snippet-form-group="${escapeHtml(groupName)}">
+            <span>${escapeHtml(groupName)}</span>
+            ${groupName === selected ? '<span class="command-group-option-mark">✓</span>' : ""}
           </button>
         `)
         .join("");
-    }
-
-    function renderSnippetFilters(snippetsAfterSearch) {
-      const groups = orderedSnippetGroups(true);
-      const allCount = snippetsAfterSearch.length;
-      const groupButtons = groups
-        .map((groupName) => {
-          const count = snippetCountByGroup(groupName, snippetsAfterSearch);
-          return `
-            <button class="command-filter-chip ${activeSnippetGroup === groupName ? "active" : ""}" type="button" data-snippet-filter="${escapeHtml(groupName)}">
-              <span>${escapeHtml(groupName)}</span>
-              <span>${count}</span>
-            </button>
-          `;
-        })
-        .join("");
-      return `
-        <div class="command-snippet-filter" aria-label="片段分组筛选">
-          <button class="command-filter-chip ${activeSnippetGroup === "all" ? "active" : ""}" type="button" data-snippet-filter="all">
-            <span>全部</span>
-            <span>${allCount}</span>
-          </button>
-          ${groupButtons}
-        </div>
-      `;
     }
 
     function compareSnippets(left, right) {
@@ -3490,8 +3675,8 @@ SSH 认证中...</pre>
         .some((field) => field.toLowerCase().includes(query));
     }
 
-    function groupedSnippets(snippets) {
-      const groups = new Map();
+    function groupedSnippets(snippets, includeEmptyGroups) {
+      const groups = new Map(orderedSnippetGroups(true).map((groupName) => [groupName, []]));
       snippets.forEach((item) => {
         const group = item.group || "未分组";
         if (!groups.has(group)) {
@@ -3499,28 +3684,58 @@ SSH 认证中...</pre>
         }
         groups.get(group).push(item);
       });
-      return Array.from(groups.entries());
+      return Array.from(groups.entries()).filter(([, items]) => includeEmptyGroups || items.length > 0);
     }
 
     function renderSnippetItem(item) {
       return `
-        <article class="command-item">
-          <div class="command-item-title">
-            <strong title="${escapeHtml(item.title)}">${escapeHtml(item.title)}</strong>
-            ${item.favorite ? '<span class="command-item-badge">常用</span>' : ""}
+        <article class="command-tree-row">
+          <div class="command-tree-main">
+            <div class="command-tree-title-line">
+              <strong title="${escapeHtml(item.title)}">${escapeHtml(item.title)}</strong>
+              ${item.favorite ? '<span class="command-item-badge">常用</span>' : ""}
+            </div>
+            <code class="command-tree-code" title="${escapeHtml(item.command)}">${escapeHtml(item.command)}</code>
+            <div class="command-tree-meta">
+              <span>使用 ${item.useCount} 次</span>
+              <span>${escapeHtml(formatDateTime(item.lastUsedAt || item.updatedAt))}</span>
+            </div>
           </div>
-          <div class="command-item-note">${escapeHtml(item.note || "未填写备注")}</div>
-          <pre class="command-item-code">${escapeHtml(item.command)}</pre>
-          <div class="command-item-meta">
-            <span>使用 ${item.useCount} 次</span>
-            <span>最近 ${escapeHtml(formatDateTime(item.lastUsedAt || item.updatedAt))}</span>
-          </div>
-          <div class="command-item-actions">
-            <button class="command-mini-button" type="button" data-command-action="insert-snippet" data-command-id="${item.id}">插入</button>
-            <button class="command-mini-button primary" type="button" data-command-action="run-snippet" data-command-id="${item.id}">执行</button>
-            <button class="command-mini-button" type="button" data-command-action="edit-snippet" data-command-id="${item.id}">编辑</button>
+          <div class="command-tree-actions" aria-label="片段操作">
+            <button class="command-icon-button" type="button" data-command-action="copy-snippet" data-command-id="${item.id}" title="复制命令" aria-label="复制命令">
+              <svg class="ui-icon" viewBox="0 0 16 16"><rect x="5.4" y="4.4" width="7" height="8" rx="1.2"/><path d="M3.4 10.4V3.8c0-.7.4-1.2 1.2-1.2h5.8"/></svg>
+            </button>
+            <button class="command-icon-button" type="button" data-command-action="insert-snippet" data-command-id="${item.id}" title="插入到命令操作台" aria-label="插入到命令操作台">
+              <svg class="ui-icon" viewBox="0 0 16 16"><path d="M10.8 4.4v5.1H4.4"/><path d="m6.6 7.3-2.2 2.2 2.2 2.2"/></svg>
+            </button>
+            <button class="command-icon-button primary" type="button" data-command-action="run-snippet" data-command-id="${item.id}" title="发送到当前终端" aria-label="发送到当前终端">
+              <svg class="ui-icon" viewBox="0 0 16 16"><path d="M5.4 3.8v8.4l6.9-4.2z"/></svg>
+            </button>
+            <button class="command-icon-button" type="button" data-command-action="edit-snippet" data-command-id="${item.id}" title="编辑" aria-label="编辑">
+              <svg class="ui-icon" viewBox="0 0 16 16"><path d="M3.8 11.8 4.4 9l5.9-5.9 2.5 2.5L6.9 11.5z"/><path d="M9.4 4l2.5 2.5"/><path d="M3.4 12.6h9.2"/></svg>
+            </button>
+            <button class="command-icon-button danger" type="button" data-command-action="delete-snippet" data-command-id="${item.id}" title="删除" aria-label="删除">
+              <svg class="ui-icon" viewBox="0 0 16 16"><path d="M3.6 4.6h8.8"/><path d="M6.4 4.6V3.3h3.2v1.3"/><path d="M5 6.2l.4 6.1h5.2l.4-6.1"/><path d="M6.9 7.4v3.4M9.1 7.4v3.4"/></svg>
+            </button>
           </div>
         </article>
+      `;
+    }
+
+    function renderSnippetGroup(group, items) {
+      const collapsed = collapsedCommandGroups.has(group);
+      const rows = items.length > 0
+        ? items.map(renderSnippetItem).join("")
+        : '<div class="command-tree-row"><div class="command-tree-main"><span class="command-form-help">空分组，保存命令时可选择。</span></div></div>';
+      return `
+        <section class="command-tree-group">
+          <button class="command-tree-group-head" type="button" data-command-group-toggle="${escapeHtml(group)}" aria-expanded="${String(!collapsed)}">
+            <span class="command-tree-caret">${collapsed ? ">" : "v"}</span>
+            <span class="command-tree-group-title">${escapeHtml(group)}</span>
+            <span class="command-tree-group-count">${items.length} 条</span>
+          </button>
+          ${collapsed ? "" : `<div class="command-tree-list">${rows}</div>`}
+        </section>
       `;
     }
 
@@ -3536,6 +3751,7 @@ SSH 认证中...</pre>
             </div>
           </div>
           <div class="command-history-actions">
+            <button class="command-mini-button" type="button" data-command-action="copy-history" data-command-id="${item.id}">复制</button>
             <button class="command-mini-button" type="button" data-command-action="insert-history" data-command-id="${item.id}">插入</button>
             <button class="command-mini-button primary" type="button" data-command-action="run-history" data-command-id="${item.id}">执行</button>
             <button class="command-mini-button" type="button" data-command-action="history-to-snippet" data-command-id="${item.id}">存为片段</button>
@@ -3549,39 +3765,28 @@ SSH 认证中...</pre>
       commandModeButtons.forEach((button) => {
         button.classList.toggle("active", button.dataset.commandMode === activeCommandMode);
       });
+      const isSnippetMode = activeCommandMode === "snippets";
+      commandNewSnippetButton.hidden = !isSnippetMode;
+      commandNewGroupButton.hidden = !isSnippetMode;
 
-      if (activeCommandMode === "snippets") {
-        ensureActiveSnippetGroup();
-        const snippetsAfterSearch = [...commandSnippets]
+      if (isSnippetMode) {
+        const snippets = [...commandSnippets]
           .sort(compareSnippets)
           .filter((item) => snippetMatchesQuery(item, query));
-        const snippets = activeSnippetGroup === "all"
-          ? snippetsAfterSearch
-          : snippetsAfterSearch.filter((item) => normalizeSnippetGroupName(item.group || "") === activeSnippetGroup);
-        const snippetFilters = renderSnippetFilters(snippetsAfterSearch);
-        commandLibraryResultMeta.textContent = activeSnippetGroup === "all"
-          ? `${snippets.length} 条片段`
-          : `${activeSnippetGroup} · ${snippets.length} 条`;
+        const includeEmptyGroups = query.length === 0;
+        commandLibraryResultMeta.textContent = `${snippets.length} 条片段`;
 
-        if (snippets.length === 0) {
-          commandLibraryBody.innerHTML = `${snippetFilters}<div class="command-library-empty">没有匹配到片段。<br>可以直接新建一个常用命令片段。</div>`;
+        if (snippets.length === 0 && query.length > 0) {
+          commandLibraryBody.innerHTML = '<div class="command-library-empty">没有匹配到片段。<br>可以调整搜索词，或直接新建一个常用命令。</div>';
           renderCommandLibraryFooterStatus();
           return;
         }
 
-        commandLibraryBody.innerHTML = snippetFilters + groupedSnippets(snippets)
-          .map(([group, items]) => `
-            <section class="command-group">
-              <div class="command-group-head">
-                <strong>${escapeHtml(group)}</strong>
-                <span>${items.length} 条</span>
-              </div>
-              <div class="command-library-list">
-                ${items.map(renderSnippetItem).join("")}
-              </div>
-            </section>
-          `)
-          .join("");
+        commandLibraryBody.innerHTML = `
+          <div class="command-snippet-tree">
+            ${groupedSnippets(snippets, includeEmptyGroups).map(([group, items]) => renderSnippetGroup(group, items)).join("")}
+          </div>
+        `;
       } else {
         const history = [...commandHistory]
           .sort(compareHistory)
@@ -3611,153 +3816,93 @@ SSH 认证中...</pre>
     }
 
     function setCommandDialogMode(mode) {
-      activeDialogMode = mode;
+      commandDialogMode = mode;
       const isSnippetMode = mode === "snippet";
-      commandDialogModeButtons.forEach((button) => {
-        button.classList.toggle("active", button.dataset.commandDialogMode === mode);
-      });
       commandSnippetFormPanel.hidden = !isSnippetMode;
       commandGroupPanel.hidden = isSnippetMode;
-      commandDialogSaveButton.hidden = !isSnippetMode;
       commandDialogTitle.textContent = isSnippetMode
-        ? (editingSnippetId ? "编辑命令片段" : "新建命令片段")
-        : "管理片段分组";
-      if (!isSnippetMode) {
-        renderGroupManager();
-        commandGroupNameInput.focus();
-      }
+        ? (editingSnippetId ? "编辑命令" : "新建命令")
+        : "新建分组";
     }
 
-    function resetGroupEditor() {
-      editingGroupName = null;
-      commandGroupNameInput.value = "";
-      commandGroupSaveButton.textContent = "新建分组";
-      commandGroupCancelButton.hidden = true;
-    }
-
-    function renderGroupManager() {
-      const groups = orderedSnippetGroups(true);
-      commandGroupList.innerHTML = groups
-        .map((groupName, index) => {
-          const isUngrouped = groupName === "未分组";
-          const managedIndex = commandSnippetGroups.findIndex((group) => group.name === groupName);
-          const canMoveUp = managedIndex > 0;
-          const canMoveDown = managedIndex >= 0 && managedIndex < commandSnippetGroups.length - 1;
-          const disabledAttr = isUngrouped ? "disabled" : "";
-          return `
-            <div class="command-group-manager-row" data-group-name="${escapeHtml(groupName)}">
-              <span class="command-group-grip">::</span>
-              <span class="command-group-manager-name" title="${escapeHtml(groupName)}">${escapeHtml(groupName)}</span>
-              <span class="command-group-manager-count">${snippetCountByGroup(groupName)} 条片段</span>
-              <span class="command-group-manager-actions">
-                <button class="command-mini-button" type="button" data-group-action="up" ${canMoveUp ? "" : "disabled"}>上移</button>
-                <button class="command-mini-button" type="button" data-group-action="down" ${canMoveDown ? "" : "disabled"}>下移</button>
-                <button class="command-mini-button" type="button" data-group-action="rename" ${disabledAttr}>重命名</button>
-                <button class="command-mini-button" type="button" data-group-action="delete" ${disabledAttr}>删除</button>
-              </span>
-            </div>
-          `;
-        })
-        .join("");
-    }
-
-    function saveGroupFromEditor() {
-      const nextName = normalizeSnippetGroupName(commandGroupNameInput.value);
-      if (nextName === "未分组") {
-        setFooterStatus("未分组是系统默认分组，不能作为自定义分组名称。", 2600);
-        commandGroupNameInput.focus();
-        return;
-      }
-
-      const duplicate = commandSnippetGroups.some((group) => group.name === nextName);
-      if (!editingGroupName && duplicate) {
-        setFooterStatus("这个分组已经存在。", 2200);
-        commandGroupNameInput.focus();
-        return;
-      }
-
-      if (editingGroupName) {
-        if (nextName !== editingGroupName && duplicate) {
-          setFooterStatus("这个分组已经存在。", 2200);
-          commandGroupNameInput.focus();
-          return;
-        }
-        commandSnippetGroups = commandSnippetGroups.map((group) =>
-          group.name === editingGroupName ? { name: nextName } : group
-        );
-        commandSnippets.forEach((snippet) => {
-          if (normalizeSnippetGroupName(snippet.group || "") === editingGroupName) {
-            snippet.group = nextName;
-          }
-        });
-        if (activeSnippetGroup === editingGroupName) {
-          activeSnippetGroup = nextName;
-        }
-        setFooterStatus("分组已重命名。", 2200);
-      } else {
-        commandSnippetGroups.push({ name: nextName });
-        setFooterStatus("分组已新建。", 2200);
-      }
-
-      resetGroupEditor();
-      renderGroupManager();
-      renderSnippetGroupChoices(commandSnippetGroupInput.value || "未分组");
-      renderCommandLibrary();
-    }
-
-    function moveGroup(groupName, direction) {
-      const index = commandSnippetGroups.findIndex((group) => group.name === groupName);
-      const nextIndex = index + direction;
-      if (index < 0 || nextIndex < 0 || nextIndex >= commandSnippetGroups.length) {
-        return;
-      }
-      const nextGroups = [...commandSnippetGroups];
-      const [group] = nextGroups.splice(index, 1);
-      nextGroups.splice(nextIndex, 0, group);
-      commandSnippetGroups = nextGroups;
-      renderGroupManager();
-      renderCommandLibrary();
-    }
-
-    function deleteGroup(groupName) {
-      if (groupName === "未分组") {
-        return;
-      }
-      commandSnippetGroups = commandSnippetGroups.filter((group) => group.name !== groupName);
-      commandSnippets.forEach((snippet) => {
-        if (normalizeSnippetGroupName(snippet.group || "") === groupName) {
-          snippet.group = "未分组";
-        }
-      });
-      if (activeSnippetGroup === groupName) {
-        activeSnippetGroup = "all";
-      }
-      resetGroupEditor();
-      renderGroupManager();
-      renderSnippetGroupChoices(commandSnippetGroupInput.value || "未分组");
-      renderCommandLibrary();
-      setFooterStatus("分组已删除，片段已移动到未分组。", 2600);
-    }
-
-    function openSnippetDialog(snippet = null, initialMode = "snippet") {
+    function openSnippetDialog(snippet = null) {
       editingSnippetId = snippet?.id || null;
-      resetGroupEditor();
+      groupDialogReturnToSnippet = false;
+      renderCommandLibrary();
       commandSnippetTitleInput.value = snippet?.title || "";
       commandSnippetCommandInput.value = snippet?.command || "";
       commandSnippetNoteInput.value = snippet?.note || "";
-      renderSnippetGroupChoices(snippet?.group || (activeSnippetGroup !== "all" ? activeSnippetGroup : "未分组"));
+      commandSnippetFavoriteInput.checked = Boolean(snippet?.favorite);
+      groupSelectOpen = false;
+      renderSnippetGroupSelect(snippet?.group || "未分组");
       commandDialogBackdrop.classList.add("open");
       commandDialogBackdrop.setAttribute("aria-hidden", "false");
-      setCommandDialogMode(initialMode);
-      if (initialMode === "snippet") {
-        commandSnippetTitleInput.focus();
-      }
+      setCommandDialogMode("snippet");
+      commandSnippetTitleInput.focus();
+    }
+
+    function openGroupDialog(returnToSnippet = false) {
+      groupDialogReturnToSnippet = returnToSnippet;
+      renderCommandLibrary();
+      commandGroupNameInput.value = "";
+      commandDialogBackdrop.classList.add("open");
+      commandDialogBackdrop.setAttribute("aria-hidden", "false");
+      setCommandDialogMode("group");
+      commandGroupNameInput.focus();
     }
 
     function closeSnippetDialog() {
       commandDialogBackdrop.classList.remove("open");
       commandDialogBackdrop.setAttribute("aria-hidden", "true");
       editingSnippetId = null;
+      groupDialogReturnToSnippet = false;
+    }
+
+    function saveGroupFromDialog() {
+      const rawName = commandGroupNameInput.value.trim();
+      if (!rawName) {
+        setFooterStatus("请输入分组名称。", 2200);
+        commandGroupNameInput.focus();
+        return;
+      }
+      const nextName = normalizeSnippetGroupName(rawName);
+      if (nextName === "未分组") {
+        setFooterStatus("未分组是系统默认分组，不能作为自定义分组名称。", 2600);
+        commandGroupNameInput.focus();
+        return;
+      }
+      if (commandSnippetGroups.some((group) => group.name === nextName)) {
+        setFooterStatus("这个分组已经存在。", 2200);
+        commandGroupNameInput.focus();
+        return;
+      }
+
+      commandSnippetGroups.push({ name: nextName });
+      collapsedCommandGroups.delete(nextName);
+      setSnippetFormGroup(nextName);
+      activeCommandMode = "snippets";
+      renderCommandLibrary();
+
+      if (groupDialogReturnToSnippet) {
+        groupDialogReturnToSnippet = false;
+        setCommandDialogMode("snippet");
+        commandSnippetTitleInput.focus();
+        setFooterStatus("分组已添加，可以继续保存命令。", 2200);
+        return;
+      }
+
+      closeSnippetDialog();
+      setFooterStatus("分组已新建。", 2200);
+    }
+
+    function deleteSnippet(id) {
+      const snippet = findSnippetById(id);
+      if (!snippet) {
+        return;
+      }
+      commandSnippets = commandSnippets.filter((item) => item.id !== id);
+      renderCommandLibrary();
+      setFooterStatus(`已删除片段“${snippet.title}”。`, 2200);
     }
 
     function findSnippetById(id) {
@@ -3820,15 +3965,16 @@ SSH 认证中...</pre>
       recordHistory(command, "主动发送");
       commandLastSent.textContent = `上次执行：${new Date().toLocaleTimeString("zh-CN", { hour12: false })}`;
       commandSendResult.textContent = `${label} 已模拟投递到当前终端：${activeSessionTarget}`;
-      setFooterStatus(`${label} 已执行，历史列表已更新。`, 2400);
+      setFooterStatus(`${label} 已发送到当前终端，历史列表已更新。`, 2400);
       renderCommandLibrary();
     }
 
     function saveSnippetFromDialog() {
-      const group = commandSnippetGroupInput.value.trim();
+      const group = ensureSnippetGroupExists(commandSnippetGroupInput.value.trim());
       const title = commandSnippetTitleInput.value.trim();
       const command = commandSnippetCommandInput.value.trim();
       const note = commandSnippetNoteInput.value.trim();
+      const favorite = commandSnippetFavoriteInput.checked;
 
       if (!title || !command) {
         setFooterStatus("名称和命令为必填项。", 2600);
@@ -3847,19 +3993,20 @@ SSH 认证中...</pre>
           closeSnippetDialog();
           return;
         }
-        snippet.group = group || "未分组";
+        snippet.group = group;
         snippet.title = title;
         snippet.command = command;
         snippet.note = note;
+        snippet.favorite = favorite;
         snippet.updatedAt = now;
       } else {
         commandSnippets.unshift({
           id: `snippet-${Math.random().toString(36).slice(2, 8)}`,
-          group: group || "未分组",
+          group,
           title,
           command,
           note,
-          favorite: false,
+          favorite,
           useCount: 0,
           lastUsedAt: "",
           updatedAt: now,
@@ -3868,8 +4015,17 @@ SSH 认证中...</pre>
 
       closeSnippetDialog();
       activeCommandMode = "snippets";
+      collapsedCommandGroups.delete(group);
       renderCommandLibrary();
-      setFooterStatus("命令片段已保存。", 2200);
+      setFooterStatus("命令已保存。", 2200);
+    }
+
+    function saveCommandDialog() {
+      if (commandDialogMode === "group") {
+        saveGroupFromDialog();
+        return;
+      }
+      saveSnippetFromDialog();
     }
 
     function commandTargetForCheckbox(checkbox) {
@@ -4101,9 +4257,14 @@ SSH 认证中...</pre>
     commandLibrarySearchInput.addEventListener("input", renderCommandLibrary);
 
     commandLibraryBody.addEventListener("click", (event) => {
-      const filterTrigger = event.target.closest("[data-snippet-filter]");
-      if (filterTrigger) {
-        activeSnippetGroup = filterTrigger.dataset.snippetFilter || "all";
+      const groupTrigger = event.target.closest("[data-command-group-toggle]");
+      if (groupTrigger) {
+        const groupName = groupTrigger.dataset.commandGroupToggle || "";
+        if (collapsedCommandGroups.has(groupName)) {
+          collapsedCommandGroups.delete(groupName);
+        } else {
+          collapsedCommandGroups.add(groupName);
+        }
         renderCommandLibrary();
         return;
       }
@@ -4119,6 +4280,7 @@ SSH 认证中...</pre>
         const snippet = findSnippetById(id);
         if (snippet) {
           insertCommandIntoComposer(snippet.command, `片段“${snippet.title}”`);
+          renderCommandLibrary();
         }
         return;
       }
@@ -4137,6 +4299,11 @@ SSH 认证中...</pre>
         if (snippet) {
           openSnippetDialog(snippet);
         }
+        return;
+      }
+
+      if (action === "delete-snippet") {
+        deleteSnippet(id);
         return;
       }
 
@@ -4169,81 +4336,54 @@ SSH 认证中...</pre>
       }
     });
 
-    commandManageButton.addEventListener("click", () => {
-      openSnippetDialog(null, "groups");
-    });
-
     commandNewSnippetButton.addEventListener("click", () => {
       openSnippetDialog({
-        group: "",
+        group: "未分组",
         title: deriveSnippetTitle(commandInput.value.trim() || "新建片段"),
         command: commandInput.value.trim(),
         note: "",
+        favorite: false,
       });
+    });
+
+    commandNewGroupButton.addEventListener("click", () => {
+      openGroupDialog(false);
     });
 
     commandDialogCloseButton.addEventListener("click", closeSnippetDialog);
     commandDialogCancelButton.addEventListener("click", closeSnippetDialog);
-    commandDialogSaveButton.addEventListener("click", saveSnippetFromDialog);
+    commandDialogSaveButton.addEventListener("click", saveCommandDialog);
 
-    commandDialogModeButtons.forEach((button) => {
-      button.addEventListener("click", () => {
-        setCommandDialogMode(button.dataset.commandDialogMode || "snippet");
-      });
+    commandSnippetGroupTrigger.addEventListener("click", () => {
+      groupSelectOpen = !groupSelectOpen;
+      renderSnippetGroupSelect(commandSnippetGroupInput.value || "未分组");
     });
 
-    commandSnippetGroupChoices.addEventListener("click", (event) => {
+    commandSnippetGroupMenu.addEventListener("click", (event) => {
       const trigger = event.target.closest("[data-snippet-form-group]");
       if (!trigger) {
         return;
       }
+      groupSelectOpen = false;
       setSnippetFormGroup(trigger.dataset.snippetFormGroup || "未分组");
     });
 
-    commandGroupSaveButton.addEventListener("click", saveGroupFromEditor);
-
-    commandGroupCancelButton.addEventListener("click", () => {
-      resetGroupEditor();
-      commandGroupNameInput.focus();
-    });
-
-    commandGroupList.addEventListener("click", (event) => {
-      const trigger = event.target.closest("[data-group-action]");
-      if (!trigger) {
-        return;
-      }
-      const row = trigger.closest("[data-group-name]");
-      const groupName = row?.dataset.groupName || "";
-      const action = trigger.dataset.groupAction;
-      if (!groupName) {
-        return;
-      }
-
-      if (action === "up") {
-        moveGroup(groupName, -1);
-        return;
-      }
-      if (action === "down") {
-        moveGroup(groupName, 1);
-        return;
-      }
-      if (action === "rename") {
-        editingGroupName = groupName;
-        commandGroupNameInput.value = groupName;
-        commandGroupSaveButton.textContent = "保存名称";
-        commandGroupCancelButton.hidden = false;
-        commandGroupNameInput.focus();
-        return;
-      }
-      if (action === "delete") {
-        deleteGroup(groupName);
-      }
+    commandInlineNewGroupButton.addEventListener("click", () => {
+      openGroupDialog(true);
     });
 
     commandDialogBackdrop.addEventListener("click", (event) => {
       if (event.target === commandDialogBackdrop) {
         closeSnippetDialog();
       }
+    });
+
+    document.addEventListener("click", (event) => {
+      if (!groupSelectOpen || commandSnippetGroupSelect.contains(event.target)) {
+        return;
+      }
+      groupSelectOpen = false;
+      renderSnippetGroupSelect(commandSnippetGroupInput.value || "未分组");
     });
 
     document.addEventListener("keydown", (event) => {
