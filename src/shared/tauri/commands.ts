@@ -11,6 +11,12 @@ import type {
   RevealedCredentialSecret,
 } from "../../features/connections/connectionTypes";
 import type {
+  CommandHistoryEntry,
+  CommandHistoryRecordRequest,
+  CommandSnippet,
+  CommandSnippetInput,
+} from "../../features/commands/commandLibraryTypes";
+import type {
   LocalPathMetadataResult,
   LocalUploadTempResult,
   RemoteFileDeleteInput,
@@ -148,6 +154,54 @@ export function credentialDelete(id: string) {
 
 export function credentialRevealSecret(id: string) {
   return invoke<RevealedCredentialSecret>("credential_reveal_secret", { id });
+}
+
+export function commandSnippetList() {
+  return invoke<CommandSnippet[]>("command_snippet_list");
+}
+
+export function commandSnippetUpsert(request: CommandSnippetInput) {
+  return invoke<CommandSnippet>("command_snippet_upsert", { request });
+}
+
+export function commandSnippetDelete(id: string) {
+  return invoke<void>("command_snippet_delete", {
+    request: {
+      id,
+    },
+  });
+}
+
+export function commandSnippetMarkUsed(id: string) {
+  return invoke<CommandSnippet>("command_snippet_mark_used", {
+    request: {
+      id,
+    },
+  });
+}
+
+export function commandHistoryList(limit?: number) {
+  return invoke<CommandHistoryEntry[]>("command_history_list", {
+    request: {
+      limit,
+    },
+  });
+}
+
+export function commandHistoryRecord(request: CommandHistoryRecordRequest) {
+  return invoke<CommandHistoryEntry>("command_history_record", { request });
+}
+
+export function commandHistoryDelete(id: string) {
+  return invoke<void>("command_history_delete", {
+    request: {
+      id,
+    },
+  });
+}
+
+export function commandHistoryClear() {
+  return invoke<void>("command_history_clear");
 }
 
 export function connectionTest(request: ConnectionRuntimeCredentialRequest) {

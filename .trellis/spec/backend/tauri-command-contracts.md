@@ -1269,9 +1269,9 @@ let command = build_process_signal_command(pid, signal)?;
 
 ### 1. Scope / Trigger
 
-- Trigger: backend code adds or changes SSH tunnel rules, local port forwarding lifecycle, tunnel persistence, prompt credentials, or `tunnel_*` Tauri commands.
+- Trigger: backend code adds or changes SSH tunnel rules, local/dynamic/remote forwarding lifecycle, tunnel persistence, prompt credentials, or `tunnel_*` Tauri commands.
 - Source files: `src-tauri/src/tunnels.rs`, `src-tauri/src/terminal/session.rs`, `src-tauri/src/commands.rs`, `src-tauri/src/lib.rs`, `src-tauri/src/ssh_config.rs`, `src/shared/tauri/commands.ts`, and `src/features/tunnels/tunnelTypes.ts`.
-- This is a cross-layer command contract because Rust owns saved SSH resolution, local `TcpListener` binding, direct-tcpip forwarding, runtime state, and `tunnels.json`, while React renders and edits typed rules.
+- This is a cross-layer command contract because Rust owns saved SSH resolution, local `TcpListener` binding, remote `tcpip-forward` lifecycle, direct-tcpip forwarding, runtime state, and SQLite tunnel persistence, while React renders and edits typed rules.
 
 ### 2. Signatures
 
@@ -1283,6 +1283,10 @@ let command = build_process_signal_command(pid, signal)?;
 - `tunnel_autostart(app: AppHandle, manager: State<TunnelManager>) -> Result<Vec<TunnelRuleWithState>, AppError>`
 - `ReusableForwardSession::connect_resolved(app, config) -> Result<ReusableForwardSession, AppError>`
 - `ReusableForwardSession::forward_tcp_stream(local_stream, remote_host, remote_port) -> Result<(), AppError>`
+- `ReusableForwardSession::open_direct_tcpip_stream(remote_host, remote_port, source_host, source_port) -> Result<ChannelStream<client::Msg>, AppError>`
+- `ReusableForwardSession::request_remote_forward(remote_host, remote_port) -> Result<u16, AppError>`
+- `ReusableForwardSession::cancel_remote_forward(remote_host, remote_port) -> Result<(), AppError>`
+- `ReusableForwardSession::set_remote_forward_target(local_host, local_port, event_handler)`
 
 Request fields:
 
@@ -1290,7 +1294,7 @@ Request fields:
 TunnelRuleInput {
     id: Option<String>,
     name: Option<String>,
-    kind: TunnelKind, // local | remote | dynamic; MVP accepts local only
+    kind: TunnelKind, // local | remote | dynamic
     connection_id: String,
     local_host: String,
     local_port: u16,
@@ -1332,13 +1336,19 @@ TunnelRuntimeState {
 ### 3. Contracts
 
 - Tunnel rules are stored in SQLite through `StorageRepository`; legacy `tunnels.json` is only a migration source. Runtime state is kept only in `TunnelManager` memory.
-- `TunnelKind` is persisted for future extension, but MVP validation must reject anything except `local`.
+- `TunnelKind` supports all three SSH forwarding modes:
+  - `local`: `local_host:local_port` is the local listener and `remote_host:remote_port` is the SSH-server-side target.
+  - `dynamic`: `local_host:local_port` is a no-auth SOCKS5 listener. `remote_host` is normalized to an empty string and `remote_port` to `1`; the actual target comes from each SOCKS5 CONNECT request.
+  - `remote`: `remote_host:remote_port` is the SSH-server-side listener and `local_host:local_port` is the local target service.
 - A tunnel rule references a saved `ConnectionProfile` by `connection_id`. React must not send host, port, proxy, jump, password, private-key passphrase, or raw SSH config in tunnel commands.
 - `tunnel_start` resolves the saved connection through `resolve_saved_connection(...)` and reuses credential mode, proxy, SSH jump, known_hosts, and timeout behavior.
 - Runtime prompt credentials may be supplied only through `TunnelStartRequest.runtime_credential`. They are for this one start attempt and must not be written to SQLite, vault, or legacy JSON stores.
 - `tunnel_autostart` starts only `auto_start = true` rules. If a prompt credential is required, it must not open a prompt; set the state to `credential_required` and continue with other rules.
-- `running` means the local listener is bound and the SSH forwarding session is ready. It must not claim the remote target service is healthy until a local client actually connects.
+- For `local` and `dynamic`, `running` means the local listener is bound and the SSH forwarding session is ready. It must not claim the remote target service is healthy until a local client actually connects.
+- For `remote`, `running` means the SSH server accepted `tcpip-forward`. It must not claim the local target service is healthy; forwarded connections may later fail to connect to `local_host:local_port` and should update runtime `last_error` without stopping the listener.
 - Per local client connection, Rust opens `channel_open_direct_tcpip(remote_host, remote_port, source_host, source_port)` and bridges the local `TcpStream` with the SSH channel stream.
+- Dynamic SOCKS supports SOCKS5 no-auth TCP CONNECT only. It must support IPv4, domain, and IPv6 targets; reject unsupported auth methods, commands, address types, malformed targets, and port `0` with structured tunnel SOCKS errors.
+- Remote forwarding requests must use `tcpip_forward(remote_host, remote_port)`, handle the returned bound port, and cancel with `cancel_tcpip_forward(remote_host, bound_port)` during stop/delete.
 - Stopping or deleting a running tunnel must close the SSH session and release the local listener. Deleting a running rule stops it first.
 - `TunnelManager.store_lock` may protect only `TunnelStore` load/upsert/delete/save file operations. Do not hold it across `resolve_saved_connection`, local `TcpListener` binding, SSH handshake/auth, accept-loop setup, or autostart attempts; those operations can block for network timeouts and must not freeze tunnel list/edit/stop/delete commands.
 - The accept loop owns runtime cleanup on abnormal listener exit: set a failed state, remove the rule id from the `running` map, then close the SSH session. A stale `running` entry whose state is `failed`, `credential_required`, or `stopped` must be replaceable by the next start attempt instead of short-circuiting back to the stale state.
@@ -1352,13 +1362,17 @@ TunnelRuntimeState {
 | --- | --- | --- |
 | Blank or unknown rule id | `tunnel_rule_missing` | false |
 | Editing a running rule | `tunnel_update_running` | true |
-| Non-local `kind` in MVP | `tunnel_kind_unsupported` | true |
 | Blank `connection_id` | `tunnel_connection_missing` | true |
-| Blank `local_host` | `tunnel_local_host_missing` | true |
-| Blank `remote_host` | `tunnel_remote_host_missing` | true |
-| `local_port == 0` | `tunnel_local_port_invalid` | true |
-| `remote_port == 0` | `tunnel_remote_port_invalid` | true |
+| Blank local listener/SOCKS address or remote-forward local target | `tunnel_local_host_missing` | true |
+| Blank local-forward target or remote-forward remote listener | `tunnel_remote_host_missing` | true |
+| Required local/SOCKS/target port is `0` | `tunnel_local_port_invalid` | true |
+| Required remote target/listener port is `0` | `tunnel_remote_port_invalid` | true |
 | Local bind fails, usually port already used | `tunnel_local_bind_failed` | true |
+| SOCKS handshake/auth/command/address type unsupported | `tunnel_socks_handshake_failed` | true |
+| SOCKS target host/port cannot be parsed | `tunnel_socks_target_missing` | true |
+| SSH server rejects remote forwarding | `tunnel_remote_forward_denied` | true |
+| SSH remote forwarding cancellation fails | `tunnel_remote_forward_cancel_failed` | true |
+| Remote forwarded connection cannot reach local target | `tunnel_remote_target_connect_failed` | true |
 | Prompt credential missing on manual start | `credential_prompt_required` | true |
 | Prompt credential missing on autostart | state `credential_required` | n/a |
 | SSH connect/auth/direct-tcpip failures | `tunnel_ssh_*` / `tunnel_direct_tcpip_failed` | true |
@@ -1368,13 +1382,16 @@ TunnelRuntimeState {
 ### 5. Good / Base / Bad Cases
 
 - Good: `tunnel_start` receives a saved rule id, resolves the saved connection, binds `127.0.0.1:15432`, opens one reusable SSH forwarding session, and creates direct-tcpip channels only when local clients connect.
+- Good: a `dynamic` rule binds `127.0.0.1:1080`, completes SOCKS5 no-auth negotiation, parses the CONNECT target, opens direct-tcpip to that target, and only then sends SOCKS success to the local client.
+- Good: a `remote` rule requests `tcpip-forward` on the server, stores the returned bound port in runtime state, and forwards incoming server channels to the configured local target without claiming the local service is healthy.
 - Good: `tunnel_autostart` starts saved auto-start rules and marks prompt-credential rules as `credential_required` without blocking app startup.
 - Base: a rule references a deleted connection; list still returns the rule, while start fails with the saved-connection error so the user can edit or delete the rule.
 - Bad: a tunnel command accepts frontend-supplied SSH host/password fields, writes prompt credentials into the rule store, silently downgrades SSH jump failures to direct connections, or reports remote service success just because the local listener was bound.
 
 ### 6. Tests Required
 
-- Unit-test tunnel rule validation for blank connection id, blank local/remote host, zero ports, non-local kind, and trimming/default name behavior.
+- Unit-test tunnel rule validation for blank connection id, kind-specific local/remote host semantics, zero required ports, dynamic remote-field normalization, and trimming/default name behavior.
+- Unit-test SOCKS5 parser behavior for no-auth selection, IPv4/domain/IPv6 CONNECT targets, unsupported methods, unsupported commands, malformed targets, and port `0`.
 - Unit-test tunnel store round-trip for `{ version, rules }`, created/updated timestamps, and delete-missing behavior.
 - Unit-test tunnel runtime lifecycle helpers for replacing stale failed/credential/stopped runtime entries and for resolving a stopped response after a removed running rule no longer exists in the persisted store.
 - Cross-check command registration in `commands.rs`, `lib.rs`, and `src/shared/tauri/commands.ts` whenever adding or renaming a `tunnel_*` command.
@@ -1402,6 +1419,67 @@ let config = ResolvedSshConfig {
 let config = resolve_saved_connection(app, &rule.connection_id, request.runtime_credential)?;
 let session = ReusableForwardSession::connect_resolved(app, &config).await?;
 ```
+
+## Scenario: Command Library Commands
+
+### 1. Scope / Trigger
+
+- Trigger: backend code adds or changes Command Sender snippets, Command Sender history, SQLite schema, or command-library Tauri commands.
+- Source files: `src-tauri/src/command_library.rs`, `src-tauri/src/storage_repository.rs`, `src-tauri/src/storage_sqlite.rs`, `src-tauri/src/commands.rs`, `src-tauri/src/lib.rs`, `src/shared/tauri/commands.ts`, and `src/features/layout/WorkspaceShell.tsx`.
+- This is a cross-layer storage contract because Rust owns validation, SQLite persistence, history merge semantics, and error codes while React owns only UI selection and management.
+
+### 2. Signatures
+
+```rust
+command_snippet_list(app: AppHandle) -> Result<Vec<CommandSnippet>, AppError>
+command_snippet_upsert(app: AppHandle, request: CommandSnippetInput) -> Result<CommandSnippet, AppError>
+command_snippet_delete(app: AppHandle, request: CommandSnippetIdRequest) -> Result<(), AppError>
+command_snippet_mark_used(app: AppHandle, request: CommandSnippetIdRequest) -> Result<CommandSnippet, AppError>
+command_history_list(app: AppHandle, request: CommandHistoryListRequest) -> Result<Vec<CommandHistoryEntry>, AppError>
+command_history_record(app: AppHandle, request: CommandHistoryRecordRequest) -> Result<CommandHistoryEntry, AppError>
+command_history_delete(app: AppHandle, request: CommandHistoryIdRequest) -> Result<(), AppError>
+command_history_clear(app: AppHandle) -> Result<(), AppError>
+```
+
+Serialized fields use snake_case. `CommandHistorySource` currently serializes only `command_sender`.
+
+### 3. Contracts
+
+- Command snippets and command history are production data in SQLite tables `command_snippets` and `command_history`; do not use localStorage or JSON files as production storage.
+- Command history is recorded only after Command Sender writes at least one target terminal input stream successfully. Do not capture ordinary xterm `onData`, shell history files, passwords, TUI keystrokes, target session ids, connection ids, or full target lists.
+- `command_history.command` is unique. Recording an existing command must merge with `ON CONFLICT(command)`, increment `use_count`, update `last_used_at`, and keep the newest `target_count` / `append_enter`.
+- Snippet `tags` are accepted as an array, trimmed, deduplicated case-insensitively, and stored as JSON text in SQLite.
+- Command text is trimmed before storage and limited by `COMMAND_TEXT_MAX_LENGTH`. Rust validation is authoritative; React may disable obvious empty saves but must still surface backend validation errors.
+- `command_snippet_mark_used` updates only snippet usage metadata and must not mutate command text, title, tags, or favorite state.
+- Command library commands return `AppError { code, message, raw_message, recoverable }` on failure and must be registered in both `commands.rs` and `lib.rs`.
+
+### 4. Validation & Error Matrix
+
+| Condition | Error code | Recoverable |
+| --- | --- | --- |
+| Snippet title is blank | `command_snippet_title_missing` | true |
+| Snippet command is blank | `command_snippet_command_missing` | true |
+| Snippet command exceeds the configured length | `command_snippet_too_long` | true |
+| Snippet id is missing during delete/mark-used | `command_snippet_missing` | false |
+| History command is blank | `command_history_command_missing` | true |
+| History command exceeds the configured length | `command_history_too_long` | true |
+| History id is missing during delete | `command_history_missing` | false |
+
+### 5. Good / Base / Bad Cases
+
+- Good: Command Sender writes `df -h` to 2 of 3 targets, then records one history row with `target_count=2`, `append_enter=true`, and no target ids.
+- Good: selecting a snippet and sending it unchanged records history and increments that snippet's use count.
+- Base: browser preview has no Tauri runtime; the command library lists are empty and real save/delete actions are unavailable.
+- Bad: terminal `onData` records every keypress, history rows contain `session_id`, snippets are stored in localStorage, or React invents a successful history row after every target write failed.
+
+### 6. Tests Required
+
+- Unit-test snippet validation for missing title, missing command, length limit, tag trimming, and case-insensitive tag dedupe.
+- Unit-test snippet repository round-trip, delete missing, usage update, and list sorting.
+- Unit-test history merge by command, limit clamping, delete, clear, and list sorting.
+- Cross-check command registration in `commands.rs`, `lib.rs`, and `src/shared/tauri/commands.ts`.
+- Run `cargo test --manifest-path src-tauri/Cargo.toml command_library --lib` after changing command-library validation or repository logic.
+- Run `npm run check` after changing frontend command-library types, wrappers, or Command Sender UI when type-check runs are approved for the session.
 
 ## Scenario: Window Material Commands
 

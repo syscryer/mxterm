@@ -109,6 +109,36 @@ CREATE TABLE IF NOT EXISTS tunnels (
 );
 
 CREATE INDEX IF NOT EXISTS idx_tunnels_connection_id ON tunnels(connection_id);
+
+CREATE TABLE IF NOT EXISTS command_snippets (
+    id TEXT PRIMARY KEY,
+    title TEXT NOT NULL,
+    command TEXT NOT NULL,
+    description TEXT,
+    tags_json TEXT NOT NULL,
+    favorite INTEGER NOT NULL DEFAULT 0,
+    use_count INTEGER NOT NULL DEFAULT 0,
+    last_used_at TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_command_snippets_usage
+    ON command_snippets(favorite DESC, last_used_at DESC, updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS command_history (
+    id TEXT PRIMARY KEY,
+    command TEXT NOT NULL UNIQUE,
+    source TEXT NOT NULL,
+    target_count INTEGER NOT NULL DEFAULT 0,
+    append_enter INTEGER NOT NULL DEFAULT 1,
+    use_count INTEGER NOT NULL DEFAULT 1,
+    last_used_at TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_command_history_last_used_at
+    ON command_history(last_used_at DESC);
 "#;
 
 pub struct SqliteStore {
@@ -238,7 +268,7 @@ mod tests {
 
     use super::{normalize_known_host_host, SqliteStore, SQLITE_SCHEMA_VERSION};
 
-    const CORE_TABLES: [&str; 8] = [
+    const CORE_TABLES: [&str; 10] = [
         "schema_migrations",
         "app_meta",
         "app_settings",
@@ -247,6 +277,8 @@ mod tests {
         "credentials",
         "known_hosts",
         "tunnels",
+        "command_snippets",
+        "command_history",
     ];
 
     #[test]

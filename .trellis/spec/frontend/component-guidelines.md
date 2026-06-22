@@ -301,6 +301,10 @@ Ant Design, Mantine, or similar libraries just to fix one modal or button.
   target terminal input stream; it must not claim remote command execution
   success, inspect remote output as proof, store session ids on
   `ConnectionProfile`, or log full command payloads.
+- Command Sender snippets and history are assistance around active sends only.
+  History may record a command after at least one `terminalWrite` target
+  succeeds, but it must not listen to ordinary xterm input, parse shell history,
+  record passwords/TUI keystrokes, or store target session ids / connection ids.
 - Command Sender's terminal-subtab toolbar entry should live in the far-right
   terminal action group alongside the right-pane open/close button. Keep future
   terminal-level utility buttons in the same action group instead of using

@@ -11,6 +11,10 @@ use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::sync::Mutex;
 
 use crate::app_error::AppError;
+use crate::command_library::{
+    CommandHistoryEntry, CommandHistoryIdRequest, CommandHistoryListRequest,
+    CommandHistoryRecordRequest, CommandSnippet, CommandSnippetIdRequest, CommandSnippetInput,
+};
 use crate::connections::{
     parse_remote_system_probe, ConnectionAuthKind, ConnectionProfile, ConnectionProfileInput,
     REMOTE_SYSTEM_PROBE_COMMAND,
@@ -643,6 +647,64 @@ pub async fn tunnel_autostart(
     manager: State<'_, TunnelManager>,
 ) -> Result<Vec<TunnelRuleWithState>, AppError> {
     manager.autostart(&app).await
+}
+
+#[tauri::command]
+pub fn command_snippet_list(app: AppHandle) -> Result<Vec<CommandSnippet>, AppError> {
+    StorageRepository::open_app(&app)?.command_snippet_list()
+}
+
+#[tauri::command]
+pub fn command_snippet_upsert(
+    app: AppHandle,
+    request: CommandSnippetInput,
+) -> Result<CommandSnippet, AppError> {
+    StorageRepository::open_app(&app)?.command_snippet_upsert(request, &now_timestamp()?)
+}
+
+#[tauri::command]
+pub fn command_snippet_delete(
+    app: AppHandle,
+    request: CommandSnippetIdRequest,
+) -> Result<(), AppError> {
+    StorageRepository::open_app(&app)?.command_snippet_delete(request)
+}
+
+#[tauri::command]
+pub fn command_snippet_mark_used(
+    app: AppHandle,
+    request: CommandSnippetIdRequest,
+) -> Result<CommandSnippet, AppError> {
+    StorageRepository::open_app(&app)?.command_snippet_mark_used(request, &now_timestamp()?)
+}
+
+#[tauri::command]
+pub fn command_history_list(
+    app: AppHandle,
+    request: CommandHistoryListRequest,
+) -> Result<Vec<CommandHistoryEntry>, AppError> {
+    StorageRepository::open_app(&app)?.command_history_list(request)
+}
+
+#[tauri::command]
+pub fn command_history_record(
+    app: AppHandle,
+    request: CommandHistoryRecordRequest,
+) -> Result<CommandHistoryEntry, AppError> {
+    StorageRepository::open_app(&app)?.command_history_record(request, &now_timestamp()?)
+}
+
+#[tauri::command]
+pub fn command_history_delete(
+    app: AppHandle,
+    request: CommandHistoryIdRequest,
+) -> Result<(), AppError> {
+    StorageRepository::open_app(&app)?.command_history_delete(request)
+}
+
+#[tauri::command]
+pub fn command_history_clear(app: AppHandle) -> Result<(), AppError> {
+    StorageRepository::open_app(&app)?.command_history_clear()
 }
 
 #[tauri::command]
