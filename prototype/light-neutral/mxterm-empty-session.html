@@ -1313,12 +1313,510 @@
       background: var(--mx-panel-soft);
     }
 
+    .file-panel-actions button,
+    .file-transfer-bar button,
+    .file-transfer-drawer-head button,
+    .file-transfer-row-actions button {
+      height: 26px;
+      border: 1px solid transparent;
+      border-radius: 7px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 5px;
+      padding: 0 8px;
+      color: var(--mx-muted);
+      background: transparent;
+      font-size: 12px;
+      font-weight: 650;
+    }
+
+    .file-panel-actions button:hover,
+    .file-transfer-bar button:hover,
+    .file-transfer-drawer-head button:hover,
+    .file-transfer-row-actions button:hover {
+      border-color: var(--mx-line-soft);
+      color: var(--mx-text);
+      background: var(--mx-active);
+    }
+
+    .file-browser-pane {
+      min-width: 0;
+      min-height: 0;
+      display: grid;
+      grid-template-rows: auto auto minmax(0, 1fr) auto;
+      overflow: hidden;
+      background: var(--mx-panel-soft);
+    }
+
+    .file-browser-pane[hidden],
+    .command-library-pane[hidden],
+    .tool-placeholder-pane[hidden] {
+      display: none;
+    }
+
     .file-tree {
       min-width: 0;
       min-height: 0;
       overflow: auto;
       padding: 6px;
       background: var(--mx-panel-soft);
+    }
+
+    .file-tree-section {
+      display: grid;
+      gap: 3px;
+    }
+
+    .file-tree-label {
+      height: 24px;
+      display: flex;
+      align-items: center;
+      padding: 0 7px;
+      color: var(--mx-subtle);
+      font-size: 11px;
+      font-weight: 700;
+    }
+
+    .file-tree .file-row,
+    .file-tree .tree-folder-row {
+      height: 31px;
+      border: 1px solid transparent;
+    }
+
+    .file-row.selected {
+      border: 1px solid color-mix(in srgb, var(--mx-primary) 22%, transparent);
+      color: #123067;
+      background: color-mix(in srgb, var(--mx-primary) 13%, var(--mx-panel));
+      font-weight: 650;
+    }
+
+    .file-row .file-size,
+    .tree-folder-row .file-size {
+      color: var(--mx-subtle);
+      font-size: 11px;
+      font-weight: 600;
+    }
+
+    .file-transfer-dock {
+      min-width: 0;
+      border-top: 1px solid var(--mx-line);
+      background: color-mix(in srgb, var(--mx-panel) 82%, var(--mx-panel-muted));
+    }
+
+    .file-transfer-bar {
+      min-width: 0;
+      height: 38px;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 58px 34px 54px;
+      align-items: center;
+      gap: 6px;
+      padding: 0 9px;
+    }
+
+    .file-transfer-summary {
+      min-width: 0;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      overflow: hidden;
+      color: var(--mx-muted);
+      font-size: 12px;
+      font-weight: 650;
+      white-space: nowrap;
+    }
+
+    .file-transfer-summary strong {
+      color: var(--mx-text);
+      font-size: 12px;
+    }
+
+    .file-transfer-chip {
+      height: 20px;
+      border-radius: 999px;
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      padding: 0 7px;
+      color: var(--mx-muted);
+      background: rgba(100, 116, 139, 0.1);
+      font-size: 11px;
+      font-weight: 700;
+    }
+
+    .file-transfer-chip.running {
+      color: #1d4ed8;
+      background: var(--mx-primary-soft);
+    }
+
+    .file-transfer-chip.error {
+      color: var(--mx-danger);
+      background: color-mix(in srgb, var(--mx-danger) 10%, var(--mx-panel));
+    }
+
+    .file-transfer-progress-mini {
+      width: 58px;
+      height: 4px;
+      border-radius: 999px;
+      overflow: hidden;
+      background: rgba(100, 116, 139, 0.16);
+    }
+
+    .file-transfer-progress-mini span {
+      display: block;
+      height: 100%;
+      border-radius: inherit;
+      background: var(--mx-primary);
+    }
+
+    .file-transfer-percent {
+      color: var(--mx-muted);
+      font-size: 12px;
+      font-weight: 700;
+      text-align: right;
+      white-space: nowrap;
+    }
+
+    #fileTransferToggle {
+      width: 54px;
+      padding: 0 6px;
+    }
+
+    .file-transfer-drawer {
+      display: grid;
+      grid-template-rows: auto minmax(0, 1fr);
+      max-height: 0;
+      overflow: hidden;
+      border-top: 1px solid transparent;
+      transition: max-height 180ms ease, border-color 180ms ease;
+    }
+
+    .file-transfer-dock.open .file-transfer-drawer {
+      max-height: 270px;
+      border-top-color: var(--mx-line-soft);
+    }
+
+    .file-transfer-dock.open .file-transfer-toggle-caret {
+      transform: rotate(180deg);
+    }
+
+    .file-transfer-drawer-head {
+      min-width: 0;
+      height: 34px;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      align-items: center;
+      gap: 8px;
+      padding: 0 9px;
+      background: rgba(248, 250, 252, 0.72);
+    }
+
+    .file-transfer-drawer-head strong {
+      color: var(--mx-text);
+      font-size: 12px;
+    }
+
+    .file-transfer-list {
+      min-width: 0;
+      max-height: 224px;
+      overflow: visible;
+      display: grid;
+      align-content: start;
+      gap: 4px;
+      padding: 7px;
+    }
+
+    .file-transfer-row {
+      position: relative;
+      min-width: 0;
+      display: grid;
+      grid-template-columns: 30px minmax(0, 1fr) auto;
+      align-items: center;
+      gap: 8px;
+      border: 1px solid var(--mx-line-soft);
+      border-radius: 8px;
+      padding: 7px 8px 9px;
+      overflow: visible;
+      background: color-mix(in srgb, var(--mx-panel) 88%, var(--mx-panel-soft));
+    }
+
+    .file-transfer-row:hover,
+    .file-transfer-row:focus-within {
+      border-color: color-mix(in srgb, var(--mx-primary) 18%, var(--mx-line));
+      background: var(--mx-panel);
+    }
+
+    .file-transfer-row-icon {
+      width: 28px;
+      height: 28px;
+      border: 1px solid var(--mx-line-soft);
+      border-radius: 7px;
+      position: relative;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      color: var(--mx-muted);
+      background: var(--mx-panel-soft);
+    }
+
+    .file-transfer-row-icon.archive {
+      color: color-mix(in srgb, var(--mx-primary) 72%, var(--mx-muted));
+      background: color-mix(in srgb, var(--mx-primary) 6%, var(--mx-panel-soft));
+    }
+
+    .file-transfer-row-icon.directory {
+      color: var(--mx-muted);
+      background: color-mix(in srgb, var(--mx-panel-muted) 72%, var(--mx-panel));
+    }
+
+    .file-transfer-row-icon.log {
+      color: color-mix(in srgb, var(--mx-muted) 78%, var(--mx-text));
+      background: color-mix(in srgb, var(--mx-panel-muted) 78%, var(--mx-panel));
+    }
+
+    .file-transfer-type-label {
+      position: absolute;
+      inset: auto 2px 2px;
+      overflow: hidden;
+      color: currentColor;
+      font-family: var(--font-ui);
+      font-size: 7px;
+      font-weight: 800;
+      line-height: 1;
+      text-align: center;
+      letter-spacing: 0;
+    }
+
+    .file-transfer-row-main {
+      min-width: 0;
+      display: grid;
+      gap: 4px;
+    }
+
+    .file-transfer-row-title {
+      min-width: 0;
+      display: block;
+      color: var(--mx-text);
+      font-size: 12px;
+      font-weight: 700;
+    }
+
+    .file-transfer-name,
+    .file-transfer-path {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .file-transfer-progress-text {
+      color: var(--mx-primary);
+      font-family: var(--font-mono);
+      font-size: 10px;
+      font-weight: 700;
+      line-height: 1.35;
+      white-space: nowrap;
+    }
+
+    .file-transfer-meta {
+      min-width: 0;
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      overflow: hidden;
+      color: var(--mx-muted);
+      font-size: 11px;
+      white-space: nowrap;
+    }
+
+    .file-transfer-tag {
+      flex: 0 0 auto;
+      height: 20px;
+      border: 1px solid var(--mx-line);
+      border-radius: 999px;
+      display: inline-flex;
+      align-items: center;
+      padding: 0 6px;
+      color: var(--mx-muted);
+      background: color-mix(in srgb, var(--mx-panel-soft) 76%, var(--mx-panel));
+      font-size: 11px;
+      font-weight: 650;
+    }
+
+    .file-transfer-tag.direction {
+      border-color: color-mix(in srgb, var(--mx-primary) 22%, var(--mx-line));
+      color: var(--mx-primary);
+      background: var(--mx-primary-soft);
+    }
+
+    .file-transfer-status-dot {
+      flex: 0 0 auto;
+      width: 6px;
+      height: 6px;
+      border-radius: 999px;
+      background: var(--mx-success);
+    }
+
+    .file-transfer-size-text {
+      flex: 1 1 auto;
+      min-width: 0;
+      overflow: hidden;
+      color: var(--mx-subtle);
+      font-family: var(--font-mono);
+      font-size: 11px;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .file-transfer-speed-text {
+      flex: 0 1 auto;
+      max-width: 76px;
+      overflow: hidden;
+      color: var(--mx-muted);
+      font-family: var(--font-mono);
+      font-size: 10px;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .file-transfer-path {
+      color: var(--mx-subtle);
+      font-family: var(--font-mono);
+      font-size: 11px;
+    }
+
+    .file-transfer-progress {
+      min-width: 0;
+      height: 4px;
+      border-radius: 999px;
+      overflow: hidden;
+      background: rgba(100, 116, 139, 0.14);
+    }
+
+    .file-transfer-progress-line {
+      grid-column: 1 / -1;
+      min-width: 0;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      align-items: center;
+      gap: 7px;
+    }
+
+    .file-transfer-progress span {
+      display: block;
+      height: 100%;
+      border-radius: inherit;
+      background: var(--mx-primary);
+    }
+
+    .file-transfer-row.error {
+      border-color: color-mix(in srgb, var(--mx-danger) 22%, var(--mx-line));
+    }
+
+    .file-transfer-row.error::after,
+    .file-transfer-row.error .file-transfer-progress span {
+      background: var(--mx-danger);
+    }
+
+    .file-transfer-row.error .file-transfer-row-icon {
+      border-color: color-mix(in srgb, var(--mx-danger) 26%, var(--mx-line));
+      color: var(--mx-danger);
+      background: color-mix(in srgb, var(--mx-danger) 9%, var(--mx-panel));
+    }
+
+    .file-transfer-row.error .file-transfer-status-dot {
+      background: var(--mx-danger);
+    }
+
+    .file-transfer-row-actions {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      opacity: 0.72;
+      transition: opacity 140ms ease;
+    }
+
+    .file-transfer-row-actions button {
+      width: 26px;
+      padding: 0;
+    }
+
+    .file-transfer-row:hover .file-transfer-row-actions,
+    .file-transfer-row:focus-within .file-transfer-row-actions {
+      opacity: 1;
+    }
+
+    .file-transfer-detail-card {
+      position: absolute;
+      z-index: 12;
+      top: calc(100% + 6px);
+      right: 6px;
+      width: min(292px, calc(100% - 12px));
+      border: 1px solid var(--mx-line);
+      border-radius: 9px;
+      display: grid;
+      gap: 7px;
+      padding: 9px;
+      color: var(--mx-text);
+      background: color-mix(in srgb, var(--mx-panel) 94%, var(--mx-panel-soft));
+      box-shadow: 0 14px 34px rgb(15 23 42 / 14%);
+      opacity: 0;
+      pointer-events: none;
+      transform: translateY(4px);
+      transition: opacity 140ms ease, transform 140ms ease;
+    }
+
+    .file-transfer-row:nth-last-child(-n + 2) .file-transfer-detail-card {
+      top: auto;
+      bottom: calc(100% + 6px);
+      transform: translateY(-4px);
+    }
+
+    .file-transfer-row:hover .file-transfer-detail-card,
+    .file-transfer-row:focus-within .file-transfer-detail-card {
+      opacity: 1;
+      transform: translateY(0);
+    }
+
+    .file-transfer-detail-card div {
+      min-width: 0;
+      display: grid;
+      grid-template-columns: 52px minmax(0, 1fr);
+      gap: 8px;
+      align-items: baseline;
+    }
+
+    .file-transfer-detail-card span {
+      color: var(--mx-subtle);
+      font-size: 11px;
+      font-weight: 700;
+    }
+
+    .file-transfer-detail-card strong,
+    .file-transfer-detail-card code {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      font-size: 12px;
+    }
+
+    .file-transfer-detail-card code {
+      color: var(--mx-muted);
+      font-family: var(--font-mono);
+      font-size: 11px;
+    }
+
+    .tool-placeholder-pane {
+      min-width: 0;
+      min-height: 0;
+      display: grid;
+      place-items: center;
+      padding: 24px;
+      color: var(--mx-muted);
+      background: var(--mx-panel-soft);
+      font-size: 13px;
+      text-align: center;
     }
 
     .tool-tab-strip {
@@ -2868,7 +3366,7 @@
             <button class="terminal-tool-button" id="commandSenderToggle" type="button" aria-label="命令发送器" title="命令发送器" aria-pressed="false" aria-controls="commandSenderPanel">
               <svg class="ui-icon" viewBox="0 0 16 16"><path d="M2.8 4.2h10.4v7.6H2.8z"/><path d="m5 6.5 1.7 1.5L5 9.5"/><path d="M8.4 9.5h2.8"/></svg>
             </button>
-            <button class="terminal-tool-button active" id="commandLibraryToggle" type="button" aria-label="命令库" title="命令库" aria-pressed="true" aria-controls="commandLibraryPane">
+            <button class="terminal-tool-button" id="commandLibraryToggle" type="button" aria-label="命令库" title="命令库" aria-pressed="false" aria-controls="commandLibraryPane">
               <svg class="ui-icon" viewBox="0 0 16 16"><path d="M3.4 3.2h3.1v9.6H3.4z"/><path d="M6.8 3.2h5.8v9.6H6.8z"/><path d="M8.6 5.3h2.2M8.6 8h2.7M8.6 10.7h2"/></svg>
             </button>
           </nav>
@@ -3280,13 +3778,9 @@ SSH 认证中...</pre>
       <aside class="right-file-pane" aria-label="右侧工具面板">
         <header class="file-panel-tabs">
           <div class="tool-tab-strip" aria-label="右侧工具">
-            <button class="file-panel-tab" type="button" data-tool-tab="files">
+            <button class="file-panel-tab active" type="button" data-tool-tab="files">
               <svg class="ui-icon" viewBox="0 0 16 16"><path d="M2.8 4.5h4l1.1 1.4h5.3v7H2.8z"/></svg>
               <span>文件</span>
-            </button>
-            <button class="file-panel-tab" type="button" data-tool-tab="transfers">
-              <svg class="ui-icon" viewBox="0 0 16 16"><path d="M8 2.8v7.7"/><path d="m5.6 7.8 2.4 2.7 2.4-2.7"/><path d="M3.4 12.5h9.2"/></svg>
-              <span>传输</span>
             </button>
             <button class="file-panel-tab" type="button" data-tool-tab="monitor">
               <svg class="ui-icon" viewBox="0 0 16 16"><path d="M2.8 11.8h10.4"/><path d="M4.3 9.2 6.1 7l1.7 1.6 3-3.6"/></svg>
@@ -3296,7 +3790,7 @@ SSH 认证中...</pre>
               <svg class="ui-icon" viewBox="0 0 16 16"><path d="M5.1 5.2a2.3 2.3 0 1 0 0 5.6"/><path d="M10.9 5.2a2.3 2.3 0 1 1 0 5.6"/><path d="M5.9 8h4.2"/></svg>
               <span>隧道</span>
             </button>
-            <button class="file-panel-tab active" type="button" data-tool-tab="command">
+            <button class="file-panel-tab" type="button" data-tool-tab="command">
               <svg class="ui-icon" viewBox="0 0 16 16"><path d="M2.8 4.2h10.4v7.6H2.8z"/><path d="m5 6.5 1.7 1.5L5 9.5"/><path d="M8.4 9.5h2.8"/></svg>
               <span>命令</span>
             </button>
@@ -3307,7 +3801,223 @@ SSH 认证中...</pre>
           </div>
         </header>
 
-        <section class="command-library-pane" id="commandLibraryPane" aria-label="命令">
+        <section class="file-browser-pane" id="fileBrowserPane" aria-label="远程文件">
+          <div class="file-path-row">
+            <input class="file-path-input" value="/opt/app" aria-label="远程路径">
+          </div>
+          <div class="file-panel-actions" aria-label="文件操作">
+            <button type="button">
+              <svg class="ui-icon" viewBox="0 0 16 16"><path d="M8 3.2v9.6"/><path d="M3.2 8h9.6"/></svg>
+              新建
+            </button>
+            <button type="button">
+              <svg class="ui-icon" viewBox="0 0 16 16"><path d="M8 2.8v7.7"/><path d="m5.6 7.8 2.4 2.7 2.4-2.7"/><path d="M3.4 12.5h9.2"/></svg>
+              上传
+            </button>
+            <button type="button">
+              <svg class="ui-icon" viewBox="0 0 16 16"><path d="M13 8a5 5 0 1 1-1.45-3.55"/><path d="M13 3.7v3.2H9.8"/></svg>
+              刷新
+            </button>
+            <span class="tool-pane-spacer"></span>
+            <button type="button">
+              <svg class="ui-icon" viewBox="0 0 16 16"><path d="M3 4.3h10"/><path d="M5.2 8h5.6"/><path d="M6.7 11.7h2.6"/></svg>
+              隐藏文件
+            </button>
+          </div>
+          <div class="file-tree" aria-label="文件树">
+            <div class="file-tree-section">
+              <div class="file-tree-label">/opt/app</div>
+              <button class="tree-folder-row" type="button">
+                <svg class="ui-icon" viewBox="0 0 16 16"><path d="M2.8 4.5h4l1.1 1.4h5.3v7H2.8z"/></svg>
+                <span>config</span>
+                <span class="file-size">4 项</span>
+              </button>
+              <div class="tree-children">
+                <button class="file-row selected" type="button">
+                  <svg class="ui-icon" viewBox="0 0 16 16"><path d="M4.3 2.8h5.2l2.2 2.2v8.2H4.3z"/><path d="M9.5 2.8V5h2.2"/></svg>
+                  <span>app.conf</span>
+                  <span class="file-size">3 KB</span>
+                </button>
+                <button class="file-row" type="button">
+                  <svg class="ui-icon" viewBox="0 0 16 16"><path d="M4.3 2.8h5.2l2.2 2.2v8.2H4.3z"/><path d="M9.5 2.8V5h2.2"/></svg>
+                  <span>nginx.conf</span>
+                  <span class="file-size">6 KB</span>
+                </button>
+              </div>
+              <button class="tree-folder-row" type="button">
+                <svg class="ui-icon" viewBox="0 0 16 16"><path d="M2.8 4.5h4l1.1 1.4h5.3v7H2.8z"/></svg>
+                <span>logs</span>
+                <span class="file-size">12 项</span>
+              </button>
+              <button class="file-row selected" type="button">
+                <svg class="ui-icon" viewBox="0 0 16 16"><path d="M4.3 2.8h5.2l2.2 2.2v8.2H4.3z"/><path d="M9.5 2.8V5h2.2"/></svg>
+                <span>release.tar.gz</span>
+                <span class="file-size">48 MB</span>
+              </button>
+              <button class="file-row" type="button">
+                <svg class="ui-icon" viewBox="0 0 16 16"><path d="M4.3 2.8h5.2l2.2 2.2v8.2H4.3z"/><path d="M9.5 2.8V5h2.2"/></svg>
+                <span>README.md</span>
+                <span class="file-size">9 KB</span>
+              </button>
+              <button class="file-row" type="button">
+                <svg class="ui-icon" viewBox="0 0 16 16"><path d="M4.3 2.8h5.2l2.2 2.2v8.2H4.3z"/><path d="M9.5 2.8V5h2.2"/></svg>
+                <span>deploy.sh</span>
+                <span class="file-size">2 KB</span>
+              </button>
+            </div>
+          </div>
+          <section class="file-transfer-dock" id="fileTransferDock" aria-label="文件传输">
+            <div class="file-transfer-bar">
+              <div class="file-transfer-summary">
+                <strong>传输</strong>
+                <span class="file-transfer-chip running">2 进行中</span>
+                <span class="file-transfer-chip error">1 失败</span>
+              </div>
+              <div class="file-transfer-progress-mini" aria-hidden="true"><span style="width: 64%"></span></div>
+              <span class="file-transfer-percent">64%</span>
+              <button type="button" id="fileTransferToggle" aria-expanded="false">
+                <span>展开</span>
+                <svg class="ui-icon file-transfer-toggle-caret" viewBox="0 0 16 16"><path d="m4.5 6.4 3.5 3.5 3.5-3.5"/></svg>
+              </button>
+            </div>
+            <div class="file-transfer-drawer">
+              <div class="file-transfer-drawer-head">
+                <strong>传输队列</strong>
+                <button type="button">清理完成项</button>
+              </div>
+              <div class="file-transfer-list">
+                <article class="file-transfer-row">
+                  <span class="file-transfer-row-icon archive">
+                    <svg class="ui-icon" viewBox="0 0 16 16"><path d="M4 3.1h8v2.3H4z"/><path d="M4.6 5.4h6.8v7.5H4.6z"/><path d="M6.7 7.4h2.6"/></svg>
+                    <span class="file-transfer-type-label">TGZ</span>
+                  </span>
+                  <div class="file-transfer-row-main">
+                    <div class="file-transfer-row-title">
+                      <span class="file-transfer-name">release.tar.gz</span>
+                    </div>
+                    <div class="file-transfer-meta">
+                      <span class="file-transfer-tag direction">下载</span>
+                      <span class="file-transfer-status-dot"></span>
+                      <span class="file-transfer-size-text">48 MB / 76 MB</span>
+                      <span class="file-transfer-speed-text">8.4 MB/s</span>
+                    </div>
+                  </div>
+                  <div class="file-transfer-row-actions">
+                    <button type="button" aria-label="打开">
+                      <svg class="ui-icon" viewBox="0 0 16 16"><path d="M7 4.2H4.1v7.7h7.7V9"/><path d="M8.6 4.1h3.3v3.3"/><path d="m7.8 8.2 4-4"/></svg>
+                    </button>
+                    <button type="button" aria-label="定位">
+                      <svg class="ui-icon" viewBox="0 0 16 16"><path d="M2.8 5h4l1 1.2h5.4v5.9H2.8z"/></svg>
+                    </button>
+                    <button type="button" aria-label="取消">
+                      <svg class="ui-icon" viewBox="0 0 16 16"><path d="m5 5 6 6M11 5l-6 6"/></svg>
+                    </button>
+                  </div>
+                  <div class="file-transfer-progress-line">
+                    <div class="file-transfer-progress"><span style="width: 64%"></span></div>
+                    <span class="file-transfer-progress-text">64%</span>
+                  </div>
+                  <div class="file-transfer-detail-card" role="tooltip">
+                    <div><span>状态</span><strong>下载中</strong></div>
+                    <div><span>阶段</span><strong>下载文件 · 64%</strong></div>
+                    <div><span>大小</span><strong>48 MB / 76 MB</strong></div>
+                    <div><span>速度</span><strong>8.4 MB/s</strong></div>
+                    <div><span>时间</span><strong>06/23 22:47</strong></div>
+                    <div><span>来源</span><code>/opt/app/release.tar.gz</code></div>
+                    <div><span>目标</span><code>D:\Downloads\Harbor\release.tar.gz</code></div>
+                    <div><span>策略</span><strong>同名文件自动重命名</strong></div>
+                  </div>
+                </article>
+                <article class="file-transfer-row">
+                  <span class="file-transfer-row-icon directory">
+                    <svg class="ui-icon" viewBox="0 0 16 16"><path d="M2.8 4.5h4l1.1 1.4h5.3v7H2.8z"/></svg>
+                  </span>
+                  <div class="file-transfer-row-main">
+                    <div class="file-transfer-row-title">
+                      <span class="file-transfer-name">config</span>
+                    </div>
+                    <div class="file-transfer-meta">
+                      <span class="file-transfer-tag direction">上传</span>
+                      <span class="file-transfer-status-dot"></span>
+                      <span class="file-transfer-size-text">92 MB / 328 MB</span>
+                      <span class="file-transfer-speed-text">压缩中</span>
+                    </div>
+                  </div>
+                  <div class="file-transfer-row-actions">
+                    <button type="button" aria-label="定位">
+                      <svg class="ui-icon" viewBox="0 0 16 16"><path d="M2.8 5h4l1 1.2h5.4v5.9H2.8z"/></svg>
+                    </button>
+                    <button type="button" aria-label="取消">
+                      <svg class="ui-icon" viewBox="0 0 16 16"><path d="m5 5 6 6M11 5l-6 6"/></svg>
+                    </button>
+                  </div>
+                  <div class="file-transfer-progress-line">
+                    <div class="file-transfer-progress"><span style="width: 28%"></span></div>
+                    <span class="file-transfer-progress-text">28%</span>
+                  </div>
+                  <div class="file-transfer-detail-card" role="tooltip">
+                    <div><span>状态</span><strong>压缩中</strong></div>
+                    <div><span>阶段</span><strong>目录打包中 · 28%</strong></div>
+                    <div><span>大小</span><strong>92 MB / 328 MB</strong></div>
+                    <div><span>速度</span><strong>压缩中</strong></div>
+                    <div><span>时间</span><strong>06/23 22:46</strong></div>
+                    <div><span>来源</span><code>D:\work\config</code></div>
+                    <div><span>目标</span><code>/opt/app/config</code></div>
+                    <div><span>策略</span><strong>目录使用 tar.gz 压缩传输</strong></div>
+                  </div>
+                </article>
+                <article class="file-transfer-row error">
+                  <span class="file-transfer-row-icon log">
+                    <svg class="ui-icon" viewBox="0 0 16 16"><path d="M4.3 2.8h5.2l2.2 2.2v8.2H4.3z"/><path d="M9.5 2.8V5h2.2"/><path d="M6.1 7.6h3.8"/><path d="M6.1 9.7h2.8"/></svg>
+                    <span class="file-transfer-type-label">LOG</span>
+                  </span>
+                  <div class="file-transfer-row-main">
+                    <div class="file-transfer-row-title">
+                      <span class="file-transfer-name">app.log</span>
+                    </div>
+                    <div class="file-transfer-meta">
+                      <span class="file-transfer-tag direction">下载</span>
+                      <span class="file-transfer-status-dot"></span>
+                      <span class="file-transfer-size-text">12 MB / 29 MB</span>
+                      <span class="file-transfer-speed-text">0 B/s</span>
+                    </div>
+                  </div>
+                  <div class="file-transfer-row-actions">
+                    <button type="button" aria-label="重试">
+                      <svg class="ui-icon" viewBox="0 0 16 16"><path d="M13 8a5 5 0 1 1-1.45-3.55"/><path d="M13 3.7v3.2H9.8"/></svg>
+                    </button>
+                    <button type="button" aria-label="定位">
+                      <svg class="ui-icon" viewBox="0 0 16 16"><path d="M2.8 5h4l1 1.2h5.4v5.9H2.8z"/></svg>
+                    </button>
+                    <button type="button" aria-label="移除">
+                      <svg class="ui-icon" viewBox="0 0 16 16"><path d="M5.2 4.4h5.6"/><path d="M6 4.4l.4-1h3.2l.4 1"/><path d="M6 6.2v5.4M8 6.2v5.4M10 6.2v5.4"/><path d="M4.2 4.4h7.6l-.5 8.4H4.7z"/></svg>
+                    </button>
+                  </div>
+                  <div class="file-transfer-progress-line">
+                    <div class="file-transfer-progress"><span style="width: 42%"></span></div>
+                    <span class="file-transfer-progress-text">42%</span>
+                  </div>
+                  <div class="file-transfer-detail-card" role="tooltip">
+                    <div><span>状态</span><strong>失败，可重试</strong></div>
+                    <div><span>阶段</span><strong>连接中断 · 42%</strong></div>
+                    <div><span>大小</span><strong>12 MB / 29 MB</strong></div>
+                    <div><span>速度</span><strong>0 B/s</strong></div>
+                    <div><span>时间</span><strong>06/23 22:44</strong></div>
+                    <div><span>来源</span><code>/opt/app/logs/app.log</code></div>
+                    <div><span>目标</span><code>D:\Downloads\Harbor\logs\app.log</code></div>
+                    <div><span>错误</span><strong>SFTP 通道被远端关闭</strong></div>
+                  </div>
+                </article>
+              </div>
+            </div>
+          </section>
+        </section>
+
+        <section class="tool-placeholder-pane" id="toolPlaceholderPane" hidden>
+          <span id="toolPlaceholderText">这个工具在真实项目中保持原面板，这里只验证文件与传输融合后的结构。</span>
+        </section>
+
+        <section class="command-library-pane" id="commandLibraryPane" aria-label="命令" hidden>
           <div class="command-library-head">
             <div class="command-library-title">
               <strong>命令</strong>
@@ -3402,6 +4112,12 @@ SSH 认证中...</pre>
     const commandSenderPanel = document.getElementById("commandSenderPanel");
     const sessionTabs = Array.from(document.querySelectorAll(".session-tab[data-session-target]"));
     const rightToolTabs = Array.from(document.querySelectorAll("[data-tool-tab]"));
+    const fileBrowserPane = document.getElementById("fileBrowserPane");
+    const commandLibraryPane = document.getElementById("commandLibraryPane");
+    const toolPlaceholderPane = document.getElementById("toolPlaceholderPane");
+    const toolPlaceholderText = document.getElementById("toolPlaceholderText");
+    const fileTransferDock = document.getElementById("fileTransferDock");
+    const fileTransferToggle = document.getElementById("fileTransferToggle");
     const terminalOutput = document.getElementById("terminalOutput");
     const commandTargetCheckboxes = Array.from(document.querySelectorAll(".command-target-checkbox"));
     const commandTargetTerminalSelects = Array.from(document.querySelectorAll(".command-target-terminal"));
@@ -4139,9 +4855,7 @@ SSH 认证中...</pre>
     });
 
     commandLibraryToggle.addEventListener("click", () => {
-      rightToolTabs.forEach((button) => {
-        button.classList.toggle("active", button.dataset.toolTab === "command");
-      });
+      setRightTool("command");
       commandLibraryToggle.classList.add("active");
       setFooterStatus("命令面板入口保留在终端工具区，正文集中在右侧。", 2200);
       commandLibrarySearchInput.focus();
@@ -4231,20 +4945,39 @@ SSH 认证中...</pre>
       });
     });
 
+    function setRightTool(tab) {
+      rightToolTabs.forEach((item) => {
+        item.classList.toggle("active", item.dataset.toolTab === tab);
+      });
+      fileBrowserPane.hidden = tab !== "files";
+      commandLibraryPane.hidden = tab !== "command";
+      toolPlaceholderPane.hidden = tab === "files" || tab === "command";
+      commandLibraryToggle.classList.toggle("active", tab === "command");
+      commandLibraryToggle.setAttribute("aria-pressed", String(tab === "command"));
+      if (tab !== "files") {
+        fileTransferDock.classList.remove("open");
+        fileTransferToggle?.setAttribute("aria-expanded", "false");
+        fileTransferToggle?.querySelector("span")?.replaceChildren("展开");
+      }
+      if (tab === "monitor") {
+        toolPlaceholderText.textContent = "监控保留独立工具面板；文件传输反馈已收进文件页底部。";
+      }
+      if (tab === "tunnels") {
+        toolPlaceholderText.textContent = "隧道保留独立工具面板；它不是文件操作的后续状态。";
+      }
+    }
+
     rightToolTabs.forEach((button) => {
       button.addEventListener("click", () => {
-        const tab = button.dataset.toolTab || "command";
-        if (tab !== "command") {
-          rightToolTabs.forEach((item) => {
-            item.classList.toggle("active", item.dataset.toolTab === "command");
-          });
-          setFooterStatus("这个原型阶段先只展开“命令”面板，其余工具保留现有入口布局。", 2600);
-          return;
-        }
-        rightToolTabs.forEach((item) => {
-          item.classList.toggle("active", item === button);
-        });
+        setRightTool(button.dataset.toolTab || "files");
       });
+    });
+
+    fileTransferToggle.addEventListener("click", () => {
+      const expanded = !fileTransferDock.classList.contains("open");
+      fileTransferDock.classList.toggle("open", expanded);
+      fileTransferToggle.setAttribute("aria-expanded", String(expanded));
+      fileTransferToggle.querySelector("span")?.replaceChildren(expanded ? "收起" : "展开");
     });
 
     commandModeButtons.forEach((button) => {

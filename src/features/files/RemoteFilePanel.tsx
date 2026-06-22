@@ -50,7 +50,7 @@ import {
 } from "./remoteFilePaths";
 import type { RemoteFileEntry } from "./remoteFileTypes";
 
-export type RemoteFileTool = "files" | "transfers" | "monitor" | "tunnels" | "commands";
+export type RemoteFileTool = "files" | "monitor" | "tunnels" | "commands";
 
 export interface RemoteFileUploadItem {
   file: File;
@@ -62,8 +62,6 @@ interface RemoteFilePanelProps {
   availableTools?: RemoteFileTool[];
   connection: ConnectionProfile | null;
   refreshRequest?: RemoteFileRefreshRequest | null;
-  transferAttention?: boolean;
-  transferCount?: number;
   transferPanel?: ReactNode;
   nativeDropTargetPath?: string | null;
   monitorPanel?: ReactNode;
@@ -145,15 +143,13 @@ const previewDirectoryEntries: Record<string, RemoteFileEntry[]> = {
 
 const defaultRemotePath = "/";
 const loadingIndicatorDelayMs = 180;
-const defaultRemoteFileTools: RemoteFileTool[] = ["files", "transfers", "monitor", "tunnels", "commands"];
+const defaultRemoteFileTools: RemoteFileTool[] = ["files", "monitor", "tunnels", "commands"];
 
 export function RemoteFilePanel({
   activeTool,
   availableTools,
   connection,
   refreshRequest,
-  transferAttention = false,
-  transferCount = 0,
   transferPanel,
   nativeDropTargetPath = null,
   monitorPanel,
@@ -260,16 +256,10 @@ export function RemoteFilePanel({
       <FilePanelTabs
         activeTool={effectiveActiveTool}
         availableTools={visibleTools}
-        transferAttention={transferAttention}
-        transferCount={transferCount}
         onToolChange={onToolChange}
         onToggleRightPane={onToggleRightPane}
       />
-      {effectiveActiveTool === "transfers" ? (
-        <div className="transfer-tool-body">
-          {transferPanel || <p className="file-panel-empty">还没有传输任务。</p>}
-        </div>
-      ) : effectiveActiveTool === "monitor" ? (
+      {effectiveActiveTool === "monitor" ? (
         <div className="monitor-tool-body">
           {monitorPanel || <p className="file-panel-empty">打开一个 SSH 会话后显示监控。</p>}
         </div>
@@ -334,6 +324,7 @@ export function RemoteFilePanel({
               </ContextMenu.Root>
             </>
           )}
+          {transferPanel ? <div className="file-transfer-dock-wrap">{transferPanel}</div> : null}
         </FilePanelShell>
       )}
     </aside>
@@ -903,15 +894,11 @@ export function RemoteFilePanel({
 function FilePanelTabs({
   activeTool,
   availableTools,
-  transferAttention,
-  transferCount,
   onToolChange,
   onToggleRightPane,
 }: {
   activeTool: RemoteFileTool;
   availableTools: RemoteFileTool[];
-  transferAttention: boolean;
-  transferCount: number;
   onToolChange?: (tool: RemoteFileTool) => void;
   onToggleRightPane?: () => void;
 }) {
@@ -921,17 +908,6 @@ function FilePanelTabs({
         <button className={activeTool === "files" ? "active" : ""} type="button" onClick={() => onToolChange?.("files")}>
           <Folder className="ui-icon" aria-hidden="true" />
           文件
-        </button>
-      ) : null}
-      {availableTools.includes("transfers") ? (
-        <button
-          className={`${activeTool === "transfers" ? "active" : ""} ${transferAttention ? "attention" : ""}`}
-          type="button"
-          onClick={() => onToolChange?.("transfers")}
-        >
-          <Upload className="ui-icon" aria-hidden="true" />
-          传输
-          {transferCount > 0 ? <span className="tool-tab-badge">{transferCount.toString()}</span> : null}
         </button>
       ) : null}
       {availableTools.includes("monitor") ? (

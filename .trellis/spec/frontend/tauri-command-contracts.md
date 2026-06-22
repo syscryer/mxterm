@@ -893,7 +893,7 @@ interface TunnelRuntimeCredentialInput {
 - Host-key errors from tunnel start must be parsed with the shared host-key parser, trusted through `knownHostTrust(...)`, and then retried with the same optional runtime credential.
 - Delete actions must remove a tunnel row only after `tunnelDelete(...)` succeeds. If delete fails, keep the row, show the `AppError.message`, close the confirmation dialog, and refresh the list so React does not drift from Rust runtime state.
 - `TunnelPanel` may refresh and list rules, but app-level autostart belongs in `WorkspaceShell` mount so auto-start rules run even if the user never opens the tunnel tab.
-- The right-pane entry is `RemoteFileTool = "files" | "transfers" | "monitor" | "tunnels"`; the tunnel panel should be passed through the existing `RemoteFilePanel` tool slot.
+- The right-pane entry is `RemoteFileTool = "files" | "monitor" | "tunnels" | "commands"`. File transfers are rendered as the file pane's bottom transfer dock, not as a first-level right-pane tool tab. Tunnel and command panels should still be passed through the existing `RemoteFilePanel` tool slots.
 - Tunnel UI must use Radix Dialog, Lucide icons, `AppSelect`, shared confirmation dialog, and global `--mx-*` tokens. Do not use native `<select>` or feature-local dropdown popovers.
 - A visible `running` state means data was written to the local forwarding machinery, not that the remote target command or service succeeded.
 
@@ -984,7 +984,7 @@ Frontend types mirror Rust snake_case fields. `CommandSnippet.group` is a displa
 - Snippets should be grouped by `group` as a one-level tree: root snippets render directly at the top, folder headers render only for explicit non-root groups, and folder children are indented. Do not use left/right split panes, nested folders, or horizontal group chips in the narrow right pane.
 - Snippet rows should keep only high-frequency direct actions visible: copy, insert, and send. Edit/delete live in the snippet row context menu; group rename/delete actions live in the folder context menu. Deleting a group deletes the snippets inside that group.
 - Direct send from the right-pane command library must write to the resolved target list without expanding the bottom Command Sender and without clearing any existing Command Sender draft input.
-- Command Sender target lists may include SSH terminals and local terminals. Local terminal workspaces expose only the right-pane command tool; SSH-only tools such as files, transfers, monitor, and tunnels stay hidden there.
+- Command Sender target lists may include SSH terminals and local terminals. Local terminal workspaces expose only the right-pane command tool; SSH-only tools such as files, monitor, and tunnels stay hidden there.
 - History should render as compact command rows, not large cards. It may offer copy, insert, run, save-as-snippet, delete, and clear actions.
 - History scope filtering should default to the current SSH connection in SSH workspaces and the current local terminal profile in local workspaces. The filter list is flat: current context, other SSH connections, local profiles, and all history.
 - Terminal input recording is controlled from Settings through `settings.command.recordTerminalInputHistory`; the right-pane history view shows only the current state and a Settings entry, not a local checkbox.
