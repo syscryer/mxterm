@@ -16,6 +16,7 @@
   --mx-chrome-active: #e9ecef;
   --mx-primary: var(--mx-primary-light);
   --mx-success: #15803d;
+  --mx-warning: #d97706;
   --mx-danger: #dc2626;
   --mx-terminal: #111827;
   --mx-terminal-line: #263241;
@@ -162,6 +163,7 @@
   --mx-chrome-active: #343434;
   --mx-primary: var(--mx-primary-dark, #73b7ff);
   --mx-success: #57d8ae;
+  --mx-warning: #f7c66b;
   --mx-danger: #ff8f9b;
   --mx-terminal-line: #2f3b4b;
   --mx-material-bg:
@@ -267,6 +269,7 @@
     --mx-chrome-active: #343434;
     --mx-primary: var(--mx-primary-dark, #73b7ff);
     --mx-success: #57d8ae;
+    --mx-warning: #f7c66b;
     --mx-danger: #ff8f9b;
     --mx-terminal-line: #2f3b4b;
     --mx-material-bg:

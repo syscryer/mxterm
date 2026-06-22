@@ -18,6 +18,7 @@ import type { IWindowsPty } from "@xterm/xterm";
 import { createPortal } from "react-dom";
 import {
   AlertTriangle,
+  Archive,
   ChevronDown,
   ChevronLeft,
   Clock3,
@@ -26,6 +27,10 @@ import {
   CircleAlert,
   CornerDownLeft,
   KeyRound,
+  ExternalLink,
+  FileText,
+  Folder,
+  FolderOpen,
   List,
   Loader2,
   LockKeyhole,
@@ -1014,10 +1019,6 @@ export function WorkspaceShell() {
       )
     : [];
   const remoteFileDeleteDirtyCount = remoteFileDeleteAffectedTabs.filter((tab) => tab.dirty).length;
-  const transferBadgeCount = remoteFileTransfers.filter((item) =>
-    ["queued", "running", "error"].includes(item.status),
-  ).length;
-  const transferAttention = remoteFileTransfers.some((item) => item.status === "error");
   const effectiveWindowMaterial = normalizeWindowMaterial(
     settings.appearance.windowMaterial,
     supportedWindowMaterials,
@@ -1184,18 +1185,30 @@ export function WorkspaceShell() {
           return item;
         }
 
-        const totalBytes = event.total_bytes || 0;
+        const hasKnownTotal = event.total_bytes !== null && event.total_bytes !== undefined;
+        const totalBytes = event.total_bytes ?? 0;
         const progress =
           totalBytes > 0 ? transferProgressPercent(event.loaded_bytes, totalBytes) : item.progress;
+        const stage =
+          item.kind === "directory" && event.direction === "download" && !hasKnownTotal
+            ? "压缩中"
+            : event.direction === "upload"
+              ? "上传中"
+              : "下载中";
+        const progressDetail =
+          item.kind === "directory" && event.direction === "download" && !hasKnownTotal
+            ? `压缩包 ${formatFileSize(event.loaded_bytes)}`
+            : formatTransferProgressBytes(event.loaded_bytes, totalBytes);
 
         return {
           ...item,
           progress: clampTransferProgress(progress),
-          progressDetail: formatTransferProgressBytes(event.loaded_bytes, totalBytes),
+          progressDetail,
           progressIndeterminate: totalBytes <= 0,
           speedText: formatTransferSpeed(
             calculateTransferAverageSpeed(event.loaded_bytes, item.startedAt),
           ),
+          stage,
         };
       }),
     );
@@ -1241,7 +1254,16 @@ export function WorkspaceShell() {
     update: Partial<Omit<RemoteFileTransferItem, "id" | "createdAt">>,
   ) {
     setRemoteFileTransfers((items) =>
-      items.map((item) => (item.id === transferId ? { ...item, ...update } : item)),
+      items.map((item) => {
+        if (item.id !== transferId) {
+          return item;
+        }
+        const next = { ...item, ...update };
+        if (update.progressDetail === "100%" && item.progressDetail?.includes(" / ")) {
+          next.progressDetail = item.progressDetail;
+        }
+        return next;
+      }),
     );
   }
 
@@ -1430,8 +1452,6 @@ export function WorkspaceShell() {
     const errorText = suggestion ? `${baseError}\n建议：${suggestion}` : baseError;
     updateRemoteFileTransfer(transferId, {
       error: errorText,
-      progress: 100,
-      progressDetail: null,
       progressIndeterminate: false,
       speedText: null,
       stage: mappedStage ?? stage,
@@ -2646,7 +2666,11 @@ export function WorkspaceShell() {
         setTransferProgress(transferId, {
           indeterminate: true,
           progress: 4,
-          stage: isDirectory ? "扫描目录并下载" : "准备下载",
+          stage: isDirectory
+            ? request.compress
+              ? "压缩中"
+              : "扫描目录"
+            : "准备下载",
         });
         result = await remoteFileDownloadToLocal({
           ...request,
@@ -5572,8 +5596,6 @@ export function WorkspaceShell() {
             connection={remoteFileConnection}
             key={remoteFilePanelKey}
             refreshRequest={remoteFileRefreshRequest}
-            transferAttention={transferAttention}
-            transferCount={transferBadgeCount}
             nativeDropTargetPath={nativeFileDropTargetPath}
             monitorPanel={
               <MonitorPanel
@@ -6275,109 +6297,188 @@ function RemoteFileTransferPanel({
   onOpenLocalPath: (path: string) => void;
   onRevealLocalPath: (path: string) => void;
 }) {
+  const [expanded, setExpanded] = useState(false);
+  const activeCount = transfers.filter((item) => ["queued", "running"].includes(item.status)).length;
+  const errorCount = transfers.filter((item) => item.status === "error").length;
   const finishedCount = transfers.filter((item) =>
     ["success", "skipped", "canceled"].includes(item.status),
   ).length;
+  const summaryTransfer =
+    transfers.find((item) => ["running", "queued"].includes(item.status)) ||
+    transfers.find((item) => item.status === "error") ||
+    transfers[0] ||
+    null;
+  const summaryProgress = summaryTransfer ? clampTransferProgress(summaryTransfer.progress) : 0;
+  const summaryProgressText = summaryTransfer
+    ? `${Math.round(summaryProgress).toString()}%`
+    : "空闲";
 
   return (
-    <section className="transfer-panel" aria-label="文件传输">
-      <header className="transfer-panel-head">
-        <span>
+    <section className={`transfer-panel ${expanded ? "open" : ""}`} aria-label="文件传输">
+      <header className="transfer-panel-bar">
+        <div className="transfer-panel-summary">
           <strong>传输</strong>
-          <small>{transfers.length === 0 ? "无任务" : `${transfers.length.toString()} 项任务`}</small>
-        </span>
-        <button type="button" disabled={finishedCount === 0} onClick={onClearFinished}>
-          清理完成项
+          {activeCount > 0 ? <span className="transfer-chip running">{activeCount.toString()} 进行中</span> : null}
+          {errorCount > 0 ? <span className="transfer-chip error">{errorCount.toString()} 失败</span> : null}
+          {transfers.length === 0 ? <span className="transfer-chip">无任务</span> : null}
+        </div>
+        <div className="transfer-progress-mini" aria-hidden="true">
+          <span style={{ width: `${summaryProgress.toString()}%` }} />
+        </div>
+        <span className="transfer-panel-percent">{summaryProgressText}</span>
+        <button
+          className="transfer-panel-toggle"
+          type="button"
+          aria-expanded={expanded}
+          onClick={() => setExpanded((open) => !open)}
+        >
+          {expanded ? "收起" : "展开"}
+          <ChevronDown className="ui-icon" aria-hidden="true" />
         </button>
       </header>
 
-      <div className="transfer-list">
-        {transfers.length === 0 ? (
-          <p className="file-panel-empty">上传和下载任务会显示在这里。</p>
-        ) : (
-          transfers.map((item) => {
-            const progressValue = clampTransferProgress(item.progress);
-            const progressLabel = `${Math.round(progressValue).toString()}%`;
-            const progressText = item.progressDetail || progressLabel;
-            const canRemove = item.status !== "queued" && item.status !== "running";
+      <div className="transfer-drawer">
+        <div className="transfer-drawer-head">
+          <strong>传输队列</strong>
+          <button type="button" disabled={finishedCount === 0} onClick={onClearFinished}>
+            清理完成项
+          </button>
+        </div>
 
-            return (
-              <article className={`transfer-item ${item.status}`} key={item.id}>
-                <header>
-                  <div className="transfer-head-main">
-                    <span className="transfer-kind">
-                      {item.direction === "upload" ? "上传" : "下载"}
-                      {" / "}
-                      {item.kind === "directory" ? "目录" : "文件"}
-                    </span>
-                    <span className="transfer-status">{transferStatusLabel(item.status)}</span>
+        <div className="transfer-list">
+          {transfers.length === 0 ? (
+            <p className="file-panel-empty">上传和下载任务会显示在这里。</p>
+          ) : (
+            transfers.map((item) => {
+              const progressValue = clampTransferProgress(item.progress);
+              const progressLabel = `${Math.round(progressValue).toString()}%`;
+              const canRemove = item.status !== "queued" && item.status !== "running";
+              const typeLabel = transferFileTypeLabel(item);
+              const sizeText = transferItemSizeText(item);
+              const statusText = transferDisplayStatusLabel(item);
+              const detailText = [
+                `状态：${statusText}`,
+                `阶段：${item.stage}`,
+                `方向：${transferDirectionLabel(item.direction)}`,
+                `类型：${transferKindLabel(item.kind)}`,
+                `进度：${progressLabel}`,
+                `大小：${sizeText}`,
+                item.speedText ? `速度：${item.speedText}` : null,
+                `创建时间：${formatTransferDetailTime(item.createdAt)}`,
+                item.error ? `错误：${item.error}` : null,
+                `来源：${transferSourcePath(item)}`,
+                `目标：${transferTargetPath(item)}`,
+              ].filter(Boolean).join("\n");
+
+              return (
+                <article className={`transfer-item ${item.status}`} key={item.id}>
+                  <Tooltip label={detailText}>
+                    <div className={`transfer-type-icon ${transferFileTypeClass(item)}`}>
+                      {item.kind === "directory" ? (
+                        <Folder className="ui-icon" aria-hidden="true" />
+                      ) : transferFileTypeClass(item) === "archive" ? (
+                        <Archive className="ui-icon" aria-hidden="true" />
+                      ) : (
+                        <FileText className="ui-icon" aria-hidden="true" />
+                      )}
+                      {typeLabel ? <span>{typeLabel}</span> : null}
+                    </div>
+                  </Tooltip>
+
+                  <div className="transfer-item-main">
+                    <div className="transfer-item-title">
+                      <strong title={item.name}>{item.name}</strong>
+                    </div>
+                    <div className="transfer-item-meta">
+                      <span className="transfer-tag direction">
+                        {item.direction === "upload" ? "上传" : "下载"}
+                      </span>
+                      <span className={`transfer-status-dot ${item.status}`} aria-hidden="true" />
+                      <span className="transfer-size-text" title={sizeText}>
+                        {sizeText}
+                      </span>
+                      {item.speedText ? <span className="transfer-speed-text">{item.speedText}</span> : null}
+                      <span className="transfer-status">{statusText}</span>
+                    </div>
                   </div>
-                  {canRemove ? (
-                    <Tooltip label="删除任务">
+
+                  <div className="transfer-item-actions">
+                    <Tooltip label="复制路径">
                       <button
-                        className="transfer-dismiss"
                         type="button"
-                        aria-label={`删除任务 ${item.name}`}
-                        onClick={() => onRemove(item.id)}
+                        aria-label={`复制 ${item.name} 路径`}
+                        onClick={() => onCopyPath(item.localPath || item.remotePath)}
                       >
-                        <X className="ui-icon" aria-hidden="true" />
+                        <Clipboard className="ui-icon" aria-hidden="true" />
                       </button>
                     </Tooltip>
-                  ) : null}
-                </header>
-                <strong title={item.name}>{item.name}</strong>
-                <div className="transfer-progress-summary">
-                  <small>{item.stage}</small>
-                  <span>
-                    {progressText}
-                    {item.speedText ? <em>{item.speedText}</em> : null}
-                  </span>
-                </div>
-                <div
-                  className={`transfer-progress ${item.progressIndeterminate ? "indeterminate" : ""}`}
-                  role="progressbar"
-                  aria-label={`${item.name} ${item.stage}`}
-                  aria-valuemax={100}
-                  aria-valuemin={0}
-                  aria-valuenow={Math.round(progressValue)}
-                >
-                  <span style={{ width: `${progressValue.toString()}%` }} />
-                </div>
-                <code title={item.remotePath}>{item.remotePath}</code>
-                {item.localPath ? <code title={item.localPath}>{item.localPath}</code> : null}
-                {item.error ? <p className="transfer-error">{item.error}</p> : null}
-                <footer>
-                  <button type="button" onClick={() => onCopyPath(item.localPath || item.remotePath)}>
-                    <Clipboard className="ui-icon" aria-hidden="true" />
-                    复制路径
-                  </button>
-                  {item.localPath && item.kind !== "directory" ? (
-                    <button type="button" onClick={() => onOpenLocalPath(item.localPath || "")}>
-                      打开
-                    </button>
-                  ) : null}
-                  {item.localPath ? (
-                    <button type="button" onClick={() => onRevealLocalPath(item.localPath || "")}>
-                      定位
-                    </button>
-                  ) : null}
-                  {item.status === "error" && item.retry ? (
-                    <button type="button" onClick={() => onRetry(item.id)}>
-                      <RefreshCw className="ui-icon" aria-hidden="true" />
-                      重试
-                    </button>
-                  ) : null}
-                  {item.status === "queued" || item.status === "running" ? (
-                    <button type="button" onClick={() => onCancel(item.id)}>
-                      <X className="ui-icon" aria-hidden="true" />
-                      取消
-                    </button>
-                  ) : null}
-                </footer>
-              </article>
-            );
-          })
-        )}
+                    {item.localPath && item.kind !== "directory" ? (
+                      <Tooltip label="打开">
+                        <button
+                          type="button"
+                          aria-label={`打开 ${item.name}`}
+                          onClick={() => onOpenLocalPath(item.localPath || "")}
+                        >
+                          <ExternalLink className="ui-icon" aria-hidden="true" />
+                        </button>
+                      </Tooltip>
+                    ) : null}
+                    {item.localPath ? (
+                      <Tooltip label="定位">
+                        <button
+                          type="button"
+                          aria-label={`定位 ${item.name}`}
+                          onClick={() => onRevealLocalPath(item.localPath || "")}
+                        >
+                          <FolderOpen className="ui-icon" aria-hidden="true" />
+                        </button>
+                      </Tooltip>
+                    ) : null}
+                    {item.status === "error" && item.retry ? (
+                      <Tooltip label="重试">
+                        <button type="button" aria-label={`重试 ${item.name}`} onClick={() => onRetry(item.id)}>
+                          <RefreshCw className="ui-icon" aria-hidden="true" />
+                        </button>
+                      </Tooltip>
+                    ) : null}
+                    {item.status === "queued" || item.status === "running" ? (
+                      <Tooltip label="取消">
+                        <button type="button" aria-label={`取消 ${item.name}`} onClick={() => onCancel(item.id)}>
+                          <X className="ui-icon" aria-hidden="true" />
+                        </button>
+                      </Tooltip>
+                    ) : null}
+                    {canRemove ? (
+                      <Tooltip label="移除任务">
+                        <button
+                          type="button"
+                          aria-label={`删除任务 ${item.name}`}
+                          onClick={() => onRemove(item.id)}
+                        >
+                          <Trash2 className="ui-icon" aria-hidden="true" />
+                        </button>
+                      </Tooltip>
+                    ) : null}
+                  </div>
+
+                  <div className="transfer-progress-line">
+                    <div
+                      className={`transfer-progress ${item.progressIndeterminate ? "indeterminate" : ""}`}
+                      role="progressbar"
+                      aria-label={`${item.name} ${item.stage}`}
+                      aria-valuemax={100}
+                      aria-valuemin={0}
+                      aria-valuenow={Math.round(progressValue)}
+                    >
+                      <span style={{ width: `${progressValue.toString()}%` }} />
+                    </div>
+                    <span className="transfer-progress-text">{progressLabel}</span>
+                  </div>
+                </article>
+              );
+            })
+          )}
+        </div>
       </div>
     </section>
   );
@@ -9261,6 +9362,93 @@ function previewRemoteFileEntryMetadata(entry: RemoteFileEntry): RemoteFileEntry
   };
 }
 
+function transferFileTypeClass(item: RemoteFileTransferItem) {
+  if (item.kind === "directory") {
+    return "directory";
+  }
+  const name = item.name.toLowerCase();
+  if (
+    name.endsWith(".tar.gz") ||
+    name.endsWith(".tgz") ||
+    name.endsWith(".zip") ||
+    name.endsWith(".gz") ||
+    name.endsWith(".7z") ||
+    name.endsWith(".rar")
+  ) {
+    return "archive";
+  }
+  if (name.endsWith(".log")) {
+    return "log";
+  }
+  return "file";
+}
+
+function transferFileTypeLabel(item: RemoteFileTransferItem) {
+  if (item.kind === "directory") {
+    return null;
+  }
+  const name = item.name.toLowerCase();
+  if (name.endsWith(".tar.gz") || name.endsWith(".tgz")) return "TGZ";
+  if (name.endsWith(".zip")) return "ZIP";
+  if (name.endsWith(".gz")) return "GZ";
+  if (name.endsWith(".7z")) return "7Z";
+  if (name.endsWith(".rar")) return "RAR";
+  if (name.endsWith(".log")) return "LOG";
+  const extension = item.name.includes(".") ? item.name.split(".").pop() || "" : "";
+  return extension.length > 0 && extension.length <= 4 ? extension.toUpperCase() : null;
+}
+
+function transferItemSizeText(item: RemoteFileTransferItem) {
+  if (item.kind === "directory") {
+    return item.progressDetail?.includes(" / ") || item.progressDetail?.startsWith("压缩包 ")
+      ? item.progressDetail
+      : "目录";
+  }
+  if (item.progressDetail?.includes(" / ")) {
+    return item.progressDetail;
+  }
+  if (item.progressDetail?.startsWith("压缩包 ")) {
+    return item.progressDetail;
+  }
+  return "文件";
+}
+
+function transferDirectionLabel(direction: TransferDirection) {
+  return direction === "upload" ? "上传" : "下载";
+}
+
+function transferKindLabel(kind: TransferKind) {
+  return kind === "directory" ? "目录" : "文件";
+}
+
+function transferSourcePath(item: RemoteFileTransferItem) {
+  if (item.direction === "upload") {
+    return item.localPath || "本地选择的文件";
+  }
+  return item.remotePath;
+}
+
+function transferTargetPath(item: RemoteFileTransferItem) {
+  if (item.direction === "upload") {
+    return item.remotePath;
+  }
+  return item.localPath || "本地下载目录";
+}
+
+function formatTransferDetailTime(timestamp: number) {
+  const date = new Date(timestamp);
+  if (Number.isNaN(date.getTime())) {
+    return "--";
+  }
+  return date.toLocaleString("zh-CN", {
+    hour: "2-digit",
+    hour12: false,
+    minute: "2-digit",
+    month: "2-digit",
+    day: "2-digit",
+  });
+}
+
 function transferStatusLabel(status: TransferStatus) {
   const labels: Record<TransferStatus, string> = {
     canceled: "已取消",
@@ -9271,6 +9459,39 @@ function transferStatusLabel(status: TransferStatus) {
     success: "完成",
   };
   return labels[status];
+}
+
+function transferDisplayStatusLabel(item: RemoteFileTransferItem) {
+  if (item.status !== "running" && item.status !== "queued") {
+    return transferStatusLabel(item.status);
+  }
+
+  const stage = item.stage.trim();
+  if (!stage) {
+    return transferStatusLabel(item.status);
+  }
+  if (stage.includes("等待")) {
+    return "等待";
+  }
+  if (stage.includes("压缩") || stage.includes("打包") || stage.includes("tar.gz")) {
+    return "压缩中";
+  }
+  if (stage.includes("扫描")) {
+    return "扫描中";
+  }
+  if (stage.includes("检查") || stage.includes("准备")) {
+    return "准备中";
+  }
+  if (stage.includes("下载")) {
+    return "下载中";
+  }
+  if (stage.includes("上传")) {
+    return "上传中";
+  }
+  if (stage.includes("解压")) {
+    return "解压中";
+  }
+  return transferStatusLabel(item.status);
 }
 
 function remoteKindLabel(kind: RemoteFileEntry["type"]) {
