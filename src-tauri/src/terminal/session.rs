@@ -6,13 +6,13 @@ use std::time::Duration;
 use encoding_rs::{CoderResult, Decoder, Encoding};
 use russh::client;
 use russh::keys::{load_secret_key, PrivateKeyWithHashAlg};
-use russh::{ChannelMsg, ChannelReadHalf, ChannelWriteHalf, Disconnect};
+use russh::{Channel, ChannelMsg, ChannelReadHalf, ChannelStream, ChannelWriteHalf, Disconnect};
 use russh_sftp::client::SftpSession;
 use std::future::Future;
 use tauri::{AppHandle, Manager};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, RwLock};
 use uuid::Uuid;
 
 use crate::app_error::AppError;
@@ -40,6 +40,27 @@ struct KnownHostClient {
     port: u16,
     app_data_dir: std::path::PathBuf,
     secret_store: Arc<dyn SecretStore>,
+    remote_forward: RemoteForwardState,
+}
+
+#[derive(Clone, Debug)]
+struct RemoteForwardTarget {
+    host: String,
+    port: u16,
+}
+
+#[derive(Clone)]
+pub enum RemoteForwardEvent {
+    Started,
+    Finished { error: Option<AppError> },
+}
+
+pub type RemoteForwardEventHandler = Arc<dyn Fn(RemoteForwardEvent) + Send + Sync + 'static>;
+
+#[derive(Clone, Default)]
+struct RemoteForwardState {
+    target: Arc<RwLock<Option<RemoteForwardTarget>>>,
+    event_handler: Arc<RwLock<Option<RemoteForwardEventHandler>>>,
 }
 
 impl client::Handler for KnownHostClient {
@@ -66,6 +87,93 @@ impl client::Handler for KnownHostClient {
             )),
         }
     }
+
+    fn server_channel_open_forwarded_tcpip(
+        &mut self,
+        channel: Channel<client::Msg>,
+        _connected_address: &str,
+        _connected_port: u32,
+        _originator_address: &str,
+        _originator_port: u32,
+        _session: &mut client::Session,
+    ) -> impl Future<Output = Result<(), Self::Error>> + Send {
+        let remote_forward = self.remote_forward.clone();
+        async move {
+            tauri::async_runtime::spawn(async move {
+                remote_forward.handle_forwarded_tcpip(channel).await;
+            });
+            Ok(())
+        }
+    }
+}
+
+impl RemoteForwardState {
+    async fn set_target(
+        &self,
+        host: String,
+        port: u16,
+        event_handler: Option<RemoteForwardEventHandler>,
+    ) {
+        *self.target.write().await = Some(RemoteForwardTarget { host, port });
+        *self.event_handler.write().await = event_handler;
+    }
+
+    async fn clear_target(&self) {
+        *self.target.write().await = None;
+        *self.event_handler.write().await = None;
+    }
+
+    async fn emit(&self, event: RemoteForwardEvent) {
+        if let Some(handler) = self.event_handler.read().await.as_ref().cloned() {
+            handler(event);
+        }
+    }
+
+    async fn handle_forwarded_tcpip(&self, channel: Channel<client::Msg>) {
+        let target = self.target.read().await.clone();
+        let Some(target) = target else {
+            let mut remote_stream = channel.into_stream();
+            let _ = remote_stream.shutdown().await;
+            return;
+        };
+
+        self.emit(RemoteForwardEvent::Started).await;
+        let result = forward_channel_to_local_target(channel, &target).await;
+        self.emit(RemoteForwardEvent::Finished {
+            error: result.err(),
+        })
+        .await;
+    }
+}
+
+async fn forward_channel_to_local_target(
+    channel: Channel<client::Msg>,
+    target: &RemoteForwardTarget,
+) -> Result<(), AppError> {
+    let mut remote_stream = channel.into_stream();
+    let mut local_stream = TcpStream::connect((target.host.as_str(), target.port))
+        .await
+        .map_err(|error| {
+            AppError::new(
+                "tunnel_remote_target_connect_failed",
+                "远程转发回连本机目标失败。",
+                format!("{}:{}: {error}", target.host, target.port),
+                true,
+            )
+        })?;
+    tokio::io::copy_bidirectional(&mut local_stream, &mut remote_stream)
+        .await
+        .map_err(|error| {
+            AppError::new(
+                "tunnel_stream_copy_failed",
+                "SSH 隧道数据转发失败。",
+                error,
+                true,
+            )
+        })?;
+    let _ = remote_stream.shutdown().await;
+    let _ = local_stream.shutdown().await;
+    Ok(())
 }
 
 fn vault_secret_store(app: &AppHandle) -> Result<Arc<dyn SecretStore>, AppError> {
@@ -146,6 +254,7 @@ pub struct ReusableSftpSession {
 pub struct ReusableForwardSession {
     client: SshHandle,
     jump_client: Option<SshHandle>,
+    remote_forward: RemoteForwardState,
 }
 
 pub(crate) struct TerminalOutputDecoder {
@@ -178,6 +287,7 @@ impl TerminalSession {
             port,
             app_data_dir: ssh_app_data_dir(&app)?,
             secret_store: vault_secret_store(&app)?,
+            remote_forward: RemoteForwardState::default(),
         };
 
         emit_progress(&progress, "tcp_connecting", "正在建立 SSH TCP 连接...");
@@ -351,6 +461,7 @@ impl ReusableExecSession {
             port: config.port,
             app_data_dir: ssh_app_data_dir(app)?,
             secret_store: vault_secret_store(app)?,
+            remote_forward: RemoteForwardState::default(),
         };
 
         let (mut client, jump_client) = run_with_timeout(
@@ -566,11 +677,13 @@ impl ReusableForwardSession {
             nodelay: true,
             ..<_>::default()
         });
+        let remote_forward = RemoteForwardState::default();
         let host_key_handler = KnownHostClient {
             host: config.host.clone(),
             port: config.port,
             app_data_dir: ssh_app_data_dir(app)?,
             secret_store: vault_secret_store(app)?,
+            remote_forward: remote_forward.clone(),
         };
 
         let (mut client, jump_client) = run_with_timeout(
@@ -596,6 +709,7 @@ impl ReusableForwardSession {
         Ok(Self {
             client,
             jump_client,
+            remote_forward,
         })
     }
 
@@ -610,6 +724,31 @@ impl ReusableForwardSession {
             .map(|address| address.ip().to_string())
             .unwrap_or_else(|| "127.0.0.1".to_string());
         let source_port = peer_addr.map(|address| address.port()).unwrap_or(0);
+        let mut remote_stream = self
+            .open_direct_tcpip_stream(remote_host, remote_port, source_host, source_port)
+            .await?;
+        tokio::io::copy_bidirectional(&mut local_stream, &mut remote_stream)
+            .await
+            .map_err(|error| {
+                AppError::new(
+                    "tunnel_stream_copy_failed",
+                    "SSH 隧道数据转发失败。",
+                    error,
+                    true,
+                )
+            })?;
+        let _ = remote_stream.shutdown().await;
+        let _ = local_stream.shutdown().await;
+        Ok(())
+    }
+
+    pub async fn open_direct_tcpip_stream(
+        &self,
+        remote_host: &str,
+        remote_port: u16,
+        source_host: String,
+        source_port: u16,
+    ) -> Result<ChannelStream<client::Msg>, AppError> {
         let channel = run_with_timeout(
             "tunnel_direct_tcpip_timeout",
             "SSH 隧道通道打开超时。",
@@ -630,20 +769,82 @@ impl ReusableForwardSession {
                 true,
             )
         })?;
-        let mut remote_stream = channel.into_stream();
-        tokio::io::copy_bidirectional(&mut local_stream, &mut remote_stream)
-            .await
-            .map_err(|error| {
-                AppError::new(
-                    "tunnel_stream_copy_failed",
-                    "SSH 隧道数据转发失败。",
-                    error,
-                    true,
-                )
-            })?;
-        let _ = remote_stream.shutdown().await;
-        let _ = local_stream.shutdown().await;
-        Ok(())
+        Ok(channel.into_stream())
+    }
+
+    pub async fn set_remote_forward_target(
+        &self,
+        local_host: String,
+        local_port: u16,
+        event_handler: Option<RemoteForwardEventHandler>,
+    ) {
+        self.remote_forward
+            .set_target(local_host, local_port, event_handler)
+            .await;
+    }
+
+    pub async fn clear_remote_forward_target(&self) {
+        self.remote_forward.clear_target().await;
+    }
+
+    pub async fn request_remote_forward(
+        &self,
+        remote_host: &str,
+        remote_port: u16,
+    ) -> Result<u16, AppError> {
+        let requested_port = u32::from(remote_port);
+        let bound_port = run_with_timeout(
+            "tunnel_remote_forward_timeout",
+            "远程端口转发请求超时。",
+            Duration::from_secs(20),
+            self.client
+                .tcpip_forward(remote_host.to_string(), requested_port),
+        )
+        .await?
+        .map_err(|error| {
+            AppError::new(
+                "tunnel_remote_forward_denied",
+                "SSH 服务器拒绝远程端口转发。",
+                error,
+                true,
+            )
+        })?;
+        let effective_port = if requested_port == 0 {
+            bound_port
+        } else {
+            requested_port
+        };
+        u16::try_from(effective_port).map_err(|error| {
+            AppError::new(
+                "tunnel_remote_port_invalid",
+                "远端监听端口无效。",
+                error,
+                true,
+            )
+        })
+    }
+
+    pub async fn cancel_remote_forward(
+        &self,
+        remote_host: &str,
+        remote_port: u16,
+    ) -> Result<(), AppError> {
+        run_with_timeout(
+            "tunnel_remote_forward_cancel_timeout",
+            "取消远程端口转发超时。",
+            Duration::from_secs(20),
+            self.client
+                .cancel_tcpip_forward(remote_host.to_string(), u32::from(remote_port)),
+        )
+        .await?
+        .map_err(|error| {
+            AppError::new(
+                "tunnel_remote_forward_cancel_failed",
+                "取消远程端口转发失败。",
+                error,
+                true,
+            )
+        })
     }
 
     pub async fn close(&self) {
@@ -677,6 +878,7 @@ impl ReusableSftpSession {
             port: config.port,
             app_data_dir: ssh_app_data_dir(app)?,
             secret_store: vault_secret_store(app)?,
+            remote_forward: RemoteForwardState::default(),
         };
 
         let (mut client, jump_client) = run_with_timeout(
@@ -895,6 +1097,7 @@ async fn connect_target_client(
                 port: jump.port,
                 app_data_dir: ssh_app_data_dir(app).map_err(to_russh_error)?,
                 secret_store: vault_secret_store(app).map_err(to_russh_error)?,
+                remote_forward: RemoteForwardState::default(),
             };
 
             let mut jump_client = run_with_timeout(

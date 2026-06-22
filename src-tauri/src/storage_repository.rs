@@ -8,6 +8,12 @@ use serde::{de::DeserializeOwned, Serialize};
 use tauri::{AppHandle, Manager};
 
 use crate::app_error::AppError;
+use crate::command_library::{
+    normalize_command_history_limit, validate_command_history_record,
+    validate_command_snippet_input, CommandHistoryEntry, CommandHistoryIdRequest,
+    CommandHistoryListRequest, CommandHistoryRecordRequest, CommandSnippet,
+    CommandSnippetIdRequest, CommandSnippetInput,
+};
 use crate::connections::{
     validate_profile_input, ConnectionAuthKind, ConnectionCredentialMode, ConnectionProfile,
     ConnectionProfileInput, ConnectionRemoteSystemInfo,
@@ -24,7 +30,9 @@ use crate::sync_snapshot::{
     SyncConnectionGroup, SyncConnectionRecord, SyncCredentialRecord, SyncDataDocument,
     SyncSecretEntry, SyncSecretsPlaintext, SYNC_PROTOCOL_VERSION,
 };
-use crate::tunnels::{validate_tunnel_rule_input, TunnelRule, TunnelRuleInput};
+use crate::tunnels::{
+    default_tunnel_rule_name, validate_tunnel_rule_input, TunnelRule, TunnelRuleInput,
+};
 
 pub struct StorageRepository {
     connection: Connection,
@@ -1683,6 +1691,7 @@ impl StorageRepository {
         let validated = validate_tunnel_rule_input(input)?;
         let id = validated
             .id
+            .clone()
             .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
         let created_at = self
             .connection
@@ -1694,15 +1703,10 @@ impl StorageRepository {
             .optional()
             .map_err(sqlite_repository_error)?
             .unwrap_or_else(|| now.to_string());
-        let name = validated.name.unwrap_or_else(|| {
-            format!(
-                "{}:{} -> {}:{}",
-                validated.local_host,
-                validated.local_port,
-                validated.remote_host,
-                validated.remote_port
-            )
-        });
+        let name = validated
+            .name
+            .clone()
+            .unwrap_or_else(|| default_tunnel_rule_name(&validated));
         self.connection
             .execute(
                 "INSERT INTO tunnels(
@@ -1759,6 +1763,261 @@ impl StorageRepository {
         }
         Ok(())
     }
+
+    pub fn command_snippet_list(&self) -> Result<Vec<CommandSnippet>, AppError> {
+        let mut statement = self
+            .connection
+            .prepare(
+                "SELECT id, title, command, description, tags_json, favorite,
+                        use_count, last_used_at, created_at, updated_at
+                   FROM command_snippets
+                  ORDER BY favorite DESC,
+                           COALESCE(last_used_at, updated_at) DESC,
+                           updated_at DESC,
+                           title ASC",
+            )
+            .map_err(sqlite_repository_error)?;
+        let rows = statement
+            .query_map([], row_to_command_snippet)
+            .map_err(sqlite_repository_error)?;
+        collect_rows(rows)
+    }
+
+    pub fn command_snippet_upsert(
+        &self,
+        input: CommandSnippetInput,
+        now: &str,
+    ) -> Result<CommandSnippet, AppError> {
+        let validated = validate_command_snippet_input(input)?;
+        let id = validated
+            .id
+            .clone()
+            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+        let existing = self
+            .connection
+            .query_row(
+                "SELECT created_at, use_count, last_used_at
+                   FROM command_snippets WHERE id = ?1",
+                params![id],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, i64>(1)?,
+                        row.get::<_, Option<String>>(2)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(sqlite_repository_error)?;
+        let (created_at, use_count, last_used_at) =
+            existing.unwrap_or_else(|| (now.to_string(), 0, None));
+        let tags_json = serde_json::to_string(&validated.tags).map_err(sqlite_serialize_error)?;
+        self.connection
+            .execute(
+                "INSERT INTO command_snippets(
+                    id, title, command, description, tags_json, favorite,
+                    use_count, last_used_at, created_at, updated_at
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+                ON CONFLICT(id) DO UPDATE SET
+                    title = excluded.title,
+                    command = excluded.command,
+                    description = excluded.description,
+                    tags_json = excluded.tags_json,
+                    favorite = excluded.favorite,
+                    updated_at = excluded.updated_at",
+                params![
+                    id,
+                    validated.title,
+                    validated.command,
+                    validated.description,
+                    tags_json,
+                    if validated.favorite { 1 } else { 0 },
+                    use_count,
+                    last_used_at,
+                    created_at,
+                    now,
+                ],
+            )
+            .map_err(sqlite_repository_error)?;
+        self.command_snippet_get(&id)?.ok_or_else(|| {
+            AppError::new(
+                "command_snippet_missing",
+                "命令片段不存在。",
+                format!("snippet_id={id}"),
+                false,
+            )
+        })
+    }
+
+    pub fn command_snippet_delete(&self, request: CommandSnippetIdRequest) -> Result<(), AppError> {
+        let changed = self
+            .connection
+            .execute(
+                "DELETE FROM command_snippets WHERE id = ?1",
+                params![request.id],
+            )
+            .map_err(sqlite_repository_error)?;
+        if changed == 0 {
+            return Err(AppError::new(
+                "command_snippet_missing",
+                "命令片段不存在。",
+                "snippet id missing",
+                false,
+            ));
+        }
+        Ok(())
+    }
+
+    pub fn command_snippet_mark_used(
+        &self,
+        request: CommandSnippetIdRequest,
+        now: &str,
+    ) -> Result<CommandSnippet, AppError> {
+        let changed = self
+            .connection
+            .execute(
+                "UPDATE command_snippets
+                    SET use_count = use_count + 1,
+                        last_used_at = ?1,
+                        updated_at = ?1
+                  WHERE id = ?2",
+                params![now, &request.id],
+            )
+            .map_err(sqlite_repository_error)?;
+        if changed == 0 {
+            return Err(AppError::new(
+                "command_snippet_missing",
+                "命令片段不存在。",
+                "snippet id missing",
+                false,
+            ));
+        }
+        self.command_snippet_get(&request.id)?.ok_or_else(|| {
+            AppError::new(
+                "command_snippet_missing",
+                "命令片段不存在。",
+                format!("snippet_id={}", request.id),
+                false,
+            )
+        })
+    }
+
+    pub fn command_history_list(
+        &self,
+        request: CommandHistoryListRequest,
+    ) -> Result<Vec<CommandHistoryEntry>, AppError> {
+        let limit = i64::from(normalize_command_history_limit(request.limit));
+        let mut statement = self
+            .connection
+            .prepare(
+                "SELECT id, command, source, target_count, append_enter,
+                        use_count, last_used_at, created_at
+                   FROM command_history
+                  ORDER BY last_used_at DESC, created_at DESC
+                  LIMIT ?1",
+            )
+            .map_err(sqlite_repository_error)?;
+        let rows = statement
+            .query_map(params![limit], row_to_command_history_entry)
+            .map_err(sqlite_repository_error)?;
+        collect_rows(rows)
+    }
+
+    pub fn command_history_record(
+        &self,
+        request: CommandHistoryRecordRequest,
+        now: &str,
+    ) -> Result<CommandHistoryEntry, AppError> {
+        let validated = validate_command_history_record(request)?;
+        let id = uuid::Uuid::new_v4().to_string();
+        self.connection
+            .execute(
+                "INSERT INTO command_history(
+                    id, command, source, target_count, append_enter,
+                    use_count, last_used_at, created_at
+                ) VALUES (?1, ?2, ?3, ?4, ?5, 1, ?6, ?6)
+                ON CONFLICT(command) DO UPDATE SET
+                    source = excluded.source,
+                    target_count = excluded.target_count,
+                    append_enter = excluded.append_enter,
+                    use_count = command_history.use_count + 1,
+                    last_used_at = excluded.last_used_at",
+                params![
+                    id,
+                    validated.command,
+                    enum_value(&validated.source)?,
+                    validated.target_count,
+                    if validated.append_enter { 1 } else { 0 },
+                    now,
+                ],
+            )
+            .map_err(sqlite_repository_error)?;
+        self.command_history_get_by_command(&validated.command)?
+            .ok_or_else(|| {
+                AppError::new(
+                    "command_history_missing",
+                    "历史命令不存在。",
+                    "history command missing after record",
+                    false,
+                )
+            })
+    }
+
+    pub fn command_history_delete(&self, request: CommandHistoryIdRequest) -> Result<(), AppError> {
+        let changed = self
+            .connection
+            .execute(
+                "DELETE FROM command_history WHERE id = ?1",
+                params![request.id],
+            )
+            .map_err(sqlite_repository_error)?;
+        if changed == 0 {
+            return Err(AppError::new(
+                "command_history_missing",
+                "历史命令不存在。",
+                "history id missing",
+                false,
+            ));
+        }
+        Ok(())
+    }
+
+    pub fn command_history_clear(&self) -> Result<(), AppError> {
+        self.connection
+            .execute("DELETE FROM command_history", [])
+            .map_err(sqlite_repository_error)?;
+        Ok(())
+    }
+
+    fn command_snippet_get(&self, id: &str) -> Result<Option<CommandSnippet>, AppError> {
+        self.connection
+            .query_row(
+                "SELECT id, title, command, description, tags_json, favorite,
+                        use_count, last_used_at, created_at, updated_at
+                   FROM command_snippets WHERE id = ?1",
+                params![id],
+                row_to_command_snippet,
+            )
+            .optional()
+            .map_err(sqlite_repository_error)
+    }
+
+    fn command_history_get_by_command(
+        &self,
+        command: &str,
+    ) -> Result<Option<CommandHistoryEntry>, AppError> {
+        self.connection
+            .query_row(
+                "SELECT id, command, source, target_count, append_enter,
+                        use_count, last_used_at, created_at
+                   FROM command_history WHERE command = ?1",
+                params![command],
+                row_to_command_history_entry,
+            )
+            .optional()
+            .map_err(sqlite_repository_error)
+    }
+
     fn existing_connection_meta(
         &self,
         id: &str,
@@ -1865,6 +2124,48 @@ fn row_to_tunnel_rule(row: &rusqlite::Row<'_>) -> rusqlite::Result<TunnelRule> {
         auto_start: row.get::<_, i64>(8)? != 0,
         created_at: row.get(9)?,
         updated_at: row.get(10)?,
+    })
+}
+
+fn row_to_command_snippet(row: &rusqlite::Row<'_>) -> rusqlite::Result<CommandSnippet> {
+    let tags_json: String = row.get(4)?;
+    let tags = serde_json::from_str(&tags_json).map_err(from_serde_row_error)?;
+    Ok(CommandSnippet {
+        id: row.get(0)?,
+        title: row.get(1)?,
+        command: row.get(2)?,
+        description: row.get(3)?,
+        tags,
+        favorite: row.get::<_, i64>(5)? != 0,
+        use_count: row_i64_to_u32(row.get(6)?)?,
+        last_used_at: row.get(7)?,
+        created_at: row.get(8)?,
+        updated_at: row.get(9)?,
+    })
+}
+
+fn row_to_command_history_entry(row: &rusqlite::Row<'_>) -> rusqlite::Result<CommandHistoryEntry> {
+    let source: String = row.get(2)?;
+    Ok(CommandHistoryEntry {
+        id: row.get(0)?,
+        command: row.get(1)?,
+        source: serde_json::from_value(serde_json::Value::String(source))
+            .map_err(from_serde_row_error)?,
+        target_count: row_i64_to_u32(row.get(3)?)?,
+        append_enter: row.get::<_, i64>(4)? != 0,
+        use_count: row_i64_to_u32(row.get(5)?)?,
+        last_used_at: row.get(6)?,
+        created_at: row.get(7)?,
+    })
+}
+
+fn row_i64_to_u32(value: i64) -> rusqlite::Result<u32> {
+    u32::try_from(value).map_err(|error| {
+        rusqlite::Error::FromSqlConversionFailure(
+            0,
+            rusqlite::types::Type::Integer,
+            Box::new(error),
+        )
     })
 }
 
@@ -2328,6 +2629,142 @@ mod tests {
         assert_eq!(revealed.kind, ConnectionAuthKind::PrivateKey);
         assert_eq!(revealed.password, None);
         assert_eq!(revealed.private_key_passphrase, Some("phrase".to_string()));
+    }
+
+    #[test]
+    fn command_library_snippet_roundtrips_and_marks_used() {
+        let (repo, _db_path, _secrets) = temp_repository("command-snippet-roundtrip");
+
+        let saved = repo
+            .command_snippet_upsert(
+                crate::command_library::CommandSnippetInput {
+                    id: Some("snippet-001".to_string()),
+                    title: Some("磁盘".to_string()),
+                    command: "df -h".to_string(),
+                    description: Some("查看磁盘".to_string()),
+                    tags: vec!["linux".to_string(), " Linux ".to_string()],
+                    favorite: true,
+                },
+                "2026-06-22T00:00:00+08:00",
+            )
+            .unwrap();
+        let used = repo
+            .command_snippet_mark_used(
+                crate::command_library::CommandSnippetIdRequest {
+                    id: saved.id.clone(),
+                },
+                "2026-06-22T00:01:00+08:00",
+            )
+            .unwrap();
+        let snippets = repo.command_snippet_list().unwrap();
+
+        assert_eq!(snippets.len(), 1);
+        assert_eq!(snippets[0].tags, vec!["linux"]);
+        assert_eq!(used.use_count, 1);
+        assert_eq!(
+            used.last_used_at.as_deref(),
+            Some("2026-06-22T00:01:00+08:00")
+        );
+    }
+
+    #[test]
+    fn command_library_snippet_delete_reports_missing() {
+        let (repo, _db_path, _secrets) = temp_repository("command-snippet-delete");
+
+        let error = repo
+            .command_snippet_delete(crate::command_library::CommandSnippetIdRequest {
+                id: "missing".to_string(),
+            })
+            .unwrap_err();
+
+        assert_eq!(error.code, "command_snippet_missing");
+    }
+
+    #[test]
+    fn command_library_history_merges_duplicate_commands() {
+        let (repo, _db_path, _secrets) = temp_repository("command-history-merge");
+
+        let first = repo
+            .command_history_record(
+                crate::command_library::CommandHistoryRecordRequest {
+                    command: "uptime".to_string(),
+                    source: crate::command_library::CommandHistorySource::CommandSender,
+                    target_count: 1,
+                    append_enter: true,
+                },
+                "2026-06-22T00:00:00+08:00",
+            )
+            .unwrap();
+        let second = repo
+            .command_history_record(
+                crate::command_library::CommandHistoryRecordRequest {
+                    command: " uptime ".to_string(),
+                    source: crate::command_library::CommandHistorySource::CommandSender,
+                    target_count: 3,
+                    append_enter: false,
+                },
+                "2026-06-22T00:01:00+08:00",
+            )
+            .unwrap();
+        let history = repo
+            .command_history_list(crate::command_library::CommandHistoryListRequest {
+                limit: Some(10),
+            })
+            .unwrap();
+
+        assert_eq!(first.id, second.id);
+        assert_eq!(second.use_count, 2);
+        assert_eq!(second.target_count, 3);
+        assert!(!second.append_enter);
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].last_used_at, "2026-06-22T00:01:00+08:00");
+    }
+
+    #[test]
+    fn command_library_history_delete_and_clear() {
+        let (repo, _db_path, _secrets) = temp_repository("command-history-delete-clear");
+        let first = repo
+            .command_history_record(
+                crate::command_library::CommandHistoryRecordRequest {
+                    command: "whoami".to_string(),
+                    source: crate::command_library::CommandHistorySource::CommandSender,
+                    target_count: 1,
+                    append_enter: true,
+                },
+                "2026-06-22T00:00:00+08:00",
+            )
+            .unwrap();
+        let _second = repo
+            .command_history_record(
+                crate::command_library::CommandHistoryRecordRequest {
+                    command: "pwd".to_string(),
+                    source: crate::command_library::CommandHistorySource::CommandSender,
+                    target_count: 1,
+                    append_enter: true,
+                },
+                "2026-06-22T00:01:00+08:00",
+            )
+            .unwrap();
+
+        repo.command_history_delete(crate::command_library::CommandHistoryIdRequest {
+            id: first.id,
+        })
+        .unwrap();
+        let history = repo
+            .command_history_list(crate::command_library::CommandHistoryListRequest {
+                limit: Some(10),
+            })
+            .unwrap();
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].command, "pwd");
+
+        repo.command_history_clear().unwrap();
+        let history = repo
+            .command_history_list(crate::command_library::CommandHistoryListRequest {
+                limit: Some(10),
+            })
+            .unwrap();
+        assert!(history.is_empty());
     }
 
     fn password_connection_input() -> ConnectionProfileInput {

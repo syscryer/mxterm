@@ -1,4 +1,5 @@
 mod app_error;
+mod command_library;
 mod commands;
 mod connections;
 mod credentials;
@@ -99,6 +100,14 @@ pub fn run() {
             commands::tunnel_start,
             commands::tunnel_stop,
             commands::tunnel_autostart,
+            commands::command_snippet_list,
+            commands::command_snippet_upsert,
+            commands::command_snippet_delete,
+            commands::command_snippet_mark_used,
+            commands::command_history_list,
+            commands::command_history_record,
+            commands::command_history_delete,
+            commands::command_history_clear,
             commands::webdav_settings_get,
             commands::webdav_settings_save,
             commands::webdav_test_connection,

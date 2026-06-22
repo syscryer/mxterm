@@ -1,11 +1,13 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::net::{Ipv4Addr, Ipv6Addr};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::async_runtime::JoinHandle;
 use tauri::AppHandle;
-use tokio::net::TcpListener;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{Mutex, RwLock};
 use uuid::Uuid;
 
@@ -13,7 +15,9 @@ use crate::app_error::AppError;
 use crate::ssh_config::{resolve_saved_connection, RuntimeCredentialInput};
 use crate::storage::{load_json_document, write_json_document, JsonStoreErrorLabels};
 use crate::storage_repository::StorageRepository;
-use crate::terminal::session::ReusableForwardSession;
+use crate::terminal::session::{
+    RemoteForwardEvent, RemoteForwardEventHandler, ReusableForwardSession,
+};
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -117,6 +121,18 @@ struct RunningTunnel {
     rule: TunnelRule,
     session: Arc<ReusableForwardSession>,
     task: JoinHandle<()>,
+    remote_forward: Option<RemoteForwardBinding>,
+}
+
+struct RemoteForwardBinding {
+    host: String,
+    port: u16,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct Socks5ConnectTarget {
+    host: String,
+    port: u16,
 }
 
 fn tunnel_store_error_labels() -> JsonStoreErrorLabels {
@@ -170,21 +186,19 @@ impl TunnelStore {
 
     pub fn upsert(&mut self, input: TunnelRuleInput, now: &str) -> Result<TunnelRule, AppError> {
         let validated = validate_tunnel_rule_input(input)?;
-        let id = validated.id.unwrap_or_else(|| Uuid::new_v4().to_string());
+        let id = validated
+            .id
+            .clone()
+            .unwrap_or_else(|| Uuid::new_v4().to_string());
         let existing_index = self.document.rules.iter().position(|rule| rule.id == id);
         let created_at = existing_index
             .and_then(|index| self.document.rules.get(index))
             .map(|rule| rule.created_at.clone())
             .unwrap_or_else(|| now.to_string());
-        let name = validated.name.unwrap_or_else(|| {
-            format!(
-                "{}:{} -> {}:{}",
-                validated.local_host,
-                validated.local_port,
-                validated.remote_host,
-                validated.remote_port
-            )
-        });
+        let name = validated
+            .name
+            .clone()
+            .unwrap_or_else(|| default_tunnel_rule_name(&validated));
         let rule = TunnelRule {
             id,
             name,
@@ -364,6 +378,81 @@ impl TunnelManager {
             }
         };
 
+        if rule.kind == TunnelKind::Remote {
+            let session = match ReusableForwardSession::connect_resolved(app, &config).await {
+                Ok(session) => Arc::new(session),
+                Err(error) => {
+                    self.set_state(failed_state(&rule, &error)).await;
+                    return Err(error);
+                }
+            };
+
+            if let Err(error) = self.load_rule(app, rule_id).await {
+                session.close().await;
+                self.states.write().await.remove(rule_id);
+                return Err(error);
+            }
+
+            if self.running.lock().await.contains_key(rule_id) {
+                session.close().await;
+                return self.attach_state(rule).await;
+            }
+
+            let states_for_events = Arc::clone(&self.states);
+            let rule_id_for_events = rule.id.clone();
+            let event_handler: RemoteForwardEventHandler = Arc::new(move |event| {
+                let states = Arc::clone(&states_for_events);
+                let rule_id = rule_id_for_events.clone();
+                tauri::async_runtime::spawn(async move {
+                    match event {
+                        RemoteForwardEvent::Started => {
+                            increment_active_connections(&states, &rule_id).await;
+                        }
+                        RemoteForwardEvent::Finished { error } => {
+                            decrement_active_connections(&states, &rule_id, error).await;
+                        }
+                    }
+                });
+            });
+            session
+                .set_remote_forward_target(
+                    rule.local_host.clone(),
+                    rule.local_port,
+                    Some(event_handler),
+                )
+                .await;
+            let bound_port = match session
+                .request_remote_forward(&rule.remote_host, rule.remote_port)
+                .await
+            {
+                Ok(port) => port,
+                Err(error) => {
+                    session.clear_remote_forward_target().await;
+                    session.close().await;
+                    self.set_state(failed_state(&rule, &error)).await;
+                    return Err(error);
+                }
+            };
+
+            let running_state =
+                running_state(&rule, Some(rule.remote_host.clone()), Some(bound_port))?;
+            self.set_state(running_state).await;
+            let task = tauri::async_runtime::spawn(std::future::pending::<()>());
+            self.running.lock().await.insert(
+                rule_id.to_string(),
+                RunningTunnel {
+                    rule: rule.clone(),
+                    session,
+                    task,
+                    remote_forward: Some(RemoteForwardBinding {
+                        host: rule.remote_host.clone(),
+                        port: bound_port,
+                    }),
+                },
+            );
+            return self.attach_state(rule).await;
+        }
+
         let bind_address = format!("{}:{}", rule.local_host, rule.local_port);
         let listener = match TcpListener::bind(bind_address.as_str()).await {
             Ok(listener) => listener,
@@ -419,6 +508,7 @@ impl TunnelManager {
                 rule: rule.clone(),
                 session,
                 task,
+                remote_forward: None,
             },
         );
         self.attach_state(rule).await
@@ -443,6 +533,13 @@ impl TunnelManager {
         if let Some(running) = running {
             let rule = running.rule;
             running.task.abort();
+            if let Some(binding) = running.remote_forward.as_ref() {
+                let _ = running
+                    .session
+                    .cancel_remote_forward(&binding.host, binding.port)
+                    .await;
+                running.session.clear_remote_forward_target().await;
+            }
             running.session.close().await;
             Some(rule)
         } else {
@@ -499,10 +596,17 @@ async fn run_tunnel_accept_loop(
                 let rule_id = rule.id.clone();
                 let remote_host = rule.remote_host.clone();
                 let remote_port = rule.remote_port;
+                let kind = rule.kind.clone();
                 tauri::async_runtime::spawn(async move {
-                    let result = session
-                        .forward_tcp_stream(stream, &remote_host, remote_port)
-                        .await;
+                    let result = match kind {
+                        TunnelKind::Local => {
+                            session
+                                .forward_tcp_stream(stream, &remote_host, remote_port)
+                                .await
+                        }
+                        TunnelKind::Dynamic => forward_socks5_stream(session, stream).await,
+                        TunnelKind::Remote => Ok(()),
+                    };
                     decrement_active_connections(&states, &rule_id, result.err()).await;
                 });
             }
@@ -520,6 +624,118 @@ async fn run_tunnel_accept_loop(
     }
     running.lock().await.remove(&rule.id);
     session.close().await;
+}
+
+async fn forward_socks5_stream(
+    session: Arc<ReusableForwardSession>,
+    mut local_stream: TcpStream,
+) -> Result<(), AppError> {
+    let target = read_socks5_connect_target(&mut local_stream).await?;
+    let peer_addr = local_stream.peer_addr().ok();
+    let source_host = peer_addr
+        .map(|address| address.ip().to_string())
+        .unwrap_or_else(|| "127.0.0.1".to_string());
+    let source_port = peer_addr.map(|address| address.port()).unwrap_or(0);
+    let mut remote_stream = match session
+        .open_direct_tcpip_stream(&target.host, target.port, source_host, source_port)
+        .await
+    {
+        Ok(stream) => stream,
+        Err(error) => {
+            let _ = write_socks5_reply(&mut local_stream, 0x05).await;
+            return Err(error);
+        }
+    };
+    write_socks5_reply(&mut local_stream, 0x00).await?;
+    tokio::io::copy_bidirectional(&mut local_stream, &mut remote_stream)
+        .await
+        .map_err(|error| {
+            AppError::new(
+                "tunnel_stream_copy_failed",
+                "SSH 隧道数据转发失败。",
+                error,
+                true,
+            )
+        })?;
+    let _ = remote_stream.shutdown().await;
+    let _ = local_stream.shutdown().await;
+    Ok(())
+}
+
+async fn read_socks5_connect_target(
+    stream: &mut TcpStream,
+) -> Result<Socks5ConnectTarget, AppError> {
+    let mut greeting = [0u8; 2];
+    stream
+        .read_exact(&mut greeting)
+        .await
+        .map_err(|error| socks_handshake_error("SOCKS5 握手读取失败。", error))?;
+    if greeting[0] != 0x05 {
+        return Err(socks_handshake_error(
+            "SOCKS5 版本不受支持。",
+            format!("version={}", greeting[0]),
+        ));
+    }
+    let method_count = usize::from(greeting[1]);
+    if method_count == 0 {
+        let _ = stream.write_all(&[0x05, 0xff]).await;
+        return Err(socks_handshake_error(
+            "SOCKS5 客户端未提供认证方式。",
+            "method count is zero",
+        ));
+    }
+    let mut methods = vec![0u8; method_count];
+    stream
+        .read_exact(&mut methods)
+        .await
+        .map_err(|error| socks_handshake_error("SOCKS5 认证方式读取失败。", error))?;
+    if let Err(error) = select_socks5_no_auth_method(&methods) {
+        let _ = stream.write_all(&[0x05, 0xff]).await;
+        return Err(error);
+    }
+    stream
+        .write_all(&[0x05, 0x00])
+        .await
+        .map_err(|error| socks_handshake_error("SOCKS5 握手响应失败。", error))?;
+
+    let mut request = vec![0u8; 4];
+    stream
+        .read_exact(&mut request)
+        .await
+        .map_err(|error| socks_handshake_error("SOCKS5 请求读取失败。", error))?;
+    let extra_len = match request[3] {
+        0x01 => 6,
+        0x03 => {
+            let mut length = [0u8; 1];
+            stream
+                .read_exact(&mut length)
+                .await
+                .map_err(|error| socks_target_error("SOCKS5 域名长度读取失败。", error))?;
+            request.push(length[0]);
+            usize::from(length[0]).saturating_add(2)
+        }
+        0x04 => 18,
+        atyp => {
+            return Err(socks_handshake_error(
+                "SOCKS5 地址类型不受支持。",
+                format!("atyp={atyp}"),
+            ));
+        }
+    };
+    let mut extra = vec![0u8; extra_len];
+    stream
+        .read_exact(&mut extra)
+        .await
+        .map_err(|error| socks_target_error("SOCKS5 目标读取失败。", error))?;
+    request.extend(extra);
+    parse_socks5_connect_target(&request)
+}
+
+async fn write_socks5_reply(stream: &mut TcpStream, reply: u8) -> Result<(), AppError> {
+    stream
+        .write_all(&[0x05, reply, 0x00, 0x01, 0, 0, 0, 0, 0, 0])
+        .await
+        .map_err(|error| socks_handshake_error("SOCKS5 响应发送失败。", error))
 }
 
 async fn increment_active_connections(
@@ -577,43 +793,78 @@ fn resolve_stopped_rule(
 pub(crate) fn validate_tunnel_rule_input(
     input: TunnelRuleInput,
 ) -> Result<TunnelRuleInput, AppError> {
-    if input.kind != TunnelKind::Local {
-        return Err(AppError::new(
-            "tunnel_kind_unsupported",
-            "暂只支持本地端口转发。",
-            format!("kind={:?}", input.kind),
-            true,
-        ));
-    }
-
     let connection_id = trim_required(
         input.connection_id,
         "tunnel_connection_missing",
         "请选择 SSH 连接。",
         "connection_id is empty",
     )?;
-    let local_host = trim_required(
-        input.local_host,
-        "tunnel_local_host_missing",
-        "请填写本地监听地址。",
-        "local_host is empty",
-    )?;
-    let remote_host = trim_required(
-        input.remote_host,
-        "tunnel_remote_host_missing",
-        "请填写远端目标地址。",
-        "remote_host is empty",
-    )?;
-    validate_port(
-        input.local_port,
-        "tunnel_local_port_invalid",
-        "本地监听端口无效。",
-    )?;
-    validate_port(
-        input.remote_port,
-        "tunnel_remote_port_invalid",
-        "远端目标端口无效。",
-    )?;
+    let (local_host, local_port, remote_host, remote_port) = match input.kind {
+        TunnelKind::Local => {
+            let local_host = trim_required(
+                input.local_host,
+                "tunnel_local_host_missing",
+                "请填写本地监听地址。",
+                "local_host is empty",
+            )?;
+            let remote_host = trim_required(
+                input.remote_host,
+                "tunnel_remote_host_missing",
+                "请填写远端目标地址。",
+                "remote_host is empty",
+            )?;
+            validate_port(
+                input.local_port,
+                "tunnel_local_port_invalid",
+                "本地监听端口无效。",
+            )?;
+            validate_port(
+                input.remote_port,
+                "tunnel_remote_port_invalid",
+                "远端目标端口无效。",
+            )?;
+            (local_host, input.local_port, remote_host, input.remote_port)
+        }
+        TunnelKind::Dynamic => {
+            let local_host = trim_required(
+                input.local_host,
+                "tunnel_local_host_missing",
+                "请填写本地 SOCKS 监听地址。",
+                "local_host is empty",
+            )?;
+            validate_port(
+                input.local_port,
+                "tunnel_local_port_invalid",
+                "本地 SOCKS 端口无效。",
+            )?;
+            (local_host, input.local_port, String::new(), 1)
+        }
+        TunnelKind::Remote => {
+            let local_host = trim_required(
+                input.local_host,
+                "tunnel_local_host_missing",
+                "请填写本机目标地址。",
+                "local_host is empty",
+            )?;
+            let remote_host = trim_required(
+                input.remote_host,
+                "tunnel_remote_host_missing",
+                "请填写远端监听地址。",
+                "remote_host is empty",
+            )?;
+            validate_port(
+                input.local_port,
+                "tunnel_local_port_invalid",
+                "本机目标端口无效。",
+            )?;
+            validate_port(
+                input.remote_port,
+                "tunnel_remote_port_invalid",
+                "远端监听端口无效。",
+            )?;
+            (local_host, input.local_port, remote_host, input.remote_port)
+        }
+    };
 
     Ok(TunnelRuleInput {
         id: normalized_optional_id(input.id.as_deref()),
@@ -624,11 +875,129 @@ pub(crate) fn validate_tunnel_rule_input(
         kind: input.kind,
         connection_id,
         local_host,
-        local_port: input.local_port,
+        local_port,
         remote_host,
-        remote_port: input.remote_port,
+        remote_port,
         auto_start: input.auto_start,
     })
+}
+
+pub(crate) fn default_tunnel_rule_name(input: &TunnelRuleInput) -> String {
+    match input.kind {
+        TunnelKind::Local => format!(
+            "L {}:{} -> {}:{}",
+            input.local_host, input.local_port, input.remote_host, input.remote_port
+        ),
+        TunnelKind::Dynamic => format!("D {}:{} SOCKS", input.local_host, input.local_port),
+        TunnelKind::Remote => format!(
+            "R {}:{} -> {}:{}",
+            input.remote_host, input.remote_port, input.local_host, input.local_port
+        ),
+    }
+}
+
+pub(crate) fn select_socks5_no_auth_method(methods: &[u8]) -> Result<(), AppError> {
+    if methods.iter().any(|method| *method == 0x00) {
+        return Ok(());
+    }
+    Err(socks_handshake_error(
+        "SOCKS5 客户端不支持无认证方式。",
+        "no supported no-auth method",
+    ))
+}
+
+pub(crate) fn parse_socks5_connect_target(request: &[u8]) -> Result<Socks5ConnectTarget, AppError> {
+    if request.len() < 7 {
+        return Err(socks_target_error(
+            "SOCKS5 请求目标不完整。",
+            "request too short",
+        ));
+    }
+    if request[0] != 0x05 {
+        return Err(socks_handshake_error(
+            "SOCKS5 版本不受支持。",
+            format!("version={}", request[0]),
+        ));
+    }
+    if request[1] != 0x01 {
+        return Err(socks_handshake_error(
+            "SOCKS5 暂只支持 CONNECT 请求。",
+            format!("command={}", request[1]),
+        ));
+    }
+    if request[2] != 0x00 {
+        return Err(socks_handshake_error(
+            "SOCKS5 请求格式无效。",
+            format!("reserved={}", request[2]),
+        ));
+    }
+
+    match request[3] {
+        0x01 => parse_socks5_ipv4_target(request),
+        0x03 => parse_socks5_domain_target(request),
+        0x04 => parse_socks5_ipv6_target(request),
+        atyp => Err(socks_handshake_error(
+            "SOCKS5 地址类型不受支持。",
+            format!("atyp={atyp}"),
+        )),
+    }
+}
+
+fn parse_socks5_ipv4_target(request: &[u8]) -> Result<Socks5ConnectTarget, AppError> {
+    if request.len() < 10 {
+        return Err(socks_target_error(
+            "SOCKS5 IPv4 目标不完整。",
+            "ipv4 request too short",
+        ));
+    }
+    let host = Ipv4Addr::new(request[4], request[5], request[6], request[7]).to_string();
+    let port = socks5_port(request[8], request[9])?;
+    Ok(Socks5ConnectTarget { host, port })
+}
+
+fn parse_socks5_domain_target(request: &[u8]) -> Result<Socks5ConnectTarget, AppError> {
+    let domain_len = usize::from(request[4]);
+    let port_start = 5usize.saturating_add(domain_len);
+    if domain_len == 0 || request.len() < port_start.saturating_add(2) {
+        return Err(socks_target_error(
+            "SOCKS5 域名目标不完整。",
+            "domain request too short",
+        ));
+    }
+    let domain = String::from_utf8(request[5..port_start].to_vec())
+        .map_err(|error| socks_target_error("SOCKS5 域名目标无效。", error))?;
+    let port = socks5_port(request[port_start], request[port_start + 1])?;
+    Ok(Socks5ConnectTarget { host: domain, port })
+}
+
+fn parse_socks5_ipv6_target(request: &[u8]) -> Result<Socks5ConnectTarget, AppError> {
+    if request.len() < 22 {
+        return Err(socks_target_error(
+            "SOCKS5 IPv6 目标不完整。",
+            "ipv6 request too short",
+        ));
+    }
+    let mut octets = [0u8; 16];
+    octets.copy_from_slice(&request[4..20]);
+    let host = Ipv6Addr::from(octets).to_string();
+    let port = socks5_port(request[20], request[21])?;
+    Ok(Socks5ConnectTarget { host, port })
+}
+
+fn socks5_port(high: u8, low: u8) -> Result<u16, AppError> {
+    let port = u16::from_be_bytes([high, low]);
+    if port == 0 {
+        return Err(socks_target_error("SOCKS5 目标端口无效。", "port is zero"));
+    }
+    Ok(port)
+}
+
+fn socks_handshake_error(message: &str, raw_message: impl ToString) -> AppError {
+    AppError::new("tunnel_socks_handshake_failed", message, raw_message, true)
+}
+
+fn socks_target_error(message: &str, raw_message: impl ToString) -> AppError {
+    AppError::new("tunnel_socks_target_missing", message, raw_message, true)
 }
 
 fn normalized_optional_id(value: Option<&str>) -> Option<String> {
@@ -800,13 +1169,127 @@ mod tests {
     }
 
     #[test]
-    fn tunnel_rule_validation_rejects_non_local_kind_for_mvp() {
+    fn tunnel_rule_validation_accepts_dynamic_without_remote_target() {
         let mut input = valid_input();
         input.kind = TunnelKind::Dynamic;
+        input.name = None;
+        input.remote_host = "  ".to_string();
+        input.remote_port = 0;
 
-        let error = validate_tunnel_rule_input(input).unwrap_err();
+        let validated = validate_tunnel_rule_input(input).unwrap();
 
-        assert_eq!(error.code, "tunnel_kind_unsupported");
+        assert_eq!(validated.kind, TunnelKind::Dynamic);
+        assert_eq!(validated.remote_host, "");
+        assert_eq!(validated.remote_port, 1);
+    }
+
+    #[test]
+    fn tunnel_rule_validation_accepts_remote_forward_with_remote_listener_and_local_target() {
+        let mut input = valid_input();
+        input.kind = TunnelKind::Remote;
+        input.local_host = " 127.0.0.1 ".to_string();
+        input.local_port = 8080;
+        input.remote_host = " 0.0.0.0 ".to_string();
+        input.remote_port = 18080;
+
+        let validated = validate_tunnel_rule_input(input).unwrap();
+
+        assert_eq!(validated.kind, TunnelKind::Remote);
+        assert_eq!(validated.local_host, "127.0.0.1");
+        assert_eq!(validated.local_port, 8080);
+        assert_eq!(validated.remote_host, "0.0.0.0");
+        assert_eq!(validated.remote_port, 18080);
+    }
+
+    #[test]
+    fn tunnel_rule_validation_rejects_remote_forward_missing_listener_or_target() {
+        let mut missing_target = valid_input();
+        missing_target.kind = TunnelKind::Remote;
+        missing_target.local_host = " ".to_string();
+
+        let error = validate_tunnel_rule_input(missing_target).unwrap_err();
+
+        assert_eq!(error.code, "tunnel_local_host_missing");
+
+        let mut missing_listener = valid_input();
+        missing_listener.kind = TunnelKind::Remote;
+        missing_listener.remote_host = " ".to_string();
+
+        let error = validate_tunnel_rule_input(missing_listener).unwrap_err();
+
+        assert_eq!(error.code, "tunnel_remote_host_missing");
+    }
+
+    #[test]
+    fn tunnel_store_generates_default_names_by_kind() {
+        let root = std::env::temp_dir().join(format!("mxterm-tunnels-{}", Uuid::new_v4()));
+        let path = root.join("tunnels.json");
+        let mut store = TunnelStore::load(path).unwrap();
+
+        let mut dynamic = valid_input();
+        dynamic.id = Some("dynamic-rule".to_string());
+        dynamic.name = None;
+        dynamic.kind = TunnelKind::Dynamic;
+        dynamic.local_port = 1080;
+        dynamic.remote_host = String::new();
+        dynamic.remote_port = 1;
+
+        let mut remote = valid_input();
+        remote.id = Some("remote-rule".to_string());
+        remote.name = None;
+        remote.kind = TunnelKind::Remote;
+        remote.local_port = 8080;
+        remote.remote_host = "0.0.0.0".to_string();
+        remote.remote_port = 18080;
+
+        let dynamic = store.upsert(dynamic, "2026-06-20T00:00:00+08:00").unwrap();
+        let remote = store.upsert(remote, "2026-06-20T00:00:00+08:00").unwrap();
+
+        assert_eq!(dynamic.name, "D 127.0.0.1:1080 SOCKS");
+        assert_eq!(remote.name, "R 0.0.0.0:18080 -> 127.0.0.1:8080");
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn socks5_method_selection_requires_no_auth() {
+        assert!(select_socks5_no_auth_method(&[0x02, 0x00]).is_ok());
+
+        let error = select_socks5_no_auth_method(&[0x02]).unwrap_err();
+
+        assert_eq!(error.code, "tunnel_socks_handshake_failed");
+    }
+
+    #[test]
+    fn socks5_connect_parser_supports_ipv4_domain_and_ipv6() {
+        let ipv4 = parse_socks5_connect_target(&[0x05, 0x01, 0x00, 0x01, 127, 0, 0, 1, 0x15, 0x38])
+            .unwrap();
+        let domain = parse_socks5_connect_target(&[
+            0x05, 0x01, 0x00, 0x03, 11, b'e', b'x', b'a', b'm', b'p', b'l', b'e', b'.', b'c', b'o',
+            b'm', 0x01, 0xbb,
+        ])
+        .unwrap();
+        let ipv6 = parse_socks5_connect_target(&[
+            0x05, 0x01, 0x00, 0x04, 0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1,
+            0x04, 0xd2,
+        ])
+        .unwrap();
+
+        assert_eq!(ipv4.host, "127.0.0.1");
+        assert_eq!(ipv4.port, 5432);
+        assert_eq!(domain.host, "example.com");
+        assert_eq!(domain.port, 443);
+        assert_eq!(ipv6.host, "2001:db8::1");
+        assert_eq!(ipv6.port, 1234);
+    }
+
+    #[test]
+    fn socks5_connect_parser_rejects_unsupported_command() {
+        let error =
+            parse_socks5_connect_target(&[0x05, 0x02, 0x00, 0x01, 127, 0, 0, 1, 0x15, 0x38])
+                .unwrap_err();
+
+        assert_eq!(error.code, "tunnel_socks_handshake_failed");
     }
 
     #[test]

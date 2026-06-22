@@ -902,7 +902,7 @@ interface TunnelRuntimeCredentialInput {
 | Condition | Frontend behavior |
 | --- | --- |
 | No saved SSH connections | Disable new-rule action and show the tunnel empty state. |
-| Dialog has blank connection/local host/remote host | Keep the dialog open and show inline validation. |
+| Dialog has blank connection, required local field, or required remote field for the selected kind | Keep the dialog open and show inline validation. |
 | Port text is not an integer in `1..=65535` | Keep the dialog open and show inline validation. |
 | `credential_prompt_required` from manual start | Open the one-time credential dialog; do not persist the credential. |
 | `host_key_unknown` or `host_key_changed` from manual start | Open host-key confirmation, call `knownHostTrust`, then retry the same tunnel start. |
@@ -912,7 +912,9 @@ interface TunnelRuntimeCredentialInput {
 
 ### 5. Good / Base / Bad Cases
 
-- Good: `TunnelPanel` submits `kind: "local"`, `connection_id`, local bind host/port, remote target host/port, and `auto_start`, then renders the returned `TunnelRuleWithState`.
+- Good: `TunnelPanel` submits the selected `kind`, `connection_id`, kind-specific local/remote host and port fields, and `auto_start`, then renders the returned `TunnelRuleWithState`.
+- Good: dynamic SOCKS hides remote target fields, sends `remote_host=""` and `remote_port=1`, and renders the route as local SOCKS listener to SOCKS5 over SSH.
+- Good: remote forwarding labels remote fields as the SSH-server listener and local fields as the local target, then renders the route as remote listener to local target.
 - Good: Workspace startup calls `tunnelAutostart()` once in the shell; opening the tunnel tab later calls `tunnelList()` to render current runtime state.
 - Good: a prompt-credential tunnel start opens a one-time password/private-key dialog and retries with `runtime_credential` only for that request.
 - Base: browser preview shows a fake stopped tunnel so CSS/layout can be inspected without a Tauri runtime.
@@ -944,6 +946,68 @@ await tunnelStart(rule.id, {
   password: prompt.password,
 });
 ```
+
+## Scenario: Command Library Wrappers and Command Sender UI
+
+### 1. Scope / Trigger
+
+- Trigger: frontend code adds or changes command snippets, Command Sender history, typed command-library wrappers, or Command Sender snippet/history UI.
+- Source files: `src/shared/tauri/commands.ts`, `src/features/commands/commandLibraryTypes.ts`, `src/features/layout/WorkspaceShell.tsx`, `src/styles/app.css`, `src-tauri/src/command_library.rs`, and `src-tauri/src/commands.rs`.
+- This is a cross-layer command contract because React edits typed snippet/history payloads while Rust owns validation, persistence, duplicate history merging, and usage counts.
+
+### 2. Signatures
+
+```ts
+commandSnippetList(): Promise<CommandSnippet[]>
+commandSnippetUpsert(request: CommandSnippetInput): Promise<CommandSnippet>
+commandSnippetDelete(id: string): Promise<void>
+commandSnippetMarkUsed(id: string): Promise<CommandSnippet>
+commandHistoryList(limit?: number): Promise<CommandHistoryEntry[]>
+commandHistoryRecord(request: CommandHistoryRecordRequest): Promise<CommandHistoryEntry>
+commandHistoryDelete(id: string): Promise<void>
+commandHistoryClear(): Promise<void>
+```
+
+Frontend types mirror Rust snake_case fields. `CommandHistorySource` is currently `"command_sender"`.
+
+### 3. Contracts
+
+- Components must call typed wrappers in `src/shared/tauri/commands.ts`; do not call `invoke("command_*")` directly from UI components.
+- Command Sender history is an active-send history only. Record history only after at least one selected target returns from `terminalWrite(...)` successfully.
+- Do not listen to `TerminalPanel` / xterm `onData` for command history. Ordinary shell typing, password prompts, TUI input, and pasted text must not enter command history.
+- History records may include command text, `source`, successful `target_count`, `append_enter`, usage count, and timestamps. They must not include target session ids, connection ids, connection names, or command output.
+- Selecting a snippet fills the textarea and tracks the selected snippet id. Any manual textarea change clears that selected snippet id so edited commands are treated as ordinary sends.
+- Sending an unchanged selected snippet should call `commandSnippetMarkUsed(id)` after at least one target write succeeds.
+- Selecting a history row fills the textarea. Saving a history command as a snippet uses the normal snippet upsert flow; history itself is not promoted automatically.
+- Browser preview may show empty snippet/history states, but real save/delete/record actions must go through the typed Tauri wrappers.
+- UI must use `AppSelect`, Radix Dialog, `ConfirmDialog`, Lucide icons, shared button styles, and global `--mx-*` tokens. Do not use native `<select>`, `window.confirm`, or feature-local dropdown implementations.
+
+### 4. Validation & Error Matrix
+
+| Condition | Frontend behavior |
+| --- | --- |
+| No snippet rows | Disable snippet dropdown and keep the manager available for creating the first snippet. |
+| No history rows | Disable history dropdown and history delete/clear actions. |
+| Save snippet returns validation error | Keep the snippet dialog open and show `AppError.message` near the form. |
+| Delete snippet/history fails | Keep local UI coherent, surface `AppError.message`, and allow refresh/retry instead of silently removing rows. |
+| All target writes fail | Do not call `commandHistoryRecord` or `commandSnippetMarkUsed`. |
+| Any `command_snippet_*` or `command_history_*` wrapper returns `Command ... not found` after a frontend hot update | Treat it as a backend-restart/version mismatch state: show a neutral notice that asks the user to restart the app, disable snippet/history persistence actions, and do not show a red inline error. |
+| Browser preview has no Tauri runtime | Show the UI shell, disable or reject real persistence actions with a clear message. |
+
+### 5. Good / Base / Bad Cases
+
+- Good: user selects a snippet, sends it to three targets, two writes succeed, history records `target_count=2` and the snippet use count increments once.
+- Good: user selects a snippet then edits the command before sending; history records the edited command, but the original snippet use count does not increment.
+- Good: deleting a history row requires an explicit user action and updates the dropdown state only after the wrapper succeeds.
+- Base: history command text may contain newlines; dropdown labels are truncated visually while the stored command remains intact.
+- Bad: React keeps an extra localStorage history, records history before writes complete, stores `sessionId`, or hides backend errors by only mutating local arrays.
+
+### 6. Tests Required
+
+- Run `npm run check` after changing command-library frontend types, wrappers, `WorkspaceShell` Command Sender UI, or related CSS when type-check runs are approved for the session.
+- Cross-check frontend payload field names against Rust structs in `src-tauri/src/command_library.rs`.
+- Browser/desktop visual checks should cover empty snippet/history states, snippet management dialog, delete confirmations, long command labels, and dark theme token contrast.
+- Run `cargo test --manifest-path src-tauri/Cargo.toml command_library --lib` when frontend payload changes require Rust command-library changes and Rust test runs are approved for the session.
 
 ## Scenario: Window Material Commands
 

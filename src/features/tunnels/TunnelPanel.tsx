@@ -30,6 +30,7 @@ import { AppSelect } from "../../shared/ui/AppSelect";
 import { ConfirmDialog } from "../../shared/ui/ConfirmDialog";
 import { Tooltip } from "../../shared/ui/Tooltip";
 import type {
+  TunnelKind,
   TunnelRule,
   TunnelRuleInput,
   TunnelRuleWithState,
@@ -46,6 +47,7 @@ interface TunnelFormState {
   autoStart: boolean;
   connectionId: string;
   id?: string;
+  kind: TunnelKind;
   localHost: string;
   localPort: string;
   name: string;
@@ -76,7 +78,11 @@ const authKindOptions: Array<{ label: string; value: ConnectionAuthKind }> = [
   { label: "私钥", value: "private_key" },
 ];
 
-const localKindOptions = [{ label: "本地转发", value: "local" }];
+const tunnelKindOptions: Array<{ label: string; value: TunnelKind }> = [
+  { label: "本地转发", value: "local" },
+  { label: "动态 SOCKS", value: "dynamic" },
+  { label: "远程转发", value: "remote" },
+];
 
 export function TunnelPanel({ activeConnectionId = null, connections }: TunnelPanelProps) {
   const [items, setItems] = useState<TunnelRuleWithState[]>([]);
@@ -143,6 +149,7 @@ export function TunnelPanel({ activeConnectionId = null, connections }: TunnelPa
     setForm({
       autoStart: false,
       connectionId,
+      kind: "local",
       localHost: "127.0.0.1",
       localPort: "15432",
       name: "",
@@ -157,6 +164,7 @@ export function TunnelPanel({ activeConnectionId = null, connections }: TunnelPa
       autoStart: rule.auto_start,
       connectionId: rule.connection_id,
       id: rule.id,
+      kind: rule.kind,
       localHost: rule.local_host,
       localPort: rule.local_port.toString(),
       name: rule.name,
@@ -350,7 +358,7 @@ export function TunnelPanel({ activeConnectionId = null, connections }: TunnelPa
             <div className="tunnel-empty">
               <Network className="ui-icon" aria-hidden="true" />
               <strong>{unavailableReason ? "隧道功能需要重启后启用" : connections.length ? "还没有隧道规则" : "暂无可用 SSH 连接"}</strong>
-              <small>{unavailableReason || (connections.length ? "新建本地端口转发后，可以从本机访问远端内网服务。" : "先创建 SSH 连接后再配置端口转发。")}</small>
+              <small>{unavailableReason || (connections.length ? "可创建本地转发、动态 SOCKS 或远程转发规则。" : "先创建 SSH 连接后再配置端口转发。")}</small>
               {connections.length && !unavailableReason ? (
                 <button type="button" onClick={openCreateForm}>
                   <Plus className="ui-icon" aria-hidden="true" />
@@ -375,12 +383,17 @@ export function TunnelPanel({ activeConnectionId = null, connections }: TunnelPa
                     <span className={`tunnel-status ${state.status}`}>{tunnelStatusLabel(state.status)}</span>
                   </header>
                   <div className="tunnel-route">
-                    <code>{rule.local_host}:{rule.local_port.toString()}</code>
-                    <span aria-hidden="true">→</span>
-                    <code>{rule.remote_host}:{rule.remote_port.toString()}</code>
+                    {formatTunnelRoute(rule).map((part, index) =>
+                      part === "→" ? (
+                        <span aria-hidden="true" key={`${rule.id}-arrow-${index.toString()}`}>→</span>
+                      ) : (
+                        <code key={`${rule.id}-${part}`}>{part}</code>
+                      ),
+                    )}
                   </div>
                   <div className="tunnel-meta">
                     <span>{connection?.name || "连接不存在"}</span>
+                    <em>{tunnelKindLabel(rule.kind)}</em>
                     {rule.auto_start ? <em>自动启动</em> : null}
                     {state.active_connections > 0 ? <em>{state.active_connections.toString()} 路连接</em> : null}
                   </div>
@@ -469,6 +482,40 @@ function TunnelRuleDialog({
   onClose: () => void;
   onSubmit: (event: FormEvent<HTMLFormElement>) => void;
 }) {
+  const copy = form ? tunnelFormCopy(form.kind) : tunnelFormCopy("local");
+
+  function changeKind(kind: TunnelKind) {
+    if (!form) {
+      return;
+    }
+    const next: TunnelFormState = { ...form, kind };
+    if (kind === "dynamic") {
+      next.remoteHost = "";
+      next.remotePort = "1";
+      if (form.localPort === "15432") {
+        next.localPort = "1080";
+      }
+    } else if (kind === "remote") {
+      if (!form.remoteHost.trim()) {
+        next.remoteHost = "127.0.0.1";
+      }
+      if (form.remotePort === "1" || form.remotePort === "5432") {
+        next.remotePort = "18080";
+      }
+      if (form.localPort === "15432") {
+        next.localPort = "8080";
+      }
+    } else {
+      if (!form.remoteHost.trim()) {
+        next.remoteHost = "127.0.0.1";
+      }
+      if (form.remotePort === "1" || form.remotePort === "18080") {
+        next.remotePort = "5432";
+      }
+    }
+    onChange(next);
+  }
+
   return (
     <Dialog.Root open={Boolean(form)} onOpenChange={(open) => !open && onClose()}>
       <Dialog.Portal>
@@ -479,7 +526,7 @@ function TunnelRuleDialog({
               <header className="dialog-head">
                 <span className="dialog-title-group">
                   <Dialog.Title>{form.id ? "编辑隧道" : "新建隧道"}</Dialog.Title>
-                  <Dialog.Description className="dialog-subtitle">本地端口转发到远端网络目标</Dialog.Description>
+                  <Dialog.Description className="dialog-subtitle">{copy.description}</Dialog.Description>
                 </span>
                 <Dialog.Close asChild>
                   <button className="icon-button dialog-close-button" type="button" aria-label="关闭">
@@ -494,7 +541,7 @@ function TunnelRuleDialog({
                 </label>
                 <label>
                   <span>类型</span>
-                  <AppSelect ariaLabel="隧道类型" value="local" options={localKindOptions} onChange={() => undefined} />
+                  <AppSelect ariaLabel="隧道类型" value={form.kind} options={tunnelKindOptions} onChange={changeKind} />
                 </label>
                 <label>
                   <span>SSH 连接</span>
@@ -502,24 +549,28 @@ function TunnelRuleDialog({
                 </label>
                 <div className="tunnel-form-grid">
                   <label>
-                    <span>本地监听地址</span>
+                    <span>{copy.localHostLabel}</span>
                     <input value={form.localHost} onChange={(event) => onChange({ ...form, localHost: event.currentTarget.value })} />
                   </label>
                   <label>
-                    <span>本地端口</span>
+                    <span>{copy.localPortLabel}</span>
                     <input inputMode="numeric" value={form.localPort} onChange={(event) => onChange({ ...form, localPort: event.currentTarget.value })} />
                   </label>
                 </div>
-                <div className="tunnel-form-grid">
-                  <label>
-                    <span>远端目标地址</span>
-                    <input value={form.remoteHost} onChange={(event) => onChange({ ...form, remoteHost: event.currentTarget.value })} />
-                  </label>
-                  <label>
-                    <span>远端端口</span>
-                    <input inputMode="numeric" value={form.remotePort} onChange={(event) => onChange({ ...form, remotePort: event.currentTarget.value })} />
-                  </label>
-                </div>
+                {form.kind === "dynamic" ? (
+                  <p className="tunnel-helper-note">无认证 SOCKS5，仅支持 TCP CONNECT。</p>
+                ) : (
+                  <div className="tunnel-form-grid">
+                    <label>
+                      <span>{copy.remoteHostLabel}</span>
+                      <input value={form.remoteHost} onChange={(event) => onChange({ ...form, remoteHost: event.currentTarget.value })} />
+                    </label>
+                    <label>
+                      <span>{copy.remotePortLabel}</span>
+                      <input inputMode="numeric" value={form.remotePort} onChange={(event) => onChange({ ...form, remotePort: event.currentTarget.value })} />
+                    </label>
+                  </div>
+                )}
                 <label className="tunnel-check-row">
                   <input type="checkbox" checked={form.autoStart} onChange={(event) => onChange({ ...form, autoStart: event.currentTarget.checked })} />
                   <span>
@@ -677,26 +728,27 @@ function HostKeyPromptDialog({
 }
 
 function formToInput(form: TunnelFormState): TunnelRuleInput {
-  const localPort = parsePort(form.localPort, "本地端口无效。");
-  const remotePort = parsePort(form.remotePort, "远端端口无效。");
+  const copy = tunnelFormCopy(form.kind);
+  const localPort = parsePort(form.localPort, `${copy.localPortLabel}无效。`);
+  const remotePort = form.kind === "dynamic" ? 1 : parsePort(form.remotePort, `${copy.remotePortLabel}无效。`);
   if (!form.connectionId.trim()) {
     throw new Error("请选择 SSH 连接。");
   }
   if (!form.localHost.trim()) {
-    throw new Error("请填写本地监听地址。");
+    throw new Error(`请填写${copy.localHostLabel}。`);
   }
-  if (!form.remoteHost.trim()) {
-    throw new Error("请填写远端目标地址。");
+  if (form.kind !== "dynamic" && !form.remoteHost.trim()) {
+    throw new Error(`请填写${copy.remoteHostLabel}。`);
   }
   return {
     auto_start: form.autoStart,
     connection_id: form.connectionId.trim(),
     id: form.id,
-    kind: "local",
+    kind: form.kind,
     local_host: form.localHost.trim(),
     local_port: localPort,
     name: form.name.trim() || undefined,
-    remote_host: form.remoteHost.trim(),
+    remote_host: form.kind === "dynamic" ? "" : form.remoteHost.trim(),
     remote_port: remotePort,
   };
 }
@@ -757,6 +809,67 @@ function tunnelStatusLabel(status: TunnelStatus) {
   return labels[status];
 }
 
+function tunnelKindLabel(kind: TunnelKind) {
+  const labels: Record<TunnelKind, string> = {
+    dynamic: "动态 SOCKS",
+    local: "本地转发",
+    remote: "远程转发",
+  };
+  return labels[kind];
+}
+
+function formatTunnelRoute(rule: TunnelRule) {
+  const local = `${rule.local_host}:${rule.local_port.toString()}`;
+  const remote = `${rule.remote_host}:${rule.remote_port.toString()}`;
+  if (rule.kind === "dynamic") {
+    return [local, "→", "SOCKS5 over SSH"];
+  }
+  if (rule.kind === "remote") {
+    return [remote, "→", local];
+  }
+  return [local, "→", remote];
+}
+
+function formatDefaultTunnelName(input: TunnelRuleInput) {
+  const local = `${input.local_host}:${input.local_port.toString()}`;
+  const remote = `${input.remote_host}:${input.remote_port.toString()}`;
+  if (input.kind === "dynamic") {
+    return `D ${local} SOCKS`;
+  }
+  if (input.kind === "remote") {
+    return `R ${remote} -> ${local}`;
+  }
+  return `L ${local} -> ${remote}`;
+}
+
+function tunnelFormCopy(kind: TunnelKind) {
+  if (kind === "dynamic") {
+    return {
+      description: "本机 SOCKS5 代理通过 SSH 访问远端网络",
+      localHostLabel: "本地 SOCKS 地址",
+      localPortLabel: "本地 SOCKS 端口",
+      remoteHostLabel: "远端目标地址",
+      remotePortLabel: "远端目标端口",
+    };
+  }
+  if (kind === "remote") {
+    return {
+      description: "远端监听端口转发到本机服务",
+      localHostLabel: "本机目标地址",
+      localPortLabel: "本机目标端口",
+      remoteHostLabel: "远端监听地址",
+      remotePortLabel: "远端监听端口",
+    };
+  }
+  return {
+    description: "本地端口转发到远端网络目标",
+    localHostLabel: "本地监听地址",
+    localPortLabel: "本地监听端口",
+    remoteHostLabel: "远端目标地址",
+    remotePortLabel: "远端目标端口",
+  };
+}
+
 function isCredentialPromptError(error: unknown) {
   return (
     typeof error === "object" &&
@@ -807,10 +920,10 @@ function previewSavedTunnel(input: TunnelRuleInput, fallbackConnectionId: string
     connection_id: input.connection_id || fallbackConnectionId,
     created_at: "preview",
     id: input.id || `preview-${Date.now().toString()}`,
-    kind: "local",
+    kind: input.kind,
     local_host: input.local_host,
     local_port: input.local_port,
-    name: input.name || `${input.local_host}:${input.local_port.toString()} -> ${input.remote_host}:${input.remote_port.toString()}`,
+    name: input.name || formatDefaultTunnelName(input),
     remote_host: input.remote_host,
     remote_port: input.remote_port,
     updated_at: "preview",
