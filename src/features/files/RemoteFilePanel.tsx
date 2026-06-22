@@ -20,6 +20,7 @@ import {
   RefreshCw,
   Trash2,
   Upload,
+  X,
 } from "lucide-react";
 import * as ContextMenu from "@radix-ui/react-context-menu";
 import {
@@ -30,6 +31,7 @@ import {
   type CSSProperties,
   type DragEvent,
   type FormEvent,
+  type MouseEvent,
   type ReactNode,
 } from "react";
 
@@ -69,7 +71,9 @@ interface RemoteFilePanelProps {
   onCopyPath?: (path: string) => void;
   onCreateDirectory?: (parentPath: string) => void;
   onCreateFile?: (parentPath: string) => void;
+  onDeleteEntries?: (entries: RemoteFileEntry[]) => void;
   onDeleteEntry?: (entry: RemoteFileEntry) => void;
+  onDownloadEntries?: (entries: RemoteFileEntry[]) => void;
   onDownloadEntry?: (entry: RemoteFileEntry) => void;
   onOpenFile?: (entry: RemoteFileEntry) => void;
   onRenameEntry?: (entry: RemoteFileEntry) => void;
@@ -114,6 +118,11 @@ interface DataTransferItemWithEntry {
   webkitGetAsEntry?: () => FileSystemEntryLike | null;
 }
 
+interface RemoteFileVisibleRow {
+  depth: number;
+  entry: RemoteFileEntry;
+}
+
 const previewDirectoryEntries: Record<string, RemoteFileEntry[]> = {
   "/": [
     { name: "logs", path: "/opt/app/logs", type: "directory" },
@@ -152,7 +161,9 @@ export function RemoteFilePanel({
   onCopyPath,
   onCreateDirectory,
   onCreateFile,
+  onDeleteEntries,
   onDeleteEntry,
+  onDownloadEntries,
   onDownloadEntry,
   onOpenFile,
   onRenameEntry,
@@ -177,6 +188,8 @@ export function RemoteFilePanel({
   const [loadingPath, setLoadingPath] = useState<string | null>(null);
   const [visibleLoadingPath, setVisibleLoadingPath] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [selectedEntriesByPath, setSelectedEntriesByPath] = useState<Record<string, RemoteFileEntry>>({});
+  const [selectionAnchorPath, setSelectionAnchorPath] = useState<string | null>(null);
   const loadingIndicatorTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const connectionLoadScopeRef = useRef(0);
   const directoryLoadRequestRef = useRef(0);
@@ -190,6 +203,14 @@ export function RemoteFilePanel({
     () => Object.values(expandedDirectories).some(Boolean),
     [expandedDirectories],
   );
+  const visibleRows = useMemo(
+    () => flattenVisibleRows(entries, directoryEntries, expandedDirectories, showHidden, 0),
+    [directoryEntries, entries, expandedDirectories, showHidden],
+  );
+  const selectedEntries = useMemo(
+    () => selectedEntriesInVisibleOrder(selectedEntriesByPath, visibleRows),
+    [selectedEntriesByPath, visibleRows],
+  );
 
   useEffect(() => {
     connectionLoadScopeRef.current += 1;
@@ -200,6 +221,7 @@ export function RemoteFilePanel({
     setLocatedDirectoryPath(null);
     setUploadMenuOpen(false);
     setDropTargetPath(null);
+    clearSelection();
     setCurrentPath(defaultRemotePath);
     setActiveDirectoryPath(defaultRemotePath);
     setLoadingPath(null);
@@ -330,6 +352,7 @@ export function RemoteFilePanel({
     setCurrentPath(normalizedPath);
     setActiveDirectoryPath(normalizedPath);
     setLocatedDirectoryPath(null);
+    clearSelection();
     setUploadMenuOpen(false);
     if (directoryEntries[normalizedPath]) {
       setError(null);
@@ -352,6 +375,7 @@ export function RemoteFilePanel({
     setCurrentPath(revealRootPath);
     setActiveDirectoryPath(terminalDirectory);
     setLocatedDirectoryPath(terminalDirectory);
+    clearSelection();
     setUploadMenuOpen(false);
     setExpandedDirectories((current) => {
       const next = { ...current };
@@ -452,17 +476,111 @@ export function RemoteFilePanel({
     }
   }
 
+  function clearSelection() {
+    setSelectedEntriesByPath({});
+    setSelectionAnchorPath(null);
+  }
+
+  function selectSingleEntry(entry: RemoteFileEntry) {
+    const path = normalizeRemotePath(entry.path);
+    setSelectedEntriesByPath({ [path]: { ...entry, path } });
+    setSelectionAnchorPath(path);
+  }
+
+  function toggleEntrySelection(entry: RemoteFileEntry) {
+    const path = normalizeRemotePath(entry.path);
+    setSelectedEntriesByPath((current) => {
+      const next = { ...current };
+      if (next[path]) {
+        delete next[path];
+      } else {
+        next[path] = { ...entry, path };
+      }
+      return next;
+    });
+    setSelectionAnchorPath(path);
+  }
+
+  function selectEntryRange(entry: RemoteFileEntry, append: boolean) {
+    const path = normalizeRemotePath(entry.path);
+    const anchorPath = selectionAnchorPath || path;
+    const anchorIndex = visibleRows.findIndex((row) => normalizeRemotePath(row.entry.path) === anchorPath);
+    const targetIndex = visibleRows.findIndex((row) => normalizeRemotePath(row.entry.path) === path);
+    if (anchorIndex < 0 || targetIndex < 0) {
+      selectSingleEntry(entry);
+      return;
+    }
+
+    const start = Math.min(anchorIndex, targetIndex);
+    const end = Math.max(anchorIndex, targetIndex);
+    setSelectedEntriesByPath((current) => {
+      const next = append ? { ...current } : {};
+      for (const row of visibleRows.slice(start, end + 1)) {
+        const rowPath = normalizeRemotePath(row.entry.path);
+        next[rowPath] = { ...row.entry, path: rowPath };
+      }
+      return next;
+    });
+    setSelectionAnchorPath(path);
+  }
+
+  function handleEntryClick(
+    event: MouseEvent<HTMLButtonElement>,
+    entry: RemoteFileEntry,
+    isDirectory: boolean,
+  ) {
+    if (event.shiftKey) {
+      event.preventDefault();
+      selectEntryRange(entry, event.ctrlKey || event.metaKey);
+      return;
+    }
+
+    if (event.ctrlKey || event.metaKey) {
+      event.preventDefault();
+      toggleEntrySelection(entry);
+      return;
+    }
+
+    if (isDirectory) {
+      toggleDirectory(entry);
+      return;
+    }
+
+    selectSingleEntry(entry);
+  }
+
+  function handleEntryContextMenu(entry: RemoteFileEntry) {
+    const path = normalizeRemotePath(entry.path);
+    if (!selectedEntriesByPath[path]) {
+      selectSingleEntry(entry);
+    }
+  }
+
+  function isEntrySelected(entry: RemoteFileEntry) {
+    return Boolean(selectedEntriesByPath[normalizeRemotePath(entry.path)]);
+  }
+
+  function selectionMenuEntries(entry: RemoteFileEntry) {
+    if (!isEntrySelected(entry)) {
+      return [];
+    }
+    return selectedEntries.length > 1 ? selectedEntries : [];
+  }
+
   function renderRows(rows: RemoteFileEntry[], depth: number): ReactNode[] {
     return rows.flatMap((entry) => {
       const isDirectory = entry.type === "directory";
       const expanded = Boolean(expandedDirectories[entry.path]);
       const isActiveDirectory = isDirectory && entry.path === activeDirectoryPath;
       const isLocatedDirectory = entry.path === locatedDirectoryPath;
+      const isSelected = isEntrySelected(entry);
       const row = (
         <ContextMenu.Root key={entry.path}>
           <ContextMenu.Trigger asChild>
             <button
-              className={`remote-file-row ${isActiveDirectory ? "is-active-directory" : ""} ${
+              className={`remote-file-row ${isSelected ? "is-selected" : ""} ${
+                isActiveDirectory ? "is-active-directory" : ""
+              } ${
                 isLocatedDirectory ? "is-located" : ""
               } ${
                 effectiveDropTargetPath === entry.path ? "is-drop-target" : ""
@@ -475,12 +593,10 @@ export function RemoteFilePanel({
               }}
               type="button"
               title={entry.path}
+              aria-pressed={isSelected}
               aria-current={isLocatedDirectory ? "location" : isActiveDirectory ? "page" : undefined}
-              onClick={() => {
-                if (isDirectory) {
-                  toggleDirectory(entry);
-                }
-              }}
+              onClick={(event) => handleEntryClick(event, entry, isDirectory)}
+              onContextMenu={() => handleEntryContextMenu(entry)}
               onDoubleClick={() => {
                 if (!isDirectory) {
                   onOpenFile?.(entry);
@@ -557,6 +673,11 @@ export function RemoteFilePanel({
 
   function renderFileMenu(entry: RemoteFileEntry) {
     const parentPath = remotePathParent(entry.path);
+    const menuEntries = selectionMenuEntries(entry);
+    if (menuEntries.length > 0) {
+      return renderSelectionMenu(menuEntries);
+    }
+
     return (
       <>
         <ContextMenu.Item className="context-menu-item" onSelect={() => onOpenFile?.(entry)}>
@@ -594,6 +715,11 @@ export function RemoteFilePanel({
   }
 
   function renderDirectoryMenu(entry: RemoteFileEntry) {
+    const menuEntries = selectionMenuEntries(entry);
+    if (menuEntries.length > 0) {
+      return renderSelectionMenu(menuEntries);
+    }
+
     return (
       <>
         <ContextMenu.Item
@@ -643,6 +769,28 @@ export function RemoteFilePanel({
         <ContextMenu.Item className="context-menu-item danger" onSelect={() => onDeleteEntry?.(entry)}>
           <Trash2 className="ui-icon" aria-hidden="true" />
           删除
+        </ContextMenu.Item>
+      </>
+    );
+  }
+
+  function renderSelectionMenu(entries: RemoteFileEntry[]) {
+    if (entries.length === 0) {
+      return null;
+    }
+    return (
+      <>
+        <ContextMenu.Item className="context-menu-item" onSelect={() => onDownloadEntries?.(entries)}>
+          <Download className="ui-icon" aria-hidden="true" />
+          下载所选 {entries.length.toString()} 项
+        </ContextMenu.Item>
+        <ContextMenu.Item className="context-menu-item danger" onSelect={() => onDeleteEntries?.(entries)}>
+          <Trash2 className="ui-icon" aria-hidden="true" />
+          删除所选 {entries.length.toString()} 项
+        </ContextMenu.Item>
+        <ContextMenu.Item className="context-menu-item" onSelect={clearSelection}>
+          <X className="ui-icon" aria-hidden="true" />
+          清空选择
         </ContextMenu.Item>
       </>
     );
@@ -1241,6 +1389,44 @@ function visibleEntries(entries: RemoteFileEntry[], showHidden: boolean) {
   return sortRemoteFileEntries(
     showHidden ? entries : entries.filter((entry) => !entry.name.startsWith(".")),
   );
+}
+
+function flattenVisibleRows(
+  rows: RemoteFileEntry[],
+  directoryEntries: Record<string, RemoteFileEntry[]>,
+  expandedDirectories: Record<string, boolean>,
+  showHidden: boolean,
+  depth: number,
+): RemoteFileVisibleRow[] {
+  return rows.flatMap((entry) => {
+    const current = [{ depth, entry }];
+    if (entry.type !== "directory" || !expandedDirectories[entry.path]) {
+      return current;
+    }
+    const children = visibleEntries(directoryEntries[entry.path] || [], showHidden);
+    return [
+      ...current,
+      ...flattenVisibleRows(children, directoryEntries, expandedDirectories, showHidden, depth + 1),
+    ];
+  });
+}
+
+function selectedEntriesInVisibleOrder(
+  selectedEntriesByPath: Record<string, RemoteFileEntry>,
+  visibleRows: RemoteFileVisibleRow[],
+) {
+  const selectedPaths = new Set(Object.keys(selectedEntriesByPath));
+  const visibleEntries = visibleRows
+    .map((row) => selectedEntriesByPath[normalizeRemotePath(row.entry.path)])
+    .filter((entry): entry is RemoteFileEntry => Boolean(entry));
+  const visiblePaths = new Set(visibleEntries.map((entry) => normalizeRemotePath(entry.path)));
+  const hiddenEntries = Array.from(selectedPaths)
+    .filter((path) => !visiblePaths.has(path))
+    .sort()
+    .map((path) => selectedEntriesByPath[path])
+    .filter((entry): entry is RemoteFileEntry => Boolean(entry));
+
+  return [...visibleEntries, ...hiddenEntries];
 }
 
 function previewEntriesForPath(path: string) {

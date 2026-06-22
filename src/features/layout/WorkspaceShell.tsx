@@ -308,6 +308,11 @@ type RemoteFileTextAction =
   | { action: "create-file"; connectionId: string; parentPath: string }
   | { action: "rename"; connectionId: string; entry: RemoteFileEntry };
 
+interface RemoteFileDeleteTarget {
+  connectionId: string;
+  entries: RemoteFileEntry[];
+}
+
 type ConnectionFilter = "recent" | "all" | "favorites";
 
 type LatencyProbeState =
@@ -554,7 +559,7 @@ export function WorkspaceShell() {
   const [pendingRemoteFileCloseId, setPendingRemoteFileCloseId] = useState<string | null>(null);
   const [pendingRemoteFileConflictId, setPendingRemoteFileConflictId] = useState<string | null>(null);
   const [remoteFileDeleteTarget, setRemoteFileDeleteTarget] =
-    useState<{ connectionId: string; entry: RemoteFileEntry } | null>(null);
+    useState<RemoteFileDeleteTarget | null>(null);
   const [remoteFileTextAction, setRemoteFileTextAction] = useState<RemoteFileTextAction | null>(null);
   const [remoteFileTextValue, setRemoteFileTextValue] = useState("");
   const [remoteFileTextError, setRemoteFileTextError] = useState<string | null>(null);
@@ -998,9 +1003,14 @@ export function WorkspaceShell() {
   const pendingRemoteFileConflictTab = pendingRemoteFileConflictId
     ? remoteFileTabs.find((tab) => tab.id === pendingRemoteFileConflictId) || null
     : null;
+  const remoteFileDeleteEntries = remoteFileDeleteTarget
+    ? collapseRemoteFileDeleteEntries(remoteFileDeleteTarget.entries)
+    : [];
   const remoteFileDeleteAffectedTabs = remoteFileDeleteTarget
     ? remoteFileTabs.filter((tab) =>
-        isRemoteFileTabUnderEntry(tab, remoteFileDeleteTarget.connectionId, remoteFileDeleteTarget.entry.path),
+        remoteFileDeleteEntries.some((entry) =>
+          isRemoteFileTabUnderEntry(tab, remoteFileDeleteTarget.connectionId, entry.path),
+        ),
       )
     : [];
   const remoteFileDeleteDirtyCount = remoteFileDeleteAffectedTabs.filter((tab) => tab.dirty).length;
@@ -1886,10 +1896,18 @@ export function WorkspaceShell() {
   }
 
   function requestDeleteRemoteEntry(entry: RemoteFileEntry) {
+    requestDeleteRemoteEntries([entry]);
+  }
+
+  function requestDeleteRemoteEntries(entries: RemoteFileEntry[]) {
     if (!activeConnection) {
       return;
     }
-    setRemoteFileDeleteTarget({ connectionId: activeConnection.id, entry });
+    const normalizedEntries = collapseRemoteFileDeleteEntries(entries);
+    if (normalizedEntries.length === 0) {
+      return;
+    }
+    setRemoteFileDeleteTarget({ connectionId: activeConnection.id, entries: normalizedEntries });
   }
 
   async function submitRemoteFileTextAction(event: FormEvent<HTMLFormElement>) {
@@ -1978,17 +1996,29 @@ export function WorkspaceShell() {
     if (!target) {
       return;
     }
+    const entries = collapseRemoteFileDeleteEntries(target.entries);
+    if (entries.length === 0) {
+      setRemoteFileDeleteTarget(null);
+      return;
+    }
 
     if (hasTauriRuntime()) {
-      await remoteFileDelete({
-        connectionId: target.connectionId,
-        path: target.entry.path,
-        recursive: target.entry.type === "directory",
-      });
+      for (const entry of entries) {
+        await remoteFileDelete({
+          connectionId: target.connectionId,
+          path: entry.path,
+          recursive: entry.type === "directory",
+        });
+      }
     }
-    triggerRemoteFileRefresh(target.connectionId, remotePathParent(target.entry.path));
+    for (const parentPath of uniqueRemoteParentPaths(entries)) {
+      triggerRemoteFileRefresh(target.connectionId, parentPath);
+    }
     const nextRemoteFileTabs = remoteFileTabs.filter(
-      (tab) => !isRemoteFileTabUnderEntry(tab, target.connectionId, target.entry.path),
+      (tab) =>
+        !entries.some((entry) =>
+          isRemoteFileTabUnderEntry(tab, target.connectionId, entry.path),
+        ),
     );
     const removedActiveRemoteFileTab = Boolean(
       activeRemoteFileTabId &&
@@ -2543,10 +2573,20 @@ export function WorkspaceShell() {
   }
 
   function downloadRemoteFile(entry: RemoteFileEntry) {
+    downloadRemoteFiles([entry]);
+  }
+
+  function downloadRemoteFiles(entries: RemoteFileEntry[]) {
     if (!activeConnection) {
       return;
     }
-    void runRemoteFileDownload(entry);
+    void runRemoteFileDownloadQueue(entries);
+  }
+
+  async function runRemoteFileDownloadQueue(entries: RemoteFileEntry[]) {
+    for (const entry of entries) {
+      await runRemoteFileDownload(entry);
+    }
   }
 
   async function runRemoteFileDownload(
@@ -5591,7 +5631,9 @@ export function WorkspaceShell() {
             onCopyPath={copyRemotePath}
             onCreateDirectory={requestCreateRemoteDirectory}
             onCreateFile={requestCreateRemoteFile}
+            onDeleteEntries={requestDeleteRemoteEntries}
             onDeleteEntry={requestDeleteRemoteEntry}
+            onDownloadEntries={downloadRemoteFiles}
             onDownloadEntry={downloadRemoteFile}
             onOpenFile={openRemoteFile}
             onRenameEntry={requestRenameRemoteEntry}
@@ -5934,14 +5976,14 @@ export function WorkspaceShell() {
         description={
           remoteFileDeleteTarget
             ? remoteFileDeleteDescription(
-                remoteFileDeleteTarget.entry.path,
+                remoteFileDeleteEntries,
                 remoteFileDeleteAffectedTabs.length,
                 remoteFileDeleteDirtyCount,
               )
             : ""
         }
         open={Boolean(remoteFileDeleteTarget)}
-        title="删除远程文件"
+        title={remoteFileDeleteEntries.length > 1 ? "删除所选远程文件" : "删除远程文件"}
         onConfirm={confirmRemoteFileDelete}
         onOpenChange={(open) => {
           if (!open) {
@@ -8590,8 +8632,39 @@ function isRemoteFileTabUnderEntry(
   );
 }
 
-function remoteFileDeleteDescription(path: string, affectedTabs: number, dirtyTabs: number) {
-  const base = `确认删除“${path}”吗？这个操作无法撤销。`;
+function collapseRemoteFileDeleteEntries(entries: RemoteFileEntry[]) {
+  const byPath = new Map<string, RemoteFileEntry>();
+  for (const entry of entries) {
+    const path = normalizeRemotePath(entry.path);
+    byPath.set(path, { ...entry, path });
+  }
+
+  const orderedEntries = Array.from(byPath.values()).sort(
+    (left, right) => left.path.length - right.path.length || left.path.localeCompare(right.path),
+  );
+  const collapsed: RemoteFileEntry[] = [];
+  for (const entry of orderedEntries) {
+    const coveredByDirectory = collapsed.some(
+      (selected) =>
+        selected.type === "directory" &&
+        isRemotePathStrictDescendant(entry.path, selected.path),
+    );
+    if (!coveredByDirectory) {
+      collapsed.push(entry);
+    }
+  }
+  return collapsed;
+}
+
+function uniqueRemoteParentPaths(entries: RemoteFileEntry[]) {
+  return Array.from(new Set(entries.map((entry) => remotePathParent(entry.path))));
+}
+
+function remoteFileDeleteDescription(entries: RemoteFileEntry[], affectedTabs: number, dirtyTabs: number) {
+  const base =
+    entries.length === 1
+      ? `确认删除“${entries[0].path}”吗？这个操作无法撤销。`
+      : `确认删除选中的 ${entries.length.toString()} 个远程条目吗？这个操作无法撤销。`;
   if (dirtyTabs > 0) {
     return `${base} 将同时关闭 ${affectedTabs.toString()} 个已打开文件，其中 ${dirtyTabs.toString()} 个有未保存修改。`;
   }
