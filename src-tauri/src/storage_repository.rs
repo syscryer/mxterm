@@ -9,10 +9,10 @@ use tauri::{AppHandle, Manager};
 
 use crate::app_error::AppError;
 use crate::command_library::{
-    normalize_command_history_limit, validate_command_history_record,
-    validate_command_snippet_input, CommandHistoryEntry, CommandHistoryIdRequest,
-    CommandHistoryListRequest, CommandHistoryRecordRequest, CommandSnippet,
-    CommandSnippetIdRequest, CommandSnippetInput,
+    normalize_command_history_limit, normalize_command_snippet_group,
+    validate_command_history_record, validate_command_snippet_input, CommandHistoryEntry,
+    CommandHistoryIdRequest, CommandHistoryListRequest, CommandHistoryRecordRequest,
+    CommandHistoryScope, CommandSnippet, CommandSnippetIdRequest, CommandSnippetInput,
 };
 use crate::connections::{
     validate_profile_input, ConnectionAuthKind, ConnectionCredentialMode, ConnectionProfile,
@@ -1768,10 +1768,11 @@ impl StorageRepository {
         let mut statement = self
             .connection
             .prepare(
-                "SELECT id, title, command, description, tags_json, favorite,
+                "SELECT id, title, command, description, group_name, tags_json, favorite,
                         use_count, last_used_at, created_at, updated_at
                    FROM command_snippets
-                  ORDER BY favorite DESC,
+                  ORDER BY group_name ASC,
+                           favorite DESC,
                            COALESCE(last_used_at, updated_at) DESC,
                            updated_at DESC,
                            title ASC",
@@ -1815,13 +1816,14 @@ impl StorageRepository {
         self.connection
             .execute(
                 "INSERT INTO command_snippets(
-                    id, title, command, description, tags_json, favorite,
+                    id, title, command, description, group_name, tags_json, favorite,
                     use_count, last_used_at, created_at, updated_at
-                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
                 ON CONFLICT(id) DO UPDATE SET
                     title = excluded.title,
                     command = excluded.command,
                     description = excluded.description,
+                    group_name = excluded.group_name,
                     tags_json = excluded.tags_json,
                     favorite = excluded.favorite,
                     updated_at = excluded.updated_at",
@@ -1830,6 +1832,7 @@ impl StorageRepository {
                     validated.title,
                     validated.command,
                     validated.description,
+                    validated.group,
                     tags_json,
                     if validated.favorite { 1 } else { 0 },
                     use_count,
@@ -1907,6 +1910,30 @@ impl StorageRepository {
         request: CommandHistoryListRequest,
     ) -> Result<Vec<CommandHistoryEntry>, AppError> {
         let limit = i64::from(normalize_command_history_limit(request.limit));
+        if let Some(scope) = request.scope {
+            let scope_kind = enum_value(&scope.scope_kind)?;
+            let mut statement = self
+                .connection
+                .prepare(
+                    "SELECT history.id, history.command, scope.source,
+                            scope.target_count, scope.append_enter,
+                            scope.use_count, scope.last_used_at, history.created_at
+                       FROM command_history history
+                       JOIN command_history_scopes scope ON scope.history_id = history.id
+                      WHERE scope.scope_kind = ?1 AND scope.scope_id = ?2
+                      ORDER BY scope.last_used_at DESC, history.created_at DESC
+                      LIMIT ?3",
+                )
+                .map_err(sqlite_repository_error)?;
+            let rows = statement
+                .query_map(
+                    params![scope_kind, scope.scope_id.trim(), limit],
+                    row_to_command_history_entry,
+                )
+                .map_err(sqlite_repository_error)?;
+            return collect_rows(rows);
+        }
+
         let mut statement = self
             .connection
             .prepare(
@@ -1952,7 +1979,8 @@ impl StorageRepository {
                 ],
             )
             .map_err(sqlite_repository_error)?;
-        self.command_history_get_by_command(&validated.command)?
+        let entry = self
+            .command_history_get_by_command(&validated.command)?
             .ok_or_else(|| {
                 AppError::new(
                     "command_history_missing",
@@ -1960,7 +1988,16 @@ impl StorageRepository {
                     "history command missing after record",
                     false,
                 )
-            })
+            })?;
+        self.command_history_record_scopes(
+            &entry.id,
+            &validated.scopes,
+            &validated.source,
+            validated.target_count,
+            validated.append_enter,
+            now,
+        )?;
+        Ok(entry)
     }
 
     pub fn command_history_delete(&self, request: CommandHistoryIdRequest) -> Result<(), AppError> {
@@ -1992,7 +2029,7 @@ impl StorageRepository {
     fn command_snippet_get(&self, id: &str) -> Result<Option<CommandSnippet>, AppError> {
         self.connection
             .query_row(
-                "SELECT id, title, command, description, tags_json, favorite,
+                "SELECT id, title, command, description, group_name, tags_json, favorite,
                         use_count, last_used_at, created_at, updated_at
                    FROM command_snippets WHERE id = ?1",
                 params![id],
@@ -2016,6 +2053,44 @@ impl StorageRepository {
             )
             .optional()
             .map_err(sqlite_repository_error)
+    }
+
+    fn command_history_record_scopes(
+        &self,
+        history_id: &str,
+        scopes: &[CommandHistoryScope],
+        source: &crate::command_library::CommandHistorySource,
+        target_count: u32,
+        append_enter: bool,
+        now: &str,
+    ) -> Result<(), AppError> {
+        let source = enum_value(source)?;
+        for scope in scopes {
+            self.connection
+                .execute(
+                    "INSERT INTO command_history_scopes(
+                        history_id, scope_kind, scope_id, source, target_count, append_enter,
+                        use_count, last_used_at, created_at
+                    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 1, ?7, ?7)
+                    ON CONFLICT(history_id, scope_kind, scope_id) DO UPDATE SET
+                        source = excluded.source,
+                        target_count = excluded.target_count,
+                        append_enter = excluded.append_enter,
+                        use_count = command_history_scopes.use_count + 1,
+                        last_used_at = excluded.last_used_at",
+                    params![
+                        history_id,
+                        enum_value(&scope.scope_kind)?,
+                        scope.scope_id.as_str(),
+                        source.as_str(),
+                        target_count,
+                        if append_enter { 1 } else { 0 },
+                        now,
+                    ],
+                )
+                .map_err(sqlite_repository_error)?;
+        }
+        Ok(())
     }
 
     fn existing_connection_meta(
@@ -2128,19 +2203,20 @@ fn row_to_tunnel_rule(row: &rusqlite::Row<'_>) -> rusqlite::Result<TunnelRule> {
 }
 
 fn row_to_command_snippet(row: &rusqlite::Row<'_>) -> rusqlite::Result<CommandSnippet> {
-    let tags_json: String = row.get(4)?;
+    let tags_json: String = row.get(5)?;
     let tags = serde_json::from_str(&tags_json).map_err(from_serde_row_error)?;
     Ok(CommandSnippet {
         id: row.get(0)?,
         title: row.get(1)?,
         command: row.get(2)?,
         description: row.get(3)?,
+        group: normalize_command_snippet_group(Some(row.get::<_, String>(4)?.as_str())),
         tags,
-        favorite: row.get::<_, i64>(5)? != 0,
-        use_count: row_i64_to_u32(row.get(6)?)?,
-        last_used_at: row.get(7)?,
-        created_at: row.get(8)?,
-        updated_at: row.get(9)?,
+        favorite: row.get::<_, i64>(6)? != 0,
+        use_count: row_i64_to_u32(row.get(7)?)?,
+        last_used_at: row.get(8)?,
+        created_at: row.get(9)?,
+        updated_at: row.get(10)?,
     })
 }
 
@@ -2642,6 +2718,7 @@ mod tests {
                     title: Some("磁盘".to_string()),
                     command: "df -h".to_string(),
                     description: Some("查看磁盘".to_string()),
+                    group: Some("巡检".to_string()),
                     tags: vec!["linux".to_string(), " Linux ".to_string()],
                     favorite: true,
                 },
@@ -2659,6 +2736,7 @@ mod tests {
         let snippets = repo.command_snippet_list().unwrap();
 
         assert_eq!(snippets.len(), 1);
+        assert_eq!(snippets[0].group, "巡检");
         assert_eq!(snippets[0].tags, vec!["linux"]);
         assert_eq!(used.use_count, 1);
         assert_eq!(
@@ -2691,6 +2769,7 @@ mod tests {
                     source: crate::command_library::CommandHistorySource::CommandSender,
                     target_count: 1,
                     append_enter: true,
+                    scopes: Vec::new(),
                 },
                 "2026-06-22T00:00:00+08:00",
             )
@@ -2702,6 +2781,7 @@ mod tests {
                     source: crate::command_library::CommandHistorySource::CommandSender,
                     target_count: 3,
                     append_enter: false,
+                    scopes: Vec::new(),
                 },
                 "2026-06-22T00:01:00+08:00",
             )
@@ -2709,6 +2789,7 @@ mod tests {
         let history = repo
             .command_history_list(crate::command_library::CommandHistoryListRequest {
                 limit: Some(10),
+                scope: None,
             })
             .unwrap();
 
@@ -2730,6 +2811,7 @@ mod tests {
                     source: crate::command_library::CommandHistorySource::CommandSender,
                     target_count: 1,
                     append_enter: true,
+                    scopes: Vec::new(),
                 },
                 "2026-06-22T00:00:00+08:00",
             )
@@ -2741,6 +2823,7 @@ mod tests {
                     source: crate::command_library::CommandHistorySource::CommandSender,
                     target_count: 1,
                     append_enter: true,
+                    scopes: Vec::new(),
                 },
                 "2026-06-22T00:01:00+08:00",
             )
@@ -2753,6 +2836,7 @@ mod tests {
         let history = repo
             .command_history_list(crate::command_library::CommandHistoryListRequest {
                 limit: Some(10),
+                scope: None,
             })
             .unwrap();
         assert_eq!(history.len(), 1);
@@ -2762,9 +2846,93 @@ mod tests {
         let history = repo
             .command_history_list(crate::command_library::CommandHistoryListRequest {
                 limit: Some(10),
+                scope: None,
             })
             .unwrap();
         assert!(history.is_empty());
+    }
+
+    #[test]
+    fn command_library_history_filters_by_scope() {
+        let (repo, _db_path, _secrets) = temp_repository("command-history-scope");
+
+        repo.command_history_record(
+            crate::command_library::CommandHistoryRecordRequest {
+                command: "global-only".to_string(),
+                source: crate::command_library::CommandHistorySource::CommandSender,
+                target_count: 1,
+                append_enter: true,
+                scopes: Vec::new(),
+            },
+            "2026-06-22T00:00:00+08:00",
+        )
+        .unwrap();
+        repo.command_history_record(
+            crate::command_library::CommandHistoryRecordRequest {
+                command: "uptime".to_string(),
+                source: crate::command_library::CommandHistorySource::CommandSender,
+                target_count: 2,
+                append_enter: true,
+                scopes: vec![
+                    crate::command_library::CommandHistoryScope {
+                        scope_kind: crate::command_library::CommandHistoryScopeKind::SshConnection,
+                        scope_id: "ssh-001".to_string(),
+                    },
+                    crate::command_library::CommandHistoryScope {
+                        scope_kind: crate::command_library::CommandHistoryScopeKind::LocalProfile,
+                        scope_id: "profile-pwsh".to_string(),
+                    },
+                ],
+            },
+            "2026-06-22T00:01:00+08:00",
+        )
+        .unwrap();
+        repo.command_history_record(
+            crate::command_library::CommandHistoryRecordRequest {
+                command: "pwd".to_string(),
+                source: crate::command_library::CommandHistorySource::TerminalInput,
+                target_count: 1,
+                append_enter: true,
+                scopes: vec![crate::command_library::CommandHistoryScope {
+                    scope_kind: crate::command_library::CommandHistoryScopeKind::SshConnection,
+                    scope_id: "ssh-002".to_string(),
+                }],
+            },
+            "2026-06-22T00:02:00+08:00",
+        )
+        .unwrap();
+
+        let ssh_one = repo
+            .command_history_list(crate::command_library::CommandHistoryListRequest {
+                limit: Some(10),
+                scope: Some(crate::command_library::CommandHistoryScope {
+                    scope_kind: crate::command_library::CommandHistoryScopeKind::SshConnection,
+                    scope_id: "ssh-001".to_string(),
+                }),
+            })
+            .unwrap();
+        let local_pwsh = repo
+            .command_history_list(crate::command_library::CommandHistoryListRequest {
+                limit: Some(10),
+                scope: Some(crate::command_library::CommandHistoryScope {
+                    scope_kind: crate::command_library::CommandHistoryScopeKind::LocalProfile,
+                    scope_id: "profile-pwsh".to_string(),
+                }),
+            })
+            .unwrap();
+        let all = repo
+            .command_history_list(crate::command_library::CommandHistoryListRequest {
+                limit: Some(10),
+                scope: None,
+            })
+            .unwrap();
+
+        assert_eq!(ssh_one.len(), 1);
+        assert_eq!(ssh_one[0].command, "uptime");
+        assert_eq!(local_pwsh.len(), 1);
+        assert_eq!(local_pwsh[0].command, "uptime");
+        assert_eq!(all.len(), 3);
+        assert!(all.iter().any(|entry| entry.command == "global-only"));
     }
 
     fn password_connection_input() -> ConnectionProfileInput {

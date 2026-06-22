@@ -1,10 +1,17 @@
-export type CommandHistorySource = "command_sender";
+export type CommandHistorySource = "command_sender" | "terminal_input";
+export type CommandHistoryScopeKind = "ssh_connection" | "local_profile";
+
+export interface CommandHistoryScope {
+  scope_kind: CommandHistoryScopeKind;
+  scope_id: string;
+}
 
 export interface CommandSnippet {
   id: string;
   title: string;
   command: string;
   description?: string | null;
+  group: string;
   tags: string[];
   favorite: boolean;
   use_count: number;
@@ -18,6 +25,7 @@ export interface CommandSnippetInput {
   title?: string;
   command: string;
   description?: string | null;
+  group?: string | null;
   tags?: string[];
   favorite?: boolean;
 }
@@ -35,6 +43,7 @@ export interface CommandHistoryEntry {
 
 export interface CommandHistoryListRequest {
   limit?: number;
+  scope?: CommandHistoryScope | null;
 }
 
 export interface CommandHistoryRecordRequest {
@@ -42,4 +51,5 @@ export interface CommandHistoryRecordRequest {
   source?: CommandHistorySource;
   target_count?: number;
   append_enter?: boolean;
+  scopes?: CommandHistoryScope[];
 }

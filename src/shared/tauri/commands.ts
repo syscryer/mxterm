@@ -13,6 +13,7 @@ import type {
 import type {
   CommandHistoryEntry,
   CommandHistoryRecordRequest,
+  CommandHistoryScope,
   CommandSnippet,
   CommandSnippetInput,
 } from "../../features/commands/commandLibraryTypes";
@@ -180,10 +181,11 @@ export function commandSnippetMarkUsed(id: string) {
   });
 }
 
-export function commandHistoryList(limit?: number) {
+export function commandHistoryList(limit?: number, scope?: CommandHistoryScope | null) {
   return invoke<CommandHistoryEntry[]>("command_history_list", {
     request: {
       limit,
+      scope,
     },
   });
 }

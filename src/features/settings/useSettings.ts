@@ -5,6 +5,7 @@ import {
   normalizeSettings,
   type AppearanceSettings,
   type BasicSettings,
+  type CommandSettings,
   type FileTransferSettings,
   type MxtermSettings,
   type SecuritySettings,
@@ -94,6 +95,18 @@ export function useSettings() {
     );
   }, []);
 
+  const updateCommand = useCallback((update: Partial<CommandSettings>) => {
+    setSettings((current) =>
+      normalizeSettings({
+        ...current,
+        command: {
+          ...current.command,
+          ...update,
+        },
+      }),
+    );
+  }, []);
+
   const updateLocalTerminal = useCallback((update: Partial<LocalTerminalSettings>) => {
     setSettings((current) =>
       normalizeSettings({
@@ -112,6 +125,7 @@ export function useSettings() {
     settings,
     updateAppearance,
     updateBasic,
+    updateCommand,
     updateFileTransfer,
     updateLocalTerminal,
     updateSecurity,

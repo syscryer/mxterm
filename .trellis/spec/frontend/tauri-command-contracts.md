@@ -169,7 +169,7 @@ type HostKeyInfo = {
 - The same-connection "new terminal" action must only be visible after the active terminal has a connected `sessionId`. When used inside an already active session, it must create a terminal tab directly and call `terminalConnect` with the saved `connection_id`; it must not call `startConnectionStep(...)` or show the connection-preparation page. If this direct connect fails, keep the lightweight terminal tab in a failed state instead of routing the user back into the preparation flow.
 - `TerminalPanel` receives an already-created `initialSessionId`; it must not start a second SSH connection for that tab.
 - During terminal handoff, match terminal output/state events by `request_id` as well as by `session_id`; shell prompts can arrive before the frontend receives the returned session id.
-- Keep the terminal handoff warmup listener alive briefly after replacing the connecting tab, and make `TerminalPanel` consume appended `initialOutput` bytes. Otherwise the remote prompt can land between `terminalConnect` resolving and the xterm listener mounting, leaving a connected but visually blank terminal while remote file browsing works.
+- Keep the terminal handoff warmup listener alive briefly after replacing the connecting tab, and make `TerminalPanel` consume appended `initialOutput` bytes. Otherwise the remote prompt can land between `terminalConnect` resolving and the xterm listener mounting, leaving a connected but visually blank terminal while remote file browsing works. While the startup buffer is active, `TerminalPanel` must ignore live output events whose `request_id` equals `initialRequestId`; stop warmup capture only after the startup buffer has flushed and the mounted output listener is ready, so one startup byte stream cannot be rendered through both paths.
 - `TerminalPanel` should buffer startup handoff output briefly and write it as one ordered batch with early live events. If the combined startup batch contains a duplicated leading shell prompt before a login banner / motd and the same prompt appears again at the end, remove only that leading duplicate before writing to xterm. If the prompt is joined to the first banner line, such as `root@host:~# Welcome to ...`, strip only the prompt prefix and keep the banner text. If warmup and live capture the same leading login banner block before the first prompt, keep one copy of that startup banner. If warmup and live capture produce adjacent duplicate prompts such as `[root@host ~]# [root@host ~]#`, collapse them to a single prompt before writing.
 - Local Windows terminals must call `getWindowsPtyInfo()` and pass the mapped `{ backend, buildNumber }` object to `TerminalPanel`. xterm uses the build number to decide ConPTY reflow behavior; a bare `{ backend: "conpty" }` can keep older wrapping heuristics enabled on modern Windows builds.
 - Do not store terminal session runtime state inside a `ConnectionProfile`. Connection profiles are persistent data; terminal tabs and session ids are runtime state.
@@ -951,8 +951,8 @@ await tunnelStart(rule.id, {
 
 ### 1. Scope / Trigger
 
-- Trigger: frontend code adds or changes command snippets, Command Sender history, typed command-library wrappers, or Command Sender snippet/history UI.
-- Source files: `src/shared/tauri/commands.ts`, `src/features/commands/commandLibraryTypes.ts`, `src/features/layout/WorkspaceShell.tsx`, `src/styles/app.css`, `src-tauri/src/command_library.rs`, and `src-tauri/src/commands.rs`.
+- Trigger: frontend code adds or changes command snippets, Command Sender history, typed command-library wrappers, or the right-pane command library UI.
+- Source files: `src/shared/tauri/commands.ts`, `src/features/commands/commandLibraryTypes.ts`, `src/features/commands/CommandLibraryPanel.tsx`, `src/features/files/RemoteFilePanel.tsx`, `src/features/layout/WorkspaceShell.tsx`, `src/styles/app.css`, `src-tauri/src/command_library.rs`, and `src-tauri/src/commands.rs`.
 - This is a cross-layer command contract because React edits typed snippet/history payloads while Rust owns validation, persistence, duplicate history merging, and usage counts.
 
 ### 2. Signatures
@@ -962,32 +962,41 @@ commandSnippetList(): Promise<CommandSnippet[]>
 commandSnippetUpsert(request: CommandSnippetInput): Promise<CommandSnippet>
 commandSnippetDelete(id: string): Promise<void>
 commandSnippetMarkUsed(id: string): Promise<CommandSnippet>
-commandHistoryList(limit?: number): Promise<CommandHistoryEntry[]>
+commandHistoryList(limit?: number, scope?: CommandHistoryScope | null): Promise<CommandHistoryEntry[]>
 commandHistoryRecord(request: CommandHistoryRecordRequest): Promise<CommandHistoryEntry>
 commandHistoryDelete(id: string): Promise<void>
 commandHistoryClear(): Promise<void>
 ```
 
-Frontend types mirror Rust snake_case fields. `CommandHistorySource` is currently `"command_sender"`.
+Frontend types mirror Rust snake_case fields. `CommandSnippet.group` is a display folder name and blanks are normalized by Rust to the root folder value `""`. Legacy `"未分组"` values are treated as root. `CommandHistorySource` is currently `"command_sender" | "terminal_input"`. `CommandHistoryScope.scope_kind` is `"ssh_connection" | "local_profile"`; scope ids are persisted connection ids or local terminal profile ids, never runtime tab/session ids.
 
 ### 3. Contracts
 
 - Components must call typed wrappers in `src/shared/tauri/commands.ts`; do not call `invoke("command_*")` directly from UI components.
-- Command Sender history is an active-send history only. Record history only after at least one selected target returns from `terminalWrite(...)` successfully.
-- Do not listen to `TerminalPanel` / xterm `onData` for command history. Ordinary shell typing, password prompts, TUI input, and pasted text must not enter command history.
-- History records may include command text, `source`, successful `target_count`, `append_enter`, usage count, and timestamps. They must not include target session ids, connection ids, connection names, or command output.
+- Command Sender history is recorded after at least one selected target returns from `terminalWrite(...)` successfully.
+- Terminal input history is optional and must default to disabled. When `settings.command.recordTerminalInputHistory` is enabled, `TerminalPanel` may record only successful Enter-submitted printable command lines as `terminal_input`.
+- Terminal input history must drop control sequences, function keys, cursor navigation, Tab completion, Ctrl/Alt input, TUI-like input, password-like commands, and sensitive variable assignments. It must not parse shell history files or inject shell hooks.
+- History records may include command text, `source`, successful `target_count`, `append_enter`, usage count, and timestamps. Scope records may include `ssh_connection + connection_id` or `local_profile + profile_id` for filtering. They must not include target session ids, tab ids, connection names, or command output.
 - Selecting a snippet fills the textarea and tracks the selected snippet id. Any manual textarea change clears that selected snippet id so edited commands are treated as ordinary sends.
 - Sending an unchanged selected snippet should call `commandSnippetMarkUsed(id)` after at least one target write succeeds.
 - Selecting a history row fills the textarea. Saving a history command as a snippet uses the normal snippet upsert flow; history itself is not promoted automatically.
+- The right-side tool pane owns the command library entry. `RemoteFilePanel` exposes a `commands` tab that renders `CommandLibraryPanel`; the bottom Command Sender remains the only target-selection and terminal-write surface.
+- Snippets should be grouped by `group` as a one-level tree: root snippets render directly at the top, folder headers render only for explicit non-root groups, and folder children are indented. Do not use left/right split panes, nested folders, or horizontal group chips in the narrow right pane.
+- Snippet rows should keep only high-frequency direct actions visible: copy, insert, and send. Edit/delete live in the snippet row context menu; group rename/delete actions live in the folder context menu. Deleting a group deletes the snippets inside that group.
+- Direct send from the right-pane command library must write to the resolved target list without expanding the bottom Command Sender and without clearing any existing Command Sender draft input.
+- Command Sender target lists may include SSH terminals and local terminals. Local terminal workspaces expose only the right-pane command tool; SSH-only tools such as files, transfers, monitor, and tunnels stay hidden there.
+- History should render as compact command rows, not large cards. It may offer copy, insert, run, save-as-snippet, delete, and clear actions.
+- History scope filtering should default to the current SSH connection in SSH workspaces and the current local terminal profile in local workspaces. The filter list is flat: current context, other SSH connections, local profiles, and all history.
+- Terminal input recording is controlled from Settings through `settings.command.recordTerminalInputHistory`; the right-pane history view shows only the current state and a Settings entry, not a local checkbox.
 - Browser preview may show empty snippet/history states, but real save/delete/record actions must go through the typed Tauri wrappers.
-- UI must use `AppSelect`, Radix Dialog, `ConfirmDialog`, Lucide icons, shared button styles, and global `--mx-*` tokens. Do not use native `<select>`, `window.confirm`, or feature-local dropdown implementations.
+- UI must use Radix Dialog, `ConfirmDialog`, Lucide icons, shared button/menu styles, and global `--mx-*` tokens. Do not use native `<select>`, `window.confirm`, or feature-local dropdown implementations.
 
 ### 4. Validation & Error Matrix
 
 | Condition | Frontend behavior |
 | --- | --- |
-| No snippet rows | Disable snippet dropdown and keep the manager available for creating the first snippet. |
-| No history rows | Disable history dropdown and history delete/clear actions. |
+| No snippet rows | Keep the right-pane command tab available and show a neutral empty state plus create action. |
+| No history rows | Keep history visible as an empty state and disable history delete/clear actions. |
 | Save snippet returns validation error | Keep the snippet dialog open and show `AppError.message` near the form. |
 | Delete snippet/history fails | Keep local UI coherent, surface `AppError.message`, and allow refresh/retry instead of silently removing rows. |
 | All target writes fail | Do not call `commandHistoryRecord` or `commandSnippetMarkUsed`. |
@@ -998,13 +1007,13 @@ Frontend types mirror Rust snake_case fields. `CommandHistorySource` is currentl
 
 - Good: user selects a snippet, sends it to three targets, two writes succeed, history records `target_count=2` and the snippet use count increments once.
 - Good: user selects a snippet then edits the command before sending; history records the edited command, but the original snippet use count does not increment.
-- Good: deleting a history row requires an explicit user action and updates the dropdown state only after the wrapper succeeds.
-- Base: history command text may contain newlines; dropdown labels are truncated visually while the stored command remains intact.
+- Good: deleting a history row requires an explicit user action and updates the right-pane list state only after the wrapper succeeds.
+- Base: history command text may contain newlines; row labels are truncated visually while the stored command remains intact.
 - Bad: React keeps an extra localStorage history, records history before writes complete, stores `sessionId`, or hides backend errors by only mutating local arrays.
 
 ### 6. Tests Required
 
-- Run `npm run check` after changing command-library frontend types, wrappers, `WorkspaceShell` Command Sender UI, or related CSS when type-check runs are approved for the session.
+- Run `npm run check` after changing command-library frontend types, wrappers, `CommandLibraryPanel`, `RemoteFilePanel` tool tabs, `WorkspaceShell` Command Sender UI, or related CSS when type-check runs are approved for the session.
 - Cross-check frontend payload field names against Rust structs in `src-tauri/src/command_library.rs`.
 - Browser/desktop visual checks should cover empty snippet/history states, snippet management dialog, delete confirmations, long command labels, and dark theme token contrast.
 - Run `cargo test --manifest-path src-tauri/Cargo.toml command_library --lib` when frontend payload changes require Rust command-library changes and Rust test runs are approved for the session.

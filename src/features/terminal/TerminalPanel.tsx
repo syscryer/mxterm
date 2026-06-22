@@ -71,6 +71,7 @@ interface TerminalPanelProps {
   onSearchClose?: (tabId: string) => void;
   onSearchQueryChange?: (tabId: string, query: string) => void;
   onStatusChange: (tabId: string, status: string) => void;
+  onTerminalInputCommand?: (tabId: string, command: string) => void;
 }
 
 export function TerminalPanel({
@@ -87,6 +88,7 @@ export function TerminalPanel({
   onSearchCaseSensitiveToggle,
   onSearchQueryChange,
   onStatusChange,
+  onTerminalInputCommand,
   onWarmupCaptureReady,
   searchCaseSensitive = false,
   searchNavigationRequest = null,
@@ -106,13 +108,16 @@ export function TerminalPanel({
   const sessionIdRef = useRef<string | null>(null);
   const osc7BufferRef = useRef("");
   const inputDirectoryStateRef = useRef(createTerminalInputDirectoryState());
+  const inputHistoryStateRef = useRef(createTerminalInputHistoryState());
   const initialOutputWrittenLengthRef = useRef(0);
   const startedRef = useRef(false);
   const decoderRef = useRef(new TextDecoder());
   const onWarmupCaptureReadyRef = useRef(onWarmupCaptureReady);
+  const onTerminalInputCommandRef = useRef(onTerminalInputCommand);
   const startupOutputBufferRef = useRef("");
   const startupOutputBufferingRef = useRef(false);
   const startupOutputFlushTimerRef = useRef<number | null>(null);
+  const terminalOutputListenerReadyRef = useRef(false);
   const terminalOutputWriterRef = useRef<((decoded: string) => void) | null>(null);
   const pendingOutputBufferRef = useRef("");
   const pendingOutputFrameRef = useRef<number | null>(null);
@@ -131,6 +136,10 @@ export function TerminalPanel({
   useEffect(() => {
     onWarmupCaptureReadyRef.current = onWarmupCaptureReady;
   }, [onWarmupCaptureReady]);
+
+  useEffect(() => {
+    onTerminalInputCommandRef.current = onTerminalInputCommand;
+  }, [onTerminalInputCommand]);
 
   useEffect(() => {
     sessionIdRef.current = sessionId;
@@ -198,6 +207,9 @@ export function TerminalPanel({
       }
       const bufferedOutput = startupOutputBufferRef.current;
       startupOutputBufferRef.current = "";
+      if (terminalOutputListenerReadyRef.current) {
+        onWarmupCaptureReadyRef.current?.(tabId);
+      }
       startupOutputBufferingRef.current = false;
       if (bufferedOutput) {
         terminal.write(normalizeStartupOutput(bufferedOutput));
@@ -288,9 +300,17 @@ export function TerminalPanel({
       if (inputDirectory.directory) {
         onCurrentDirectoryChange?.(tabId, inputDirectory.directory);
       }
-      void terminalWrite(activeSessionId, data).catch((error) => {
-        terminal.writeln(`\r\n输入发送失败: ${formatError(error)}`);
-      });
+      const inputHistory = applyTerminalInputHistoryData(inputHistoryStateRef.current, data);
+      inputHistoryStateRef.current = inputHistory.state;
+      void terminalWrite(activeSessionId, data)
+        .then(() => {
+          inputHistory.commands.forEach((command) => {
+            onTerminalInputCommandRef.current?.(tabId, command);
+          });
+        })
+        .catch((error) => {
+          terminal.writeln(`\r\n输入发送失败: ${formatError(error)}`);
+        });
     });
 
     const resizeDisposable = terminal.onResize(({ cols, rows }) => {
@@ -335,7 +355,11 @@ export function TerminalPanel({
     let disposed = false;
     if (hasTauriRuntime()) {
       setListenersReady(false);
+      terminalOutputListenerReadyRef.current = false;
       const outputListener = listenTerminalOutput((event) => {
+        if (startupOutputBufferingRef.current && event.request_id === initialRequestId) {
+          return;
+        }
         if (!matchesTerminalEvent(event, tabId, sessionIdRef.current, initialRequestId)) {
           return;
         }
@@ -372,7 +396,10 @@ export function TerminalPanel({
           stopOutputListener = unlistenOutput;
           stopStateListener = unlistenState;
           stopProgressListener = unlistenProgress;
-          onWarmupCaptureReadyRef.current?.(tabId);
+          terminalOutputListenerReadyRef.current = true;
+          if (!startupOutputBufferingRef.current) {
+            onWarmupCaptureReadyRef.current?.(tabId);
+          }
           setListenersReady(true);
         },
       ).catch((error: unknown) => {
@@ -399,6 +426,7 @@ export function TerminalPanel({
       }
       startupOutputBufferRef.current = "";
       startupOutputBufferingRef.current = false;
+      terminalOutputListenerReadyRef.current = false;
       pendingOutputBufferRef.current = "";
       clearPendingOutputSchedule();
       terminalOutputWriterRef.current = null;
@@ -928,6 +956,64 @@ function clearPendingTerminalResizeSync(
     window.clearTimeout(pendingResizeTimerRef.current);
     pendingResizeTimerRef.current = null;
   }
+}
+
+interface TerminalInputHistoryState {
+  buffer: string;
+  dirty: boolean;
+}
+
+function createTerminalInputHistoryState(): TerminalInputHistoryState {
+  return { buffer: "", dirty: false };
+}
+
+function applyTerminalInputHistoryData(
+  state: TerminalInputHistoryState,
+  data: string,
+): { commands: string[]; state: TerminalInputHistoryState } {
+  let nextState = state;
+  const commands: string[] = [];
+
+  for (const char of data) {
+    const code = char.charCodeAt(0);
+    if (char === "\r" || char === "\n") {
+      const command = nextState.dirty ? "" : nextState.buffer.trim();
+      if (command && !isSensitiveTerminalInputCommand(command)) {
+        commands.push(command);
+      }
+      nextState = createTerminalInputHistoryState();
+      continue;
+    }
+
+    if (char === "\b" || char === "\x7f") {
+      nextState = {
+        ...nextState,
+        buffer: nextState.buffer.slice(0, -1),
+      };
+      continue;
+    }
+
+    if (code < 32 || code === 127) {
+      nextState = { ...nextState, dirty: true };
+      continue;
+    }
+
+    nextState = {
+      ...nextState,
+      buffer: `${nextState.buffer}${char}`,
+    };
+  }
+
+  return { commands, state: nextState };
+}
+
+function isSensitiveTerminalInputCommand(command: string) {
+  return (
+    /\b(?:passwd|sshpass)\b/i.test(command) ||
+    /\bsudo\s+-S\b/i.test(command) ||
+    /\b(?:mysql|mariadb|psql|redis-cli)\b[^\n\r]*\s-p(?:\S+)?/i.test(command) ||
+    /\b(?:password|passwd|token|secret|access[_-]?key)\s*=/i.test(command)
+  );
 }
 
 function formatError(error: unknown) {

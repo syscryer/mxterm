@@ -1435,19 +1435,25 @@ command_snippet_list(app: AppHandle) -> Result<Vec<CommandSnippet>, AppError>
 command_snippet_upsert(app: AppHandle, request: CommandSnippetInput) -> Result<CommandSnippet, AppError>
 command_snippet_delete(app: AppHandle, request: CommandSnippetIdRequest) -> Result<(), AppError>
 command_snippet_mark_used(app: AppHandle, request: CommandSnippetIdRequest) -> Result<CommandSnippet, AppError>
-command_history_list(app: AppHandle, request: CommandHistoryListRequest) -> Result<Vec<CommandHistoryEntry>, AppError>
+command_history_list(app: AppHandle, request: CommandHistoryListRequest { limit, scope }) -> Result<Vec<CommandHistoryEntry>, AppError>
 command_history_record(app: AppHandle, request: CommandHistoryRecordRequest) -> Result<CommandHistoryEntry, AppError>
 command_history_delete(app: AppHandle, request: CommandHistoryIdRequest) -> Result<(), AppError>
 command_history_clear(app: AppHandle) -> Result<(), AppError>
 ```
 
-Serialized fields use snake_case. `CommandHistorySource` currently serializes only `command_sender`.
+Serialized fields use snake_case. `CommandHistorySource` currently serializes `command_sender` and `terminal_input`. `CommandHistoryScope.scope_kind` serializes `ssh_connection` and `local_profile`; scope ids are saved connection ids or local terminal profile ids.
 
 ### 3. Contracts
 
-- Command snippets and command history are production data in SQLite tables `command_snippets` and `command_history`; do not use localStorage or JSON files as production storage.
-- Command history is recorded only after Command Sender writes at least one target terminal input stream successfully. Do not capture ordinary xterm `onData`, shell history files, passwords, TUI keystrokes, target session ids, connection ids, or full target lists.
+- Command snippets and command history are production data in SQLite tables `command_snippets`, `command_history`, and `command_history_scopes`; do not use localStorage or JSON files as production storage.
+- Command Sender history is recorded only after Command Sender writes at least one target terminal input stream successfully.
+- Optional terminal input history may record `terminal_input` only when the frontend setting is enabled and a conservative xterm input parser sees a successful Enter-submitted printable line. It must drop control sequences, password-like commands, TUI keystrokes, target session ids, runtime tab ids, and full target lists.
 - `command_history.command` is unique. Recording an existing command must merge with `ON CONFLICT(command)`, increment `use_count`, update `last_used_at`, and keep the newest `target_count` / `append_enter`.
+- `command_history_scopes` records where a command was used for filtering: SSH uses `ssh_connection + connection_id`, local terminals use `local_profile + profile_id`. It may store per-scope source, target count, append-enter flag, use count, and last-used timestamp, but must not store connection names, command output, session ids, or tab ids.
+- `command_history_list` without a scope returns global history. With a scope, it joins `command_history_scopes` and returns per-scope source/use-count/last-used values. Legacy unscoped history appears only in the all-history view.
+- Command snippets own a display folder field. Rust serializes it as `group`; SQLite stores it as `group_name TEXT NOT NULL DEFAULT ''`. Blank, missing, or legacy `"未分组"` values must normalize to `COMMAND_SNIPPET_DEFAULT_GROUP`, which represents the root folder.
+- Existing SQLite databases that already have `command_snippets` must be upgraded by adding `group_name` with a non-null default and creating the group index. Do not require users to delete their database.
+- Existing SQLite databases that already have `command_history_scopes` must be upgraded by adding missing metadata columns (`source`, `target_count`, `append_enter`) with non-null defaults, backfilling them from `command_history` when possible, and creating the scope index. `CREATE TABLE IF NOT EXISTS` alone is not a migration for existing tables.
 - Snippet `tags` are accepted as an array, trimmed, deduplicated case-insensitively, and stored as JSON text in SQLite.
 - Command text is trimmed before storage and limited by `COMMAND_TEXT_MAX_LENGTH`. Rust validation is authoritative; React may disable obvious empty saves but must still surface backend validation errors.
 - `command_snippet_mark_used` updates only snippet usage metadata and must not mutate command text, title, tags, or favorite state.

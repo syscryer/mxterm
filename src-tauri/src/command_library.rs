@@ -6,11 +6,27 @@ use crate::app_error::AppError;
 pub const COMMAND_TEXT_MAX_LENGTH: usize = 4000;
 pub const COMMAND_HISTORY_DEFAULT_LIMIT: u16 = 50;
 pub const COMMAND_HISTORY_MAX_LIMIT: u16 = 200;
+pub const COMMAND_SNIPPET_DEFAULT_GROUP: &str = "";
+const COMMAND_SNIPPET_LEGACY_UNGROUPED: &str = "未分组";
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CommandHistorySource {
     CommandSender,
+    TerminalInput,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CommandHistoryScopeKind {
+    SshConnection,
+    LocalProfile,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
+pub struct CommandHistoryScope {
+    pub scope_kind: CommandHistoryScopeKind,
+    pub scope_id: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -22,6 +38,8 @@ pub struct CommandSnippetInput {
     pub command: String,
     #[serde(default)]
     pub description: Option<String>,
+    #[serde(default)]
+    pub group: Option<String>,
     #[serde(default)]
     pub tags: Vec<String>,
     #[serde(default)]
@@ -37,6 +55,8 @@ pub struct CommandSnippetIdRequest {
 pub struct CommandHistoryListRequest {
     #[serde(default)]
     pub limit: Option<u16>,
+    #[serde(default)]
+    pub scope: Option<CommandHistoryScope>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -48,6 +68,8 @@ pub struct CommandHistoryRecordRequest {
     pub target_count: u32,
     #[serde(default = "default_append_enter")]
     pub append_enter: bool,
+    #[serde(default)]
+    pub scopes: Vec<CommandHistoryScope>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -61,6 +83,7 @@ pub struct CommandSnippet {
     pub title: String,
     pub command: String,
     pub description: Option<String>,
+    pub group: String,
     pub tags: Vec<String>,
     pub favorite: bool,
     pub use_count: u32,
@@ -87,6 +110,7 @@ pub struct ValidatedCommandSnippetInput {
     pub title: String,
     pub command: String,
     pub description: Option<String>,
+    pub group: String,
     pub tags: Vec<String>,
     pub favorite: bool,
 }
@@ -97,6 +121,7 @@ pub struct ValidatedCommandHistoryRecord {
     pub source: CommandHistorySource,
     pub target_count: u32,
     pub append_enter: bool,
+    pub scopes: Vec<CommandHistoryScope>,
 }
 
 pub fn validate_command_snippet_input(
@@ -119,6 +144,7 @@ pub fn validate_command_snippet_input(
         title,
         command,
         description: trim_optional(input.description.as_deref()),
+        group: normalize_command_snippet_group(input.group.as_deref()),
         tags: normalize_tags(input.tags),
         favorite: input.favorite,
     })
@@ -138,6 +164,7 @@ pub fn validate_command_history_record(
         source: request.source,
         target_count: request.target_count,
         append_enter: request.append_enter,
+        scopes: normalize_command_history_scopes(request.scopes)?,
     })
 }
 
@@ -153,6 +180,16 @@ fn default_command_history_source() -> CommandHistorySource {
 
 fn default_append_enter() -> bool {
     true
+}
+
+pub fn normalize_command_snippet_group(value: Option<&str>) -> String {
+    match trim_optional(value) {
+        Some(group) if group == COMMAND_SNIPPET_LEGACY_UNGROUPED => {
+            COMMAND_SNIPPET_DEFAULT_GROUP.to_string()
+        }
+        Some(group) => group,
+        None => COMMAND_SNIPPET_DEFAULT_GROUP.to_string(),
+    }
 }
 
 fn validate_command_text(
@@ -197,6 +234,29 @@ fn normalized_optional_id(value: Option<&str>) -> Option<String> {
     trim_optional(value)
 }
 
+fn normalize_command_history_scopes(
+    scopes: Vec<CommandHistoryScope>,
+) -> Result<Vec<CommandHistoryScope>, AppError> {
+    let mut seen = HashSet::new();
+    let mut normalized = Vec::new();
+    for scope in scopes {
+        let scope_id = trim_required(
+            &scope.scope_id,
+            "command_history_scope_invalid",
+            "命令历史范围无效。",
+            "scope id is empty",
+        )?;
+        let dedupe_key = (scope.scope_kind.clone(), scope_id.clone());
+        if seen.insert(dedupe_key) {
+            normalized.push(CommandHistoryScope {
+                scope_kind: scope.scope_kind,
+                scope_id,
+            });
+        }
+    }
+    Ok(normalized)
+}
+
 fn normalize_tags(tags: Vec<String>) -> Vec<String> {
     let mut seen = HashSet::new();
     let mut normalized = Vec::new();
@@ -221,6 +281,7 @@ mod tests {
             title: Some(" 常用磁盘 ".to_string()),
             command: " df -h ".to_string(),
             description: Some(" 查看磁盘 ".to_string()),
+            group: Some(" 巡检 ".to_string()),
             tags: vec![
                 " Linux ".to_string(),
                 "linux".to_string(),
@@ -235,8 +296,26 @@ mod tests {
         assert_eq!(validated.title, "常用磁盘");
         assert_eq!(validated.command, "df -h");
         assert_eq!(validated.description.as_deref(), Some("查看磁盘"));
+        assert_eq!(validated.group, "巡检");
         assert_eq!(validated.tags, vec!["Linux", "运维"]);
         assert!(validated.favorite);
+    }
+
+    #[test]
+    fn snippet_validation_defaults_blank_group_to_root() {
+        let validated = validate_command_snippet_input(CommandSnippetInput {
+            id: None,
+            title: Some("磁盘".to_string()),
+            command: "df -h".to_string(),
+            description: None,
+            group: Some(" ".to_string()),
+            tags: Vec::new(),
+            favorite: false,
+        })
+        .unwrap();
+
+        assert_eq!(validated.group, COMMAND_SNIPPET_DEFAULT_GROUP);
+        assert!(validated.group.is_empty());
     }
 
     #[test]
@@ -246,6 +325,7 @@ mod tests {
             title: Some(" ".to_string()),
             command: "df -h".to_string(),
             description: None,
+            group: None,
             tags: Vec::new(),
             favorite: false,
         })
@@ -255,6 +335,7 @@ mod tests {
             title: Some("磁盘".to_string()),
             command: " ".to_string(),
             description: None,
+            group: None,
             tags: Vec::new(),
             favorite: false,
         })
@@ -271,6 +352,16 @@ mod tests {
             source: CommandHistorySource::CommandSender,
             target_count: 3,
             append_enter: true,
+            scopes: vec![
+                CommandHistoryScope {
+                    scope_kind: CommandHistoryScopeKind::SshConnection,
+                    scope_id: " ssh-001 ".to_string(),
+                },
+                CommandHistoryScope {
+                    scope_kind: CommandHistoryScopeKind::SshConnection,
+                    scope_id: "ssh-001".to_string(),
+                },
+            ],
         })
         .unwrap();
 
@@ -278,6 +369,8 @@ mod tests {
         assert_eq!(validated.source, CommandHistorySource::CommandSender);
         assert_eq!(validated.target_count, 3);
         assert!(validated.append_enter);
+        assert_eq!(validated.scopes.len(), 1);
+        assert_eq!(validated.scopes[0].scope_id, "ssh-001");
     }
 
     #[test]
