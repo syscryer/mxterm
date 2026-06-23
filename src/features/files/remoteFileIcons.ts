@@ -1,5 +1,7 @@
 import type { RemoteFileEntry } from "./remoteFileTypes";
 
+import { isDockerfileName, remoteFileExtension } from "../../shared/remoteFiles/fileNames";
+
 export type RemoteFileIconShape =
   | "archive"
   | "certificate"
@@ -156,7 +158,8 @@ export function resolveRemoteFileIcon(
   const normalizedName = entry.name.toLowerCase();
   return (
     fileNameIcons[normalizedName] ||
-    extensionIcons[fileExtension(normalizedName)] ||
+    (isDockerfileName(normalizedName) ? fileNameIcons.dockerfile : undefined) ||
+    extensionIcons[remoteFileExtension(normalizedName)] ||
     defaultFileIcon
   );
 }
@@ -179,9 +182,4 @@ function imageIcon(): RemoteFileIconDescriptor {
 
 function packageIcon(label: string): RemoteFileIconDescriptor {
   return { accent: "#0f766e", label, shape: "package", tone: "#ccfbf1" };
-}
-
-function fileExtension(fileName: string) {
-  const parts = fileName.toLowerCase().split(".");
-  return parts.length > 1 ? parts[parts.length - 1] : "";
 }

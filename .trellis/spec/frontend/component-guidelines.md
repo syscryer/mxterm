@@ -197,6 +197,12 @@ Ant Design, Mantine, or similar libraries just to fix one modal or button.
   as local SVG/component markup in `RemoteFilePanel`, and run
   `node scripts/check-remote-file-local-icons-source.mjs` after changing the
   icon resolver or file tree icon styles.
+- Remote file file-name special cases shared by file icons and Monaco language
+  detection, such as `Dockerfile` and prefixed `*.Dockerfile` names, must use
+  `src/shared/remoteFiles/fileNames.ts` instead of duplicating suffix logic in
+  `remoteFileIcons.ts` and `remoteFileLanguages.ts`. After changing these
+  matchers, run both `node scripts/check-remote-file-local-icons-source.mjs`
+  and `node scripts/check-remote-editor-language-source.mjs`.
 - Terminal surfaces should not add decorative padding by default. If xterm
   spacing is ever needed, it must be accounted for by FitAddon; parent-only
   padding can make FitAddon over-count rows and clip the bottom terminal line at

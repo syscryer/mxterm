@@ -7,6 +7,7 @@ mod docker_tools;
 mod events;
 mod known_hosts;
 pub mod mcp;
+mod remote_exec_pool;
 mod remote_files;
 mod remote_monitor;
 mod ssh_config;
@@ -28,6 +29,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .manage(remote_monitor::RemoteMonitorManager::default())
+        .manage(docker_tools::DockerExecSessionManager::default())
         .manage(remote_files::RemoteFileManager::default())
         .manage(terminal::manager::TerminalManager::default())
         .manage(tunnels::TunnelManager::default())

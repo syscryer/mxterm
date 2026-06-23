@@ -6687,14 +6687,12 @@ button {
   flex: 0 0 auto;
   display: inline-flex;
   align-items: center;
-  gap: 5px;
+  justify-content: center;
   border: 1px solid var(--mx-line-soft);
   border-radius: 999px;
-  padding: 2px 7px;
+  padding: 4px;
   color: var(--mx-muted);
   background: var(--mx-panel-soft);
-  font-size: 11px;
-  font-weight: 560;
 }
 
 .docker-engine-state.running {
@@ -6709,8 +6707,8 @@ button {
   grid-area: resource;
   min-width: 0;
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 6px;
+  grid-template-columns: max-content max-content minmax(0, 1fr);
+  gap: 12px;
   overflow: hidden;
   color: var(--mx-subtle);
   font-size: 11px;
@@ -6723,6 +6721,10 @@ button {
   align-items: center;
   gap: 4px;
   overflow: hidden;
+}
+
+.docker-engine-resource-metric:last-child {
+  justify-self: end;
 }
 
 .docker-engine-resource-metric .ui-icon {

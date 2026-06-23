@@ -48,55 +48,55 @@ fn serve(data_dir: &Path) -> io::Result<()> {
     let stdout = io::stdout();
     let mut writer = stdout.lock();
 
-    while let Some(message) = read_message(&mut reader)? {
-        let response = handle_message(data_dir, message);
-        if response.is_null() {
-            continue;
-        }
-        write_message(&mut writer, &response)?;
-    }
-    Ok(())
+    serve_stream(data_dir, &mut reader, &mut writer)
 }
 
-fn read_message(reader: &mut impl BufRead) -> io::Result<Option<Value>> {
-    let mut content_length = None;
+fn serve_stream(
+    data_dir: &Path,
+    reader: &mut impl BufRead,
+    writer: &mut impl Write,
+) -> io::Result<()> {
     loop {
         let mut line = String::new();
         let read = reader.read_line(&mut line)?;
         if read == 0 {
-            return Ok(None);
-        }
-        let trimmed = line.trim_end_matches(['\r', '\n']);
-        if trimmed.is_empty() {
             break;
         }
-        if let Some(value) = trimmed.strip_prefix("Content-Length:") {
-            content_length = value.trim().parse::<usize>().ok();
-        }
-    }
 
-    let Some(length) = content_length else {
-        return Ok(None);
-    };
-    let mut body = vec![0u8; length];
-    reader.read_exact(&mut body)?;
-    let value = serde_json::from_slice(&body).unwrap_or_else(|error| {
-        json!({
-            "jsonrpc": "2.0",
-            "id": null,
-            "error": {
-                "code": -32700,
-                "message": format!("parse error: {error}")
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+
+        let message = match serde_json::from_str(trimmed) {
+            Ok(value) => value,
+            Err(error) => {
+                write_message(
+                    writer,
+                    &json!({
+                        "jsonrpc": "2.0",
+                        "id": null,
+                        "error": {
+                            "code": -32700,
+                            "message": format!("parse error: {error}")
+                        }
+                    }),
+                )?;
+                continue;
             }
-        })
-    });
-    Ok(Some(value))
+        };
+        let response = handle_message(data_dir, message);
+        if response.is_null() {
+            continue;
+        }
+        write_message(writer, &response)?;
+    }
+    Ok(())
 }
 
 fn write_message(writer: &mut impl Write, value: &Value) -> io::Result<()> {
-    let body = serde_json::to_vec(value)?;
-    write!(writer, "Content-Length: {}\r\n\r\n", body.len())?;
-    writer.write_all(&body)?;
+    serde_json::to_writer(&mut *writer, value)?;
+    writer.write_all(b"\n")?;
     writer.flush()
 }
 
@@ -320,4 +320,60 @@ fn error(id: Value, code: i64, message: &str, data: Option<Value>) -> Value {
             "data": data,
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn initialize_message(id: u64) -> String {
+        json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2024-11-05",
+                "capabilities": {},
+                "clientInfo": { "name": "probe", "version": "1" }
+            }
+        })
+        .to_string()
+    }
+
+    #[test]
+    fn stdio_initialize_uses_ndjson() {
+        let input = format!("{}\n", initialize_message(1));
+        let mut reader = BufReader::new(input.as_bytes());
+        let mut output = Vec::new();
+
+        serve_stream(Path::new("."), &mut reader, &mut output).unwrap();
+
+        let text = String::from_utf8(output).unwrap();
+        assert!(text.ends_with('\n'));
+        assert!(!text.contains("Content-Length"));
+
+        let response = serde_json::from_str::<Value>(text.trim()).unwrap();
+        assert_eq!(response["id"], json!(1));
+        assert_eq!(response["result"]["serverInfo"]["name"], "mxterm-mcp");
+    }
+
+    #[test]
+    fn malformed_json_returns_parse_error_and_keeps_reading() {
+        let input = format!("not-json\n{}\n", initialize_message(2));
+        let mut reader = BufReader::new(input.as_bytes());
+        let mut output = Vec::new();
+
+        serve_stream(Path::new("."), &mut reader, &mut output).unwrap();
+
+        let lines = String::from_utf8(output).unwrap();
+        let responses = lines.lines().collect::<Vec<_>>();
+        assert_eq!(responses.len(), 2);
+
+        let parse_error = serde_json::from_str::<Value>(responses[0]).unwrap();
+        assert_eq!(parse_error["error"]["code"], json!(-32700));
+
+        let initialize = serde_json::from_str::<Value>(responses[1]).unwrap();
+        assert_eq!(initialize["id"], json!(2));
+        assert_eq!(initialize["result"]["serverInfo"]["name"], "mxterm-mcp");
+    }
 }
