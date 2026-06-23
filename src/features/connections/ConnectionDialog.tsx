@@ -63,8 +63,8 @@ interface ConnectionDialogGroup {
 }
 
 interface GroupOption {
-  id: string;
   label: string;
+  value: string;
 }
 
 type ConnectionDialogTab = "basic" | "proxy" | "advanced";
@@ -181,8 +181,12 @@ export function ConnectionDialog({
     setShowProxyPassword(false);
     setRevealBusy(false);
     setDeleteConfirmOpen(false);
-    setForm(connection ? formFromConnection(connection) : { ...emptyForm, group: defaultGroup || "" });
-  }, [connection, defaultGroup, open]);
+    setForm(
+      connection
+        ? formFromConnection(connection, groups)
+        : { ...emptyForm, group: normalizeGroupName(defaultGroup) },
+    );
+  }, [connection, defaultGroup, groups, open]);
 
   if (!open) {
     return null;
@@ -542,7 +546,7 @@ export function ConnectionDialog({
                   { label: "不分组", value: "" },
                   ...groupOptions.map((group) => ({
                     label: group.label,
-                    value: group.id,
+                    value: group.value,
                   })),
                 ]}
                 onChange={(group) => setForm({ ...form, group })}
@@ -1136,7 +1140,10 @@ export function ConnectionDialog({
   }
 }
 
-function formFromConnection(connection: ConnectionProfile): ConnectionProfileInput {
+function formFromConnection(
+  connection: ConnectionProfile,
+  groups: ConnectionDialogGroup[] = [],
+): ConnectionProfileInput {
   const credentialMode = connection.credential_mode || "inline";
   const legacyAuthKind =
     connection.auth_kind ||
@@ -1146,7 +1153,7 @@ function formFromConnection(connection: ConnectionProfile): ConnectionProfileInp
   return {
     id: connection.id,
     name: connection.name,
-    group: connection.group || "",
+    group: resolveGroupName(connection.group, groups),
     host: connection.host,
     port: connection.port,
     username: connection.username,
@@ -1235,23 +1242,54 @@ function validateNetworkPath(form: ConnectionProfileInput): DialogFeedback | nul
 
 function buildGroupOptions(groups: ConnectionDialogGroup[], currentGroup: string): GroupOption[] {
   const groupById = new Map(groups.map((group) => [group.id, group]));
-  const options = groups.map((group) => ({
-    id: group.id,
-    label: groupPathLabel(group, groupById),
-  }));
-  const trimmedCurrentGroup = currentGroup.trim();
+  const seenValues = new Set<string>();
+  const options = groups.reduce<GroupOption[]>((items, group) => {
+    const value = normalizeGroupName(group.name);
+    if (!value || seenValues.has(value)) {
+      return items;
+    }
+
+    seenValues.add(value);
+    items.push({
+      label: groupPathLabel(group, groupById),
+      value,
+    });
+    return items;
+  }, []);
+  const trimmedCurrentGroup = normalizeGroupName(currentGroup);
 
   if (
     trimmedCurrentGroup &&
-    !options.some((option) => option.id === trimmedCurrentGroup)
+    !options.some((option) => option.value === trimmedCurrentGroup)
   ) {
     options.push({
-      id: trimmedCurrentGroup,
       label: trimmedCurrentGroup,
+      value: trimmedCurrentGroup,
     });
   }
 
   return options;
+}
+
+function resolveGroupName(
+  value: string | null | undefined,
+  groups: ConnectionDialogGroup[],
+) {
+  const groupName = normalizeGroupName(value);
+  if (!groupName) {
+    return "";
+  }
+
+  if (groups.some((group) => normalizeGroupName(group.name) === groupName)) {
+    return groupName;
+  }
+
+  const legacyGroup = groups.find((group) => group.id === groupName);
+  return normalizeGroupName(legacyGroup?.name) || groupName;
+}
+
+function normalizeGroupName(value: string | null | undefined) {
+  return value?.trim() || "";
 }
 
 function groupPathLabel(
