@@ -15,6 +15,7 @@ import {
 export type SettingsSectionId =
   | "basic"
   | "credentials"
+  | "mcp"
   | "security"
   | "sync"
   | "shortcuts"

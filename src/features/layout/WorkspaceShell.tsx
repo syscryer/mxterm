@@ -6286,6 +6286,7 @@ export function WorkspaceShell() {
 
         <SettingsView
           activeSection={settingsSectionRequest}
+          connections={connections}
           credentials={credentials}
           credentialError={credentialError}
           credentialLoading={credentialLoading}

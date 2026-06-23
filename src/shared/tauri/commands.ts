@@ -74,6 +74,7 @@ import type {
   WebDavTestResult,
   WebDavUploadRequest,
 } from "../../features/settings/webdavSyncTypes";
+import type { McpSettings } from "../../features/settings/mcpSettingsTypes";
 
 export interface SecretVaultStatus {
   initialized: boolean;
@@ -726,4 +727,16 @@ export function webdavUploadSnapshot(request: WebDavUploadRequest) {
 
 export function webdavDownloadSnapshot(request: WebDavDownloadRequest) {
   return invoke<WebDavSyncResult>("webdav_download_snapshot", { request });
+}
+
+export function mcpSettingsGet() {
+  return invoke<McpSettings>("mcp_settings_get");
+}
+
+export function mcpSettingsSave(request: McpSettings) {
+  return invoke<McpSettings>("mcp_settings_save", { request });
+}
+
+export function mcpExecutablePath() {
+  return invoke<string>("mcp_executable_path");
 }

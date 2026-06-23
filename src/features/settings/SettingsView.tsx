@@ -34,6 +34,7 @@ import {
   Trash2,
   Type,
   Undo2,
+  Waypoints,
   X,
 } from "lucide-react";
 
@@ -44,10 +45,17 @@ import {
   selectLocalDownloadDirectory,
   selectLocalPrivateKeyFile,
 } from "../../shared/tauri/dialog";
-import { credentialRevealSecret, localTerminalListProfiles } from "../../shared/tauri/commands";
+import {
+  credentialRevealSecret,
+  localTerminalListProfiles,
+  mcpExecutablePath,
+  mcpSettingsGet,
+  mcpSettingsSave,
+} from "../../shared/tauri/commands";
 import { hasTauriRuntime } from "../../shared/tauri/runtime";
 import type {
   ConnectionAuthKind,
+  ConnectionProfile,
   CredentialProfile,
   CredentialProfileInput,
 } from "../connections/connectionTypes";
@@ -98,8 +106,10 @@ import type {
 import { LocalTerminalIcon } from "../terminal/LocalTerminalIcons";
 import { WebDavSyncSettingsSection } from "./WebDavSyncSettingsSection";
 import { ShortcutSettingsSection } from "./ShortcutSettingsSection";
+import { defaultMcpSettings, type McpSettings } from "./mcpSettingsTypes";
 
 interface SettingsViewProps {
+  connections: ConnectionProfile[];
   credentials: CredentialProfile[];
   credentialError?: string | null;
   credentialLoading?: boolean;
@@ -135,6 +145,7 @@ const settingsSections: Array<{
 }> = [
   { id: "basic", label: "基础设置", description: "启动、连接与面板行为", icon: Settings },
   { id: "credentials", label: "账号管理", description: "复用登录账号（用户名+密码/私钥）", icon: Shield },
+  { id: "mcp", label: "MCP", description: "AI Agent 连接与受控 SSH 工具", icon: Waypoints },
   { id: "security", label: "安全", description: "安全密码与本机保护", icon: ShieldCheck },
   { id: "sync", label: "同步", description: "WebDAV 手动同步", icon: Cloud },
   { id: "shortcuts", label: "快捷键", description: "应用内键盘操作与冲突管理", icon: Keyboard },
@@ -152,6 +163,7 @@ const credentialKindOptions: Array<{
 ];
 
 export function SettingsView({
+  connections,
   credentials,
   credentialError,
   credentialLoading = false,
@@ -280,6 +292,7 @@ export function SettingsView({
             onUpdate={onUpdateSecurity}
           />
         ) : null}
+        {activeSection === "mcp" ? <McpSettingsSection connections={connections} /> : null}
         {activeSection === "sync" ? <WebDavSyncSettingsSection /> : null}
         {activeSection === "shortcuts" ? (
           <ShortcutSettingsSection
@@ -294,6 +307,352 @@ export function SettingsView({
             onUpdate={onUpdateTerminalTheme}
           />
         ) : null}
+      </div>
+    </section>
+  );
+}
+
+function McpSettingsSection({ connections }: { connections: ConnectionProfile[] }) {
+  const [settings, setSettings] = useState<McpSettings>(defaultMcpSettings);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
+  const desktopRuntime = hasTauriRuntime();
+  const [executablePath, setExecutablePath] = useState("mxterm-mcp.exe");
+  const [connectionExposureQuery, setConnectionExposureQuery] = useState("");
+  const connectionExposureSearchQuery = connectionExposureQuery.trim();
+  const connectionExposureSearchActive = connectionExposureSearchQuery.length > 0;
+  const connectionIds = useMemo(
+    () => connections.map((connection) => connection.id),
+    [connections],
+  );
+  const filteredConnections = useMemo(() => {
+    const query = connectionExposureSearchQuery.toLowerCase();
+    if (!query) {
+      return connections;
+    }
+    return connections.filter((connection) =>
+      [
+        connection.name,
+        connection.group,
+        connection.host,
+        connection.username,
+        connection.port.toString(),
+      ]
+        .filter(Boolean)
+        .some((value) => String(value).toLowerCase().includes(query)),
+    );
+  }, [connectionExposureSearchQuery, connections]);
+  const filteredConnectionIds = useMemo(
+    () => filteredConnections.map((connection) => connection.id),
+    [filteredConnections],
+  );
+  const exposedConnectionIds = useMemo(
+    () =>
+      settings.connection_exposure_mode === "all"
+        ? connectionIds
+        : connectionIds.filter((id) => settings.exposed_connection_ids.includes(id)),
+    [connectionIds, settings.connection_exposure_mode, settings.exposed_connection_ids],
+  );
+  const exposedConnectionIdSet = useMemo(
+    () => new Set(exposedConnectionIds),
+    [exposedConnectionIds],
+  );
+  const connectionExposureDisabled =
+    loading || saving || !desktopRuntime || !settings.enabled || !settings.expose_connections;
+  const connectionExposureBatchDisabled =
+    connectionExposureDisabled || filteredConnectionIds.length === 0;
+  const configSnippet = useMemo(
+    () =>
+      JSON.stringify(
+        {
+          mcpServers: {
+            mxterm: {
+              command: executablePath,
+              args: [],
+            },
+          },
+        },
+        null,
+        2,
+      ),
+    [executablePath],
+  );
+
+  useEffect(() => {
+    let cancelled = false;
+    async function load() {
+      if (!desktopRuntime) {
+        setSettings(defaultMcpSettings);
+        setLoading(false);
+        return;
+      }
+      try {
+        setLoading(true);
+        const next = await mcpSettingsGet();
+        const nextExecutablePath = await mcpExecutablePath().catch(() => executablePath);
+        if (!cancelled) {
+          setSettings(next);
+          setExecutablePath(nextExecutablePath);
+          setError(null);
+        }
+      } catch (error) {
+        if (!cancelled) {
+          setError(error instanceof Error ? error.message : "MCP 设置读取失败。");
+        }
+      } finally {
+        if (!cancelled) {
+          setLoading(false);
+        }
+      }
+    }
+    void load();
+    return () => {
+      cancelled = true;
+    };
+  }, [desktopRuntime]);
+
+  async function saveUpdate(update: Partial<McpSettings>) {
+    if (!desktopRuntime) {
+      setError("需要在 mXterm 桌面端保存 MCP 设置。");
+      return;
+    }
+    const previous = settings;
+    const next = { ...settings, ...update };
+    setSettings(next);
+    setSaving(true);
+    setError(null);
+    try {
+      setSettings(await mcpSettingsSave(next));
+    } catch (error) {
+      setSettings(previous);
+      setError(error instanceof Error ? error.message : "MCP 设置保存失败。");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  function setAllConnectionExposure(exposed: boolean) {
+    if (!connectionExposureSearchActive) {
+      void saveUpdate(
+        exposed
+          ? {
+              connection_exposure_mode: "all",
+              exposed_connection_ids: [],
+            }
+          : {
+              connection_exposure_mode: "custom",
+              exposed_connection_ids: [],
+            },
+      );
+      return;
+    }
+
+    const nextIds = new Set(exposedConnectionIds);
+    for (const connectionId of filteredConnectionIds) {
+      if (exposed) {
+        nextIds.add(connectionId);
+      } else {
+        nextIds.delete(connectionId);
+      }
+    }
+    void saveUpdate({
+      connection_exposure_mode: "custom",
+      exposed_connection_ids: connectionIds.filter((id) => nextIds.has(id)),
+    });
+  }
+
+  function setConnectionExposure(connectionId: string, exposed: boolean) {
+    const nextIds = new Set(exposedConnectionIds);
+    if (exposed) {
+      nextIds.add(connectionId);
+    } else {
+      nextIds.delete(connectionId);
+    }
+    void saveUpdate({
+      connection_exposure_mode: "custom",
+      exposed_connection_ids: connectionIds.filter((id) => nextIds.has(id)),
+    });
+  }
+
+  async function copyConfig() {
+    try {
+      await navigator.clipboard.writeText(configSnippet);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1600);
+    } catch {
+      setError("无法写入剪贴板，可手动复制下方配置。");
+    }
+  }
+
+  return (
+    <section className="settings-page-section">
+      <header className="settings-section-head">
+        <h1>MCP</h1>
+        <p>把 mXterm 保存的连接提供给本机 AI Agent；SSH 操作必须单独开启。</p>
+      </header>
+
+      <div className="settings-panel mcp-settings-panel">
+        <SettingsRow
+          icon={Waypoints}
+          title="启用 mXterm MCP"
+          description="默认关闭。关闭时 sidecar 只返回禁用状态，不暴露连接信息。"
+        >
+          <SettingsToggle
+            checked={settings.enabled}
+            disabled={loading || saving || !desktopRuntime}
+            label="启用 mXterm MCP"
+            onChange={(enabled) => void saveUpdate({ enabled })}
+          />
+        </SettingsRow>
+
+        <SettingsRow
+          icon={Server}
+          title="暴露连接信息"
+          description="只返回脱敏后的连接元数据，不返回密码、私钥口令或 vault 明文。"
+        >
+          <SettingsToggle
+            checked={settings.expose_connections}
+            disabled={loading || saving || !desktopRuntime || !settings.enabled}
+            label="暴露连接信息"
+            onChange={(expose_connections) => void saveUpdate({ expose_connections })}
+          />
+        </SettingsRow>
+
+        <SettingsRow
+          icon={Terminal}
+          title="启用 SSH 操作"
+          description="允许 Agent 通过已保存 connection_id 测试连接、执行命令和传输文件。"
+        >
+          <SettingsToggle
+            checked={settings.ssh_operations_enabled}
+            disabled={loading || saving || !desktopRuntime || !settings.enabled}
+            label="启用 SSH 操作"
+            onChange={(ssh_operations_enabled) => void saveUpdate({ ssh_operations_enabled })}
+          />
+        </SettingsRow>
+
+        <SettingsRow
+          icon={ShieldCheck}
+          title="允许危险命令确认"
+          description="关闭时直接拒绝危险命令；开启后仍需要 MCP 工具参数显式确认。"
+        >
+          <SettingsToggle
+            checked={settings.allow_dangerous_commands}
+            disabled={
+              loading ||
+              saving ||
+              !desktopRuntime ||
+              !settings.enabled ||
+              !settings.ssh_operations_enabled
+            }
+            label="允许危险命令确认"
+            onChange={(allow_dangerous_commands) =>
+              void saveUpdate({ allow_dangerous_commands })
+            }
+          />
+        </SettingsRow>
+
+        <div className="mcp-config-block">
+          <div>
+            <strong>stdio client 配置</strong>
+            <small>发布包中 sidecar 会随 mXterm 一起提供；开发期可替换为本地绝对路径。</small>
+          </div>
+          <button
+            className="settings-action-button"
+            type="button"
+            disabled={!desktopRuntime}
+            onClick={() => void copyConfig()}
+          >
+            <Check className="ui-icon" aria-hidden="true" />
+            <span>{copied ? "已复制" : "复制配置"}</span>
+          </button>
+          <pre>{configSnippet}</pre>
+        </div>
+
+        {!desktopRuntime ? (
+          <p className="settings-note">浏览器预览不能保存 MCP 设置，请在桌面端操作。</p>
+        ) : null}
+        {error ? (
+          <p className="settings-path-error" role="alert">
+            {error}
+          </p>
+        ) : null}
+      </div>
+
+      <div className="settings-panel mcp-connection-exposure-panel">
+        <div className="mcp-connection-exposure-head">
+          <span>
+            <strong>MCP 可用连接</strong>
+            <small>
+              {connectionExposureSearchActive
+                ? `匹配 ${filteredConnections.length.toString()} / ${connections.length.toString()}，已开放 ${exposedConnectionIds.length.toString()} 个连接`
+                : settings.connection_exposure_mode === "all"
+                ? `默认开放全部 ${connections.length.toString()} 个连接`
+                : `已开放 ${exposedConnectionIds.length.toString()} / ${connections.length.toString()} 个连接`}
+            </small>
+          </span>
+          <div>
+            <button
+              className="settings-action-button"
+              type="button"
+              disabled={connectionExposureBatchDisabled}
+              onClick={() => setAllConnectionExposure(true)}
+            >
+              {connectionExposureSearchActive ? "打开匹配" : "全部打开"}
+            </button>
+            <button
+              className="settings-action-button"
+              type="button"
+              disabled={connectionExposureBatchDisabled}
+              onClick={() => setAllConnectionExposure(false)}
+            >
+              {connectionExposureSearchActive ? "关闭匹配" : "全部关闭"}
+            </button>
+          </div>
+        </div>
+        <div className="mcp-connection-exposure-tools">
+          <label className="mcp-connection-search">
+            <Search className="ui-icon" aria-hidden="true" />
+            <input
+              type="search"
+              value={connectionExposureQuery}
+              placeholder="搜索连接名、主机、用户或分组"
+              aria-label="搜索 MCP 可用连接"
+              onChange={(event) => setConnectionExposureQuery(event.currentTarget.value)}
+            />
+          </label>
+        </div>
+        <div className="mcp-connection-exposure-list">
+          {connections.length === 0 ? (
+            <p className="settings-note">还没有保存连接。</p>
+          ) : filteredConnections.length === 0 ? (
+            <p className="settings-note">没有匹配的连接。</p>
+          ) : (
+            filteredConnections.map((connection) => {
+              const exposed = exposedConnectionIdSet.has(connection.id);
+              return (
+                <div className="mcp-connection-exposure-row" key={connection.id}>
+                  <span>
+                    <strong>{connection.name}</strong>
+                    <small>
+                      {connection.username}@{connection.host}:{connection.port.toString()}
+                    </small>
+                  </span>
+                  <SettingsToggle
+                    checked={exposed}
+                    disabled={connectionExposureDisabled}
+                    label={`${connection.name} MCP 暴露`}
+                    onChange={(nextExposed) =>
+                      setConnectionExposure(connection.id, nextExposed)
+                    }
+                  />
+                </div>
+              );
+            })
+          )}
+        </div>
       </div>
     </section>
   );
