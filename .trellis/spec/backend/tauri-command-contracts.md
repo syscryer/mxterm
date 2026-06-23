@@ -1969,6 +1969,9 @@ mxterm-mcp [--data-dir <path>]
 - `mxterm-mcp` speaks JSON-RPC/MCP over stdio as newline-delimited JSON: one JSON-RPC message per line, no `Content-Length` header. It must work while the mXterm desktop app is not running.
 - Metadata-only MCP reads must open `StorageRepository::open_root(...)` with the in-memory secret store. Read-only MCP listing must not unlock the local vault or reveal secrets.
 - SSH-capable MCP tools must resolve saved connections through the normal vault-backed repository path and must not accept dynamic plaintext credential fields.
+- MCP exec-capable tools (`test_connection`, `execute_command`, and `server_monitor`) use a process-local `RemoteExecSessionPool` keyed by saved connection id and `ResolvedSshConfig::signature()`. A command timeout must invalidate the cached connection before returning `mcp_command_timeout`. SFTP transfer tools intentionally keep one operation-scoped `ReusableSftpSession` per transfer until a dedicated SFTP pooling contract exists.
+- MCP upload/download tools write to `.mxterm-mcp-transfer-*` temporary files next to the final target and only rename after the copy and flush complete. Failed transfers must clean the temporary file when cleanup is possible; partial final files should not replace an existing target.
+- MCP transfer responses include `bytes_transferred` and `duration_ms` for files and directories. Directory values are the sum of transferred child file bytes for that operation.
 - `reject_plaintext_credential_args(...)` must reject argument keys such as `host`, `user`, `username`, `password`, `passphrase`, `private_key`, and `private_key_content` before tool dispatch.
 - `McpConnectionExposureMode::All` means every saved connection is exposed.
 - `McpConnectionExposureMode::Custom` means only `exposed_connection_ids` are exposed.
@@ -2000,8 +2003,10 @@ mxterm-mcp [--data-dir <path>]
 
 - Good: `mxterm-mcp --data-dir <temp-root>` starts without the desktop app, returns only `get_mxterm_mcp_status` by default, and exposes connection tools only after persisted MCP settings enable them.
 - Good: when `connection_exposure_mode = "custom"` and `exposed_connection_ids = ["conn-prod"]`, list/search/get and SSH tools behave as if only `conn-prod` exists.
+- Good: transfer tools copy into a sibling temporary file, flush it, rename it to the final target, and return transferred bytes plus elapsed milliseconds.
 - Base: `connection_exposure_mode = "all"` with an empty id list still exposes every saved connection.
 - Bad: metadata reads unlock the local secret store, hidden connection ids remain callable through SSH tools, the sidecar accepts raw `password`/`private_key` arguments, or `tools/list` advertises disabled tools that runtime will always reject.
+- Bad: a transfer tool writes directly to the final target, leaving a truncated target file after copy failure, or reports success without the byte/duration fields.
 
 ### 6. Tests Required
 
@@ -2013,6 +2018,7 @@ mxterm-mcp [--data-dir <path>]
   - redacted connection serialization excludes secret material
   - plaintext credential arguments are rejected
   - custom exposure mode filters connection list/search/get and blocks SSH actions by hidden id
+  - transfer temporary paths stay beside the target and transfer result serialization includes `bytes_transferred` and `duration_ms`
 - When sidecar dispatch changes, run a stdio end-to-end check against a temp `--data-dir` repository that verifies disabled gating and custom exposure filtering without launching the desktop app.
 
 ### 7. Wrong vs Correct

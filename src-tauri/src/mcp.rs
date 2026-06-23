@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
@@ -15,10 +15,11 @@ use crate::connections::{
     ConnectionAuthKind, ConnectionCredentialMode, ConnectionJumpKind, ConnectionProfile,
     ConnectionProxyKind,
 };
+use crate::remote_exec_pool::{RemoteExecRetry, RemoteExecSessionPool};
 use crate::ssh_config::{ResolvedSshConfig, RuntimeCredentialInput};
 use crate::storage_repository::StorageRepository;
 use crate::storage_vault::{SecretStore, VaultState};
-use crate::terminal::session::{ReusableExecSession, ReusableSftpSession, SshConnectionContext};
+use crate::terminal::session::{ReusableSftpSession, SshConnectionContext};
 use crate::webdav_sync::WebDavSyncService;
 
 pub const MCP_SETTINGS_KEY: &str = "mcp.default";
@@ -26,6 +27,8 @@ const DEFAULT_TIMEOUT_SECONDS: u64 = 30;
 const MAX_TIMEOUT_SECONDS: u64 = 300;
 const DEFAULT_OUTPUT_BYTES: usize = 64 * 1024;
 const MAX_OUTPUT_BYTES: usize = 1024 * 1024;
+
+static MCP_EXEC_SESSION_POOL: OnceLock<RemoteExecSessionPool> = OnceLock::new();
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct McpSettings {
@@ -142,6 +145,8 @@ pub struct McpTransferResult {
     pub remote_path: String,
     pub directory: bool,
     pub ok: bool,
+    pub bytes_transferred: u64,
+    pub duration_ms: u128,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -483,6 +488,10 @@ pub fn normalize_output_limit(limit: Option<usize>) -> usize {
         .clamp(1024, MAX_OUTPUT_BYTES)
 }
 
+fn mcp_exec_session_pool() -> &'static RemoteExecSessionPool {
+    MCP_EXEC_SESSION_POOL.get_or_init(RemoteExecSessionPool::default)
+}
+
 pub async fn execute_command(
     root: &Path,
     connection_id: &str,
@@ -506,25 +515,26 @@ pub async fn execute_command(
         }
     }
     let started = now_millis();
-    let repo = repository_for_ssh(root)?;
-    let config =
-        repo.resolve_saved_connection(connection_id.trim(), None::<RuntimeCredentialInput>)?;
-    let context = SshConnectionContext::from_parts(root.to_path_buf(), local_secret_store(root)?);
-    let session = ReusableExecSession::connect_resolved_with_context(&context, &config).await?;
-    let result =
-        tokio::time::timeout(normalize_timeout(timeout_seconds), session.exec(command)).await;
-    session.close().await;
-    let output = result.map_err(|_| {
-        AppError::new(
-            "mcp_command_timeout",
-            "MCP SSH 命令执行超时。",
-            format!(
-                "timeout_seconds={}",
-                normalize_timeout(timeout_seconds).as_secs()
-            ),
-            true,
-        )
-    })??;
+    let (config, context) = resolve_ssh(root, connection_id)?;
+    let timeout = normalize_timeout(timeout_seconds);
+    let pool = mcp_exec_session_pool();
+    let result = tokio::time::timeout(
+        timeout,
+        pool.exec_with_context(&context, &config, command, RemoteExecRetry::ReconnectOnce),
+    )
+    .await;
+    let output = match result {
+        Ok(output) => output?,
+        Err(_) => {
+            pool.invalidate_connection(&config.connection_id).await;
+            return Err(AppError::new(
+                "mcp_command_timeout",
+                "MCP SSH 命令执行超时。",
+                format!("timeout_seconds={}", timeout.as_secs()),
+                true,
+            ));
+        }
+    };
     let limit = normalize_output_limit(max_output_bytes);
     let (stdout, stdout_truncated) = bytes_to_limited_string(&output.stdout, limit);
     let (stderr, stderr_truncated) = bytes_to_limited_string(&output.stderr, limit);
@@ -559,12 +569,10 @@ pub async fn test_connection(
 ) -> Result<Value, AppError> {
     ensure_ssh_enabled(settings)?;
     ensure_connection_exposed(settings, connection_id)?;
-    let repo = repository_for_ssh(root)?;
-    let config =
-        repo.resolve_saved_connection(connection_id.trim(), None::<RuntimeCredentialInput>)?;
-    let context = SshConnectionContext::from_parts(root.to_path_buf(), local_secret_store(root)?);
-    let session = ReusableExecSession::connect_resolved_with_context(&context, &config).await?;
-    session.close().await;
+    let (config, context) = resolve_ssh(root, connection_id)?;
+    mcp_exec_session_pool()
+        .warm_with_context(&context, &config)
+        .await?;
     audit(
         root,
         "test_connection",
@@ -604,16 +612,18 @@ pub async fn upload_file(
     ensure_connection_exposed(settings, connection_id)?;
     validate_local_read_path(local_path, false)?;
     let remote_path = require_remote_path(remote_path)?;
+    let started = now_millis();
     let (config, context) = resolve_ssh(root, connection_id)?;
     let session = ReusableSftpSession::connect_resolved_with_context(&context, &config).await?;
-    upload_file_inner(session.sftp(), local_path, remote_path).await?;
+    let bytes_transferred = upload_file_inner(session.sftp(), local_path, remote_path).await?;
     session.close().await;
+    let duration_ms = now_millis().saturating_sub(started);
     audit(
         root,
         "upload_file",
         &config.connection_id,
         true,
-        json!({ "remote_path": remote_path }),
+        json!({ "remote_path": remote_path, "bytes_transferred": bytes_transferred, "duration_ms": duration_ms }),
     );
     Ok(McpTransferResult {
         connection_id: config.connection_id,
@@ -621,6 +631,8 @@ pub async fn upload_file(
         remote_path: remote_path.to_string(),
         directory: false,
         ok: true,
+        bytes_transferred,
+        duration_ms,
     })
 }
 
@@ -635,16 +647,18 @@ pub async fn download_file(
     ensure_connection_exposed(settings, connection_id)?;
     validate_local_write_path(local_path)?;
     let remote_path = require_remote_path(remote_path)?;
+    let started = now_millis();
     let (config, context) = resolve_ssh(root, connection_id)?;
     let session = ReusableSftpSession::connect_resolved_with_context(&context, &config).await?;
-    download_file_inner(session.sftp(), remote_path, local_path).await?;
+    let bytes_transferred = download_file_inner(session.sftp(), remote_path, local_path).await?;
     session.close().await;
+    let duration_ms = now_millis().saturating_sub(started);
     audit(
         root,
         "download_file",
         &config.connection_id,
         true,
-        json!({ "remote_path": remote_path }),
+        json!({ "remote_path": remote_path, "bytes_transferred": bytes_transferred, "duration_ms": duration_ms }),
     );
     Ok(McpTransferResult {
         connection_id: config.connection_id,
@@ -652,6 +666,8 @@ pub async fn download_file(
         remote_path: remote_path.to_string(),
         directory: false,
         ok: true,
+        bytes_transferred,
+        duration_ms,
     })
 }
 
@@ -666,16 +682,18 @@ pub async fn upload_directory(
     ensure_connection_exposed(settings, connection_id)?;
     validate_local_read_path(local_path, true)?;
     let remote_path = require_remote_path(remote_path)?;
+    let started = now_millis();
     let (config, context) = resolve_ssh(root, connection_id)?;
     let session = ReusableSftpSession::connect_resolved_with_context(&context, &config).await?;
-    upload_directory_inner(session.sftp(), local_path, remote_path).await?;
+    let bytes_transferred = upload_directory_inner(session.sftp(), local_path, remote_path).await?;
     session.close().await;
+    let duration_ms = now_millis().saturating_sub(started);
     audit(
         root,
         "upload_directory",
         &config.connection_id,
         true,
-        json!({ "remote_path": remote_path }),
+        json!({ "remote_path": remote_path, "bytes_transferred": bytes_transferred, "duration_ms": duration_ms }),
     );
     Ok(McpTransferResult {
         connection_id: config.connection_id,
@@ -683,6 +701,8 @@ pub async fn upload_directory(
         remote_path: remote_path.to_string(),
         directory: true,
         ok: true,
+        bytes_transferred,
+        duration_ms,
     })
 }
 
@@ -697,16 +717,19 @@ pub async fn download_directory(
     ensure_connection_exposed(settings, connection_id)?;
     validate_local_directory_target(local_path)?;
     let remote_path = require_remote_path(remote_path)?;
+    let started = now_millis();
     let (config, context) = resolve_ssh(root, connection_id)?;
     let session = ReusableSftpSession::connect_resolved_with_context(&context, &config).await?;
-    download_directory_inner(session.sftp(), remote_path, local_path).await?;
+    let bytes_transferred =
+        download_directory_inner(session.sftp(), remote_path, local_path).await?;
     session.close().await;
+    let duration_ms = now_millis().saturating_sub(started);
     audit(
         root,
         "download_directory",
         &config.connection_id,
         true,
-        json!({ "remote_path": remote_path }),
+        json!({ "remote_path": remote_path, "bytes_transferred": bytes_transferred, "duration_ms": duration_ms }),
     );
     Ok(McpTransferResult {
         connection_id: config.connection_id,
@@ -714,6 +737,8 @@ pub async fn download_directory(
         remote_path: remote_path.to_string(),
         directory: true,
         ok: true,
+        bytes_transferred,
+        duration_ms,
     })
 }
 
@@ -863,11 +888,50 @@ fn validate_local_directory_target(path: &Path) -> Result<(), AppError> {
     })
 }
 
+fn mcp_remote_part_path(remote_path: &str, timestamp_ms: u128) -> String {
+    let trimmed = remote_path.trim_end_matches('/');
+    let (parent, file_name) = trimmed
+        .rsplit_once('/')
+        .map_or(("", trimmed), |(parent, name)| {
+            if parent.is_empty() {
+                ("/", name)
+            } else {
+                (parent, name)
+            }
+        });
+    let file_name = if file_name.is_empty() {
+        "target"
+    } else {
+        file_name
+    };
+    let part_name = format!(".mxterm-mcp-transfer-{timestamp_ms}-{file_name}.part");
+    if parent.is_empty() {
+        part_name
+    } else if parent == "/" {
+        format!("/{part_name}")
+    } else {
+        format!("{parent}/{part_name}")
+    }
+}
+
+fn mcp_local_part_path(local_path: &Path, timestamp_ms: u128) -> PathBuf {
+    let file_name = local_path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .filter(|value| !value.is_empty())
+        .unwrap_or("download");
+    let part_name = format!(".mxterm-mcp-transfer-{timestamp_ms}-{file_name}.part");
+    local_path
+        .parent()
+        .map(|parent| parent.join(&part_name))
+        .unwrap_or_else(|| PathBuf::from(part_name))
+}
+
 async fn upload_file_inner(
     sftp: &russh_sftp::client::SftpSession,
     local_path: &Path,
     remote_path: &str,
-) -> Result<(), AppError> {
+) -> Result<u64, AppError> {
     let mut local = tokio::fs::File::open(local_path).await.map_err(|error| {
         AppError::new(
             "mcp_upload_local_open_failed",
@@ -876,35 +940,58 @@ async fn upload_file_inner(
             true,
         )
     })?;
-    let mut remote = sftp
-        .create(remote_path.to_string())
-        .await
-        .map_err(|error| {
-            AppError::new(
-                "mcp_upload_remote_create_failed",
-                "远程文件创建失败。",
-                error,
-                true,
-            )
-        })?;
-    tokio::io::copy(&mut local, &mut remote)
-        .await
-        .map_err(|error| AppError::new("mcp_upload_failed", "文件上传失败。", error, true))?;
-    remote.shutdown().await.map_err(|error| {
+    let part_path = mcp_remote_part_path(remote_path, now_millis());
+    let mut remote = sftp.create(part_path.clone()).await.map_err(|error| {
         AppError::new(
-            "mcp_upload_flush_failed",
-            "远程文件写入完成失败。",
+            "mcp_upload_remote_create_failed",
+            "远程临时文件创建失败。",
             error,
             true,
         )
-    })
+    })?;
+    let copied = match tokio::io::copy(&mut local, &mut remote).await {
+        Ok(copied) => copied,
+        Err(error) => {
+            let _ = sftp.remove_file(part_path).await;
+            return Err(AppError::new(
+                "mcp_upload_failed",
+                "文件上传失败。",
+                error,
+                true,
+            ));
+        }
+    };
+    if let Err(error) = remote.shutdown().await {
+        let _ = sftp.remove_file(part_path).await;
+        return Err(AppError::new(
+            "mcp_upload_flush_failed",
+            "远程临时文件写入完成失败。",
+            error,
+            true,
+        ));
+    }
+
+    let _ = sftp.remove_file(remote_path.to_string()).await;
+    if let Err(error) = sftp
+        .rename(part_path.clone(), remote_path.to_string())
+        .await
+    {
+        let _ = sftp.remove_file(part_path).await;
+        return Err(AppError::new(
+            "mcp_upload_rename_failed",
+            "远程临时文件重命名失败。",
+            error,
+            true,
+        ));
+    }
+    Ok(copied)
 }
 
 async fn download_file_inner(
     sftp: &russh_sftp::client::SftpSession,
     remote_path: &str,
     local_path: &Path,
-) -> Result<(), AppError> {
+) -> Result<u64, AppError> {
     let mut remote = sftp.open(remote_path.to_string()).await.map_err(|error| {
         AppError::new(
             "mcp_download_remote_open_failed",
@@ -913,33 +1000,60 @@ async fn download_file_inner(
             true,
         )
     })?;
-    let mut local = tokio::fs::File::create(local_path).await.map_err(|error| {
+    let part_path = mcp_local_part_path(local_path, now_millis());
+    let mut local = tokio::fs::File::create(&part_path).await.map_err(|error| {
         AppError::new(
             "mcp_download_local_create_failed",
-            "本地文件创建失败。",
+            "本地临时文件创建失败。",
             error,
             true,
         )
     })?;
-    tokio::io::copy(&mut remote, &mut local)
-        .await
-        .map_err(|error| AppError::new("mcp_download_failed", "文件下载失败。", error, true))?;
-    local.shutdown().await.map_err(|error| {
-        AppError::new(
+    let copied = match tokio::io::copy(&mut remote, &mut local).await {
+        Ok(copied) => copied,
+        Err(error) => {
+            let _ = tokio::fs::remove_file(&part_path).await;
+            return Err(AppError::new(
+                "mcp_download_failed",
+                "文件下载失败。",
+                error,
+                true,
+            ));
+        }
+    };
+    if let Err(error) = local.shutdown().await {
+        let _ = tokio::fs::remove_file(&part_path).await;
+        return Err(AppError::new(
             "mcp_download_flush_failed",
-            "本地文件写入完成失败。",
+            "本地临时文件写入完成失败。",
             error,
             true,
-        )
-    })
+        ));
+    }
+    drop(local);
+
+    if local_path.exists() {
+        let _ = tokio::fs::remove_file(local_path).await;
+    }
+    if let Err(error) = tokio::fs::rename(&part_path, local_path).await {
+        let _ = tokio::fs::remove_file(&part_path).await;
+        return Err(AppError::new(
+            "mcp_download_rename_failed",
+            "本地临时文件重命名失败。",
+            error,
+            true,
+        ));
+    }
+    Ok(copied)
 }
 
 async fn upload_directory_inner(
     sftp: &russh_sftp::client::SftpSession,
     local_path: &Path,
     remote_path: &str,
-) -> Result<(), AppError> {
+) -> Result<u64, AppError> {
     let mut stack = vec![(local_path.to_path_buf(), remote_path.to_string())];
+    let mut bytes_transferred = 0_u64;
     while let Some((local_dir, remote_dir)) = stack.pop() {
         let _ = sftp.create_dir(remote_dir.clone()).await;
         for entry in fs::read_dir(&local_dir).map_err(|error| {
@@ -978,19 +1092,20 @@ async fn upload_directory_inner(
             {
                 stack.push((local_child, remote_child));
             } else {
-                upload_file_inner(sftp, &local_child, &remote_child).await?;
+                bytes_transferred += upload_file_inner(sftp, &local_child, &remote_child).await?;
             }
         }
     }
-    Ok(())
+    Ok(bytes_transferred)
 }
 
 async fn download_directory_inner(
     sftp: &russh_sftp::client::SftpSession,
     remote_path: &str,
     local_path: &Path,
-) -> Result<(), AppError> {
+) -> Result<u64, AppError> {
     let mut stack = vec![(remote_path.to_string(), local_path.to_path_buf())];
+    let mut bytes_transferred = 0_u64;
     while let Some((remote_dir, local_dir)) = stack.pop() {
         tokio::fs::create_dir_all(&local_dir)
             .await
@@ -1017,11 +1132,11 @@ async fn download_directory_inner(
             if entry.file_type().is_dir() {
                 stack.push((remote_child, local_child));
             } else {
-                download_file_inner(sftp, &remote_child, &local_child).await?;
+                bytes_transferred += download_file_inner(sftp, &remote_child, &local_child).await?;
             }
         }
     }
-    Ok(())
+    Ok(bytes_transferred)
 }
 
 fn bytes_to_limited_string(bytes: &[u8], limit: usize) -> (String, bool) {
@@ -1304,6 +1419,36 @@ mod tests {
         assert!(tool_names.contains(&"execute_command".to_string()));
         assert!(tool_names.contains(&"upload_directory".to_string()));
         assert_eq!(tool_names.len(), status(&settings).tools.len());
+    }
+
+    #[test]
+    fn transfer_temp_paths_stay_next_to_targets() {
+        let remote_part = mcp_remote_part_path("/opt/app/archive.tar.gz", 42);
+        assert!(remote_part.starts_with("/opt/app/.mxterm-mcp-transfer-42-"));
+        assert!(remote_part.ends_with("-archive.tar.gz.part"));
+
+        let local_part = mcp_local_part_path(Path::new("C:/tmp/archive.tar.gz"), 42);
+        assert_eq!(
+            local_part.file_name().and_then(|value| value.to_str()),
+            Some(".mxterm-mcp-transfer-42-archive.tar.gz.part")
+        );
+    }
+
+    #[test]
+    fn transfer_result_serializes_bytes_and_duration() {
+        let result = McpTransferResult {
+            connection_id: "conn".to_string(),
+            local_path: "C:/tmp/a.bin".to_string(),
+            remote_path: "/tmp/a.bin".to_string(),
+            directory: false,
+            ok: true,
+            bytes_transferred: 128,
+            duration_ms: 12,
+        };
+
+        let serialized = serde_json::to_value(result).unwrap();
+        assert_eq!(serialized["bytes_transferred"], json!(128));
+        assert_eq!(serialized["duration_ms"], json!(12));
     }
 
     #[test]
