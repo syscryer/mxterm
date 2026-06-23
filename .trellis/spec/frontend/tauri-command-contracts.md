@@ -1190,6 +1190,109 @@ Frontend payloads mirror Rust snake_case fields. `WebDavSettings.password_saved`
 - Cross-check TypeScript payload fields against Rust structs in `src-tauri/src/webdav_sync.rs` and command signatures in `src-tauri/src/commands.rs`.
 - Browser/desktop visual checks should cover disabled/off state, saved-password state, remote empty state, incompatible remote state, busy buttons, and dark theme token contrast.
 
+## Scenario: MCP Settings UI
+
+### 1. Scope / Trigger
+
+- Trigger: frontend code adds or changes the MCP settings section, MCP typed wrappers, or connection-exposure selection behavior.
+- Source files: `src/shared/tauri/commands.ts`, `src/features/settings/mcpSettingsTypes.ts`, `src/features/settings/SettingsView.tsx`, `src/features/layout/WorkspaceShell.tsx`, and `src/styles/app.css`.
+- This is a cross-layer command contract because React persists MCP capability gates and per-connection exposure state while Rust owns sidecar enforcement and redacted storage reads.
+
+### 2. Signatures
+
+```ts
+type McpConnectionExposureMode = "all" | "custom"
+
+type McpSettings = {
+  enabled: boolean
+  expose_connections: boolean
+  ssh_operations_enabled: boolean
+  allow_dangerous_commands: boolean
+  connection_exposure_mode: McpConnectionExposureMode
+  exposed_connection_ids: string[]
+}
+
+mcpSettingsGet(): Promise<McpSettings>
+mcpSettingsSave(request: McpSettings): Promise<McpSettings>
+mcpExecutablePath(): Promise<string>
+```
+
+### 3. Contracts
+
+- Components must call the typed wrappers in `src/shared/tauri/commands.ts`; do not call `invoke("mcp_settings_*")` or `invoke("mcp_executable_path")` directly from `SettingsView`.
+- `WorkspaceShell` must pass the saved `ConnectionProfile[]` list into `SettingsView` so the MCP page can render connection exposure toggles without reloading connection state through a second feature-local hook.
+- `McpSettings.connection_exposure_mode = "all"` means every saved connection is exposed and `exposed_connection_ids` may be empty.
+- `McpSettings.connection_exposure_mode = "custom"` means only `exposed_connection_ids` are exposed. The frontend must preserve id order from the current connection list when saving derived custom selections.
+- The MCP settings page owns three distinct surfaces:
+  - master capability switches
+  - copyable stdio config block
+  - a separate `MCP 可用连接` settings panel for per-connection exposure
+- The connection exposure panel must not collapse exposure state into local filtered state. Search only affects visible rows; checked state must still derive from the full persisted `McpSettings`.
+- When no search query is active:
+  - `全部打开` saves `{ connection_exposure_mode: "all", exposed_connection_ids: [] }`
+  - `全部关闭` saves `{ connection_exposure_mode: "custom", exposed_connection_ids: [] }`
+- When a search query is active:
+  - bulk buttons act only on the filtered result set
+  - button labels must make that scope explicit, for example `打开匹配` / `关闭匹配`
+  - non-matching connection exposure state must remain unchanged
+- Browser preview without Tauri must render the MCP layout with deterministic defaults, but saving and executable-path lookup must stay disabled and explain that desktop mode is required.
+
+### 4. Validation & Error Matrix
+
+| Condition | Frontend behavior |
+| --- | --- |
+| No Tauri runtime | Show the MCP layout, disable save/copy actions that require runtime values, and explain that desktop mode is required for persistence. |
+| `mcpSettingsGet` fails | Keep the MCP page visible and show the Rust error message in the section error area. |
+| `mcpSettingsSave` fails | Revert optimistic local state to the previous `McpSettings` value and show the Rust error message. |
+| `mcpExecutablePath` fails | Keep the page usable and fall back to `mxterm-mcp.exe` in the generated stdio snippet. |
+| MCP master switch is off | Disable subordinate switches and connection exposure controls. |
+| Connection exposure switch is off | Disable connection exposure search, row toggles, and bulk buttons. |
+| Search returns no matches | Keep the exposure panel visible and show a neutral `没有匹配的连接。` message. |
+
+### 5. Good / Base / Bad Cases
+
+- Good: `SettingsView` receives `connections` from `WorkspaceShell`, derives row checked state from the persisted `McpSettings`, and keeps that state stable while filtering the list by search text.
+- Good: search-mode bulk actions convert the setting to `custom` and only add or remove ids from the currently filtered rows.
+- Base: browser preview shows the MCP section and connection exposure panel with disabled persistence actions.
+- Bad: the page stores exposure selection only in local filtered state, drops hidden selections during search, calls Tauri commands directly from JSX handlers, or embeds the connection exposure rows inside the main capability panel instead of a separate settings group.
+
+### 6. Tests Required
+
+- Run `pnpm check` after changing `McpSettings`, MCP wrappers, `SettingsView`, `WorkspaceShell`, or MCP settings CSS.
+- Cross-check `McpSettings` field names against Rust `McpSettings` / `McpSettingsInput` in `src-tauri/src/mcp.rs`.
+- Verify that search-mode bulk toggles preserve non-matching ids in the saved request payload.
+- Browser/desktop visual checks should cover:
+  - disabled-by-default state
+  - separate `MCP 可用连接` panel rendering
+  - search with checked rows preserved
+  - search-mode bulk button labels and disabled states
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```tsx
+await invoke("mcp_settings_save", {
+  request: {
+    enabled,
+    exposed_connection_ids: filteredIds,
+  },
+});
+```
+
+This bypasses the typed wrapper and can silently drop required fields such as `connection_exposure_mode`.
+
+#### Correct
+
+```tsx
+void saveUpdate({
+  connection_exposure_mode: "custom",
+  exposed_connection_ids: connectionIds.filter((id) => nextIds.has(id)),
+});
+```
+
+The UI updates the full persisted contract and preserves non-filtered ids unless the user explicitly changes them.
+
 ## Scenario: Docker Toolbox UI
 
 ### 1. Scope / Trigger

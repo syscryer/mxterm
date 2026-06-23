@@ -1901,3 +1901,140 @@ pub async fn docker_list_containers(
     crate::docker_tools::list_containers(&app, request).await
 }
 ```
+
+## Scenario: mXterm MCP Sidecar and MCP Settings Commands
+
+### 1. Scope / Trigger
+
+- Trigger: backend code adds or changes the `mxterm-mcp` sidecar, MCP settings persistence, MCP-side connection filtering, or the `mcp_*` Tauri commands.
+- Source files: `src-tauri/src/mcp.rs`, `src-tauri/src/bin/mxterm_mcp.rs`, `src-tauri/src/lib.rs`, `src-tauri/Cargo.toml`, `src/shared/tauri/commands.ts`, and `src/features/settings/mcpSettingsTypes.ts`.
+- This is a cross-layer command contract because Rust owns the sidecar protocol, settings gates, storage filtering, and SSH enforcement while React owns persisted settings edits and the executable-path/config display.
+
+### 2. Signatures
+
+- `mcp_settings_get(app: AppHandle) -> Result<McpSettings, AppError>`
+- `mcp_settings_save(app: AppHandle, request: McpSettingsInput) -> Result<McpSettings, AppError>`
+- `mcp_executable_path() -> Result<String, AppError>`
+
+`McpSettings` / `McpSettingsInput` fields:
+
+```rust
+enabled: bool
+expose_connections: bool
+ssh_operations_enabled: bool
+allow_dangerous_commands: bool
+connection_exposure_mode: McpConnectionExposureMode // "all" | "custom"
+exposed_connection_ids: Vec<String>
+```
+
+`mxterm-mcp` stdio tool surface:
+
+- `get_mxterm_mcp_status`
+- `list_connections`
+- `search_connections`
+- `get_connection`
+- `test_connection`
+- `execute_command`
+- `server_monitor`
+- `upload_file`
+- `download_file`
+- `upload_directory`
+- `download_directory`
+- `execute_script`
+
+Sidecar startup:
+
+```text
+mxterm-mcp [--data-dir <path>]
+```
+
+### 3. Contracts
+
+- `src-tauri/Cargo.toml` must register `mxterm-mcp` as a standalone binary and keep `default-run = "m-xterm"` so `tauri dev` still launches the desktop app without an explicit `--bin`.
+- `mxterm-mcp` speaks JSON-RPC/MCP over stdio with `Content-Length` framing. It must work while the mXterm desktop app is not running.
+- Metadata-only MCP reads must open `StorageRepository::open_root(...)` with the in-memory secret store. Read-only MCP listing must not unlock the local vault or reveal secrets.
+- SSH-capable MCP tools must resolve saved connections through the normal vault-backed repository path and must not accept dynamic plaintext credential fields.
+- `reject_plaintext_credential_args(...)` must reject argument keys such as `host`, `user`, `username`, `password`, `passphrase`, `private_key`, and `private_key_content` before tool dispatch.
+- `McpConnectionExposureMode::All` means every saved connection is exposed.
+- `McpConnectionExposureMode::Custom` means only `exposed_connection_ids` are exposed.
+- `normalize_connection_ids(...)` must trim ids, drop blanks, and deduplicate before persisting them.
+- The sidecar must apply connection exposure filtering to:
+  - `list_connections`
+  - `search_connections`
+  - `get_connection`
+  - every SSH-capable tool that accepts `connection_id`
+- Knowing a hidden `connection_id` must not bypass MCP exposure. SSH operations on a non-exposed connection must fail before any remote session is opened.
+- `get_mxterm_mcp_status` may return a summary only when the master MCP switch and the connection-exposure switch are enabled. Disabled status must not leak connection counts or sync/security metadata.
+- `mcp_executable_path()` must derive the sidecar path from the current desktop executable directory and return the sibling `mxterm-mcp.exe` path on Windows packaging/dev layouts.
+- MCP connection DTOs must remain redacted. They may expose metadata such as `has_inline_secret`, `has_saved_credential`, `private_key_path_saved`, `password_saved`, and `redacted: true`, but never the plaintext secret material or private-key path text.
+
+### 4. Validation & Error Matrix
+
+| Condition | Error code / behavior | Recoverable |
+| --- | --- | --- |
+| `mcp.enabled` is false | only `get_mxterm_mcp_status` appears in `tools/list`; other tools return disabled error payloads | true |
+| `mcp.expose_connections` is false | connection list/search/get tools return disabled error payloads and status summary is `null` | true |
+| `mcp.ssh_operations_enabled` is false | SSH-capable tools are omitted from `tools/list` and runtime calls fail with disabled error payloads | true |
+| `connection_exposure_mode = custom` and id not in `exposed_connection_ids` | `mcp_connection_not_exposed` | true |
+| MCP tool args include plaintext credential fields | `mcp_plaintext_credential_arguments_forbidden` | true |
+| Unknown tool name | `mcp_tool_unknown` | false |
+| `--data-dir` flag is provided without a value | `mcp_data_dir_missing` | true |
+| Dangerous command without required allow/confirm state | command returns recoverable dangerous-command rejection | true |
+
+### 5. Good / Base / Bad Cases
+
+- Good: `mxterm-mcp --data-dir <temp-root>` starts without the desktop app, returns only `get_mxterm_mcp_status` by default, and exposes connection tools only after persisted MCP settings enable them.
+- Good: when `connection_exposure_mode = "custom"` and `exposed_connection_ids = ["conn-prod"]`, list/search/get and SSH tools behave as if only `conn-prod` exists.
+- Base: `connection_exposure_mode = "all"` with an empty id list still exposes every saved connection.
+- Bad: metadata reads unlock the local secret store, hidden connection ids remain callable through SSH tools, the sidecar accepts raw `password`/`private_key` arguments, or `tools/list` advertises disabled tools that runtime will always reject.
+
+### 6. Tests Required
+
+- Run `cargo check --manifest-path src-tauri/Cargo.toml` after changing `src-tauri/src/mcp.rs`, sidecar dispatch, command registration, or MCP settings structs.
+- Run `cargo test --manifest-path src-tauri/Cargo.toml mcp --lib` after changing MCP redaction, tool gating, dangerous command checks, or settings normalization.
+- Add/update tests that assert:
+  - default settings expose only status
+  - enabled settings expose the expected tool list
+  - redacted connection serialization excludes secret material
+  - plaintext credential arguments are rejected
+  - custom exposure mode filters connection list/search/get and blocks SSH actions by hidden id
+- When sidecar dispatch changes, run a stdio end-to-end check against a temp `--data-dir` repository that verifies disabled gating and custom exposure filtering without launching the desktop app.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```rust
+let connection = repository.connection_get(connection_id)?;
+let config = repository.resolve_saved_connection(connection_id, None::<RuntimeCredentialInput>)?;
+```
+
+This resolves and uses the saved connection without checking whether MCP exposure allows that id.
+
+#### Correct
+
+```rust
+ensure_connection_exposed(settings, connection_id)?;
+let config = repository.resolve_saved_connection(connection_id.trim(), None::<RuntimeCredentialInput>)?;
+```
+
+The sidecar enforces exposure policy before any SSH-capable resolution happens.
+
+#### Wrong
+
+```rust
+StorageRepository::open_root(root, local_secret_store(root)?)
+```
+
+for metadata-only listing.
+
+#### Correct
+
+```rust
+StorageRepository::open_root(
+    root,
+    Arc::new(crate::storage_vault::InMemorySecretStore::default()),
+)
+```
+
+Metadata reads stay redacted and do not depend on unlocking the local vault.

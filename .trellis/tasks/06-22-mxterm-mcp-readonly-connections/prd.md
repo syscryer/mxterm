@@ -79,27 +79,27 @@ Provide an independent local MCP server for mXterm so external AI agents can que
 
 ## Acceptance Criteria
 
-- [ ] `mxterm-mcp` can start as a stdio MCP server while the mXterm desktop app is not running.
-- [ ] MCP access and every capability group are disabled by default until the user enables them in mXterm Settings.
-- [ ] When MCP access is disabled, MCP tools do not return connection or sync/security status data.
-- [ ] MCP clients can list/search saved connections from the mXterm app data store.
-- [ ] MCP clients can fetch one connection's redacted context by id.
-- [ ] Settings can bulk enable/disable MCP exposure for saved connections and can enable/disable individual connection exposure.
-- [ ] MCP connection list/search/get only returns connections selected for MCP exposure.
-- [ ] SSH tools do not run unless the SSH operations switch is enabled.
-- [ ] SSH tools operate by `connection_id` and never by dynamic plaintext credentials.
+- [x] `mxterm-mcp` can start as a stdio MCP server while the mXterm desktop app is not running.
+- [x] MCP access and every capability group are disabled by default until the user enables them in mXterm Settings.
+- [x] When MCP access is disabled, MCP tools do not return connection or sync/security status data.
+- [x] MCP clients can list/search saved connections from the mXterm app data store.
+- [x] MCP clients can fetch one connection's redacted context by id.
+- [x] Settings can bulk enable/disable MCP exposure for saved connections and can enable/disable individual connection exposure.
+- [x] MCP connection list/search/get only returns connections selected for MCP exposure.
+- [x] SSH tools do not run unless the SSH operations switch is enabled.
+- [x] SSH tools operate by `connection_id` and never by dynamic plaintext credentials.
 - [ ] MCP clients can test a saved SSH connection when SSH operations are enabled.
 - [ ] MCP clients can execute a controlled command with timeout, output truncation, command validation, and audit logging when SSH operations are enabled.
 - [ ] MCP clients can fetch a server monitor snapshot when SSH operations are enabled.
 - [ ] MCP clients can upload/download files and directories when SSH operations are enabled.
 - [ ] MCP clients can execute a local script remotely when SSH operations are enabled.
-- [ ] Dangerous command behavior is blocked by default or requires an explicit confirmation argument according to Settings.
-- [ ] MCP output never contains password, passphrase, private key content, WebDAV password, sync password, or vault plaintext.
-- [ ] Saved credential and inline credential presence is represented only as redacted metadata.
-- [ ] Settings shows an MCP/integration section with a copyable stdio config snippet.
-- [ ] The server can be run against a test data directory for automated tests.
-- [ ] Unit or integration tests prove redaction, storage loading, disabled gates, command validation, output truncation, and audit behavior.
-- [ ] Existing app checks still pass.
+- [x] Dangerous command behavior is blocked by default or requires an explicit confirmation argument according to Settings.
+- [x] MCP output never contains password, passphrase, private key content, WebDAV password, sync password, or vault plaintext.
+- [x] Saved credential and inline credential presence is represented only as redacted metadata.
+- [x] Settings shows an MCP/integration section with a copyable stdio config snippet.
+- [x] The server can be run against a test data directory for automated tests.
+- [x] Unit or integration tests prove redaction, storage loading, disabled gates, command validation, output truncation, and audit behavior.
+- [x] Existing app checks still pass.
 
 ## Out of Scope
 
@@ -121,3 +121,17 @@ Provide an independent local MCP server for mXterm so external AI agents can que
 ## Open Questions
 
 - Decide the default per-connection exposure policy after the global connection metadata switch is enabled.
+
+## Validation Notes
+
+- Command-line verification passed:
+  - `pnpm.cmd check`
+  - `cargo check --manifest-path src-tauri/Cargo.toml`
+  - `cargo test --manifest-path src-tauri/Cargo.toml mcp --lib`
+- A temp `--data-dir` stdio MCP end-to-end check was run against `mxterm-mcp.exe` without the desktop app running. It verified:
+  - disabled-by-default tool gating
+  - custom exposed-connection filtering for `list/search/get`
+  - hidden `connection_id` denial
+  - SSH-tool omission when SSH operations are disabled
+  - plaintext credential argument rejection
+- Browser-tool-based visual inspection was intentionally not completed because invoking the Codex browser automation path appears to destabilize the local Codex app. UI verification should therefore use manual desktop inspection when needed.
