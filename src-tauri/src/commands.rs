@@ -20,6 +20,11 @@ use crate::connections::{
     REMOTE_SYSTEM_PROBE_COMMAND,
 };
 use crate::credentials::{CredentialProfile, CredentialProfileInput};
+use crate::docker_tools::{
+    DockerActionResult, DockerConnectionRequest, DockerContainerActionRequest,
+    DockerContainerLogsRequest, DockerContainerSummary, DockerImagePullRequest,
+    DockerImageRemoveRequest, DockerImageSummary, DockerLogsResult,
+};
 use crate::events::RemoteFileTransferProgressEvent;
 use crate::known_hosts::HostKeyInfo;
 use crate::remote_files::{
@@ -595,6 +600,54 @@ pub async fn remote_monitor_process_signal(
     manager
         .signal_process(&app, config, request.pid, request.signal)
         .await
+}
+
+#[tauri::command]
+pub async fn docker_list_containers(
+    app: AppHandle,
+    request: DockerConnectionRequest,
+) -> Result<Vec<DockerContainerSummary>, AppError> {
+    crate::docker_tools::list_containers(&app, request).await
+}
+
+#[tauri::command]
+pub async fn docker_list_images(
+    app: AppHandle,
+    request: DockerConnectionRequest,
+) -> Result<Vec<DockerImageSummary>, AppError> {
+    crate::docker_tools::list_images(&app, request).await
+}
+
+#[tauri::command]
+pub async fn docker_container_action(
+    app: AppHandle,
+    request: DockerContainerActionRequest,
+) -> Result<DockerActionResult, AppError> {
+    crate::docker_tools::container_action(&app, request).await
+}
+
+#[tauri::command]
+pub async fn docker_container_logs(
+    app: AppHandle,
+    request: DockerContainerLogsRequest,
+) -> Result<DockerLogsResult, AppError> {
+    crate::docker_tools::container_logs(&app, request).await
+}
+
+#[tauri::command]
+pub async fn docker_image_pull(
+    app: AppHandle,
+    request: DockerImagePullRequest,
+) -> Result<DockerActionResult, AppError> {
+    crate::docker_tools::image_pull(&app, request).await
+}
+
+#[tauri::command]
+pub async fn docker_image_remove(
+    app: AppHandle,
+    request: DockerImageRemoveRequest,
+) -> Result<DockerActionResult, AppError> {
+    crate::docker_tools::image_remove(&app, request).await
 }
 
 #[tauri::command]

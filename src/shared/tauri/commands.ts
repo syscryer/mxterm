@@ -18,6 +18,13 @@ import type {
   CommandSnippetInput,
 } from "../../features/commands/commandLibraryTypes";
 import type {
+  DockerActionResult,
+  DockerContainerAction,
+  DockerContainerSummary,
+  DockerImageSummary,
+  DockerLogsResult,
+} from "../../features/tools/dockerTypes";
+import type {
   LocalPathMetadataResult,
   LocalUploadTempResult,
   RemoteFileDeleteInput,
@@ -323,6 +330,65 @@ export function remoteMonitorProcessSignal({
       connection_id: connectionId,
       pid,
       signal,
+    },
+  });
+}
+
+export function dockerListContainers(connectionId: string) {
+  return invoke<DockerContainerSummary[]>("docker_list_containers", {
+    request: {
+      connection_id: connectionId,
+    },
+  });
+}
+
+export function dockerListImages(connectionId: string) {
+  return invoke<DockerImageSummary[]>("docker_list_images", {
+    request: {
+      connection_id: connectionId,
+    },
+  });
+}
+
+export function dockerContainerAction(
+  connectionId: string,
+  containerId: string,
+  action: DockerContainerAction,
+) {
+  return invoke<DockerActionResult>("docker_container_action", {
+    request: {
+      action,
+      connection_id: connectionId,
+      container_id: containerId,
+    },
+  });
+}
+
+export function dockerContainerLogs(connectionId: string, containerId: string, tail = 120) {
+  return invoke<DockerLogsResult>("docker_container_logs", {
+    request: {
+      connection_id: connectionId,
+      container_id: containerId,
+      tail,
+    },
+  });
+}
+
+export function dockerImagePull(connectionId: string, image: string, pullId?: string) {
+  return invoke<DockerActionResult>("docker_image_pull", {
+    request: {
+      connection_id: connectionId,
+      image,
+      pull_id: pullId,
+    },
+  });
+}
+
+export function dockerImageRemove(connectionId: string, imageId: string) {
+  return invoke<DockerActionResult>("docker_image_remove", {
+    request: {
+      connection_id: connectionId,
+      image_id: imageId,
     },
   });
 }

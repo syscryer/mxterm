@@ -1189,3 +1189,114 @@ Frontend payloads mirror Rust snake_case fields. `WebDavSettings.password_saved`
 - Run `npm run check` after changing WebDAV sync types, command wrappers, settings navigation, or the sync settings component.
 - Cross-check TypeScript payload fields against Rust structs in `src-tauri/src/webdav_sync.rs` and command signatures in `src-tauri/src/commands.rs`.
 - Browser/desktop visual checks should cover disabled/off state, saved-password state, remote empty state, incompatible remote state, busy buttons, and dark theme token contrast.
+
+## Scenario: Docker Toolbox UI
+
+### 1. Scope / Trigger
+
+- Trigger: frontend code adds or changes the right-pane toolbox, Docker container/image UI, Docker typed wrappers, or Docker terminal entry behavior.
+- Source files: `src/shared/tauri/commands.ts`, `src/features/tools/dockerTypes.ts`, `src/features/tools/DockerToolPanel.tsx`, `src/features/files/RemoteFilePanel.tsx`, `src/features/layout/WorkspaceShell.tsx`, and `src/styles/app.css`.
+- Docker toolbox calls Rust through saved `connection_id` only. Frontend components must not pass SSH passwords, private-key passphrases, or raw SSH connection fields to Docker commands.
+
+### 2. Signatures
+
+```ts
+dockerListContainers(connectionId: string): Promise<DockerContainerSummary[]>
+dockerListImages(connectionId: string): Promise<DockerImageSummary[]>
+dockerContainerAction(connectionId: string, containerId: string, action: DockerContainerAction): Promise<DockerActionResult>
+dockerContainerLogs(connectionId: string, containerId: string, tail?: number): Promise<DockerLogsResult>
+dockerImagePull(connectionId: string, image: string, pullId?: string): Promise<DockerActionResult>
+dockerImageRemove(connectionId: string, imageId: string): Promise<DockerActionResult>
+```
+
+Docker image pull progress is delivered through the typed event wrapper:
+
+```ts
+listenDockerImagePullProgress(handler: (event: DockerImagePullProgressEvent) => void)
+
+type DockerImagePullProgressEvent = {
+  pull_id: string
+  connection_id: string
+  image: string
+  status: "running" | "success" | "failed"
+  message: string
+  percent?: number | null
+  current_layer?: string | null
+}
+```
+
+### 3. Contracts
+
+- Components must use the typed wrappers in `src/shared/tauri/commands.ts`; do not call `invoke("docker_*")` directly from UI components.
+- The right-pane first-level tool id is `tools`. The toolbox owns internal tabs for Docker, network diagnostics, and scheduled tasks; only Docker has live backend commands in the first version.
+- Docker actions require an active SSH connection. Local-terminal workspaces should not expose Docker controls unless a future task defines a local Docker model.
+- Delete container and delete image actions must use `ConfirmDialog`. Do not use `window.confirm`, bulk destructive actions, prune, or silent optimistic deletion.
+- Container terminal entry opens a new SSH terminal tab for the same saved connection and writes `docker exec -it <quoted container id> sh`. It must not embed a second terminal in the right pane or record the command as Command Sender history.
+- Image pull submits an optional frontend-generated `pullId`. The pull dialog should close after the task is accepted, and the image list should render a temporary pull row keyed by `pull_id` while `docker:image_pull_progress` events arrive. Success refreshes the real image list; failure keeps the row visible with the error message.
+- Long fields such as image id, container status, ports, and logs should be truncated visually with full text available through title/tooltip where useful.
+- UI must use Lucide icons, shared tooltip/dialog styles, compact row actions, and global `--mx-*` tokens. Do not introduce native selects, independent overlay styling, or a separate Docker dashboard visual system.
+
+### 4. Validation & Error Matrix
+
+| Condition | Frontend behavior |
+| --- | --- |
+| No active SSH connection | Show a neutral unavailable state and do not call Docker commands. |
+| No Tauri runtime | Render deterministic preview rows so the layout remains inspectable. |
+| `docker_command_missing` | Show that the remote host does not have Docker CLI available. |
+| `docker_permission_denied` | Show that the current remote user lacks Docker permission. |
+| Container/image delete fails | Keep the row visible, show the backend error, and allow refresh/retry. |
+| Logs load fails | Keep the logs dialog open and show the backend error inside it. |
+| Pull image validation fails before task creation | Keep the pull dialog open and show the error near the input. |
+| Pull image starts successfully | Close the pull dialog and show a running row in the image list. |
+| Pull image emits progress without a percent | Keep an indeterminate progress row and show the latest Docker stage text. |
+| Pull image fails after task creation | Keep a failed pull row in the image list; do not fake-add an image row. |
+
+### 5. Good / Base / Bad Cases
+
+- Good: Docker panel receives the current SSH connection id, loads containers and images through typed wrappers, and keeps delete rows visible until the backend confirms success.
+- Good: opening a container terminal creates a normal SSH terminal tab and writes the quoted `docker exec -it ... sh` command after the terminal session is connected.
+- Base: browser preview has no Tauri runtime; the panel renders deterministic preview rows and keeps real persistence/remote operations out of the preview path.
+- Bad: a component calls `invoke("docker_*")` directly, passes SSH password fields into Docker commands, deletes rows optimistically before backend success, or uses `window.confirm`.
+
+### 6. Tests Required
+
+- Run `npm run check` after changing Docker toolbox types, wrappers, panel props, right-pane tab integration, or workspace terminal-entry wiring when type-check runs are approved for the session.
+- Cross-check TypeScript wrapper payload field names against Rust request structs in `src-tauri/src/docker_tools.rs`.
+- Browser/desktop visual checks should cover no connection, no containers, running/exited containers, image pull dialog, delete confirmations, log dialog, and dark theme token contrast.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```tsx
+await invoke("docker_container_action", {
+  connection_id: connection.id,
+  container_id: container.id,
+  action: "remove",
+});
+```
+
+#### Correct
+
+```tsx
+await dockerContainerAction(connection.id, container.id, "remove");
+```
+
+#### Wrong
+
+```tsx
+window.confirm("删除容器？") && removeContainerLocally(container.id);
+```
+
+#### Correct
+
+```tsx
+<ConfirmDialog
+  open={Boolean(deleteTarget)}
+  title="删除容器"
+  description="确认删除该容器吗？"
+  confirmLabel="删除"
+  onConfirm={confirmRemoveContainer}
+  onOpenChange={closeDeleteDialog}
+/>
+```

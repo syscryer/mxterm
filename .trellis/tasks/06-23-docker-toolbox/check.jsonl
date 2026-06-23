@@ -1,0 +1,5 @@
+{"file": ".trellis/spec/frontend/component-guidelines.md", "reason": "检查 Docker 工具 UI 是否保持紧凑桌面工具风格、共享按钮/弹窗/tooltip 和 token 驱动样式。"}
+{"file": ".trellis/spec/frontend/tauri-command-contracts.md", "reason": "检查 Docker typed wrappers、事件监听和拉取进度状态是否同步。"}
+{"file": ".trellis/spec/backend/tauri-command-contracts.md", "reason": "检查 Docker 后端 command、事件、错误码、参数 quote 和 SSH 连接边界是否符合契约。"}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "检查 pull_id、connection_id、状态和进度字段在后端事件到前端列表的跨层一致性。"}
+{"file": ".trellis/spec/guides/code-reuse-thinking-guide.md", "reason": "检查新增事件/wrapper/进度样式是否复用现有模式，没有分散 invoke 或重复 UI 基础组件。"}

@@ -91,6 +91,8 @@ import type {
 } from "../files/remoteFileTypes";
 import { SettingsView } from "../settings/SettingsView";
 import { TunnelPanel } from "../tunnels/TunnelPanel";
+import { DockerToolPanel } from "../tools/DockerToolPanel";
+import type { DockerContainerSummary } from "../tools/dockerTypes";
 import {
   getTerminalColorScheme,
   getTerminalColorSchemeTone,
@@ -2814,7 +2816,11 @@ export function WorkspaceShell() {
     };
   }
 
-  function buildDirectTerminalTab(tabs: TerminalTab[], connection: ConnectionProfile): TerminalTab {
+  function buildDirectTerminalTab(
+    tabs: TerminalTab[],
+    connection: ConnectionProfile,
+    title?: string,
+  ): TerminalTab {
     const now = Date.now();
     const nextIndex = nextTerminalIndexForConnection(tabs, connection.id);
 
@@ -2825,7 +2831,7 @@ export function WorkspaceShell() {
       index: nextIndex,
       requestId: `terminal-${connection.id}-${now.toString()}`,
       status: "正在连接",
-      title: terminalTabTitle(nextIndex),
+      title: title || terminalTabTitle(nextIndex),
       type: "terminal",
       warmupOutput: [],
     };
@@ -3996,7 +4002,8 @@ export function WorkspaceShell() {
     closeConnectionSessions(connectionSessions.slice(index + 1).map((session) => session.connectionId));
   }
 
-  function openTerminalInActiveConnection() {    if (activeConnection) {
+  function openTerminalInActiveConnection() {
+    if (activeConnection) {
       const tab = buildDirectTerminalTab(terminalTabsRef.current, activeConnection);
       setTerminalTabs((tabs) => {
         const nextTabs = [...tabs, tab];
@@ -4008,7 +4015,27 @@ export function WorkspaceShell() {
     }
   }
 
-  async function runDirectTerminalTab(tab: TerminalTab, connection: ConnectionProfile) {
+  function openDockerContainerTerminal(container: DockerContainerSummary) {
+    if (!activeConnection) {
+      return;
+    }
+    const title = `容器 ${container.name || shortDockerRuntimeId(container.id)}`;
+    const tab = buildDirectTerminalTab(terminalTabsRef.current, activeConnection, title);
+    const command = `docker exec -it ${quotePosixShellForTerminal(container.id)} sh\r`;
+    setTerminalTabs((tabs) => {
+      const nextTabs = [...tabs, tab];
+      terminalTabsRef.current = nextTabs;
+      return nextTabs;
+    });
+    activateTerminalTab(tab);
+    void runDirectTerminalTab(tab, activeConnection, command);
+  }
+
+  async function runDirectTerminalTab(
+    tab: TerminalTab,
+    connection: ConnectionProfile,
+    initialCommand?: string,
+  ) {
     if (!tab.requestId) {
       return;
     }
@@ -4092,6 +4119,22 @@ export function WorkspaceShell() {
         return nextTabs;
       });
       void refreshConnectedProfile(connection.id, { connection_id: connection.id });
+      if (initialCommand) {
+        void terminalWrite(sessionId, initialCommand).catch((error) => {
+          setTerminalTabs((tabs) => {
+            const nextTabs = tabs.map((item) =>
+              item.id === tab.id
+                ? {
+                    ...item,
+                    error: `命令发送失败：${formatError(error)}`,
+                  }
+                : item,
+            );
+            terminalTabsRef.current = nextTabs;
+            return nextTabs;
+          });
+        });
+      }
       window.setTimeout(() => {
         stopTerminalWarmupCapture(tab.id);
       }, 3000);
@@ -5637,6 +5680,14 @@ export function WorkspaceShell() {
             }
             tunnelPanel={
               <TunnelPanel activeConnectionId={activeConnectionId} connections={connections} />
+            }
+            toolsPanel={
+              <DockerToolPanel
+                active={showSessionWorkspace && !rightPaneCollapsed && rightTool === "tools"}
+                connection={remoteFileConnection}
+                onCopyText={copyText}
+                onOpenContainerTerminal={openDockerContainerTerminal}
+              />
             }
             transferPanel={
               <RemoteFileTransferPanel
@@ -7814,6 +7865,14 @@ function nextTerminalIndexForConnection(tabs: TerminalTab[], connectionId: strin
 
 function terminalTabTitle(index: number) {
   return index === 0 ? "终端" : `终端 ${index.toString()}`;
+}
+
+function shortDockerRuntimeId(id: string) {
+  return id.replace(/^sha256:/, "").slice(0, 12) || id;
+}
+
+function quotePosixShellForTerminal(value: string) {
+  return `'${value.replace(/'/g, "'\"'\"'")}'`;
 }
 
 function formatError(error: unknown) {
