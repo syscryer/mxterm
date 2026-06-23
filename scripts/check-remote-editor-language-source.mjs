@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 
 const editorSource = readFileSync("src/features/editor/RemoteFileEditor.tsx", "utf8");
 const languageSource = readFileSync("src/features/editor/remoteFileLanguages.ts", "utf8");
+const fileNameSource = readFileSync("src/shared/remoteFiles/fileNames.ts", "utf8");
 
 const failures = [];
 
@@ -29,6 +30,10 @@ for (const value of [
 
 if (!/compose\.ya?ml/.test(languageSource) || !/docker-compose\.ya?ml/.test(languageSource)) {
   failures.push("remoteFileLanguages.ts must map compose and docker-compose YAML files");
+}
+
+if (!languageSource.includes("isDockerfileName") || !/endsWith\("\.dockerfile"\)/.test(fileNameSource)) {
+  failures.push("remote editor language source must detect Dockerfile and prefixed *.Dockerfile names");
 }
 
 const tomlLanguageMatch = languageSource.match(

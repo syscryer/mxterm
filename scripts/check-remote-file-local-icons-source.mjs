@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 const iconSource = readFileSync("src/features/files/remoteFileIcons.ts", "utf8");
 const panelSource = readFileSync("src/features/files/RemoteFilePanel.tsx", "utf8");
 const styleSource = readFileSync("src/styles/app.css", "utf8");
+const fileNameSource = readFileSync("src/shared/remoteFiles/fileNames.ts", "utf8");
 
 const forbidden = [
   "https://",
@@ -36,6 +37,10 @@ for (const value of ["remote-file-badge", "remote-file-fallback"]) {
 
 if (!/dockerfile/.test(iconSource) || !/docker-compose\.ya?ml/.test(iconSource)) {
   failures.push("remoteFileIcons.ts must map Dockerfile and docker-compose files");
+}
+
+if (!iconSource.includes("isDockerfileName") || !/endsWith\("\.dockerfile"\)/.test(fileNameSource)) {
+  failures.push("remoteFileIcons.ts must detect Dockerfile and prefixed *.Dockerfile names");
 }
 
 if (!/width:\s*20px/.test(styleSource) || !/height:\s*20px/.test(styleSource)) {

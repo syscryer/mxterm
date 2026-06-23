@@ -1,5 +1,7 @@
 import type * as monaco from "monaco-editor";
 
+import { isDockerfileName, remoteFileExtension, remoteFileNameFromPath } from "../../shared/remoteFiles/fileNames";
+
 const extensionLanguageMap: Record<string, string> = {
   bash: "shell",
   c: "cpp",
@@ -101,7 +103,11 @@ export function registerRemoteFileEditorLanguages(monacoApi: typeof monaco) {
 }
 
 export function remoteFileLanguageForPath(path: string) {
-  const filename = remoteFileName(path).toLowerCase();
+  const filename = remoteFileNameFromPath(path).toLowerCase();
+  if (isDockerfileName(filename)) {
+    return "dockerfile";
+  }
+
   const knownFilenameLanguage = filenameLanguageMap[filename];
   if (knownFilenameLanguage) {
     return knownFilenameLanguage;
@@ -114,12 +120,8 @@ export function remoteFileLanguageForPath(path: string) {
     return knownCompoundExtension[1];
   }
 
-  const extension = filename.includes(".") ? filename.split(".").pop() || "" : "";
+  const extension = remoteFileExtension(filename);
   return extensionLanguageMap[extension] || "plaintext";
-}
-
-export function remoteFileName(path: string) {
-  return path.split("/").filter(Boolean).pop() || path || "untitled";
 }
 
 function registerLanguage(

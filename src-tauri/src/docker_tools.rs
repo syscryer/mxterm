@@ -6,9 +6,10 @@ use tauri::{AppHandle, Emitter};
 
 use crate::app_error::AppError;
 use crate::events::{DockerImagePullProgressEvent, DOCKER_IMAGE_PULL_PROGRESS};
+use crate::remote_exec_pool::{RemoteExecRetry, RemoteExecSessionPool};
 use crate::remote_files::quote_posix_shell;
 use crate::ssh_config::resolve_saved_connection;
-use crate::terminal::session::{ExecOutput, ExecOutputChunkCallback, ReusableExecSession};
+use crate::terminal::session::{ExecOutput, ExecOutputChunkCallback};
 
 const DOCKER_LIST_CONTAINERS_COMMAND: &str = "docker ps -a --no-trunc --format '{{json .}}'";
 const DOCKER_LIST_IMAGES_COMMAND: &str = "docker images --no-trunc --format '{{json .}}'";
@@ -39,6 +40,8 @@ section system_df sh -c "docker system df --format '{{json .}}'"
 const DOCKER_DAEMON_CONFIG_PATH: &str = "/etc/docker/daemon.json";
 const DEFAULT_LOG_TAIL: u16 = 120;
 const MAX_LOG_TAIL: u16 = 500;
+
+pub type DockerExecSessionManager = RemoteExecSessionPool;
 
 #[derive(Debug, Deserialize)]
 pub struct DockerConnectionRequest {
@@ -258,10 +261,17 @@ struct DockerImageLine {
 
 pub async fn list_containers(
     app: &AppHandle,
+    manager: &DockerExecSessionManager,
     request: DockerConnectionRequest,
 ) -> Result<Vec<DockerContainerSummary>, AppError> {
-    let output =
-        exec_docker_command(app, &request.connection_id, DOCKER_LIST_CONTAINERS_COMMAND).await?;
+    let output = exec_docker_command(
+        app,
+        manager,
+        &request.connection_id,
+        DOCKER_LIST_CONTAINERS_COMMAND,
+        RemoteExecRetry::ReconnectOnce,
+    )
+    .await?;
     ensure_success(
         &output,
         "docker_list_containers_failed",
@@ -272,10 +282,17 @@ pub async fn list_containers(
 
 pub async fn list_images(
     app: &AppHandle,
+    manager: &DockerExecSessionManager,
     request: DockerConnectionRequest,
 ) -> Result<Vec<DockerImageSummary>, AppError> {
-    let output =
-        exec_docker_command(app, &request.connection_id, DOCKER_LIST_IMAGES_COMMAND).await?;
+    let output = exec_docker_command(
+        app,
+        manager,
+        &request.connection_id,
+        DOCKER_LIST_IMAGES_COMMAND,
+        RemoteExecRetry::ReconnectOnce,
+    )
+    .await?;
     ensure_success(
         &output,
         "docker_list_images_failed",
@@ -286,6 +303,7 @@ pub async fn list_images(
 
 pub async fn container_action(
     app: &AppHandle,
+    manager: &DockerExecSessionManager,
     request: DockerContainerActionRequest,
 ) -> Result<DockerActionResult, AppError> {
     let container_id = require_value(
@@ -298,7 +316,14 @@ pub async fn container_action(
         request.action.command(),
         quote_posix_shell(container_id)
     );
-    let output = exec_docker_command(app, &request.connection_id, &command).await?;
+    let output = exec_docker_command(
+        app,
+        manager,
+        &request.connection_id,
+        &command,
+        RemoteExecRetry::None,
+    )
+    .await?;
     ensure_success(
         &output,
         "docker_container_action_failed",
@@ -314,6 +339,7 @@ pub async fn container_action(
 
 pub async fn image_pull(
     app: &AppHandle,
+    manager: &DockerExecSessionManager,
     request: DockerImagePullRequest,
 ) -> Result<DockerActionResult, AppError> {
     let connection_id = require_value(
@@ -341,7 +367,8 @@ pub async fn image_pull(
     let callback = docker_pull_progress_callback(app, pull_id, connection_id, image);
     let command = format!("docker pull {} 2>&1", quote_posix_shell(image));
     let output_result =
-        exec_docker_command_with_stdout_chunks(app, connection_id, &command, callback).await;
+        exec_docker_command_with_stdout_chunks(app, manager, connection_id, &command, callback)
+            .await;
     let output = match output_result {
         Ok(output) => output,
         Err(error) => {
@@ -392,11 +419,19 @@ pub async fn image_pull(
 
 pub async fn image_remove(
     app: &AppHandle,
+    manager: &DockerExecSessionManager,
     request: DockerImageRemoveRequest,
 ) -> Result<DockerActionResult, AppError> {
     let image_id = require_value(&request.image_id, "docker_image_missing", "请选择镜像。")?;
     let command = format!("docker rmi -- {}", quote_posix_shell(image_id));
-    let output = exec_docker_command(app, &request.connection_id, &command).await?;
+    let output = exec_docker_command(
+        app,
+        manager,
+        &request.connection_id,
+        &command,
+        RemoteExecRetry::None,
+    )
+    .await?;
     ensure_success(
         &output,
         "docker_image_remove_failed",
@@ -412,6 +447,7 @@ pub async fn image_remove(
 
 pub async fn container_logs(
     app: &AppHandle,
+    manager: &DockerExecSessionManager,
     request: DockerContainerLogsRequest,
 ) -> Result<DockerLogsResult, AppError> {
     let container_id = require_value(
@@ -428,7 +464,14 @@ pub async fn container_logs(
         tail,
         quote_posix_shell(container_id)
     );
-    let output = exec_docker_command(app, &request.connection_id, &command).await?;
+    let output = exec_docker_command(
+        app,
+        manager,
+        &request.connection_id,
+        &command,
+        RemoteExecRetry::ReconnectOnce,
+    )
+    .await?;
     ensure_success(
         &output,
         "docker_container_logs_failed",
@@ -444,22 +487,37 @@ pub async fn container_logs(
 
 pub async fn engine_status(
     app: &AppHandle,
+    manager: &DockerExecSessionManager,
     request: DockerConnectionRequest,
 ) -> Result<DockerEngineStatus, AppError> {
-    let output =
-        exec_docker_command(app, &request.connection_id, DOCKER_ENGINE_STATUS_COMMAND).await?;
+    let output = exec_docker_command(
+        app,
+        manager,
+        &request.connection_id,
+        DOCKER_ENGINE_STATUS_COMMAND,
+        RemoteExecRetry::ReconnectOnce,
+    )
+    .await?;
     Ok(parse_engine_status(&output.stdout, &output.stderr))
 }
 
 pub async fn engine_action(
     app: &AppHandle,
+    manager: &DockerExecSessionManager,
     request: DockerEngineActionRequest,
 ) -> Result<DockerActionResult, AppError> {
     let command = format!(
         "command -v systemctl >/dev/null 2>&1 && systemctl {} docker",
         request.action.command()
     );
-    let output = exec_docker_command(app, &request.connection_id, &command).await?;
+    let output = exec_docker_command(
+        app,
+        manager,
+        &request.connection_id,
+        &command,
+        RemoteExecRetry::None,
+    )
+    .await?;
     ensure_success(
         &output,
         "docker_engine_action_failed",
@@ -475,13 +533,21 @@ pub async fn engine_action(
 
 pub async fn engine_read_config(
     app: &AppHandle,
+    manager: &DockerExecSessionManager,
     request: DockerEngineConfigRequest,
 ) -> Result<DockerEngineConfigResult, AppError> {
     let command = format!(
         "if [ -f {path} ]; then printf '__MXTERM_EXISTS__:1\\n'; cat {path}; elif [ -e {path} ]; then echo 'Docker 配置路径不是普通文件。' >&2; exit 2; else printf '__MXTERM_EXISTS__:0\\n{{}}'; fi",
         path = quote_posix_shell(DOCKER_DAEMON_CONFIG_PATH)
     );
-    let output = exec_docker_command(app, &request.connection_id, &command).await?;
+    let output = exec_docker_command(
+        app,
+        manager,
+        &request.connection_id,
+        &command,
+        RemoteExecRetry::ReconnectOnce,
+    )
+    .await?;
     ensure_success(
         &output,
         "docker_engine_config_read_failed",
@@ -503,6 +569,7 @@ pub async fn engine_read_config(
 
 pub async fn engine_save_config(
     app: &AppHandle,
+    manager: &DockerExecSessionManager,
     request: DockerEngineSaveConfigRequest,
 ) -> Result<DockerActionResult, AppError> {
     let content = request.content.trim();
@@ -533,7 +600,14 @@ rm -f "$tmp"
         encoded = encoded,
         path = quote_posix_shell(DOCKER_DAEMON_CONFIG_PATH)
     );
-    let output = exec_docker_command(app, &request.connection_id, &command).await?;
+    let output = exec_docker_command(
+        app,
+        manager,
+        &request.connection_id,
+        &command,
+        RemoteExecRetry::None,
+    )
+    .await?;
     ensure_success(
         &output,
         "docker_engine_config_save_failed",
@@ -549,8 +623,10 @@ rm -f "$tmp"
 
 async fn exec_docker_command(
     app: &AppHandle,
+    manager: &DockerExecSessionManager,
     connection_id: &str,
     command: &str,
+    retry: RemoteExecRetry,
 ) -> Result<ExecOutput, AppError> {
     let connection_id = require_value(
         connection_id,
@@ -558,23 +634,20 @@ async fn exec_docker_command(
         "请选择活动连接。",
     )?;
     let config = resolve_saved_connection(app, connection_id, None)?;
-    let session = ReusableExecSession::connect_resolved(app, &config).await?;
-    let output = session.exec(command).await;
-    session.close().await;
-    output
+    manager.exec(app, &config, command, retry).await
 }
 
 async fn exec_docker_command_with_stdout_chunks(
     app: &AppHandle,
+    manager: &DockerExecSessionManager,
     connection_id: &str,
     command: &str,
     chunks: ExecOutputChunkCallback,
 ) -> Result<ExecOutput, AppError> {
     let config = resolve_saved_connection(app, connection_id, None)?;
-    let session = ReusableExecSession::connect_resolved(app, &config).await?;
-    let output = session.exec_with_stdout_chunks(command, chunks).await;
-    session.close().await;
-    output
+    manager
+        .exec_with_stdout_chunks(app, &config, command, chunks)
+        .await
 }
 
 fn parse_containers(output: &[u8]) -> Result<Vec<DockerContainerSummary>, AppError> {

@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
+    "build:mcp-sidecar": "cargo build --manifest-path src-tauri/Cargo.toml --release --bin mxterm-mcp",
     "check": "tsc --noEmit",
     "test": "node -e \"console.log('frontend tests not configured yet')\"",
     "preview": "vite preview",

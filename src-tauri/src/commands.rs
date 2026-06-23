@@ -24,8 +24,8 @@ use crate::docker_tools::{
     DockerActionResult, DockerConnectionRequest, DockerContainerActionRequest,
     DockerContainerLogsRequest, DockerContainerSummary, DockerEngineActionRequest,
     DockerEngineConfigRequest, DockerEngineConfigResult, DockerEngineSaveConfigRequest,
-    DockerEngineStatus, DockerImagePullRequest, DockerImageRemoveRequest, DockerImageSummary,
-    DockerLogsResult,
+    DockerEngineStatus, DockerExecSessionManager, DockerImagePullRequest, DockerImageRemoveRequest,
+    DockerImageSummary, DockerLogsResult,
 };
 use crate::events::RemoteFileTransferProgressEvent;
 use crate::known_hosts::HostKeyInfo;
@@ -607,81 +607,91 @@ pub async fn remote_monitor_process_signal(
 #[tauri::command]
 pub async fn docker_list_containers(
     app: AppHandle,
+    manager: State<'_, DockerExecSessionManager>,
     request: DockerConnectionRequest,
 ) -> Result<Vec<DockerContainerSummary>, AppError> {
-    crate::docker_tools::list_containers(&app, request).await
+    crate::docker_tools::list_containers(&app, &manager, request).await
 }
 
 #[tauri::command]
 pub async fn docker_list_images(
     app: AppHandle,
+    manager: State<'_, DockerExecSessionManager>,
     request: DockerConnectionRequest,
 ) -> Result<Vec<DockerImageSummary>, AppError> {
-    crate::docker_tools::list_images(&app, request).await
+    crate::docker_tools::list_images(&app, &manager, request).await
 }
 
 #[tauri::command]
 pub async fn docker_container_action(
     app: AppHandle,
+    manager: State<'_, DockerExecSessionManager>,
     request: DockerContainerActionRequest,
 ) -> Result<DockerActionResult, AppError> {
-    crate::docker_tools::container_action(&app, request).await
+    crate::docker_tools::container_action(&app, &manager, request).await
 }
 
 #[tauri::command]
 pub async fn docker_container_logs(
     app: AppHandle,
+    manager: State<'_, DockerExecSessionManager>,
     request: DockerContainerLogsRequest,
 ) -> Result<DockerLogsResult, AppError> {
-    crate::docker_tools::container_logs(&app, request).await
+    crate::docker_tools::container_logs(&app, &manager, request).await
 }
 
 #[tauri::command]
 pub async fn docker_image_pull(
     app: AppHandle,
+    manager: State<'_, DockerExecSessionManager>,
     request: DockerImagePullRequest,
 ) -> Result<DockerActionResult, AppError> {
-    crate::docker_tools::image_pull(&app, request).await
+    crate::docker_tools::image_pull(&app, &manager, request).await
 }
 
 #[tauri::command]
 pub async fn docker_image_remove(
     app: AppHandle,
+    manager: State<'_, DockerExecSessionManager>,
     request: DockerImageRemoveRequest,
 ) -> Result<DockerActionResult, AppError> {
-    crate::docker_tools::image_remove(&app, request).await
+    crate::docker_tools::image_remove(&app, &manager, request).await
 }
 
 #[tauri::command]
 pub async fn docker_engine_status(
     app: AppHandle,
+    manager: State<'_, DockerExecSessionManager>,
     request: DockerConnectionRequest,
 ) -> Result<DockerEngineStatus, AppError> {
-    crate::docker_tools::engine_status(&app, request).await
+    crate::docker_tools::engine_status(&app, &manager, request).await
 }
 
 #[tauri::command]
 pub async fn docker_engine_action(
     app: AppHandle,
+    manager: State<'_, DockerExecSessionManager>,
     request: DockerEngineActionRequest,
 ) -> Result<DockerActionResult, AppError> {
-    crate::docker_tools::engine_action(&app, request).await
+    crate::docker_tools::engine_action(&app, &manager, request).await
 }
 
 #[tauri::command]
 pub async fn docker_engine_read_config(
     app: AppHandle,
+    manager: State<'_, DockerExecSessionManager>,
     request: DockerEngineConfigRequest,
 ) -> Result<DockerEngineConfigResult, AppError> {
-    crate::docker_tools::engine_read_config(&app, request).await
+    crate::docker_tools::engine_read_config(&app, &manager, request).await
 }
 
 #[tauri::command]
 pub async fn docker_engine_save_config(
     app: AppHandle,
+    manager: State<'_, DockerExecSessionManager>,
     request: DockerEngineSaveConfigRequest,
 ) -> Result<DockerActionResult, AppError> {
-    crate::docker_tools::engine_save_config(&app, request).await
+    crate::docker_tools::engine_save_config(&app, &manager, request).await
 }
 
 #[tauri::command]

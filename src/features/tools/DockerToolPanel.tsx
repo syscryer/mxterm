@@ -823,9 +823,10 @@ function DockerEngineView({
     {
       icon: HardDrive,
       label: "Disk",
-      value: `${formatBytes(status?.docker_disk_used_bytes ?? status?.root_disk_used_bytes)} / ${formatBytes(
+      value: formatBytePair(
+        status?.docker_disk_used_bytes ?? status?.root_disk_used_bytes,
         status?.root_disk_total_bytes,
-      )}`,
+      ),
     },
   ];
   const engineResourceSummary = engineResourceMetrics
@@ -860,9 +861,12 @@ function DockerEngineView({
         <div className="docker-engine-profile-main">
           <div className="docker-engine-profile-title">
             <strong>Docker Engine</strong>
-            <span className={`docker-engine-state ${engineStateClass}`}>
-              <span className={`docker-engine-dot ${engineStateClass}`} />
-              {engineStateLabel}
+            <span
+              aria-label={engineStateLabel}
+              className={`docker-engine-state ${engineStateClass}`}
+              title={engineStateLabel}
+            >
+              <span className={`docker-engine-dot ${engineStateClass}`} aria-hidden="true" />
             </span>
           </div>
         </div>
@@ -1426,6 +1430,23 @@ function formatBytes(value: number | null | undefined) {
   }
   const digits = unitIndex === 0 || nextValue >= 100 ? 0 : 2;
   return `${nextValue.toFixed(digits)} ${units[unitIndex]}`;
+}
+
+function formatBytePair(used: number | null | undefined, total: number | null | undefined) {
+  if (used === null || used === undefined || total === null || total === undefined) {
+    return `${formatBytes(used)} / ${formatBytes(total)}`;
+  }
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let unitIndex = 0;
+  let nextTotal = total;
+  while (nextTotal >= 1024 && unitIndex < units.length - 1) {
+    nextTotal /= 1024;
+    unitIndex += 1;
+  }
+  const divisor = 1024 ** unitIndex;
+  const nextUsed = used / divisor;
+  const digits = unitIndex === 0 || nextTotal >= 100 ? 0 : 2;
+  return `${nextUsed.toFixed(digits)} / ${nextTotal.toFixed(digits)} ${units[unitIndex]}`;
 }
 
 function previewDockerContainers(): DockerContainerSummary[] {
