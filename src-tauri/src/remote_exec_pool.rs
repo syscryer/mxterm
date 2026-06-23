@@ -1,4 +1,6 @@
 use std::collections::HashMap;
+use std::future::Future;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -7,7 +9,9 @@ use tokio::sync::Mutex;
 
 use crate::app_error::AppError;
 use crate::ssh_config::ResolvedSshConfig;
-use crate::terminal::session::{ExecOutput, ExecOutputChunkCallback, ReusableExecSession};
+use crate::terminal::session::{
+    ExecOutput, ExecOutputChunkCallback, ReusableExecSession, SshConnectionContext,
+};
 
 const DEFAULT_REMOTE_EXEC_SESSION_IDLE_TIMEOUT_MS: u64 = 180_000;
 const DEFAULT_REMOTE_EXEC_MAX_CACHED_SESSIONS: usize = 4;
@@ -34,9 +38,13 @@ pub(crate) enum RemoteExecRetry {
 struct RemoteExecSessionHandle {
     signature: String,
     connection_id: String,
-    in_flight: Arc<Mutex<u32>>,
+    in_flight: Arc<AtomicU32>,
     last_used_ms: Arc<Mutex<u64>>,
     session: Arc<Mutex<ReusableExecSession>>,
+}
+
+struct RemoteExecUseGuard {
+    in_flight: Arc<AtomicU32>,
 }
 
 #[derive(Clone, Debug)]
@@ -75,13 +83,89 @@ impl RemoteExecSessionPool {
         command: &str,
         retry: RemoteExecRetry,
     ) -> Result<ExecOutput, AppError> {
-        let handle = self.session_handle(app, config).await?;
-        self.begin_handle_use(&handle).await;
+        self.exec_with_connector(config, command, retry, || {
+            ReusableExecSession::connect_resolved(app, config)
+        })
+        .await
+    }
+
+    pub(crate) async fn exec_with_context(
+        &self,
+        context: &SshConnectionContext,
+        config: &ResolvedSshConfig,
+        command: &str,
+        retry: RemoteExecRetry,
+    ) -> Result<ExecOutput, AppError> {
+        self.exec_with_connector(config, command, retry, || {
+            ReusableExecSession::connect_resolved_with_context(context, config)
+        })
+        .await
+    }
+
+    pub(crate) async fn warm_with_context(
+        &self,
+        context: &SshConnectionContext,
+        config: &ResolvedSshConfig,
+    ) -> Result<(), AppError> {
+        let handle = self
+            .session_handle_with_connector(config, &|| {
+                ReusableExecSession::connect_resolved_with_context(context, config)
+            })
+            .await?;
+        self.mark_handle_used(&handle).await;
+        Ok(())
+    }
+
+    pub(crate) async fn invalidate_connection(&self, connection_id: &str) {
+        let removed = self.sessions.lock().await.remove(connection_id);
+        if let Some(handle) = removed {
+            self.close_handle(handle).await;
+        }
+    }
+
+    pub(crate) async fn exec_with_stdout_chunks(
+        &self,
+        app: &AppHandle,
+        config: &ResolvedSshConfig,
+        command: &str,
+        chunks: ExecOutputChunkCallback,
+    ) -> Result<ExecOutput, AppError> {
+        let handle = self
+            .session_handle_with_connector(config, &|| {
+                ReusableExecSession::connect_resolved(app, config)
+            })
+            .await?;
+        let _use_guard = begin_handle_use(&handle);
         let result = {
             let session = handle.session.lock().await;
-            session.exec(command).await
+            session.exec_with_stdout_chunks(command, chunks).await
         };
-        self.end_handle_use(&handle).await;
+
+        match result {
+            Ok(output) => {
+                self.mark_handle_used(&handle).await;
+                Ok(output)
+            }
+            Err(error) => {
+                self.invalidate_handle(&config.connection_id, &handle).await;
+                Err(error)
+            }
+        }
+    }
+
+    async fn exec_with_connector<F, Fut>(
+        &self,
+        config: &ResolvedSshConfig,
+        command: &str,
+        retry: RemoteExecRetry,
+        connect: F,
+    ) -> Result<ExecOutput, AppError>
+    where
+        F: Fn() -> Fut,
+        Fut: Future<Output = Result<ReusableExecSession, AppError>>,
+    {
+        let handle = self.session_handle_with_connector(config, &connect).await?;
+        let result = run_exec(&handle, command).await;
 
         match result {
             Ok(output) => {
@@ -91,13 +175,8 @@ impl RemoteExecSessionPool {
             Err(error) => {
                 self.invalidate_handle(&config.connection_id, &handle).await;
                 if retry == RemoteExecRetry::ReconnectOnce {
-                    let refreshed = self.connect_and_store(app, config).await?;
-                    self.begin_handle_use(&refreshed).await;
-                    let retry_result = {
-                        let session = refreshed.session.lock().await;
-                        session.exec(command).await
-                    };
-                    self.end_handle_use(&refreshed).await;
+                    let refreshed = self.connect_and_store(config, connect().await?).await?;
+                    let retry_result = run_exec(&refreshed, command).await;
                     if retry_result.is_ok() {
                         self.mark_handle_used(&refreshed).await;
                     } else {
@@ -112,38 +191,15 @@ impl RemoteExecSessionPool {
         }
     }
 
-    pub(crate) async fn exec_with_stdout_chunks(
+    async fn session_handle_with_connector<F, Fut>(
         &self,
-        app: &AppHandle,
         config: &ResolvedSshConfig,
-        command: &str,
-        chunks: ExecOutputChunkCallback,
-    ) -> Result<ExecOutput, AppError> {
-        let handle = self.session_handle(app, config).await?;
-        self.begin_handle_use(&handle).await;
-        let result = {
-            let session = handle.session.lock().await;
-            session.exec_with_stdout_chunks(command, chunks).await
-        };
-        self.end_handle_use(&handle).await;
-
-        match result {
-            Ok(output) => {
-                self.mark_handle_used(&handle).await;
-                Ok(output)
-            }
-            Err(error) => {
-                self.invalidate_handle(&config.connection_id, &handle).await;
-                Err(error)
-            }
-        }
-    }
-
-    async fn session_handle(
-        &self,
-        app: &AppHandle,
-        config: &ResolvedSshConfig,
-    ) -> Result<RemoteExecSessionHandle, AppError> {
+        connect: &F,
+    ) -> Result<RemoteExecSessionHandle, AppError>
+    where
+        F: Fn() -> Fut,
+        Fut: Future<Output = Result<ReusableExecSession, AppError>>,
+    {
         let now_ms = now_millis();
         let signature = config.signature();
 
@@ -167,7 +223,7 @@ impl RemoteExecSessionPool {
                 .await;
         }
 
-        self.connect_and_store(app, config).await
+        self.connect_and_store(config, connect().await?).await
     }
 
     async fn lookup_handle(&self, connection_id: &str) -> Option<RemoteExecSessionHandle> {
@@ -176,19 +232,17 @@ impl RemoteExecSessionPool {
 
     async fn connect_and_store(
         &self,
-        app: &AppHandle,
         config: &ResolvedSshConfig,
+        session: ReusableExecSession,
     ) -> Result<RemoteExecSessionHandle, AppError> {
         self.prune_extra_sessions(&config.connection_id).await;
 
         let new_handle = RemoteExecSessionHandle {
             signature: config.signature(),
             connection_id: config.connection_id.clone(),
-            in_flight: Arc::new(Mutex::new(0)),
+            in_flight: Arc::new(AtomicU32::new(0)),
             last_used_ms: Arc::new(Mutex::new(now_millis())),
-            session: Arc::new(Mutex::new(
-                ReusableExecSession::connect_resolved(app, config).await?,
-            )),
+            session: Arc::new(Mutex::new(session)),
         };
 
         let replaced = {
@@ -222,7 +276,7 @@ impl RemoteExecSessionPool {
         };
 
         for (connection_id, handle) in handles {
-            if handle_is_busy(&handle).await {
+            if handle_is_busy(&handle) {
                 continue;
             }
             let last_used_ms = *handle.last_used_ms.lock().await;
@@ -302,16 +356,6 @@ impl RemoteExecSessionPool {
         self.schedule_idle_prune(handle.clone());
     }
 
-    async fn begin_handle_use(&self, handle: &RemoteExecSessionHandle) {
-        let mut in_flight = handle.in_flight.lock().await;
-        *in_flight = in_flight.saturating_add(1);
-    }
-
-    async fn end_handle_use(&self, handle: &RemoteExecSessionHandle) {
-        let mut in_flight = handle.in_flight.lock().await;
-        *in_flight = in_flight.saturating_sub(1);
-    }
-
     fn schedule_idle_prune(&self, handle: RemoteExecSessionHandle) {
         let idle_timeout_ms = self.options.idle_timeout_ms;
         if idle_timeout_ms == 0 {
@@ -321,7 +365,7 @@ impl RemoteExecSessionPool {
         let pool = self.clone();
         tokio::spawn(async move {
             tokio::time::sleep(Duration::from_millis(idle_timeout_ms.saturating_add(1_000))).await;
-            if handle_is_busy(&handle).await {
+            if handle_is_busy(&handle) {
                 return;
             }
             let last_used_ms = *handle.last_used_ms.lock().await;
@@ -332,8 +376,27 @@ impl RemoteExecSessionPool {
     }
 }
 
-async fn handle_is_busy(handle: &RemoteExecSessionHandle) -> bool {
-    *handle.in_flight.lock().await > 0
+impl Drop for RemoteExecUseGuard {
+    fn drop(&mut self) {
+        self.in_flight.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+async fn run_exec(handle: &RemoteExecSessionHandle, command: &str) -> Result<ExecOutput, AppError> {
+    let _use_guard = begin_handle_use(handle);
+    let session = handle.session.lock().await;
+    session.exec(command).await
+}
+
+fn begin_handle_use(handle: &RemoteExecSessionHandle) -> RemoteExecUseGuard {
+    handle.in_flight.fetch_add(1, Ordering::SeqCst);
+    RemoteExecUseGuard {
+        in_flight: Arc::clone(&handle.in_flight),
+    }
+}
+
+fn handle_is_busy(handle: &RemoteExecSessionHandle) -> bool {
+    handle.in_flight.load(Ordering::SeqCst) > 0
 }
 
 fn can_reuse_remote_exec_session(
@@ -354,7 +417,10 @@ fn now_millis() -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use super::{can_reuse_remote_exec_session, RemoteExecSessionMeta};
+    use std::sync::atomic::{AtomicU32, Ordering};
+    use std::sync::Arc;
+
+    use super::{can_reuse_remote_exec_session, RemoteExecSessionMeta, RemoteExecUseGuard};
 
     #[test]
     fn reuse_requires_matching_signature() {
@@ -375,5 +441,19 @@ mod tests {
 
         assert!(!can_reuse_remote_exec_session(&meta, "same", 50, 200));
         assert!(can_reuse_remote_exec_session(&meta, "same", 100, 200));
+    }
+
+    #[test]
+    fn use_guard_releases_in_flight_counter_on_drop() {
+        let in_flight = Arc::new(AtomicU32::new(1));
+
+        {
+            let _guard = RemoteExecUseGuard {
+                in_flight: Arc::clone(&in_flight),
+            };
+            assert_eq!(in_flight.load(Ordering::SeqCst), 1);
+        }
+
+        assert_eq!(in_flight.load(Ordering::SeqCst), 0);
     }
 }
