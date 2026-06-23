@@ -21,6 +21,9 @@ import type {
   DockerActionResult,
   DockerContainerAction,
   DockerContainerSummary,
+  DockerEngineAction,
+  DockerEngineConfigResult,
+  DockerEngineStatus,
   DockerImageSummary,
   DockerLogsResult,
 } from "../../features/tools/dockerTypes";
@@ -390,6 +393,40 @@ export function dockerImageRemove(connectionId: string, imageId: string) {
     request: {
       connection_id: connectionId,
       image_id: imageId,
+    },
+  });
+}
+
+export function dockerEngineStatus(connectionId: string) {
+  return invoke<DockerEngineStatus>("docker_engine_status", {
+    request: {
+      connection_id: connectionId,
+    },
+  });
+}
+
+export function dockerEngineAction(connectionId: string, action: DockerEngineAction) {
+  return invoke<DockerActionResult>("docker_engine_action", {
+    request: {
+      action,
+      connection_id: connectionId,
+    },
+  });
+}
+
+export function dockerEngineReadConfig(connectionId: string) {
+  return invoke<DockerEngineConfigResult>("docker_engine_read_config", {
+    request: {
+      connection_id: connectionId,
+    },
+  });
+}
+
+export function dockerEngineSaveConfig(connectionId: string, content: string) {
+  return invoke<DockerActionResult>("docker_engine_save_config", {
+    request: {
+      connection_id: connectionId,
+      content,
     },
   });
 }

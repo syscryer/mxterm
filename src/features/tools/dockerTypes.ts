@@ -1,4 +1,5 @@
 export type DockerContainerAction = "start" | "stop" | "restart" | "remove";
+export type DockerEngineAction = "start" | "stop" | "restart";
 
 export interface DockerContainerSummary {
   id: string;
@@ -43,5 +44,35 @@ export interface DockerActionResult {
 export interface DockerLogsResult {
   container_id: string;
   tail: number;
+  content: string;
+}
+
+export interface DockerEngineStatus {
+  installed: boolean;
+  running: boolean;
+  service_status?: string | null;
+  version?: string | null;
+  api_version?: string | null;
+  server_os?: string | null;
+  root_dir?: string | null;
+  storage_driver?: string | null;
+  cgroup_driver?: string | null;
+  containers?: number | null;
+  containers_running?: number | null;
+  images?: number | null;
+  networks?: number | null;
+  volumes?: number | null;
+  daemon_cpu_percent?: number | null;
+  daemon_memory_bytes?: number | null;
+  docker_disk_used_bytes?: number | null;
+  root_disk_used_bytes?: number | null;
+  root_disk_total_bytes?: number | null;
+  can_control_service: boolean;
+  raw_error?: string | null;
+}
+
+export interface DockerEngineConfigResult {
+  path: string;
+  exists: boolean;
   content: string;
 }
