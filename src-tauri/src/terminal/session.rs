@@ -234,6 +234,7 @@ pub struct ExecOutput {
 }
 
 pub type ExecProgressCallback = Arc<dyn Fn(u64) + Send + Sync>;
+pub type ExecOutputChunkCallback = Arc<dyn Fn(&[u8]) + Send + Sync>;
 
 enum ExecStdin<'a> {
     Bytes(&'a [u8]),
@@ -490,7 +491,7 @@ impl ReusableExecSession {
     }
 
     pub async fn exec(&self, command: &str) -> Result<ExecOutput, AppError> {
-        self.exec_inner(command, None, None, None).await
+        self.exec_inner(command, None, None, None, None).await
     }
 
     pub async fn exec_with_stdin(
@@ -498,7 +499,7 @@ impl ReusableExecSession {
         command: &str,
         stdin: &[u8],
     ) -> Result<ExecOutput, AppError> {
-        self.exec_inner(command, Some(ExecStdin::Bytes(stdin)), None, None)
+        self.exec_inner(command, Some(ExecStdin::Bytes(stdin)), None, None, None)
             .await
     }
 
@@ -508,8 +509,14 @@ impl ReusableExecSession {
         stdin: &[u8],
         progress: ExecProgressCallback,
     ) -> Result<ExecOutput, AppError> {
-        self.exec_inner(command, Some(ExecStdin::Bytes(stdin)), Some(progress), None)
-            .await
+        self.exec_inner(
+            command,
+            Some(ExecStdin::Bytes(stdin)),
+            Some(progress),
+            None,
+            None,
+        )
+        .await
     }
 
     pub async fn exec_with_stdin_file_progress(
@@ -518,8 +525,14 @@ impl ReusableExecSession {
         path: &Path,
         progress: ExecProgressCallback,
     ) -> Result<ExecOutput, AppError> {
-        self.exec_inner(command, Some(ExecStdin::File(path)), Some(progress), None)
-            .await
+        self.exec_inner(
+            command,
+            Some(ExecStdin::File(path)),
+            Some(progress),
+            None,
+            None,
+        )
+        .await
     }
 
     pub async fn exec_with_stdout_progress(
@@ -527,7 +540,17 @@ impl ReusableExecSession {
         command: &str,
         progress: ExecProgressCallback,
     ) -> Result<ExecOutput, AppError> {
-        self.exec_inner(command, None, None, Some(progress)).await
+        self.exec_inner(command, None, None, Some(progress), None)
+            .await
+    }
+
+    pub async fn exec_with_stdout_chunks(
+        &self,
+        command: &str,
+        chunks: ExecOutputChunkCallback,
+    ) -> Result<ExecOutput, AppError> {
+        self.exec_inner(command, None, None, None, Some(chunks))
+            .await
     }
 
     async fn exec_inner(
@@ -536,6 +559,7 @@ impl ReusableExecSession {
         stdin: Option<ExecStdin<'_>>,
         stdin_progress: Option<ExecProgressCallback>,
         stdout_progress: Option<ExecProgressCallback>,
+        stdout_chunks: Option<ExecOutputChunkCallback>,
     ) -> Result<ExecOutput, AppError> {
         let mut channel = run_with_timeout(
             "remote_exec_channel_timeout",
@@ -630,6 +654,9 @@ impl ReusableExecSession {
         while let Some(message) = channel.wait().await {
             match message {
                 ChannelMsg::Data { data } => {
+                    if let Some(chunks) = stdout_chunks.as_ref() {
+                        chunks(&data);
+                    }
                     stdout.extend_from_slice(&data);
                     if let Some(progress) = stdout_progress.as_ref() {
                         progress(stdout.len() as u64);

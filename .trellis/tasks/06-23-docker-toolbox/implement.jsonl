@@ -1,0 +1,5 @@
+{"file": ".trellis/spec/frontend/component-guidelines.md", "reason": "Docker 工具面板需要遵守右侧窄栏、共享组件、Radix/Lucide 和全局 token 规范。"}
+{"file": ".trellis/spec/frontend/tauri-command-contracts.md", "reason": "前端 Docker wrapper、事件监听和镜像拉取进度行必须和 Rust command/event 契约一致。"}
+{"file": ".trellis/spec/backend/tauri-command-contracts.md", "reason": "后端 Docker command 必须复用保存连接解析、SSH exec、错误码和 shell quote 规则。"}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "Docker 拉取进度跨 Rust 事件、typed wrapper 和 React 状态，需要核对跨层数据流。"}
+{"file": ".trellis/tasks/06-23-docker-toolbox/research/permissive-docker-ui-tools.md", "reason": "保留 Docker 工具范围和交互密度调研结论，不复制外部代码。"}

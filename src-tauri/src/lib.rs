@@ -3,6 +3,7 @@ mod command_library;
 mod commands;
 mod connections;
 mod credentials;
+mod docker_tools;
 mod events;
 mod known_hosts;
 mod remote_files;
@@ -94,6 +95,12 @@ pub fn run() {
             commands::remote_file_download_to_local,
             commands::remote_monitor_snapshot,
             commands::remote_monitor_process_signal,
+            commands::docker_list_containers,
+            commands::docker_list_images,
+            commands::docker_container_action,
+            commands::docker_container_logs,
+            commands::docker_image_pull,
+            commands::docker_image_remove,
             commands::tunnel_list,
             commands::tunnel_upsert,
             commands::tunnel_delete,

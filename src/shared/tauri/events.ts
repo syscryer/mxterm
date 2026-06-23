@@ -1,5 +1,8 @@
 import { listen } from "@tauri-apps/api/event";
 import type {
+  DockerImagePullProgressEvent,
+} from "../../features/tools/dockerTypes";
+import type {
   RemoteFileTransferProgressEvent,
 } from "../../features/files/remoteFileTypes";
 import type {
@@ -30,6 +33,14 @@ export function listenRemoteFileTransferProgress(
   handler: (event: RemoteFileTransferProgressEvent) => void,
 ) {
   return listen<RemoteFileTransferProgressEvent>("remote_file:transfer_progress", (event) =>
+    handler(event.payload),
+  );
+}
+
+export function listenDockerImagePullProgress(
+  handler: (event: DockerImagePullProgressEvent) => void,
+) {
+  return listen<DockerImagePullProgressEvent>("docker:image_pull_progress", (event) =>
     handler(event.payload),
   );
 }

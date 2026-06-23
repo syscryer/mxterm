@@ -20,6 +20,7 @@ import {
   RefreshCw,
   Trash2,
   Upload,
+  Wrench,
   X,
 } from "lucide-react";
 import * as ContextMenu from "@radix-ui/react-context-menu";
@@ -50,7 +51,7 @@ import {
 } from "./remoteFilePaths";
 import type { RemoteFileEntry } from "./remoteFileTypes";
 
-export type RemoteFileTool = "files" | "monitor" | "tunnels" | "commands";
+export type RemoteFileTool = "files" | "monitor" | "tunnels" | "commands" | "tools";
 
 export interface RemoteFileUploadItem {
   file: File;
@@ -82,6 +83,7 @@ interface RemoteFilePanelProps {
   onUploadFile?: (parentPath: string) => void;
   onUploadItems?: (parentPath: string, items: RemoteFileUploadItem[]) => void;
   terminalPath?: string | null;
+  toolsPanel?: ReactNode;
   tunnelPanel?: ReactNode;
 }
 
@@ -143,7 +145,7 @@ const previewDirectoryEntries: Record<string, RemoteFileEntry[]> = {
 
 const defaultRemotePath = "/";
 const loadingIndicatorDelayMs = 180;
-const defaultRemoteFileTools: RemoteFileTool[] = ["files", "monitor", "tunnels", "commands"];
+const defaultRemoteFileTools: RemoteFileTool[] = ["files", "monitor", "tunnels", "commands", "tools"];
 
 export function RemoteFilePanel({
   activeTool,
@@ -170,6 +172,7 @@ export function RemoteFilePanel({
   onUploadFile,
   onUploadItems,
   terminalPath,
+  toolsPanel,
   tunnelPanel,
 }: RemoteFilePanelProps) {
   const terminalDirectory = terminalPath ? normalizeRemotePath(terminalPath) : null;
@@ -267,6 +270,8 @@ export function RemoteFilePanel({
         tunnelPanel || <p className="file-panel-empty">还没有隧道规则。</p>
       ) : effectiveActiveTool === "commands" ? (
         commandPanel || <p className="file-panel-empty">还没有命令片段。</p>
+      ) : effectiveActiveTool === "tools" ? (
+        toolsPanel || <p className="file-panel-empty">打开一个 SSH 会话后显示工具。</p>
       ) : (
         <FilePanelShell
           disabled={disabled}
@@ -926,6 +931,12 @@ function FilePanelTabs({
         <button className={activeTool === "commands" ? "active" : ""} type="button" onClick={() => onToolChange?.("commands")}>
           <ListTree className="ui-icon" aria-hidden="true" />
           命令
+        </button>
+      ) : null}
+      {availableTools.includes("tools") ? (
+        <button className={activeTool === "tools" ? "active" : ""} type="button" onClick={() => onToolChange?.("tools")}>
+          <Wrench className="ui-icon" aria-hidden="true" />
+          工具
         </button>
       ) : null}
       {onToggleRightPane ? (
