@@ -1,4 +1,6 @@
+use base64::{engine::general_purpose, Engine as _};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Emitter};
 
@@ -10,6 +12,31 @@ use crate::terminal::session::{ExecOutput, ExecOutputChunkCallback, ReusableExec
 
 const DOCKER_LIST_CONTAINERS_COMMAND: &str = "docker ps -a --no-trunc --format '{{json .}}'";
 const DOCKER_LIST_IMAGES_COMMAND: &str = "docker images --no-trunc --format '{{json .}}'";
+const DOCKER_ENGINE_STATUS_COMMAND: &str = r#"
+section() {
+  name="$1"
+  shift
+  printf '\n__MXTERM_SECTION:%s__\n' "$name"
+  "$@" 2>&1
+  printf '\n__MXTERM_RC:%s__\n' "$?"
+}
+section service sh -c 'command -v systemctl >/dev/null 2>&1 && systemctl is-active docker || { echo systemctl unavailable; exit 127; }'
+section info sh -c "docker info --format '{{json .}}'"
+section networks sh -c 'docker network ls -q | wc -l'
+section volumes sh -c 'docker volume ls -q | wc -l'
+section ps sh -c "ps -C dockerd -o %cpu=,rss= | awk 'NF >= 2 { cpu += \$1; rss += \$2; count += 1 } END { if (count == 0) { print \"\" } else { printf \"%.2f %d\n\", cpu, rss } }'"
+section root_dir sh -c "docker info --format '{{.DockerRootDir}}'"
+root_dir="$(docker info --format '{{.DockerRootDir}}' 2>/dev/null || true)"
+if [ -n "$root_dir" ]; then
+  section root_df df -B1 "$root_dir"
+  section root_du du -sb "$root_dir"
+else
+  section root_df sh -c 'echo docker root dir unavailable; exit 1'
+  section root_du sh -c 'echo docker root dir unavailable; exit 1'
+fi
+section system_df sh -c "docker system df --format '{{json .}}'"
+"#;
+const DOCKER_DAEMON_CONFIG_PATH: &str = "/etc/docker/daemon.json";
 const DEFAULT_LOG_TAIL: u16 = 120;
 const MAX_LOG_TAIL: u16 = 500;
 
@@ -76,6 +103,49 @@ pub struct DockerImageRemoveRequest {
     pub image_id: String,
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DockerEngineAction {
+    Start,
+    Stop,
+    Restart,
+}
+
+impl DockerEngineAction {
+    fn command(self) -> &'static str {
+        match self {
+            Self::Start => "start",
+            Self::Stop => "stop",
+            Self::Restart => "restart",
+        }
+    }
+
+    fn success_message(self) -> &'static str {
+        match self {
+            Self::Start => "Docker 服务已启动。",
+            Self::Stop => "Docker 服务已停止。",
+            Self::Restart => "Docker 服务已重启。",
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct DockerEngineActionRequest {
+    pub connection_id: String,
+    pub action: DockerEngineAction,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct DockerEngineConfigRequest {
+    pub connection_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct DockerEngineSaveConfigRequest {
+    pub connection_id: String,
+    pub content: String,
+}
+
 #[derive(Debug, Serialize)]
 pub struct DockerContainerSummary {
     pub id: String,
@@ -111,6 +181,38 @@ pub struct DockerActionResult {
 pub struct DockerLogsResult {
     pub container_id: String,
     pub tail: u16,
+    pub content: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct DockerEngineStatus {
+    pub installed: bool,
+    pub running: bool,
+    pub service_status: Option<String>,
+    pub version: Option<String>,
+    pub api_version: Option<String>,
+    pub server_os: Option<String>,
+    pub root_dir: Option<String>,
+    pub storage_driver: Option<String>,
+    pub cgroup_driver: Option<String>,
+    pub containers: Option<u64>,
+    pub containers_running: Option<u64>,
+    pub images: Option<u64>,
+    pub networks: Option<u64>,
+    pub volumes: Option<u64>,
+    pub daemon_cpu_percent: Option<f64>,
+    pub daemon_memory_bytes: Option<u64>,
+    pub docker_disk_used_bytes: Option<u64>,
+    pub root_disk_used_bytes: Option<u64>,
+    pub root_disk_total_bytes: Option<u64>,
+    pub can_control_service: bool,
+    pub raw_error: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct DockerEngineConfigResult {
+    pub path: String,
+    pub exists: bool,
     pub content: String,
 }
 
@@ -340,6 +442,111 @@ pub async fn container_logs(
     })
 }
 
+pub async fn engine_status(
+    app: &AppHandle,
+    request: DockerConnectionRequest,
+) -> Result<DockerEngineStatus, AppError> {
+    let output =
+        exec_docker_command(app, &request.connection_id, DOCKER_ENGINE_STATUS_COMMAND).await?;
+    Ok(parse_engine_status(&output.stdout, &output.stderr))
+}
+
+pub async fn engine_action(
+    app: &AppHandle,
+    request: DockerEngineActionRequest,
+) -> Result<DockerActionResult, AppError> {
+    let command = format!(
+        "command -v systemctl >/dev/null 2>&1 && systemctl {} docker",
+        request.action.command()
+    );
+    let output = exec_docker_command(app, &request.connection_id, &command).await?;
+    ensure_success(
+        &output,
+        "docker_engine_action_failed",
+        "Docker 服务操作失败。",
+    )?;
+
+    Ok(DockerActionResult {
+        ok: true,
+        message: request.action.success_message().to_string(),
+        output: output_text(&output),
+    })
+}
+
+pub async fn engine_read_config(
+    app: &AppHandle,
+    request: DockerEngineConfigRequest,
+) -> Result<DockerEngineConfigResult, AppError> {
+    let command = format!(
+        "if [ -f {path} ]; then printf '__MXTERM_EXISTS__:1\\n'; cat {path}; elif [ -e {path} ]; then echo 'Docker 配置路径不是普通文件。' >&2; exit 2; else printf '__MXTERM_EXISTS__:0\\n{{}}'; fi",
+        path = quote_posix_shell(DOCKER_DAEMON_CONFIG_PATH)
+    );
+    let output = exec_docker_command(app, &request.connection_id, &command).await?;
+    ensure_success(
+        &output,
+        "docker_engine_config_read_failed",
+        "Docker 配置文件读取失败。",
+    )?;
+    let raw_content = String::from_utf8_lossy(&output.stdout).to_string();
+    let (exists, content) = match raw_content.split_once('\n') {
+        Some(("__MXTERM_EXISTS__:1", content)) => (true, content.to_string()),
+        Some(("__MXTERM_EXISTS__:0", content)) => (false, content.to_string()),
+        _ => (true, raw_content),
+    };
+
+    Ok(DockerEngineConfigResult {
+        path: DOCKER_DAEMON_CONFIG_PATH.to_string(),
+        exists,
+        content,
+    })
+}
+
+pub async fn engine_save_config(
+    app: &AppHandle,
+    request: DockerEngineSaveConfigRequest,
+) -> Result<DockerActionResult, AppError> {
+    let content = request.content.trim();
+    serde_json::from_str::<Value>(content).map_err(|error| {
+        AppError::new(
+            "docker_engine_config_json_invalid",
+            "Docker 配置不是合法 JSON。",
+            error,
+            true,
+        )
+    })?;
+
+    let encoded = general_purpose::STANDARD.encode(content.as_bytes());
+    let command = format!(
+        r#"tmp="$(mktemp /tmp/mxterm-daemon-json.XXXXXX)" || exit 1
+base64 -d > "$tmp" <<'MXTERM_DOCKER_CONFIG'
+{encoded}
+MXTERM_DOCKER_CONFIG
+mkdir -p /etc/docker
+if [ -f {path} ]; then
+  backup="/etc/docker/daemon.json.bak.$(date +%Y%m%d-%H%M%S)"
+  cp {path} "$backup" || {{ rm -f "$tmp"; exit 1; }}
+fi
+cp "$tmp" {path}
+chmod 0644 {path} 2>/dev/null || true
+rm -f "$tmp"
+"#,
+        encoded = encoded,
+        path = quote_posix_shell(DOCKER_DAEMON_CONFIG_PATH)
+    );
+    let output = exec_docker_command(app, &request.connection_id, &command).await?;
+    ensure_success(
+        &output,
+        "docker_engine_config_save_failed",
+        "Docker 配置文件保存失败。",
+    )?;
+
+    Ok(DockerActionResult {
+        ok: true,
+        message: "Docker 配置已保存。".to_string(),
+        output: output_text(&output),
+    })
+}
+
 async fn exec_docker_command(
     app: &AppHandle,
     connection_id: &str,
@@ -404,6 +611,219 @@ fn parse_images(output: &[u8]) -> Result<Vec<DockerImageSummary>, AppError> {
             })
             .collect()
     })
+}
+
+#[derive(Debug, Default)]
+struct CommandSection {
+    name: String,
+    content: String,
+    exit_status: Option<i32>,
+}
+
+fn parse_engine_status(stdout: &[u8], stderr: &[u8]) -> DockerEngineStatus {
+    let sections = parse_command_sections(&String::from_utf8_lossy(stdout));
+    let service = section(&sections, "service");
+    let info = section(&sections, "info");
+    let info_json = info
+        .filter(|section| section.exit_status == Some(0))
+        .and_then(|section| serde_json::from_str::<Value>(section.content.trim()).ok());
+    let service_status = service
+        .map(|section| section.content.trim().to_string())
+        .filter(|value| !value.is_empty());
+    let root_dir = info_value_string(info_json.as_ref(), "DockerRootDir")
+        .or_else(|| section_text(&sections, "root_dir"));
+    let raw_error = engine_raw_error(&sections, stderr);
+    let system_df_used = parse_system_df_used(section_text(&sections, "system_df").as_deref());
+    let root_df = parse_df_bytes(section_text(&sections, "root_df").as_deref());
+    let (daemon_cpu_percent, daemon_memory_bytes) =
+        parse_dockerd_process_usage(section_text(&sections, "ps").as_deref());
+
+    DockerEngineStatus {
+        installed: info.is_some_and(|section| section.exit_status == Some(0)),
+        running: service_status.as_deref() == Some("active"),
+        service_status,
+        version: info_value_string(info_json.as_ref(), "ServerVersion"),
+        api_version: info_value_string(info_json.as_ref(), "APIVersion"),
+        server_os: info_value_string(info_json.as_ref(), "OperatingSystem"),
+        root_dir,
+        storage_driver: info_value_string(info_json.as_ref(), "Driver"),
+        cgroup_driver: info_value_string(info_json.as_ref(), "CgroupDriver"),
+        containers: info_value_u64(info_json.as_ref(), "Containers"),
+        containers_running: info_value_u64(info_json.as_ref(), "ContainersRunning"),
+        images: info_value_u64(info_json.as_ref(), "Images"),
+        networks: section_u64(&sections, "networks"),
+        volumes: section_u64(&sections, "volumes"),
+        daemon_cpu_percent,
+        daemon_memory_bytes,
+        docker_disk_used_bytes: system_df_used.or_else(|| section_first_u64(&sections, "root_du")),
+        root_disk_used_bytes: root_df.map(|(_, used)| used),
+        root_disk_total_bytes: root_df.map(|(total, _)| total),
+        can_control_service: service.is_some_and(|section| section.exit_status != Some(127)),
+        raw_error,
+    }
+}
+
+fn parse_command_sections(output: &str) -> Vec<CommandSection> {
+    let mut sections = Vec::new();
+    let mut current: Option<CommandSection> = None;
+
+    for line in output.lines() {
+        if let Some(name) = line
+            .strip_prefix("__MXTERM_SECTION:")
+            .and_then(|value| value.strip_suffix("__"))
+        {
+            if let Some(section) = current.take() {
+                sections.push(section);
+            }
+            current = Some(CommandSection {
+                name: name.to_string(),
+                ..CommandSection::default()
+            });
+            continue;
+        }
+
+        if let Some(exit_status) = line
+            .strip_prefix("__MXTERM_RC:")
+            .and_then(|value| value.strip_suffix("__"))
+            .and_then(|value| value.parse::<i32>().ok())
+        {
+            if let Some(section) = current.as_mut() {
+                section.exit_status = Some(exit_status);
+            }
+            continue;
+        }
+
+        if let Some(section) = current.as_mut() {
+            if !section.content.is_empty() {
+                section.content.push('\n');
+            }
+            section.content.push_str(line);
+        }
+    }
+
+    if let Some(section) = current {
+        sections.push(section);
+    }
+
+    sections
+}
+
+fn section<'a>(sections: &'a [CommandSection], name: &str) -> Option<&'a CommandSection> {
+    sections.iter().find(|section| section.name == name)
+}
+
+fn section_text(sections: &[CommandSection], name: &str) -> Option<String> {
+    section(sections, name)
+        .filter(|section| section.exit_status == Some(0))
+        .map(|section| section.content.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+fn section_u64(sections: &[CommandSection], name: &str) -> Option<u64> {
+    section_text(sections, name)?.trim().parse::<u64>().ok()
+}
+
+fn section_first_u64(sections: &[CommandSection], name: &str) -> Option<u64> {
+    section_text(sections, name)?
+        .split_whitespace()
+        .next()?
+        .parse::<u64>()
+        .ok()
+}
+
+fn info_value_string(info: Option<&Value>, key: &str) -> Option<String> {
+    info?
+        .get(key)?
+        .as_str()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string)
+}
+
+fn info_value_u64(info: Option<&Value>, key: &str) -> Option<u64> {
+    info?.get(key)?.as_u64()
+}
+
+fn parse_dockerd_process_usage(value: Option<&str>) -> (Option<f64>, Option<u64>) {
+    let Some(value) = value.map(str::trim).filter(|value| !value.is_empty()) else {
+        return (None, None);
+    };
+    let mut parts = value.split_whitespace();
+    let cpu = parts.next().and_then(|value| value.parse::<f64>().ok());
+    let memory = parts
+        .next()
+        .and_then(|value| value.parse::<u64>().ok())
+        .map(|rss_kib| rss_kib.saturating_mul(1024));
+    (cpu, memory)
+}
+
+fn parse_df_bytes(value: Option<&str>) -> Option<(u64, u64)> {
+    let line = value?.lines().nth(1)?;
+    let mut parts = line.split_whitespace();
+    let _filesystem = parts.next()?;
+    let total = parts.next()?.parse::<u64>().ok()?;
+    let used = parts.next()?.parse::<u64>().ok()?;
+    Some((total, used))
+}
+
+fn parse_system_df_used(value: Option<&str>) -> Option<u64> {
+    let value = value?.trim();
+    if value.is_empty() {
+        return None;
+    }
+    let mut total = 0u64;
+    for line in value.lines().map(str::trim).filter(|line| !line.is_empty()) {
+        if let Ok(item) = serde_json::from_str::<Value>(line) {
+            if let Some(size) = item
+                .get("Size")
+                .or_else(|| item.get("SIZE"))
+                .and_then(Value::as_str)
+                .and_then(parse_docker_size_bytes_u64)
+            {
+                total = total.saturating_add(size);
+            }
+        }
+    }
+    if total == 0 {
+        None
+    } else {
+        Some(total)
+    }
+}
+
+fn parse_docker_size_bytes_u64(value: &str) -> Option<u64> {
+    parse_docker_size_bytes(value).map(|value| value.max(0.0).round() as u64)
+}
+
+fn engine_raw_error(sections: &[CommandSection], stderr: &[u8]) -> Option<String> {
+    let mut details = Vec::new();
+    for section in sections {
+        if is_optional_engine_status_section(&section.name) {
+            continue;
+        }
+        if section.exit_status.is_some_and(|status| status != 0) {
+            let content = section.content.trim();
+            if !content.is_empty() {
+                details.push(format!("{}: {}", section.name, content));
+            }
+        }
+    }
+    let stderr = String::from_utf8_lossy(stderr).trim().to_string();
+    if !stderr.is_empty() {
+        details.push(stderr);
+    }
+    if details.is_empty() {
+        None
+    } else {
+        Some(truncate_raw(&details.join("\n")))
+    }
+}
+
+fn is_optional_engine_status_section(name: &str) -> bool {
+    matches!(
+        name,
+        "networks" | "volumes" | "ps" | "root_dir" | "root_df" | "root_du" | "system_df"
+    )
 }
 
 fn parse_json_lines<T>(output: &[u8], code: &str) -> Result<Vec<T>, AppError>

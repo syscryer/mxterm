@@ -1,27 +1,47 @@
 import * as Dialog from "@radix-ui/react-dialog";
+import { siDocker } from "simple-icons";
 import {
   Box,
   Copy,
+  Cpu,
   Download,
+  FileJson,
+  HardDrive,
   Image as ImageIcon,
+  LoaderCircle,
+  MemoryStick,
   Network,
   Play,
+  Power,
+  PowerOff,
   RefreshCw,
   RotateCw,
   ScrollText,
+  Save,
+  Settings2,
   Square,
-  SquareTerminal,
   Timer,
   Trash2,
   X,
   type LucideIcon,
 } from "lucide-react";
-import { useEffect, useMemo, useState, type CSSProperties, type FormEvent } from "react";
+import {
+  useEffect,
+  useMemo,
+  useState,
+  type CSSProperties,
+  type FormEvent,
+  type SVGProps,
+} from "react";
 
 import type { ConnectionProfile } from "../connections/connectionTypes";
 import {
   dockerContainerAction,
   dockerContainerLogs,
+  dockerEngineAction,
+  dockerEngineReadConfig,
+  dockerEngineSaveConfig,
+  dockerEngineStatus,
   dockerImagePull,
   dockerImageRemove,
   dockerListContainers,
@@ -30,10 +50,14 @@ import {
 import { hasTauriRuntime } from "../../shared/tauri/runtime";
 import { listenDockerImagePullProgress } from "../../shared/tauri/events";
 import { ConfirmDialog } from "../../shared/ui/ConfirmDialog";
+import { TabContextMenu, type TabContextMenuAction } from "../../shared/ui/TabContextMenu";
 import { Tooltip } from "../../shared/ui/Tooltip";
 import type {
   DockerContainerAction,
   DockerContainerSummary,
+  DockerEngineAction,
+  DockerEngineConfigResult,
+  DockerEngineStatus,
   DockerImagePullProgressEvent,
   DockerImagePullStatus,
   DockerImageSummary,
@@ -41,7 +65,7 @@ import type {
 } from "./dockerTypes";
 
 type ToolboxView = "docker" | "network" | "schedule";
-type DockerView = "containers" | "images";
+type DockerView = "containers" | "images" | "engine";
 
 interface DockerImagePullTask {
   pullId: string;
@@ -76,12 +100,19 @@ export function DockerToolPanel({
   const [dockerView, setDockerView] = useState<DockerView>("containers");
   const [containers, setContainers] = useState<DockerContainerSummary[]>([]);
   const [images, setImages] = useState<DockerImageSummary[]>([]);
+  const [engineStatus, setEngineStatus] = useState<DockerEngineStatus | null>(null);
+  const [engineConfig, setEngineConfig] = useState<DockerEngineConfigResult | null>(null);
+  const [engineConfigDraft, setEngineConfigDraft] = useState("");
   const [imagePullTasks, setImagePullTasks] = useState<DockerImagePullTask[]>([]);
   const [loadingContainers, setLoadingContainers] = useState(false);
   const [loadingImages, setLoadingImages] = useState(false);
+  const [loadingEngine, setLoadingEngine] = useState(false);
+  const [loadingEngineConfig, setLoadingEngineConfig] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [busyKey, setBusyKey] = useState<string | null>(null);
+  const [engineActionTarget, setEngineActionTarget] = useState<DockerEngineAction | null>(null);
+  const [restartAfterSave, setRestartAfterSave] = useState(false);
   const [containerDeleteTarget, setContainerDeleteTarget] =
     useState<DockerContainerSummary | null>(null);
   const [imageDeleteTarget, setImageDeleteTarget] = useState<DockerImageSummary | null>(null);
@@ -103,12 +134,17 @@ export function DockerToolPanel({
   useEffect(() => {
     setContainers([]);
     setImages([]);
+    setEngineStatus(null);
+    setEngineConfig(null);
+    setEngineConfigDraft("");
     setError(null);
     setNotice(null);
     setLogsTarget(null);
     setLogsResult(null);
     setLogsError(null);
     setImagePullTasks([]);
+    setEngineActionTarget(null);
+    setRestartAfterSave(false);
   }, [connectionId]);
 
   useEffect(() => {
@@ -152,6 +188,13 @@ export function DockerToolPanel({
     void refreshDocker();
   }, [active, toolboxView, connectionId]);
 
+  useEffect(() => {
+    if (!active || toolboxView !== "docker" || dockerView !== "engine" || !connectionId) {
+      return;
+    }
+    void refreshEngineView();
+  }, [active, toolboxView, dockerView, connectionId]);
+
   async function refreshDocker() {
     await Promise.all([refreshContainers(), refreshImages()]);
   }
@@ -187,6 +230,52 @@ export function DockerToolPanel({
       setError(formatDockerError(nextError));
     } finally {
       setLoadingImages(false);
+    }
+  }
+
+  async function refreshEngineView() {
+    await Promise.all([
+      refreshEngineStatus(),
+      refreshEngineConfig({ preserveDirty: true }),
+    ]);
+  }
+
+  async function refreshEngineStatus() {
+    if (!connectionId) {
+      return;
+    }
+    setLoadingEngine(true);
+    setError(null);
+    try {
+      setEngineStatus(
+        hasTauriRuntime() ? await dockerEngineStatus(connectionId) : previewDockerEngineStatus(),
+      );
+    } catch (nextError) {
+      setError(formatDockerError(nextError));
+    } finally {
+      setLoadingEngine(false);
+    }
+  }
+
+  async function refreshEngineConfig(options: { preserveDirty?: boolean } = {}) {
+    if (!connectionId) {
+      return;
+    }
+    setLoadingEngineConfig(true);
+    setError(null);
+    try {
+      const result = hasTauriRuntime()
+        ? await dockerEngineReadConfig(connectionId)
+        : previewDockerEngineConfig();
+      setEngineConfig(result);
+      const draftDirty = Boolean(engineConfig && engineConfig.content !== engineConfigDraft);
+      if (!options.preserveDirty || !draftDirty) {
+        setEngineConfigDraft(result.content);
+      }
+    } catch (nextError) {
+      setError(formatDockerError(nextError));
+    } finally {
+      setLoadingEngineConfig(false);
     }
   }
 
@@ -243,6 +332,70 @@ export function DockerToolPanel({
     } finally {
       setBusyKey(null);
       setImageDeleteTarget(null);
+    }
+  }
+
+  async function runEngineAction(action: DockerEngineAction) {
+    if (!connectionId) {
+      return;
+    }
+    setBusyKey(`engine:${action}`);
+    setError(null);
+    setNotice(null);
+    try {
+      const result = hasTauriRuntime()
+        ? await dockerEngineAction(connectionId, action)
+        : previewDockerEngineAction(action);
+      setNotice(result.message);
+      await refreshEngineStatus();
+    } catch (nextError) {
+      setError(formatDockerError(nextError));
+      await refreshEngineStatus();
+    } finally {
+      setBusyKey(null);
+      setEngineActionTarget(null);
+    }
+  }
+
+  async function saveEngineConfig(shouldRestart: boolean) {
+    if (!connectionId) {
+      return;
+    }
+    let normalized: string;
+    try {
+      normalized = `${JSON.stringify(JSON.parse(engineConfigDraft), null, 2)}\n`;
+    } catch {
+      setError("Docker 配置不是合法 JSON。");
+      return;
+    }
+
+    setBusyKey(shouldRestart ? "engine:save-restart" : "engine:save");
+    setError(null);
+    setNotice(null);
+    try {
+      const result = hasTauriRuntime()
+        ? await dockerEngineSaveConfig(connectionId, normalized)
+        : { ok: true, message: "Docker 配置已保存。", output: null };
+      setEngineConfigDraft(normalized);
+      setEngineConfig((current) => ({
+        content: normalized,
+        exists: true,
+        path: current?.path || "/etc/docker/daemon.json",
+      }));
+      if (shouldRestart) {
+        const restartResult = hasTauriRuntime()
+          ? await dockerEngineAction(connectionId, "restart")
+          : previewDockerEngineAction("restart");
+        setNotice(`${result.message}${restartResult.message}`);
+        await refreshEngineStatus();
+      } else {
+        setNotice(result.message);
+      }
+    } catch (nextError) {
+      setError(formatDockerError(nextError));
+    } finally {
+      setBusyKey(null);
+      setRestartAfterSave(false);
     }
   }
 
@@ -423,6 +576,14 @@ export function DockerToolPanel({
               <ImageIcon className="ui-icon" aria-hidden="true" />
               镜像
             </button>
+            <button
+              className={dockerView === "engine" ? "active" : ""}
+              type="button"
+              onClick={() => setDockerView("engine")}
+            >
+              <DockerBrandIcon className="ui-icon" aria-hidden="true" />
+              引擎
+            </button>
           </div>
 
           {error ? <div className="docker-inline-error">{error}</div> : null}
@@ -446,7 +607,7 @@ export function DockerToolPanel({
               onRemove={setContainerDeleteTarget}
               onRunAction={(container, action) => void runContainerAction(container, action)}
             />
-          ) : (
+          ) : dockerView === "images" ? (
             <ImageList
               busyKey={busyKey}
               images={images}
@@ -464,6 +625,27 @@ export function DockerToolPanel({
               }}
               onRefresh={() => void refreshImages()}
               onRemove={setImageDeleteTarget}
+            />
+          ) : (
+            <DockerEngineView
+              busyKey={busyKey}
+              config={engineConfig}
+              configDraft={engineConfigDraft}
+              loading={loadingEngine}
+              loadingConfig={loadingEngineConfig}
+              status={engineStatus}
+              onAction={(action) => {
+                if (action === "start") {
+                  void runEngineAction(action);
+                } else {
+                  setEngineActionTarget(action);
+                }
+              }}
+              onChangeConfig={setEngineConfigDraft}
+              onRefresh={refreshEngineStatus}
+              onRefreshConfig={refreshEngineConfig}
+              onSave={() => void saveEngineConfig(false)}
+              onSaveRestart={() => setRestartAfterSave(true)}
             />
           )}
         </div>
@@ -528,7 +710,11 @@ export function DockerToolPanel({
                   </button>
                 </Dialog.Close>
                 <button className="primary-button" type="submit" disabled={pulling}>
-                  <Download className={`ui-icon ${pulling ? "spin" : ""}`} aria-hidden="true" />
+                  {pulling ? (
+                    <LoaderCircle className="ui-icon spin" aria-hidden="true" />
+                  ) : (
+                    <Download className="ui-icon" aria-hidden="true" />
+                  )}
                   拉取
                 </button>
               </footer>
@@ -570,7 +756,254 @@ export function DockerToolPanel({
           }
         }}
       />
+
+      <ConfirmDialog
+        open={Boolean(engineActionTarget)}
+        title={engineActionTarget === "stop" ? "停止 Docker 服务" : "重启 Docker 服务"}
+        description={
+          engineActionTarget === "stop"
+            ? "停止 Docker 服务会影响该主机上的所有容器，确认继续吗？"
+            : "重启 Docker 服务可能中断正在运行的容器和网络连接，确认继续吗？"
+        }
+        confirmLabel={engineActionTarget === "stop" ? "停止" : "重启"}
+        onConfirm={() => (engineActionTarget ? runEngineAction(engineActionTarget) : undefined)}
+        onOpenChange={(open) => {
+          if (!open) {
+            setEngineActionTarget(null);
+          }
+        }}
+      />
+
+      <ConfirmDialog
+        open={restartAfterSave}
+        title="保存并重启 Docker"
+        description="保存配置后会立即重启 Docker 服务，可能影响该主机上的所有容器。确认继续吗？"
+        confirmLabel="保存并重启"
+        onConfirm={() => saveEngineConfig(true)}
+        onOpenChange={(open) => setRestartAfterSave(open)}
+      />
     </section>
+  );
+}
+
+function DockerEngineView({
+  busyKey,
+  config,
+  configDraft,
+  loading,
+  loadingConfig,
+  status,
+  onAction,
+  onChangeConfig,
+  onRefresh,
+  onRefreshConfig,
+  onSave,
+  onSaveRestart,
+}: {
+  busyKey: string | null;
+  config: DockerEngineConfigResult | null;
+  configDraft: string;
+  loading: boolean;
+  loadingConfig: boolean;
+  status: DockerEngineStatus | null;
+  onAction: (action: DockerEngineAction) => void;
+  onChangeConfig: (value: string) => void;
+  onRefresh: () => void;
+  onRefreshConfig: () => void;
+  onSave: () => void;
+  onSaveRestart: () => void;
+}) {
+  const configDirty = Boolean(config && config.content !== configDraft);
+  const controlDisabled = !status?.can_control_service || Boolean(busyKey);
+  const engineStateClass = status ? (status.running ? "running" : "stopped") : "unknown";
+  const engineStateLabel = status ? (status.running ? "引擎运行中" : "引擎已停止") : "引擎状态未知";
+  const engineResourceMetrics: Array<{ icon: LucideIcon; label: string; value: string }> = [
+    { icon: Cpu, label: "CPU", value: formatPercent(status?.daemon_cpu_percent) },
+    { icon: MemoryStick, label: "RAM", value: formatBytes(status?.daemon_memory_bytes) },
+    {
+      icon: HardDrive,
+      label: "Disk",
+      value: `${formatBytes(status?.docker_disk_used_bytes ?? status?.root_disk_used_bytes)} / ${formatBytes(
+        status?.root_disk_total_bytes,
+      )}`,
+    },
+  ];
+  const engineResourceSummary = engineResourceMetrics
+    .map((metric) => `${metric.label} ${metric.value}`)
+    .join(" · ");
+  const engineFacts: Array<[string, string | null | undefined]> = [
+    ["Docker 版本", status?.version],
+    ["API 版本", status?.api_version],
+    ["Server OS", status?.server_os],
+    ["Root Dir", status?.root_dir],
+    ["Storage", status?.storage_driver],
+    ["Cgroup", status?.cgroup_driver],
+    [
+      "容器",
+      status?.containers === undefined || status?.containers === null
+        ? null
+        : `${status.containers.toString()} / ${formatOptionalNumber(
+            status.containers_running,
+          )} running`,
+    ],
+    ["镜像", formatOptionalNumber(status?.images)],
+    ["网络", formatOptionalNumber(status?.networks)],
+    ["卷", formatOptionalNumber(status?.volumes)],
+  ];
+
+  return (
+    <div className="docker-engine-view">
+      <section className="docker-engine-profile">
+        <span className="docker-engine-brand" aria-hidden="true">
+          <DockerBrandIcon className="ui-icon" aria-hidden="true" />
+        </span>
+        <div className="docker-engine-profile-main">
+          <div className="docker-engine-profile-title">
+            <strong>Docker Engine</strong>
+            <span className={`docker-engine-state ${engineStateClass}`}>
+              <span className={`docker-engine-dot ${engineStateClass}`} />
+              {engineStateLabel}
+            </span>
+          </div>
+        </div>
+        <div className="docker-engine-actions">
+          <Tooltip label="刷新引擎状态">
+            <button
+              aria-label="刷新引擎状态"
+              className="toolbox-icon-button"
+              type="button"
+              disabled={loading}
+              onClick={onRefresh}
+            >
+              <RefreshCw className={`ui-icon ${loading ? "spin" : ""}`} aria-hidden="true" />
+            </button>
+          </Tooltip>
+          <Tooltip label="启动 Docker">
+            <button
+              aria-label="启动 Docker"
+              className="toolbox-icon-button"
+              type="button"
+              disabled={controlDisabled || busyKey === "engine:start"}
+              onClick={() => onAction("start")}
+            >
+              <Power className="ui-icon" aria-hidden="true" />
+            </button>
+          </Tooltip>
+          <Tooltip label="停止 Docker">
+            <button
+              aria-label="停止 Docker"
+              className="toolbox-icon-button danger"
+              type="button"
+              disabled={controlDisabled || busyKey === "engine:stop"}
+              onClick={() => onAction("stop")}
+            >
+              <PowerOff className="ui-icon" aria-hidden="true" />
+            </button>
+          </Tooltip>
+          <Tooltip label="重启 Docker">
+            <button
+              aria-label="重启 Docker"
+              className="toolbox-icon-button"
+              type="button"
+              disabled={controlDisabled || busyKey === "engine:restart"}
+              onClick={() => onAction("restart")}
+            >
+              <RotateCw className="ui-icon" aria-hidden="true" />
+            </button>
+          </Tooltip>
+        </div>
+        <div className="docker-engine-resource-line" title={engineResourceSummary}>
+          {engineResourceMetrics.map(({ icon: Icon, label, value }) => (
+            <span className="docker-engine-resource-metric" key={label} title={`${label} ${value}`}>
+              <Icon className="ui-icon" aria-hidden="true" />
+              <strong>{value}</strong>
+            </span>
+          ))}
+        </div>
+      </section>
+
+      <section className="docker-engine-section">
+        <header>
+          <span>
+            <Settings2 className="ui-icon" aria-hidden="true" />
+            基础信息
+          </span>
+        </header>
+        <dl className="docker-engine-facts">
+          {engineFacts.map(([label, value]) => (
+            <div key={label}>
+              <dt>{label}</dt>
+              <dd title={value || undefined}>{value || "-"}</dd>
+            </div>
+          ))}
+        </dl>
+        {status?.raw_error ? <p className="docker-engine-warning">{status.raw_error}</p> : null}
+      </section>
+
+      <section className="docker-engine-section">
+        <header>
+          <span>
+            <FileJson className="ui-icon" aria-hidden="true" />
+            配置文件
+          </span>
+          <button
+            className="toolbox-mini-button"
+            type="button"
+            disabled={loadingConfig}
+            onClick={onRefreshConfig}
+          >
+            <RefreshCw className={`ui-icon ${loadingConfig ? "spin" : ""}`} aria-hidden="true" />
+            刷新
+          </button>
+        </header>
+        <div className="docker-engine-config-toolbar">
+          <span
+            className="docker-engine-config-path"
+            title={config?.path || "/etc/docker/daemon.json"}
+          >
+            {config?.path || "/etc/docker/daemon.json"}
+            {config && !config.exists ? <em>未创建</em> : null}
+          </span>
+        </div>
+        <textarea
+          className="docker-engine-config-editor"
+          spellCheck={false}
+          value={configDraft}
+          onChange={(event) => onChangeConfig(event.currentTarget.value)}
+        />
+        <div className="docker-engine-config-actions">
+          <button
+            className="toolbox-mini-button"
+            type="button"
+            disabled={!configDirty || Boolean(busyKey)}
+            onClick={onSave}
+          >
+            <Save className="ui-icon" aria-hidden="true" />
+            保存配置
+          </button>
+          <button
+            className="toolbox-mini-button primary"
+            type="button"
+            disabled={!configDirty || Boolean(busyKey)}
+            onClick={onSaveRestart}
+          >
+            <RotateCw className="ui-icon" aria-hidden="true" />
+            保存并重启 Docker
+          </button>
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function DockerBrandIcon({
+  className,
+  ...props
+}: SVGProps<SVGSVGElement>) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" {...props}>
+      <path fill="currentColor" d={siDocker.path} />
+    </svg>
   );
 }
 
@@ -609,93 +1042,85 @@ function ContainerList({
     <div className="docker-list" aria-label="Docker 容器">
       {containers.map((container) => {
         const running = isContainerRunning(container);
+        const contextActions: TabContextMenuAction[] = [
+          {
+            label: "进入终端",
+            disabled: !running || !onOpenTerminal,
+            onSelect: () => onOpenTerminal?.(container),
+          },
+          {
+            label: "复制名称",
+            onSelect: () => onCopy(container),
+          },
+          {
+            label: "删除容器",
+            danger: true,
+            separatorBefore: true,
+            disabled: Boolean(busyKey),
+            onSelect: () => onRemove(container),
+          },
+        ];
         return (
-          <article className="docker-row" key={container.id}>
-            <div className="docker-row-main">
-              <span className="docker-row-title">
-                <Box className="ui-icon" aria-hidden="true" />
-                <strong title={container.name}>{container.name || shortDockerId(container.id)}</strong>
-                <em className={`docker-status ${normalizeState(container.state)}`}>
-                  {container.state || "unknown"}
-                </em>
-              </span>
-              <code title={container.image}>{container.image}</code>
-              <small title={container.status}>
-                {container.status}
-                {container.ports ? ` · ${container.ports}` : ""}
-              </small>
-            </div>
-            <div className="docker-row-actions">
-              <Tooltip label={running ? "停止容器" : "启动容器"}>
-                <button
-                  className="toolbox-icon-button"
-                  type="button"
-                  aria-label={running ? "停止容器" : "启动容器"}
-                  disabled={busyKey === `${running ? "stop" : "start"}:${container.id}`}
-                  onClick={() => onRunAction(container, running ? "stop" : "start")}
-                >
-                  {running ? (
-                    <Square className="ui-icon" aria-hidden="true" />
-                  ) : (
-                    <Play className="ui-icon" aria-hidden="true" />
-                  )}
-                </button>
-              </Tooltip>
-              <Tooltip label="重启容器">
-                <button
-                  className="toolbox-icon-button"
-                  type="button"
-                  aria-label="重启容器"
-                  disabled={busyKey === `restart:${container.id}`}
-                  onClick={() => onRunAction(container, "restart")}
-                >
-                  <RotateCw className="ui-icon" aria-hidden="true" />
-                </button>
-              </Tooltip>
-              <Tooltip label="查看日志">
-                <button
-                  className="toolbox-icon-button"
-                  type="button"
-                  aria-label="查看日志"
-                  onClick={() => onLogs(container)}
-                >
-                  <ScrollText className="ui-icon" aria-hidden="true" />
-                </button>
-              </Tooltip>
-              <Tooltip label="进入容器终端">
-                <button
-                  className="toolbox-icon-button"
-                  type="button"
-                  aria-label="进入容器终端"
-                  disabled={!running || !onOpenTerminal}
-                  onClick={() => onOpenTerminal?.(container)}
-                >
-                  <SquareTerminal className="ui-icon" aria-hidden="true" />
-                </button>
-              </Tooltip>
-              <Tooltip label="复制容器名称">
-                <button
-                  className="toolbox-icon-button"
-                  type="button"
-                  aria-label="复制容器名称"
-                  onClick={() => onCopy(container)}
-                >
-                  <Copy className="ui-icon" aria-hidden="true" />
-                </button>
-              </Tooltip>
-              <Tooltip label="删除容器">
-                <button
-                  className="toolbox-icon-button danger"
-                  type="button"
-                  aria-label="删除容器"
-                  disabled={Boolean(busyKey)}
-                  onClick={() => onRemove(container)}
-                >
-                  <Trash2 className="ui-icon" aria-hidden="true" />
-                </button>
-              </Tooltip>
-            </div>
-          </article>
+          <TabContextMenu actions={contextActions} key={container.id}>
+            <article className="docker-row docker-row--container" tabIndex={0}>
+              <div className="docker-row-primary">
+                <span className="docker-row-title">
+                  <Box className="ui-icon" aria-hidden="true" />
+                  <strong title={container.name}>
+                    {container.name || shortDockerId(container.id)}
+                  </strong>
+                  <em className={`docker-status ${normalizeState(container.state)}`}>
+                    {container.state || "unknown"}
+                  </em>
+                </span>
+              </div>
+              <div className="docker-row-meta">
+                <code title={container.image}>{container.image}</code>
+                <small title={container.status}>
+                  {container.status}
+                  {container.ports ? ` · ${container.ports}` : ""}
+                </small>
+              </div>
+              <div className="docker-row-actions">
+                <Tooltip label={running ? "停止容器" : "启动容器"}>
+                  <button
+                    className="toolbox-icon-button"
+                    type="button"
+                    aria-label={running ? "停止容器" : "启动容器"}
+                    disabled={busyKey === `${running ? "stop" : "start"}:${container.id}`}
+                    onClick={() => onRunAction(container, running ? "stop" : "start")}
+                  >
+                    {running ? (
+                      <Square className="ui-icon" aria-hidden="true" />
+                    ) : (
+                      <Play className="ui-icon" aria-hidden="true" />
+                    )}
+                  </button>
+                </Tooltip>
+                <Tooltip label="重启容器">
+                  <button
+                    className="toolbox-icon-button"
+                    type="button"
+                    aria-label="重启容器"
+                    disabled={busyKey === `restart:${container.id}`}
+                    onClick={() => onRunAction(container, "restart")}
+                  >
+                    <RotateCw className="ui-icon" aria-hidden="true" />
+                  </button>
+                </Tooltip>
+                <Tooltip label="查看日志">
+                  <button
+                    className="toolbox-icon-button"
+                    type="button"
+                    aria-label="查看日志"
+                    onClick={() => onLogs(container)}
+                  >
+                    <ScrollText className="ui-icon" aria-hidden="true" />
+                  </button>
+                </Tooltip>
+              </div>
+            </article>
+          </TabContextMenu>
         );
       })}
       <button className="toolbox-refresh-row" type="button" onClick={onRefresh}>
@@ -761,10 +1186,11 @@ function ImageList({
             >
               <div className="docker-row-main">
                 <span className="docker-row-title">
-                  <Download
-                    className={`ui-icon ${task.status === "running" ? "spin" : ""}`}
-                    aria-hidden="true"
-                  />
+                  {task.status === "running" ? (
+                    <LoaderCircle className="ui-icon spin" aria-hidden="true" />
+                  ) : (
+                    <Download className="ui-icon" aria-hidden="true" />
+                  )}
                   <strong title={task.image}>{task.image}</strong>
                   <em className={`docker-status ${task.status}`}>
                     {formatPullStatus(task.status)}
@@ -979,6 +1405,29 @@ function formatDockerError(error: unknown) {
   return String(error);
 }
 
+function formatOptionalNumber(value: number | null | undefined) {
+  return value === null || value === undefined ? "-" : value.toString();
+}
+
+function formatPercent(value: number | null | undefined) {
+  return value === null || value === undefined ? "-" : `${value.toFixed(2)}%`;
+}
+
+function formatBytes(value: number | null | undefined) {
+  if (value === null || value === undefined) {
+    return "-";
+  }
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let nextValue = value;
+  let unitIndex = 0;
+  while (nextValue >= 1024 && unitIndex < units.length - 1) {
+    nextValue /= 1024;
+    unitIndex += 1;
+  }
+  const digits = unitIndex === 0 || nextValue >= 100 ? 0 : 2;
+  return `${nextValue.toFixed(digits)} ${units[unitIndex]}`;
+}
+
 function previewDockerContainers(): DockerContainerSummary[] {
   return [
     {
@@ -1027,6 +1476,64 @@ function previewDockerImages(): DockerImageSummary[] {
       size: "117MB",
     },
   ];
+}
+
+function previewDockerEngineStatus(): DockerEngineStatus {
+  return {
+    api_version: "1.45",
+    can_control_service: true,
+    cgroup_driver: "systemd",
+    containers: 11,
+    containers_running: 10,
+    daemon_cpu_percent: 0,
+    daemon_memory_bytes: 3.76 * 1024 * 1024 * 1024,
+    docker_disk_used_bytes: 58.91 * 1024 * 1024 * 1024,
+    images: 159,
+    installed: true,
+    networks: 8,
+    raw_error: null,
+    root_dir: "/var/lib/docker",
+    root_disk_total_bytes: 1006.85 * 1024 * 1024 * 1024,
+    root_disk_used_bytes: 58.91 * 1024 * 1024 * 1024,
+    running: true,
+    server_os: "Ubuntu 22.04",
+    service_status: "active",
+    storage_driver: "overlay2",
+    version: "26.1.4",
+    volumes: 23,
+  };
+}
+
+function previewDockerEngineConfig(): DockerEngineConfigResult {
+  return {
+    content: `${JSON.stringify(
+      {
+        "log-driver": "json-file",
+        "log-opts": {
+          "max-file": "3",
+          "max-size": "100m",
+        },
+        "registry-mirrors": [],
+      },
+      null,
+      2,
+    )}\n`,
+    exists: true,
+    path: "/etc/docker/daemon.json",
+  };
+}
+
+function previewDockerEngineAction(action: DockerEngineAction) {
+  const messages: Record<DockerEngineAction, string> = {
+    restart: "Docker 服务已重启。",
+    start: "Docker 服务已启动。",
+    stop: "Docker 服务已停止。",
+  };
+  return {
+    ok: true,
+    message: messages[action],
+    output: null,
+  };
 }
 
 function previewDockerActionResult(action: DockerContainerAction) {

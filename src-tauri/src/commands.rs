@@ -22,8 +22,10 @@ use crate::connections::{
 use crate::credentials::{CredentialProfile, CredentialProfileInput};
 use crate::docker_tools::{
     DockerActionResult, DockerConnectionRequest, DockerContainerActionRequest,
-    DockerContainerLogsRequest, DockerContainerSummary, DockerImagePullRequest,
-    DockerImageRemoveRequest, DockerImageSummary, DockerLogsResult,
+    DockerContainerLogsRequest, DockerContainerSummary, DockerEngineActionRequest,
+    DockerEngineConfigRequest, DockerEngineConfigResult, DockerEngineSaveConfigRequest,
+    DockerEngineStatus, DockerImagePullRequest, DockerImageRemoveRequest, DockerImageSummary,
+    DockerLogsResult,
 };
 use crate::events::RemoteFileTransferProgressEvent;
 use crate::known_hosts::HostKeyInfo;
@@ -648,6 +650,38 @@ pub async fn docker_image_remove(
     request: DockerImageRemoveRequest,
 ) -> Result<DockerActionResult, AppError> {
     crate::docker_tools::image_remove(&app, request).await
+}
+
+#[tauri::command]
+pub async fn docker_engine_status(
+    app: AppHandle,
+    request: DockerConnectionRequest,
+) -> Result<DockerEngineStatus, AppError> {
+    crate::docker_tools::engine_status(&app, request).await
+}
+
+#[tauri::command]
+pub async fn docker_engine_action(
+    app: AppHandle,
+    request: DockerEngineActionRequest,
+) -> Result<DockerActionResult, AppError> {
+    crate::docker_tools::engine_action(&app, request).await
+}
+
+#[tauri::command]
+pub async fn docker_engine_read_config(
+    app: AppHandle,
+    request: DockerEngineConfigRequest,
+) -> Result<DockerEngineConfigResult, AppError> {
+    crate::docker_tools::engine_read_config(&app, request).await
+}
+
+#[tauri::command]
+pub async fn docker_engine_save_config(
+    app: AppHandle,
+    request: DockerEngineSaveConfigRequest,
+) -> Result<DockerActionResult, AppError> {
+    crate::docker_tools::engine_save_config(&app, request).await
 }
 
 #[tauri::command]

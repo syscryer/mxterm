@@ -1310,6 +1310,10 @@ dockerContainerAction(connectionId: string, containerId: string, action: DockerC
 dockerContainerLogs(connectionId: string, containerId: string, tail?: number): Promise<DockerLogsResult>
 dockerImagePull(connectionId: string, image: string, pullId?: string): Promise<DockerActionResult>
 dockerImageRemove(connectionId: string, imageId: string): Promise<DockerActionResult>
+dockerEngineStatus(connectionId: string): Promise<DockerEngineStatus>
+dockerEngineAction(connectionId: string, action: DockerEngineAction): Promise<DockerActionResult>
+dockerEngineReadConfig(connectionId: string): Promise<DockerEngineConfigResult>
+dockerEngineSaveConfig(connectionId: string, content: string): Promise<DockerActionResult>
 ```
 
 Docker image pull progress is delivered through the typed event wrapper:
@@ -1336,6 +1340,10 @@ type DockerImagePullProgressEvent = {
 - Delete container and delete image actions must use `ConfirmDialog`. Do not use `window.confirm`, bulk destructive actions, prune, or silent optimistic deletion.
 - Container terminal entry opens a new SSH terminal tab for the same saved connection and writes `docker exec -it <quoted container id> sh`. It must not embed a second terminal in the right pane or record the command as Command Sender history.
 - Image pull submits an optional frontend-generated `pullId`. The pull dialog should close after the task is accepted, and the image list should render a temporary pull row keyed by `pull_id` while `docker:image_pull_progress` events arrive. Success refreshes the real image list; failure keeps the row visible with the error message.
+- The Docker page has `containers`, `images`, and `engine` internal views. Entering the engine view may load Docker status and daemon config; ordinary container/image refreshes must not run expensive engine disk probes.
+- Engine service stop, restart, and "save config then restart" require `ConfirmDialog`. Starting the service can run directly.
+- Engine config editing is limited to `/etc/docker/daemon.json`. The UI may normalize JSON before save, but Rust remains authoritative for validation and backup/write behavior.
+- Engine management v1 targets systemd hosts and does not implement sudo password prompts. Permission failures should be shown as remote errors, not hidden behind fallback UI.
 - Long fields such as image id, container status, ports, and logs should be truncated visually with full text available through title/tooltip where useful.
 - UI must use Lucide icons, shared tooltip/dialog styles, compact row actions, and global `--mx-*` tokens. Do not introduce native selects, independent overlay styling, or a separate Docker dashboard visual system.
 
@@ -1353,11 +1361,16 @@ type DockerImagePullProgressEvent = {
 | Pull image starts successfully | Close the pull dialog and show a running row in the image list. |
 | Pull image emits progress without a percent | Keep an indeterminate progress row and show the latest Docker stage text. |
 | Pull image fails after task creation | Keep a failed pull row in the image list; do not fake-add an image row. |
+| Engine status is not loaded yet | Show a neutral unknown state, not a red stopped/error state. |
+| `systemctl` is unavailable | Disable service controls and show the raw reason in the engine panel. |
+| Engine config JSON is invalid | Keep the editor content intact and show an inline validation error. |
+| Engine config save fails | Keep the draft content visible and surface the backend error. |
 
 ### 5. Good / Base / Bad Cases
 
 - Good: Docker panel receives the current SSH connection id, loads containers and images through typed wrappers, and keeps delete rows visible until the backend confirms success.
 - Good: opening a container terminal creates a normal SSH terminal tab and writes the quoted `docker exec -it ... sh` command after the terminal session is connected.
+- Good: entering the engine view loads status/config through typed wrappers and confirms service-impacting actions before calling Rust.
 - Base: browser preview has no Tauri runtime; the panel renders deterministic preview rows and keeps real persistence/remote operations out of the preview path.
 - Bad: a component calls `invoke("docker_*")` directly, passes SSH password fields into Docker commands, deletes rows optimistically before backend success, or uses `window.confirm`.
 
