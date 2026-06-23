@@ -5022,6 +5022,7 @@ export function WorkspaceShell() {
                 className={`terminal-workbench-pane ${commandSenderOpen ? "command-sender-open" : ""} ${
                   showingLocalTerminal ? "is-hidden" : ""
                 }`}
+                data-workbench-surface={activeConnectedTerminalTab ? "terminal" : "panel"}
                 data-terminal-tone={terminalTone}
                 aria-label="终端区"
                 aria-hidden={showingLocalTerminal}
