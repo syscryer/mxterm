@@ -23,8 +23,7 @@ use crate::connections::{
 };
 use crate::known_hosts::{host_key_info, KnownHostCheck};
 use crate::ssh_config::{
-    app_error_for_host_key_changed, app_error_for_host_key_unknown, resolve_saved_connection,
-    ResolvedSshConfig,
+    app_error_for_host_key_changed, app_error_for_host_key_unknown, ResolvedSshConfig,
 };
 use crate::storage_repository::StorageRepository;
 use crate::storage_vault::{SecretStore, VaultState};
@@ -190,6 +189,31 @@ fn ssh_app_data_dir(app: &AppHandle) -> Result<std::path::PathBuf, AppError> {
         )
     })
 }
+
+#[derive(Clone)]
+pub struct SshConnectionContext {
+    app_data_dir: std::path::PathBuf,
+    secret_store: Arc<dyn SecretStore>,
+}
+
+impl SshConnectionContext {
+    pub fn from_app(app: &AppHandle) -> Result<Self, AppError> {
+        Ok(Self {
+            app_data_dir: ssh_app_data_dir(app)?,
+            secret_store: vault_secret_store(app)?,
+        })
+    }
+
+    pub fn from_parts(
+        app_data_dir: impl Into<std::path::PathBuf>,
+        secret_store: Arc<dyn SecretStore>,
+    ) -> Self {
+        Self {
+            app_data_dir: app_data_dir.into(),
+            secret_store,
+        }
+    }
+}
 enum AuthMethod {
     Password(String),
     PrivateKey {
@@ -283,11 +307,12 @@ impl TerminalSession {
             nodelay: true,
             ..<_>::default()
         });
+        let context = SshConnectionContext::from_app(&app)?;
         let host_key_handler = KnownHostClient {
             host: host.clone(),
             port,
-            app_data_dir: ssh_app_data_dir(&app)?,
-            secret_store: vault_secret_store(&app)?,
+            app_data_dir: context.app_data_dir.clone(),
+            secret_store: Arc::clone(&context.secret_store),
             remote_forward: RemoteForwardState::default(),
         };
 
@@ -296,7 +321,7 @@ impl TerminalSession {
             "terminal_connect_timeout",
             "SSH 连接超时。",
             duration_from_ms(config.advanced.connect_timeout_ms),
-            connect_target_client(&app, ssh_config, &config, host_key_handler),
+            connect_target_client(&context, ssh_config, &config, host_key_handler),
         )
         .await?
         .map_err(|error| {
@@ -449,6 +474,14 @@ impl ReusableExecSession {
         app: &AppHandle,
         config: &ResolvedSshConfig,
     ) -> Result<Self, AppError> {
+        let context = SshConnectionContext::from_app(app)?;
+        Self::connect_resolved_with_context(&context, config).await
+    }
+
+    pub async fn connect_resolved_with_context(
+        context: &SshConnectionContext,
+        config: &ResolvedSshConfig,
+    ) -> Result<Self, AppError> {
         let username = config.username.clone();
         let auth_method = auth_method(config)?;
         let ssh_config = Arc::new(client::Config {
@@ -460,8 +493,8 @@ impl ReusableExecSession {
         let host_key_handler = KnownHostClient {
             host: config.host.clone(),
             port: config.port,
-            app_data_dir: ssh_app_data_dir(app)?,
-            secret_store: vault_secret_store(app)?,
+            app_data_dir: context.app_data_dir.clone(),
+            secret_store: Arc::clone(&context.secret_store),
             remote_forward: RemoteForwardState::default(),
         };
 
@@ -469,7 +502,7 @@ impl ReusableExecSession {
             "remote_exec_connect_timeout",
             "SSH 命令连接超时。",
             duration_from_ms(config.advanced.connect_timeout_ms),
-            connect_target_client(app, ssh_config, config, host_key_handler),
+            connect_target_client(context, ssh_config, config, host_key_handler),
         )
         .await?
         .map_err(|error| {
@@ -696,6 +729,7 @@ impl ReusableForwardSession {
         app: &AppHandle,
         config: &ResolvedSshConfig,
     ) -> Result<Self, AppError> {
+        let context = SshConnectionContext::from_app(app)?;
         let username = config.username.clone();
         let auth_method = auth_method(config).map_err(map_tunnel_auth_error)?;
         let ssh_config = Arc::new(client::Config {
@@ -708,8 +742,8 @@ impl ReusableForwardSession {
         let host_key_handler = KnownHostClient {
             host: config.host.clone(),
             port: config.port,
-            app_data_dir: ssh_app_data_dir(app)?,
-            secret_store: vault_secret_store(app)?,
+            app_data_dir: context.app_data_dir.clone(),
+            secret_store: Arc::clone(&context.secret_store),
             remote_forward: remote_forward.clone(),
         };
 
@@ -717,7 +751,7 @@ impl ReusableForwardSession {
             "tunnel_ssh_connect_timeout",
             "SSH 隧道连接超时。",
             duration_from_ms(config.advanced.connect_timeout_ms),
-            connect_target_client(app, ssh_config, config, host_key_handler),
+            connect_target_client(&context, ssh_config, config, host_key_handler),
         )
         .await?
         .map_err(|error| {
@@ -892,6 +926,14 @@ impl ReusableSftpSession {
         app: &AppHandle,
         config: &ResolvedSshConfig,
     ) -> Result<Self, AppError> {
+        let context = SshConnectionContext::from_app(app)?;
+        Self::connect_resolved_with_context(&context, config).await
+    }
+
+    pub async fn connect_resolved_with_context(
+        context: &SshConnectionContext,
+        config: &ResolvedSshConfig,
+    ) -> Result<Self, AppError> {
         let username = config.username.clone();
         let auth_method = auth_method(config)?;
         let ssh_config = Arc::new(client::Config {
@@ -903,8 +945,8 @@ impl ReusableSftpSession {
         let host_key_handler = KnownHostClient {
             host: config.host.clone(),
             port: config.port,
-            app_data_dir: ssh_app_data_dir(app)?,
-            secret_store: vault_secret_store(app)?,
+            app_data_dir: context.app_data_dir.clone(),
+            secret_store: Arc::clone(&context.secret_store),
             remote_forward: RemoteForwardState::default(),
         };
 
@@ -912,7 +954,7 @@ impl ReusableSftpSession {
             "remote_sftp_connect_timeout",
             "SFTP 连接超时。",
             duration_from_ms(config.advanced.connect_timeout_ms),
-            connect_target_client(app, ssh_config, config, host_key_handler),
+            connect_target_client(context, ssh_config, config, host_key_handler),
         )
         .await?
         .map_err(|error| {
@@ -1101,7 +1143,7 @@ async fn connect_ssh_client(
 }
 
 async fn connect_target_client(
-    app: &AppHandle,
+    context: &SshConnectionContext,
     config: Arc<client::Config>,
     request: &ResolvedSshConfig,
     handler: KnownHostClient,
@@ -1111,7 +1153,7 @@ async fn connect_target_client(
             .await
             .map(|client| (client, None)),
         ConnectionJumpKind::SshJump => {
-            let jump = resolve_jump_config(app, request).map_err(to_russh_error)?;
+            let jump = resolve_jump_config(context, request).map_err(to_russh_error)?;
             let jump_auth_method = auth_method(&jump).map_err(to_russh_error)?;
             let jump_ssh_config = Arc::new(client::Config {
                 keepalive_interval: Some(duration_from_ms(jump.advanced.keepalive_interval_ms)),
@@ -1122,8 +1164,8 @@ async fn connect_target_client(
             let jump_host_key_handler = KnownHostClient {
                 host: jump.host.clone(),
                 port: jump.port,
-                app_data_dir: ssh_app_data_dir(app).map_err(to_russh_error)?,
-                secret_store: vault_secret_store(app).map_err(to_russh_error)?,
+                app_data_dir: context.app_data_dir.clone(),
+                secret_store: Arc::clone(&context.secret_store),
                 remote_forward: RemoteForwardState::default(),
             };
 
@@ -1182,7 +1224,7 @@ async fn connect_target_client(
 }
 
 fn resolve_jump_config(
-    app: &AppHandle,
+    context: &SshConnectionContext,
     request: &ResolvedSshConfig,
 ) -> Result<ResolvedSshConfig, AppError> {
     let jump_connection_id = request
@@ -1209,7 +1251,11 @@ fn resolve_jump_config(
         ));
     }
 
-    let jump = resolve_saved_connection(app, jump_connection_id, None)?;
+    let repository = StorageRepository::open_root(
+        context.app_data_dir.clone(),
+        Arc::clone(&context.secret_store),
+    )?;
+    let jump = repository.resolve_saved_connection(jump_connection_id, None)?;
     validate_jump_runtime(&request.connection_id, &request.jump, Some(&jump.jump))?;
     Ok(jump)
 }

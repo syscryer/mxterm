@@ -1,4 +1,4 @@
-mod app_error;
+pub mod app_error;
 mod command_library;
 mod commands;
 mod connections;
@@ -6,6 +6,7 @@ mod credentials;
 mod docker_tools;
 mod events;
 mod known_hosts;
+pub mod mcp;
 mod remote_files;
 mod remote_monitor;
 mod ssh_config;
@@ -65,6 +66,9 @@ pub fn run() {
             commands::known_host_trust,
             commands::local_terminal_list_profiles,
             commands::local_terminal_open,
+            mcp::mcp_executable_path,
+            mcp::mcp_settings_get,
+            mcp::mcp_settings_save,
             commands::get_windows_pty_info,
             commands::terminal_connect,
             commands::terminal_write,
