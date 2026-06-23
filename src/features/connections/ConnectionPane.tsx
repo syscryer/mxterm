@@ -37,7 +37,7 @@ interface ConnectionPaneProps {
   connections: ConnectionProfile[];
   error: string | null;
   loading: boolean;
-  onCreate: (groupId?: string) => void;
+  onCreate: (groupName?: string) => void;
   onConnect: (connection: ConnectionProfile) => void;
   onDelete: (connection: ConnectionProfile) => void | Promise<void>;
   onEdit: (connection: ConnectionProfile) => void;
@@ -45,7 +45,7 @@ interface ConnectionPaneProps {
     assignments: ConnectionGroupAssignments;
     groups: CustomGroup[];
   }) => void;
-  onMoveConnectionToGroup: (connection: ConnectionProfile, groupId: string | null) => void | Promise<void>;
+  onMoveConnectionToGroup: (connection: ConnectionProfile, groupName: string | null) => void | Promise<void>;
   onOpen: (connection: ConnectionProfile) => void;
   onOpenSearch: () => void;
   onOpenSettings: () => void;
@@ -121,7 +121,10 @@ export function ConnectionPane({
   selectedId,
 }: ConnectionPaneProps) {
   const [customGroups, setCustomGroups] = useState<CustomGroup[]>(readStoredGroups);
-  const connectionGroups = useMemo(() => buildConnectionGroupAssignments(connections), [connections]);
+  const connectionGroups = useMemo(
+    () => buildConnectionGroupAssignments(connections, customGroups),
+    [connections, customGroups],
+  );
   const [creatingGroup, setCreatingGroup] = useState(false);
   const [editingGroupId, setEditingGroupId] = useState<string | null>(null);
   const [creatingGroupParentId, setCreatingGroupParentId] = useState<string | null>(null);
@@ -144,6 +147,15 @@ export function ConnectionPane({
     () => new Set(customGroups.map((group) => group.id)),
     [customGroups],
   );
+  const customGroupNames = useMemo(
+    () =>
+      new Set(
+        customGroups
+          .map((group) => normalizeGroupName(group.name))
+          .filter(Boolean),
+      ),
+    [customGroups],
+  );
   const topLevelCustomGroups = useMemo(
     () =>
       customGroups.filter(
@@ -153,8 +165,8 @@ export function ConnectionPane({
   );
   const ungroupedConnections = useMemo(
     () =>
-      connections.filter((connection) => !customGroupIds.has(connectionGroups[connection.id] || "")),
-    [connections, connectionGroups, customGroupIds],
+      connections.filter((connection) => !customGroupNames.has(connectionGroups[connection.id] || "")),
+    [connections, connectionGroups, customGroupNames],
   );
   const draggedConnection = mouseDrag?.active
     ? connections.find((connection) => connection.id === mouseDrag.connectionId) || null
@@ -494,7 +506,7 @@ export function ConnectionPane({
         onOpen={onOpen}
         onSelect={selectTreeConnection}
         onToggleFavorite={onToggleFavorite}
-        onCreateConnection={() => onCreate(group.id)}
+        onCreateConnection={() => onCreate(normalizeGroupName(group.name))}
         onCreateGroup={() => beginCreateGroup(group.id)}
         onConnect={onConnect}
         onDeleteConnection={requestDeleteConnection}
@@ -508,7 +520,9 @@ export function ConnectionPane({
         onDeleteGroup={() => requestDeleteGroup(group)}
         onToggle={() => toggleFolder(folderId)}
         selectedId={selectedId}
-        connections={connections.filter((connection) => connectionGroups[connection.id] === group.id)}
+        connections={connections.filter(
+          (connection) => connectionGroups[connection.id] === normalizeGroupName(group.name),
+        )}
         nestedContent={
           <>
             {childGroups.map((childGroup) => renderCustomGroup(childGroup))}
@@ -591,8 +605,10 @@ export function ConnectionPane({
 
   function assignConnectionToGroup(connectionId: string, groupId: string) {
     const connection = connections.find((item) => item.id === connectionId);
-    if (connection) {
-      void onMoveConnectionToGroup(connection, groupId);
+    const group = customGroups.find((item) => item.id === groupId);
+    const groupName = normalizeGroupName(group?.name);
+    if (connection && groupName) {
+      void onMoveConnectionToGroup(connection, groupName);
     }
     finishConnectionDrag();
   }
@@ -656,18 +672,23 @@ export function ConnectionPane({
       return;
     }
 
-    setCustomGroups((groups) => {
-      if (
-        groups.some(
-          (group) =>
-            group.name === name &&
-            group.id !== editingGroupId &&
-            (group.parentId || null) === creatingGroupParentId,
-        )
-      ) {
-        return groups;
-      }
+    const hasDuplicateName = customGroups.some(
+      (group) =>
+        normalizeGroupName(group.name) === name &&
+        group.id !== editingGroupId,
+    );
 
+    if (hasDuplicateName) {
+      resetGroupForm();
+      return;
+    }
+
+    const editingGroup = editingGroupId
+      ? customGroups.find((group) => group.id === editingGroupId)
+      : null;
+    const previousName = normalizeGroupName(editingGroup?.name);
+
+    setCustomGroups((groups) => {
       if (editingGroupId) {
         return groups.map((group) =>
           group.id === editingGroupId ? { ...group, color: groupColorDraft, name } : group,
@@ -684,6 +705,15 @@ export function ConnectionPane({
         },
       ];
     });
+
+    if (editingGroup && previousName && previousName !== name) {
+      connections.forEach((connection) => {
+        if (connectionGroups[connection.id] === previousName) {
+          void onMoveConnectionToGroup(connection, name);
+        }
+      });
+    }
+
     resetGroupForm();
   }
 
@@ -710,10 +740,16 @@ export function ConnectionPane({
 
   function deleteGroup(group: CustomGroup) {
     const deletingGroupIds = collectGroupAndDescendantIds(customGroups, group.id);
+    const deletingGroupNames = new Set(
+      customGroups
+        .filter((item) => deletingGroupIds.has(item.id))
+        .map((item) => normalizeGroupName(item.name))
+        .filter(Boolean),
+    );
     setCustomGroups((groups) => groups.filter((item) => !deletingGroupIds.has(item.id)));
     connections.forEach((connection) => {
-      const groupId = connectionGroups[connection.id];
-      if (groupId && deletingGroupIds.has(groupId)) {
+      const groupName = connectionGroups[connection.id];
+      if (groupName && deletingGroupNames.has(groupName)) {
         void onMoveConnectionToGroup(connection, null);
       }
     });
@@ -1171,33 +1207,82 @@ function writeStoredGroups(groups: CustomGroup[]) {
   }
 }
 
-function buildConnectionGroupAssignments(connections: ConnectionProfile[]) {
+function buildConnectionGroupAssignments(
+  connections: ConnectionProfile[],
+  groups: CustomGroup[],
+) {
+  const groupById = new Map(groups.map((group) => [group.id, group]));
+  const groupNames = new Set(
+    groups
+      .map((group) => normalizeGroupName(group.name))
+      .filter(Boolean),
+  );
+
   return Object.fromEntries(
     connections
-      .map((connection) => [connection.id, connection.group?.trim() || ""] as const)
+      .map((connection) => {
+        const groupName = resolveConnectionGroupName(
+          connection.group,
+          groupById,
+          groupNames,
+        );
+        return [connection.id, groupName] as const;
+      })
       .filter(([, group]) => Boolean(group)),
   );
 }
 
 function mergeProfileGroups(groups: CustomGroup[], connections: ConnectionProfile[]) {
   const existingIds = new Set(groups.map((group) => group.id));
-  const existingNames = new Set(groups.map((group) => group.name.trim()));
+  const existingNames = new Set(groups.map((group) => normalizeGroupName(group.name)));
   const nextGroups = [...groups];
 
   connections.forEach((connection) => {
-    const name = connection.group?.trim();
-    if (!name || existingIds.has(name) || existingNames.has(name)) {
+    const name = normalizeGroupName(connection.group);
+    if (!name || existingNames.has(name) || existingIds.has(name)) {
       return;
     }
+    const id = uniqueGroupId(name, existingIds);
     nextGroups.push({
       color: groupPalette[nextGroups.length % groupPalette.length],
-      id: name,
+      id,
       name,
       parentId: null,
     });
-    existingIds.add(name);
+    existingIds.add(id);
     existingNames.add(name);
   });
 
   return nextGroups.length === groups.length ? groups : nextGroups;
+}
+
+function resolveConnectionGroupName(
+  value: string | null | undefined,
+  groupById: Map<string, CustomGroup>,
+  groupNames: Set<string>,
+) {
+  const groupName = normalizeGroupName(value);
+  if (!groupName || groupNames.has(groupName)) {
+    return groupName;
+  }
+
+  return normalizeGroupName(groupById.get(groupName)?.name) || groupName;
+}
+
+function uniqueGroupId(name: string, existingIds: Set<string>) {
+  if (!existingIds.has(name)) {
+    return name;
+  }
+
+  let index = 1;
+  let nextId = `${name}-${index.toString()}`;
+  while (existingIds.has(nextId)) {
+    index += 1;
+    nextId = `${name}-${index.toString()}`;
+  }
+  return nextId;
+}
+
+function normalizeGroupName(value: string | null | undefined) {
+  return value?.trim() || "";
 }

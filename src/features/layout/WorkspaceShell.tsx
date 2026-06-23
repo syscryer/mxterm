@@ -586,7 +586,7 @@ export function WorkspaceShell() {
     defaultEditorTerminalSplitPercent,
   );
   const [resizingPane, setResizingPane] = useState<ResizingPane | null>(null);
-  const [pendingConnectionGroupId, setPendingConnectionGroupId] = useState<string | null>(null);
+  const [pendingConnectionGroupName, setPendingConnectionGroupName] = useState<string | null>(null);
   const [connectionGroupCatalog, setConnectionGroupCatalog] =
     useState<ConnectionGroupCatalog>({ assignments: {}, groups: [] });
   const desktopPlatform = useMemo(() => resolveDesktopPlatform(), []);
@@ -2731,9 +2731,9 @@ export function WorkspaceShell() {
     void copyText(path);
   }
 
-  function createConnection(groupId?: string) {
+  function createConnection(groupName?: string) {
     setLeftPaneCollapsed(false);
-    setPendingConnectionGroupId(groupId || null);
+    setPendingConnectionGroupName(groupName || null);
     setEditingConnection(null);
     setDialogOpen(true);
   }
@@ -2746,7 +2746,7 @@ export function WorkspaceShell() {
   }
 
   function editConnection(connection: ConnectionProfile) {
-    setPendingConnectionGroupId(null);
+    setPendingConnectionGroupName(null);
     setEditingConnection(connection);
     setDialogOpen(true);
   }
@@ -2754,10 +2754,10 @@ export function WorkspaceShell() {
   async function saveConnection(input: ConnectionProfileInput) {
     const saved = await upsert({
       ...input,
-      group: input.group || pendingConnectionGroupId || undefined,
+      group: input.group || pendingConnectionGroupName || undefined,
     });
     setSelectedConnectionId(saved.id);
-    setPendingConnectionGroupId(null);
+    setPendingConnectionGroupName(null);
     return saved;
   }
 
@@ -4161,8 +4161,8 @@ export function WorkspaceShell() {
     }
   }
 
-  async function moveConnectionToGroup(connection: ConnectionProfile, groupId: string | null) {
-    await upsert(connectionToInput({ ...connection, group: groupId || undefined }));
+  async function moveConnectionToGroup(connection: ConnectionProfile, groupName: string | null) {
+    await upsert(connectionToInput({ ...connection, group: groupName || undefined }));
   }
 
   async function toggleConnectionFavorite(connection: ConnectionProfile) {
@@ -5724,7 +5724,7 @@ export function WorkspaceShell() {
           connection={editingConnection}
           connections={connections}
           credentials={credentials}
-          defaultGroup={pendingConnectionGroupId}
+          defaultGroup={pendingConnectionGroupName}
           groups={connectionGroupCatalog.groups}
           onClose={closeConnectionDialog}
           onDelete={deleteConnection}
@@ -6326,7 +6326,7 @@ export function WorkspaceShell() {
 
   function closeConnectionDialog() {
     setDialogOpen(false);
-    setPendingConnectionGroupId(null);
+    setPendingConnectionGroupName(null);
   }
 }
 

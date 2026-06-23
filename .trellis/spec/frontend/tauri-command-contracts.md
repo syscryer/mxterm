@@ -145,6 +145,7 @@ type HostKeyInfo = {
 - Wrapper argument objects must match Rust command parameter names exactly, for example `{ request }`, `{ id }`, and `{ sessionId }`.
 - UI state may use empty strings while editing, but `useConnections` and `useCredentials` must trim optional fields and convert blanks to `undefined` before calling `connectionUpsert` or `credentialUpsert`.
 - Connection profiles own target and behavior fields: group, host, port, username, credential mode, proxy, SSH jump reference, advanced settings, and notes.
+- `ConnectionProfileInput.group` is the persisted group display name. Frontend-only tree ids from `ConnectionPane` / localStorage are UI identifiers only and must never be passed to `connectionUpsert`, `ConnectionDialog`, or move/create handlers as the saved group value. When reading legacy data that still stores a local tree id, resolve it to the matching group name before displaying or saving.
 - Connection profiles also own repository UI metadata: `is_favorite` is the explicit favorite flag and `last_connected_at` is the last successful terminal connection timestamp. Do not infer favorites from notes or recent activity from `updated_at`.
 - Connection profiles also persist detected remote system metadata: `remote_os_id`, `remote_os_name`, and `remote_os_version`. UI system icons must prefer these fields before falling back to local name/notes/group text inference.
 - Credential profiles own reusable login account material: username plus password or private key path/passphrase plus local notes. They must not store host or port.
