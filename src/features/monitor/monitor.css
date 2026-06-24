@@ -7,6 +7,18 @@
 }
 
 .monitor-shell {
+  --monitor-tile-bg: #fbfcfe;
+  --monitor-tile-hover-bg: #f7f9fc;
+  --monitor-bar-track: #e8ebf3;
+  --monitor-donut-track: #eef1f8;
+  --monitor-soft-divider: #edf1f7;
+  --monitor-chart-bg: linear-gradient(180deg, #fbfcfe 0%, #f6f8fb 100%);
+  --monitor-chart-grid: rgb(148 163 184 / 17%);
+  --monitor-warning: #d97706;
+  --monitor-warning-bg: #fff7ed;
+  --monitor-danger: #9f1d1d;
+  --monitor-danger-bg: #fffafa;
+  --monitor-hover-bg: rgb(15 23 42 / 5%);
   flex: 1 1 0;
   min-width: 0;
   min-height: 0;
@@ -14,6 +26,40 @@
   grid-template-rows: auto auto minmax(0, 1fr);
   color: var(--mx-text);
   background: var(--mx-panel-soft);
+}
+
+.app-shell[data-theme-mode="dark"] .monitor-shell {
+  --monitor-tile-bg: color-mix(in srgb, var(--mx-panel-soft) 74%, var(--mx-panel));
+  --monitor-tile-hover-bg: color-mix(in srgb, var(--mx-text) 7%, var(--mx-panel));
+  --monitor-bar-track: color-mix(in srgb, var(--mx-text) 10%, transparent);
+  --monitor-donut-track: color-mix(in srgb, var(--mx-text) 11%, transparent);
+  --monitor-soft-divider: var(--mx-line-soft);
+  --monitor-chart-bg:
+    linear-gradient(180deg, color-mix(in srgb, var(--mx-panel-soft) 88%, #000) 0%, var(--mx-panel) 100%);
+  --monitor-chart-grid: color-mix(in srgb, var(--mx-text) 12%, transparent);
+  --monitor-warning: var(--mx-warning);
+  --monitor-warning-bg: color-mix(in srgb, var(--mx-warning) 13%, var(--mx-panel));
+  --monitor-danger: var(--mx-danger);
+  --monitor-danger-bg: color-mix(in srgb, var(--mx-danger) 10%, var(--mx-panel));
+  --monitor-hover-bg: var(--mx-active);
+}
+
+@media (prefers-color-scheme: dark) {
+  .app-shell[data-theme-mode="system"] .monitor-shell {
+    --monitor-tile-bg: color-mix(in srgb, var(--mx-panel-soft) 74%, var(--mx-panel));
+    --monitor-tile-hover-bg: color-mix(in srgb, var(--mx-text) 7%, var(--mx-panel));
+    --monitor-bar-track: color-mix(in srgb, var(--mx-text) 10%, transparent);
+    --monitor-donut-track: color-mix(in srgb, var(--mx-text) 11%, transparent);
+    --monitor-soft-divider: var(--mx-line-soft);
+    --monitor-chart-bg:
+      linear-gradient(180deg, color-mix(in srgb, var(--mx-panel-soft) 88%, #000) 0%, var(--mx-panel) 100%);
+    --monitor-chart-grid: color-mix(in srgb, var(--mx-text) 12%, transparent);
+    --monitor-warning: var(--mx-warning);
+    --monitor-warning-bg: color-mix(in srgb, var(--mx-warning) 13%, var(--mx-panel));
+    --monitor-danger: var(--mx-danger);
+    --monitor-danger-bg: color-mix(in srgb, var(--mx-danger) 10%, var(--mx-panel));
+    --monitor-hover-bg: var(--mx-active);
+  }
 }
 
 .monitor-host {
@@ -73,8 +119,8 @@
 }
 
 .monitor-small-pill.warn {
-  color: #9a3412;
-  background: #fff7ed;
+  color: var(--monitor-warning);
+  background: var(--monitor-warning-bg);
 }
 
 .monitor-status-dot {
@@ -140,7 +186,7 @@
 .monitor-icon-action:hover:not(:disabled),
 .monitor-icon-action.active {
   color: var(--mx-text);
-  background: rgb(15 23 42 / 5%);
+  background: var(--monitor-hover-bg);
 }
 
 .monitor-icon-action:disabled {
@@ -235,7 +281,7 @@
   margin: 0;
   border-radius: 6px;
   padding: 6px 7px;
-  color: #9f1d1d;
+  color: var(--monitor-danger);
   background: rgb(220 38 38 / 8%);
   font-size: 12px;
   line-height: 1.45;
@@ -264,7 +310,7 @@
   display: grid;
   gap: 5px;
   padding: 9px;
-  background: #fbfcfe;
+  background: var(--monitor-tile-bg);
 }
 
 .monitor-metric-tile:only-child {
@@ -321,7 +367,7 @@
   height: 7px;
   overflow: hidden;
   border-radius: 999px;
-  background: #e8ebf3;
+  background: var(--monitor-bar-track);
 }
 
 .monitor-bar-fill {
@@ -396,7 +442,7 @@
   display: grid;
   gap: 7px;
   padding: 10px;
-  background: #fbfcfe;
+  background: var(--monitor-tile-bg);
 }
 
 .monitor-device-row + .monitor-device-row,
@@ -462,7 +508,7 @@
 }
 
 .monitor-donut-track {
-  stroke: #eef1f8;
+  stroke: var(--monitor-donut-track);
 }
 
 .monitor-donut-segment {
@@ -541,7 +587,7 @@
   gap: 12px;
   margin-top: 10px;
   padding-top: 9px;
-  border-top: 1px solid #edf1f7;
+  border-top: 1px solid var(--monitor-soft-divider);
 }
 
 .monitor-memory-fact-row {
@@ -630,7 +676,7 @@
 .monitor-section-foot-button:hover {
   color: var(--mx-text);
   border-color: var(--mx-line-strong);
-  background: #f7f9fc;
+  background: var(--monitor-tile-hover-bg);
 }
 
 .monitor-network-identity {
@@ -642,7 +688,7 @@
   align-items: center;
   gap: 8px;
   padding: 9px;
-  background: #fbfcfe;
+  background: var(--monitor-tile-bg);
 }
 
 .monitor-network-icon,
@@ -689,7 +735,7 @@
   border: 1px solid var(--mx-line-soft);
   border-radius: 8px;
   overflow: hidden;
-  background: linear-gradient(180deg, #fbfcfe 0%, #f6f8fb 100%);
+  background: var(--monitor-chart-bg);
 }
 
 .monitor-traffic-chart svg {
@@ -699,7 +745,7 @@
 
 .monitor-chart-grid {
   fill: none;
-  stroke: rgb(148 163 184 / 17%);
+  stroke: var(--monitor-chart-grid);
   stroke-width: 1;
 }
 
@@ -720,7 +766,7 @@
 }
 
 .monitor-upload-line {
-  stroke: #d97706;
+  stroke: var(--monitor-warning);
 }
 
 .monitor-hardware-profile {
@@ -887,7 +933,7 @@
   gap: 6px;
   padding: 0 8px;
   color: var(--mx-muted);
-  background: #fbfcfe;
+  background: var(--monitor-tile-bg);
 }
 
 .monitor-search-field .ui-icon {
@@ -947,7 +993,7 @@
 
 .monitor-process-detail button:hover {
   color: var(--mx-text);
-  background: rgb(15 23 42 / 5%);
+  background: var(--monitor-hover-bg);
 }
 
 .monitor-process-head {
@@ -1026,7 +1072,7 @@
 }
 
 .monitor-process-metric.hot {
-  color: #d97706;
+  color: var(--monitor-warning);
 }
 
 .monitor-process-actions {
@@ -1054,7 +1100,7 @@
 
 .monitor-process-action-button:hover:not(:disabled) {
   color: var(--mx-text);
-  background: rgb(15 23 42 / 5%);
+  background: var(--monitor-hover-bg);
 }
 
 .monitor-process-action-button.danger:hover:not(:disabled) {
@@ -1092,8 +1138,8 @@
 }
 
 .monitor-activity-icon.warn {
-  color: #d97706;
-  background: #fff7ed;
+  color: var(--monitor-warning);
+  background: var(--monitor-warning-bg);
 }
 
 .monitor-activity-text {
@@ -1129,8 +1175,8 @@
 
 .monitor-inline-alert {
   grid-template-columns: 16px minmax(0, 1fr) auto;
-  color: #9f1d1d;
-  background: #fffafa;
+  color: var(--monitor-danger);
+  background: var(--monitor-danger-bg);
 }
 
 .monitor-inline-alert .ui-icon,

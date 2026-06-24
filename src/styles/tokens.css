@@ -208,12 +208,12 @@
 }
 
 .app-shell[data-theme-mode="dark"][data-window-material="mica"] {
-  --mx-chrome-fill: rgb(28 28 28 / 0%);
+  --mx-chrome-fill: rgb(28 28 28 / 100%);
   --mx-chrome-line: rgb(255 255 255 / 7%);
   --mx-chrome-active: rgb(255 255 255 / 7%);
   --mx-chrome-glow: rgb(255 255 255 / 5%);
   --mx-chrome-blur: 60px;
-  --mx-sidebar-surface: transparent;
+  --mx-sidebar-surface: var(--mx-chrome-fill);
   --mx-sidebar-border: color-mix(in srgb, var(--mx-line) 40%, transparent);
   --mx-sidebar-hover: color-mix(in srgb, var(--mx-text) 7%, transparent);
   --mx-sidebar-active: rgb(255 255 255 / 7%);
@@ -223,12 +223,12 @@
 }
 
 .app-shell[data-theme-mode="dark"][data-window-material="acrylic"] {
-  --mx-chrome-fill: rgb(30 31 34 / 0%);
+  --mx-chrome-fill: rgb(30 31 34 / 100%);
   --mx-chrome-line: rgb(255 255 255 / 8%);
   --mx-chrome-active: rgb(255 255 255 / 7%);
   --mx-chrome-glow: rgb(255 255 255 / 6%);
   --mx-chrome-blur: 72px;
-  --mx-sidebar-surface: transparent;
+  --mx-sidebar-surface: var(--mx-chrome-fill);
   --mx-sidebar-border: color-mix(in srgb, var(--mx-line) 42%, transparent);
   --mx-sidebar-hover: color-mix(in srgb, var(--mx-text) 7%, transparent);
   --mx-sidebar-active: rgb(255 255 255 / 7%);
@@ -238,12 +238,12 @@
 }
 
 .app-shell[data-theme-mode="dark"][data-window-material="micaAlt"] {
-  --mx-chrome-fill: rgb(28 29 32 / 0%);
+  --mx-chrome-fill: rgb(28 29 32 / 100%);
   --mx-chrome-line: rgb(255 255 255 / 7%);
   --mx-chrome-active: rgb(255 255 255 / 7%);
   --mx-chrome-glow: rgb(255 255 255 / 4%);
   --mx-chrome-blur: 64px;
-  --mx-sidebar-surface: transparent;
+  --mx-sidebar-surface: var(--mx-chrome-fill);
   --mx-sidebar-border: color-mix(in srgb, var(--mx-line) 40%, transparent);
   --mx-sidebar-hover: color-mix(in srgb, var(--mx-text) 7%, transparent);
   --mx-sidebar-active: rgb(255 255 255 / 7%);
@@ -314,12 +314,12 @@
   }
 
   .app-shell[data-theme-mode="system"][data-window-material="mica"] {
-    --mx-chrome-fill: rgb(28 28 28 / 0%);
+    --mx-chrome-fill: rgb(28 28 28 / 100%);
     --mx-chrome-line: rgb(255 255 255 / 7%);
     --mx-chrome-active: rgb(255 255 255 / 7%);
     --mx-chrome-glow: rgb(255 255 255 / 5%);
     --mx-chrome-blur: 60px;
-    --mx-sidebar-surface: transparent;
+    --mx-sidebar-surface: var(--mx-chrome-fill);
     --mx-sidebar-border: color-mix(in srgb, var(--mx-line) 40%, transparent);
     --mx-sidebar-hover: color-mix(in srgb, var(--mx-text) 7%, transparent);
     --mx-sidebar-active: rgb(255 255 255 / 7%);
@@ -329,12 +329,12 @@
   }
 
   .app-shell[data-theme-mode="system"][data-window-material="acrylic"] {
-    --mx-chrome-fill: rgb(30 31 34 / 0%);
+    --mx-chrome-fill: rgb(30 31 34 / 100%);
     --mx-chrome-line: rgb(255 255 255 / 8%);
     --mx-chrome-active: rgb(255 255 255 / 7%);
     --mx-chrome-glow: rgb(255 255 255 / 6%);
     --mx-chrome-blur: 72px;
-    --mx-sidebar-surface: transparent;
+    --mx-sidebar-surface: var(--mx-chrome-fill);
     --mx-sidebar-border: color-mix(in srgb, var(--mx-line) 42%, transparent);
     --mx-sidebar-hover: color-mix(in srgb, var(--mx-text) 7%, transparent);
     --mx-sidebar-active: rgb(255 255 255 / 7%);
@@ -344,12 +344,12 @@
   }
 
   .app-shell[data-theme-mode="system"][data-window-material="micaAlt"] {
-    --mx-chrome-fill: rgb(28 29 32 / 0%);
+    --mx-chrome-fill: rgb(28 29 32 / 100%);
     --mx-chrome-line: rgb(255 255 255 / 7%);
     --mx-chrome-active: rgb(255 255 255 / 7%);
     --mx-chrome-glow: rgb(255 255 255 / 4%);
     --mx-chrome-blur: 64px;
-    --mx-sidebar-surface: transparent;
+    --mx-sidebar-surface: var(--mx-chrome-fill);
     --mx-sidebar-border: color-mix(in srgb, var(--mx-line) 40%, transparent);
     --mx-sidebar-hover: color-mix(in srgb, var(--mx-text) 7%, transparent);
     --mx-sidebar-active: rgb(255 255 255 / 7%);

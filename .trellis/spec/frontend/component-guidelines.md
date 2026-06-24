@@ -76,12 +76,25 @@ Ant Design, Mantine, or similar libraries just to fix one modal or button.
 
 - Global component styling currently lives in `src/styles/app.css`, using design
   tokens from `src/styles/tokens.css`.
+- Light mode is the default development baseline, but every new or changed UI
+  component must be checked against explicit dark mode and system-dark mode at
+  the same time. Do not ship a light-only surface, hover state, border, shadow,
+  form control, list row, toolbar, or action button. If a visual value needs
+  theme-specific behavior, define it through global `--mx-*` tokens or scoped
+  `.app-shell[data-theme-mode="dark"]` / system-dark rules in `src/styles/app.css`.
 - Visual styling must be token-driven. Colors, backgrounds, borders, focus
   rings, state fills, shadows, and material surfaces should use the global
   `--mx-*` tokens from `src/styles/tokens.css` and shared selectors in
   `src/styles/app.css`. Avoid hard-coded colors, isolated gradients, one-off
   shadows, or feature-only state palettes unless the business semantics require
   it and the reason is documented in the review notes.
+- The product visual language is an Apple-style frosted glass desktop surface.
+  Keep material behavior centralized in the global token system
+  (`--mx-material-*`, `--mx-chrome-*`, `--mx-sidebar-*`, panel, line, active,
+  and overlay tokens). Feature components must not create their own glass,
+  acrylic, blur, shadow, or translucent palette. Chrome and navigation can show
+  the frosted material; dense work surfaces should still use readable global
+  panel tokens.
 - Reuse existing dialog, action, field, icon, and tree styles before adding new
   selectors.
 - Avoid one-off feature selectors for common UI patterns such as dialogs,
