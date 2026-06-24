@@ -1518,6 +1518,7 @@ Release environment:
 
 ```text
 MXTERM_CREATE_UPDATER_ARTIFACTS=1
+NODE_OPTIONS=--max-old-space-size=4096
 TAURI_SIGNING_PRIVATE_KEY=<GitHub Secret, required>
 TAURI_SIGNING_PRIVATE_KEY_PASSWORD=<GitHub Secret, optional>
 ```
@@ -1533,6 +1534,7 @@ TAURI_SIGNING_PRIVATE_KEY_PASSWORD=<GitHub Secret, optional>
 - macOS and ordinary Windows installer builds return `desktop-installer`.
 - Tauri config must include the GitHub latest endpoint `https://github.com/syscryer/mxterm/releases/latest/download/latest.json` and the updater public key only. Private keys and key passwords must stay in GitHub Secrets or ignored runtime paths.
 - GitHub Release workflow may build Windows x64, macOS Apple Silicon, and Linux x64 only. Do not add macOS Intel artifacts or updater metadata without a new task and spec update.
+- Release builds must set `NODE_OPTIONS=--max-old-space-size=4096` so the Vite/TypeScript build does not hit the default Node heap limit on GitHub-hosted macOS Apple Silicon runners.
 - `latest.json` must include only signed updater-installable artifacts: Windows NSIS `.exe`, macOS Apple Silicon `.app.tar.gz`, and Linux `.AppImage`. Windows portable zip, Linux deb, and Linux rpm are manual-download assets only.
 
 ### 4. Validation & Error Matrix
@@ -1547,6 +1549,7 @@ TAURI_SIGNING_PRIVATE_KEY_PASSWORD=<GitHub Secret, optional>
 | macOS build | Return `desktop-installer`. |
 | Tag version differs from `package.json`, `src-tauri/Cargo.toml`, or `src-tauri/tauri.conf.json` | Release workflow fails before publishing. |
 | `TAURI_SIGNING_PRIVATE_KEY` is missing | Release workflow fails before building updater artifacts. |
+| macOS Apple Silicon runner hits Node heap exhaustion during `pnpm build` | Keep or restore `NODE_OPTIONS=--max-old-space-size=4096` in the release workflow. |
 | Updater artifact is missing, ambiguous, or has an empty `.sig` | `generate-latest-json.mjs` fails and publish does not run. |
 
 ### 5. Good / Base / Bad Cases
