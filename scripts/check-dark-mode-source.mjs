@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 const monitorCss = readFileSync("src/features/monitor/monitor.css", "utf8");
 const appCss = readFileSync("src/styles/app.css", "utf8");
 const tokenCss = readFileSync("src/styles/tokens.css", "utf8");
+const workspaceShellTsx = readFileSync("src/features/layout/WorkspaceShell.tsx", "utf8");
 
 for (const needle of [
   "--monitor-tile-bg",
@@ -56,6 +57,65 @@ for (const needle of [
   if (!appCss.includes(needle)) {
     throw new Error(`app.css is missing dark-mode surface coverage: ${needle}`);
   }
+}
+
+for (const needle of [
+  'document.body.dataset.themeMode = settings.appearance.themeMode',
+  'document.body.dataset.windowMaterial = effectiveWindowMaterial',
+  'body.style.setProperty(name, value)',
+  'body.style.removeProperty(name)',
+]) {
+  if (!workspaceShellTsx.includes(needle)) {
+    throw new Error(`WorkspaceShell should propagate theme tokens to body portals: ${needle}`);
+  }
+}
+
+for (const needle of [
+  ':where(.app-shell[data-theme-mode="dark"], body[data-theme-mode="dark"])',
+  ':where(.app-shell[data-theme-mode="system"], body[data-theme-mode="system"])',
+  ".app-select-menu {",
+  "background: var(--mx-glass-bg-strong)",
+  "box-shadow: var(--mx-glass-shadow)",
+  ".app-select-item[aria-selected=\"true\"]",
+  ".app-select-item[data-highlighted]",
+  ".connection-dialog,",
+  ".dialog-actions,",
+  ".protocol-switch,",
+  ".protocol-chip:not(.active),",
+  ".connection-dialog input,",
+  ".connection-dialog select,",
+  ".connection-dialog textarea,",
+]) {
+  if (!appCss.includes(needle)) {
+    throw new Error(`app.css is missing portal-aware connection dialog coverage: ${needle}`);
+  }
+}
+
+const appSelectMenuIndex = appCss.indexOf(".app-select-menu {");
+const appSelectMenuBlock =
+  appSelectMenuIndex >= 0 ? appCss.slice(appSelectMenuIndex, appCss.indexOf("\n}", appSelectMenuIndex)) : "";
+if (!appSelectMenuBlock) {
+  throw new Error("app.css is missing shared AppSelect menu styles");
+}
+
+for (const forbidden of [
+  "rgb(255 255 255 / 38%)",
+  "rgb(246 248 250 / 30%)",
+  "rgb(248 250 252 / 34%)",
+  "inset 0 1px 0 rgb(255 255 255 / 95%)",
+]) {
+  if (appSelectMenuBlock.includes(forbidden)) {
+    throw new Error(`AppSelect menu still contains a light-only dropdown surface: ${forbidden}`);
+  }
+}
+
+const appSelectSelectedIndex = appCss.indexOf('.app-select-item[aria-selected="true"]');
+const appSelectSelectedBlock =
+  appSelectSelectedIndex >= 0
+    ? appCss.slice(appSelectSelectedIndex, appCss.indexOf("\n}", appSelectSelectedIndex))
+    : "";
+if (!appSelectSelectedBlock || !appSelectSelectedBlock.includes("var(--mx-primary)")) {
+  throw new Error("AppSelect selected item should use tokenized primary state");
 }
 
 for (const needle of [
@@ -165,6 +225,21 @@ for (const [label, startNeedle] of [
   }
 }
 
+for (const [label, selector] of [
+  ["dark", '.app-shell[data-theme-mode="dark"] :where(.custom-titlebar)'],
+  ["system dark", '.app-shell[data-theme-mode="system"] :where(.custom-titlebar)'],
+]) {
+  const index = appCss.indexOf(selector);
+  const block = index >= 0 ? appCss.slice(index, appCss.indexOf("\n}", index)) : "";
+  if (
+    !block ||
+    !block.includes("background: transparent") ||
+    !block.includes("border-bottom-color: transparent")
+  ) {
+    throw new Error(`${label} titlebar should merge with sidebar chrome material`);
+  }
+}
+
 for (const forbidden of [
   '--mx-chrome-fill: rgb(28 28 28 / 0%);',
   '--mx-chrome-fill: rgb(30 31 34 / 0%);',
@@ -176,13 +251,24 @@ for (const forbidden of [
 }
 
 for (const needle of [
+  '.app-shell[data-theme-mode="dark"],',
+  'body[data-theme-mode="dark"]',
+  '.app-shell[data-theme-mode="system"],',
+  'body[data-theme-mode="system"]',
   '.app-shell[data-theme-mode="dark"][data-window-material="mica"]',
+  'body[data-theme-mode="dark"][data-window-material="mica"]',
   '.app-shell[data-theme-mode="dark"][data-window-material="acrylic"]',
+  'body[data-theme-mode="dark"][data-window-material="acrylic"]',
   '.app-shell[data-theme-mode="dark"][data-window-material="micaAlt"]',
+  'body[data-theme-mode="dark"][data-window-material="micaAlt"]',
   '.app-shell[data-theme-mode="system"][data-window-material="mica"]',
+  'body[data-theme-mode="system"][data-window-material="mica"]',
   '.app-shell[data-theme-mode="system"][data-window-material="acrylic"]',
+  'body[data-theme-mode="system"][data-window-material="acrylic"]',
   '.app-shell[data-theme-mode="system"][data-window-material="micaAlt"]',
+  'body[data-theme-mode="system"][data-window-material="micaAlt"]',
   "--mx-sidebar-surface: var(--mx-chrome-fill);",
+  "--mx-glass-bg-strong:",
 ]) {
   if (!tokenCss.includes(needle)) {
     throw new Error(`tokens.css is missing unified dark chrome/sidebar token: ${needle}`);

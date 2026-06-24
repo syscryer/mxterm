@@ -112,6 +112,13 @@ Ant Design, Mantine, or similar libraries just to fix one modal or button.
   right-click menus, upload menus, and tooltips. The mXterm version should stay
   tighter and calmer than codem's large popovers: light blur, fine borders,
   modest shadow, and 7-10px radii.
+- Radix portals render outside `.app-shell` by default, so they must receive the
+  same theme context through `document.body`. `WorkspaceShell` owns the body
+  `data-theme-mode`, `data-window-material`, density/platform attributes, and
+  settings-derived CSS variables used by portal surfaces. When adding a new
+  portal dialog, menu, popover, or floating picker, verify its dark/system-dark
+  styles can match both `.app-shell[data-theme-mode=...]` and
+  `body[data-theme-mode=...]`; do not rely on app-shell-only inheritance.
 - Custom select/dropdown menus that portal to `document.body` and may appear
   inside a Radix modal dialog must be wrapped with
   `DismissableLayerBranch asChild` and the menu surface must explicitly set
