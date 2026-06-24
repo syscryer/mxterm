@@ -1,5 +1,5 @@
 import type { MouseEvent, PointerEvent, ReactNode } from "react";
-import { House } from "lucide-react";
+import { Download, House, X } from "lucide-react";
 
 import { TabContextMenu } from "../../shared/ui/TabContextMenu";
 import { Tooltip } from "../../shared/ui/Tooltip";
@@ -20,6 +20,13 @@ interface TitlebarConnectionSession {
 
 interface AppTitlebarProps {
   activeConnectionId: string | null;
+  appUpdateNotice?:
+    | {
+        label: string;
+        onDismiss: () => void;
+        onOpen: () => void;
+      }
+    | null;
   connectionById: Map<string, ConnectionProfile>;
   connectionSessions: TitlebarConnectionSession[];
   homeActive: boolean;
@@ -37,6 +44,7 @@ interface AppTitlebarProps {
 
 export function AppTitlebar({
   activeConnectionId,
+  appUpdateNotice,
   connectionById,
   connectionSessions,
   homeActive,
@@ -159,7 +167,26 @@ export function AppTitlebar({
         })}
       </nav>
 
-      <div className="window-controls" aria-label="窗口控制">
+      <div className="title-trailing">
+        {appUpdateNotice ? (
+          <div className="title-update-entry" aria-label="应用更新">
+            <button className="title-update-pill" type="button" onClick={appUpdateNotice.onOpen}>
+              <Download className="title-tool-icon" aria-hidden="true" />
+              <span>{appUpdateNotice.label}</span>
+            </button>
+            <Tooltip label="关闭本次提示">
+              <button
+                className="title-update-close"
+                type="button"
+                aria-label="关闭本次更新提示"
+                onClick={appUpdateNotice.onDismiss}
+              >
+                <X className="title-tool-icon" aria-hidden="true" />
+              </button>
+            </Tooltip>
+          </div>
+        ) : null}
+        <div className="window-controls" aria-label="窗口控制">
         <button
           className="window-control"
           type="button"
@@ -184,6 +211,7 @@ export function AppTitlebar({
         >
           <CloseGlyph />
         </button>
+        </div>
       </div>
     </header>
   );

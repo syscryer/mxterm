@@ -48,6 +48,7 @@ export type UiFontPreset =
   | "noto-sans-sc";
 
 export interface BasicSettings {
+  autoCheckAppUpdate: boolean;
   filePanelFollowsActiveConnection: boolean;
   keepFailedTerminalTabs: boolean;
   reopenLastTerminal: boolean;
@@ -200,6 +201,7 @@ export const terminalFontPresets: Array<{
 
 export const defaultSettings: MxtermSettings = {
   basic: {
+    autoCheckAppUpdate: true,
     filePanelFollowsActiveConnection: true,
     keepFailedTerminalTabs: true,
     reopenLastTerminal: false,
@@ -267,6 +269,10 @@ export function normalizeSettings(value: unknown): MxtermSettings {
 
   return {
     basic: {
+      autoCheckAppUpdate: normalizeBoolean(
+        basic.autoCheckAppUpdate,
+        defaultSettings.basic.autoCheckAppUpdate,
+      ),
       filePanelFollowsActiveConnection: normalizeBoolean(
         basic.filePanelFollowsActiveConnection,
         defaultSettings.basic.filePanelFollowsActiveConnection,

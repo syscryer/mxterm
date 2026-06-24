@@ -1132,6 +1132,99 @@ await setWindowMaterial(normalizeWindowMaterial(settings.appearance.windowMateri
 />
 ```
 
+## Scenario: Application Update Settings UI
+
+### 1. Scope / Trigger
+
+- Trigger: frontend code adds or changes application update checks, updater plugin calls, runtime distribution detection, titlebar update notices, or the Basic Settings update panel.
+- Source files: `src/shared/tauri/commands.ts`, `src/shared/tauri/appUpdate.ts`, `src/features/settings/useAppUpdate.ts`, `src/features/settings/settingsTypes.ts`, `src/features/settings/SettingsView.tsx`, `src/features/layout/WorkspaceShell.tsx`, `src/features/layout/AppTitlebar.tsx`, and `src/styles/app.css`.
+- This is a cross-layer and infra contract because React owns user-visible update state while Rust owns runtime distribution metadata and Tauri updater verifies GitHub-hosted signed artifacts.
+
+### 2. Signatures
+
+```ts
+type AppDistributionMode =
+  | "desktop-installer"
+  | "desktop-portable"
+  | "desktop-appimage"
+  | "desktop-package"
+  | "web"
+
+type AppRuntimeInfo = {
+  version: string
+  repositoryUrl: string
+  distributionMode: AppDistributionMode
+  isTauri: boolean
+}
+
+getAppRuntimeInfoCommand(): Promise<AppRuntimeInfo>
+getAppRuntimeInfo(): Promise<AppRuntimeInfo>
+checkForAppUpdate(options?: { silent?: boolean }): Promise<AppUpdateCheckResult | null>
+installAppUpdate(update: Update, onProgress?: (message: string) => void): Promise<void>
+useAppUpdate({ autoCheckEnabled }: { autoCheckEnabled: boolean }): UseAppUpdateResult
+```
+
+### 3. Contracts
+
+- Components must call `getAppRuntimeInfoCommand()` or the higher-level helpers in `src/shared/tauri/appUpdate.ts`; do not call `invoke("get_app_runtime_info")` directly from UI components.
+- Update checks are GitHub Release only. Frontend repository links and fallback URLs must point to `https://github.com/syscryer/mxterm`.
+- `settings.basic.autoCheckAppUpdate` defaults to `true`, is normalized through `normalizeSettings`, and controls only startup/background checks. Manual `立即检查` must remain available when the environment supports updater checks.
+- Automatic checks must never download, install, relaunch, or interrupt terminal/file operations. They may only set an available-update state and show a dismissible titlebar notice.
+- `desktop-portable` and `desktop-package` are unsupported for automatic install. Windows portable zip and Linux deb/rpm users must be sent to GitHub Release manually.
+- `desktop-appimage` and `desktop-installer` are the only automatic install modes in v1.
+- `installAppUpdate(...)` must call Tauri updater `downloadAndInstall(...)` and then `@tauri-apps/plugin-process` `relaunch()`. It must close the updater handle in a `finally` block.
+- The titlebar update notice is session-local. Dismissing a version hides only that version for the current app run; it must not clear the available update or persist a "skip version" setting.
+- Update UI must use SettingsView rows, existing action button styles, Lucide icons, and global `--mx-*` tokens. Do not introduce a separate update dashboard or native `<select>` controls.
+
+### 4. Validation & Error Matrix
+
+| Condition | Frontend behavior |
+| --- | --- |
+| No Tauri runtime | Return `web` runtime info, disable updater install, and explain that desktop mode is required. |
+| Development mode | Show that development mode does not check updates. |
+| Windows portable zip | Show that the user should download a new portable build from GitHub Release. |
+| Linux deb/rpm package | Show that AppImage supports automatic updates and the current package must be updated manually. |
+| Updater check returns `null` | Set status to `latest` with a clear "already latest" message. |
+| Updater check throws during manual check | Set status to `failed` and surface the error or a retry message. |
+| Silent auto-check throws | Do not show a failure notice; keep the workspace usable. |
+| Install requested without an update object | Set status to `failed` and ask the user to check updates first. |
+| Install fails | Keep the update UI usable and tell the user to download from GitHub Release. |
+
+### 5. Good / Base / Bad Cases
+
+- Good: `WorkspaceShell` owns one `useAppUpdate(...)` instance, passes state into `SettingsView`, and passes only a compact dismissible notice into `AppTitlebar`.
+- Good: Basic Settings shows current version, distribution mode, status, check/install actions, GitHub link, and the automatic-check toggle without creating a new visual system.
+- Base: browser preview renders the update panel with deterministic web runtime info and disabled automatic install behavior.
+- Bad: a component calls `invoke("get_app_runtime_info")` directly, auto-installs an update after a background check, hides Windows portable/Linux package limitations, or links to a non-GitHub release channel.
+
+### 6. Tests Required
+
+- Run `pnpm check` after changing update wrapper types, settings normalization, `useAppUpdate`, `SettingsView`, `WorkspaceShell`, `AppTitlebar`, or update CSS.
+- Run release script tests after changing repository URLs, updater target selection, or supported distribution modes: `pnpm test:release`.
+- Cross-check frontend `AppDistributionMode` values against Rust `detect_distribution_mode(...)` in the same task.
+- Browser/desktop visual checks should cover web preview, development mode, latest, available, installing, failed, Windows portable, and Linux package messages when visible update UI changes.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```tsx
+await invoke("get_app_runtime_info")
+toast("发现新版本，正在自动安装")
+```
+
+#### Correct
+
+```tsx
+const appUpdate = useAppUpdate({
+  autoCheckEnabled: settings.basic.autoCheckAppUpdate,
+})
+
+if (appUpdate.workspaceNoticeVisible) {
+  openSettingsSection("basic")
+}
+```
+
 ## Scenario: WebDAV Sync Settings UI
 
 ### 1. Scope / Trigger

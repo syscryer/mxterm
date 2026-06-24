@@ -1487,6 +1487,111 @@ Serialized fields use snake_case. `CommandHistorySource` currently serializes `c
 - Run `cargo test --manifest-path src-tauri/Cargo.toml command_library --lib` after changing command-library validation or repository logic.
 - Run `npm run check` after changing frontend command-library types, wrappers, or Command Sender UI when type-check runs are approved for the session.
 
+## Scenario: Application Runtime Info and Updater Release Contract
+
+### 1. Scope / Trigger
+
+- Trigger: backend code adds or changes runtime distribution detection, application update metadata, Tauri updater configuration, release signing environment keys, or command registration for update-related runtime info.
+- Source files: `src-tauri/src/commands.rs`, `src-tauri/src/lib.rs`, `src-tauri/tauri.conf.json`, `src-tauri/capabilities/default.json`, `src-tauri/Cargo.toml`, `.github/workflows/release.yml`, `scripts/build-platform.mjs`, `scripts/release-assets.mjs`, and `scripts/generate-latest-json.mjs`.
+- This is an infra and cross-layer contract because Rust exposes runtime metadata to React while GitHub Actions produces signed updater artifacts consumed by the Tauri updater plugin.
+
+### 2. Signatures
+
+```rust
+pub fn get_app_runtime_info() -> Result<AppRuntimeInfo, AppError>
+
+pub struct AppRuntimeInfo {
+    pub version: String,
+    pub repository_url: String,
+    pub distribution_mode: String,
+    pub is_tauri: bool,
+}
+
+pub(crate) fn detect_distribution_mode(
+    platform: &str,
+    executable_dir: &Path,
+    appimage: Option<OsString>,
+) -> &'static str
+```
+
+Release environment:
+
+```text
+MXTERM_CREATE_UPDATER_ARTIFACTS=1
+TAURI_SIGNING_PRIVATE_KEY=<GitHub Secret, required>
+TAURI_SIGNING_PRIVATE_KEY_PASSWORD=<GitHub Secret, optional>
+```
+
+### 3. Contracts
+
+- `get_app_runtime_info` must be registered in `src-tauri/src/lib.rs` through `tauri::generate_handler!` and exposed through the typed frontend wrapper.
+- The serialized `AppRuntimeInfo` uses camelCase. React may also normalize snake_case for compatibility, but Rust should keep `#[serde(rename_all = "camelCase")]`.
+- `version` must come from `env!("CARGO_PKG_VERSION")`; do not hard-code it in Rust.
+- `repository_url` must be `https://github.com/syscryer/mxterm`. No mirror or alternate release channel should be part of updater runtime metadata.
+- Windows checks for `portable.marker` in the executable directory and returns `desktop-portable` when present. Portable builds must not be treated as updater-installable.
+- Linux checks the `APPIMAGE` environment variable. A non-empty value returns `desktop-appimage`; otherwise Linux returns `desktop-package`.
+- macOS and ordinary Windows installer builds return `desktop-installer`.
+- Tauri config must include the GitHub latest endpoint `https://github.com/syscryer/mxterm/releases/latest/download/latest.json` and the updater public key only. Private keys and key passwords must stay in GitHub Secrets or ignored runtime paths.
+- GitHub Release workflow may build Windows x64, macOS Apple Silicon, and Linux x64 only. Do not add macOS Intel artifacts or updater metadata without a new task and spec update.
+- `latest.json` must include only signed updater-installable artifacts: Windows NSIS `.exe`, macOS Apple Silicon `.app.tar.gz`, and Linux `.AppImage`. Windows portable zip, Linux deb, and Linux rpm are manual-download assets only.
+
+### 4. Validation & Error Matrix
+
+| Condition | Backend / release behavior |
+| --- | --- |
+| `current_exe()` fails | Return `AppError` code `runtime_info_path_failed`, recoverable. |
+| Windows executable directory contains `portable.marker` | Return `desktop-portable`. |
+| Windows executable directory has no marker | Return `desktop-installer`. |
+| Linux `APPIMAGE` is non-empty | Return `desktop-appimage`. |
+| Linux `APPIMAGE` is missing or blank | Return `desktop-package`. |
+| macOS build | Return `desktop-installer`. |
+| Tag version differs from `package.json`, `src-tauri/Cargo.toml`, or `src-tauri/tauri.conf.json` | Release workflow fails before publishing. |
+| `TAURI_SIGNING_PRIVATE_KEY` is missing | Release workflow fails before building updater artifacts. |
+| Updater artifact is missing, ambiguous, or has an empty `.sig` | `generate-latest-json.mjs` fails and publish does not run. |
+
+### 5. Good / Base / Bad Cases
+
+- Good: a Windows NSIS install returns `desktop-installer`, updater check is enabled in React, and `latest.json` points to the signed `.exe`.
+- Good: a Windows portable zip contains `portable.marker`, returns `desktop-portable`, and the UI directs the user to GitHub Release manual download.
+- Good: a Linux AppImage launch has `APPIMAGE=/path/to/mXterm.AppImage`, returns `desktop-appimage`, and `latest.json` points to the signed AppImage.
+- Base: a Linux deb/rpm install returns `desktop-package`, so the UI keeps manual update copy visible.
+- Bad: Rust infers updater support from OS alone, workflow writes portable zip/deb/rpm into `latest.json`, a private updater key is committed, or release URLs point outside GitHub.
+
+### 6. Tests Required
+
+- Run targeted Rust tests for distribution detection after changing runtime info logic: `cargo test --manifest-path src-tauri/Cargo.toml distribution_mode --lib`.
+- Run `pnpm test:release` after changing platform matrix names, asset naming, GitHub repository URL generation, or `latest.json` target selection.
+- Run `pnpm check` after changing frontend runtime info types or wrappers.
+- Run `git diff --check` and search the working tree for private key material before staging release/updater changes.
+- Confirm `.trellis/.runtime/mxterm-updater.key` or any other private key file is ignored and not staged.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```rust
+pub fn get_app_runtime_info() -> AppRuntimeInfo {
+    AppRuntimeInfo {
+        version: "0.1.0".into(),
+        repository_url: "https://example.com/mirror".into(),
+        distribution_mode: "desktop-installer".into(),
+        is_tauri: true,
+    }
+}
+```
+
+#### Correct
+
+```rust
+let executable = std::env::current_exe()?;
+let executable_dir = executable.parent().unwrap_or_else(|| Path::new("."));
+let distribution_mode = detect_distribution_mode(
+    std::env::consts::OS,
+    executable_dir,
+    std::env::var_os("APPIMAGE"),
+);
+```
+
 ## Scenario: Window Material Commands
 
 ### 1. Scope / Trigger

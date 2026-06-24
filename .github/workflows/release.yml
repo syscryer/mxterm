@@ -1,0 +1,267 @@
+name: Release
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  build:
+    name: Build ${{ matrix.target }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: windows-latest
+            target: windows-x64
+            package_script: package:win
+            bundle_root: src-tauri/target/release/bundle
+          - runner: macos-26
+            target: macos-arm64
+            package_script: package:mac-arm64
+            bundle_root: src-tauri/target/aarch64-apple-darwin/release/bundle
+          - runner: ubuntu-22.04
+            target: linux-x64
+            package_script: package:linux
+            bundle_root: src-tauri/target/x86_64-unknown-linux-gnu/release/bundle
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9.9.0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Add macOS target
+        if: matrix.target == 'macos-arm64'
+        run: rustup target add aarch64-apple-darwin
+
+      - name: Add Linux target
+        if: matrix.target == 'linux-x64'
+        run: rustup target add x86_64-unknown-linux-gnu
+
+      - name: Install Linux build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            curl \
+            file \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libssl-dev \
+            libwebkit2gtk-4.1-dev \
+            libxdo-dev \
+            patchelf \
+            pkg-config \
+            rpm \
+            wget
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Validate release version
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME#v}"
+          package_version="$(node -p "require('./package.json').version")"
+          tauri_version="$(node -p "require('./src-tauri/tauri.conf.json').version")"
+          cargo_version="$(node -e "const fs=require('fs'); const text=fs.readFileSync('src-tauri/Cargo.toml','utf8'); const head=text.split('\n[lib]')[0]; const match=head.match(/^version\\s*=\\s*\"([^\"]+)\"/m); if (!match) process.exit(2); process.stdout.write(match[1]);")"
+
+          if [ "$tag" != "$package_version" ]; then
+            echo "::error::Tag v$tag does not match package.json version $package_version"
+            exit 1
+          fi
+
+          if [ "$tag" != "$tauri_version" ]; then
+            echo "::error::Tag v$tag does not match src-tauri/tauri.conf.json version $tauri_version"
+            exit 1
+          fi
+
+          if [ "$tag" != "$cargo_version" ]; then
+            echo "::error::Tag v$tag does not match src-tauri/Cargo.toml version $cargo_version"
+            exit 1
+          fi
+
+      - name: Validate updater signing secrets
+        shell: bash
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "${TAURI_SIGNING_PRIVATE_KEY}" ]; then
+            echo "::error::Missing TAURI_SIGNING_PRIVATE_KEY secret. GitHub Release updater artifacts must be signed."
+            exit 1
+          fi
+
+      - name: Windows code signing extension point
+        if: matrix.target == 'windows-x64'
+        shell: bash
+        run: echo "Windows Authenticode signing is intentionally not configured yet; add certificate import/signing here later."
+
+      - name: macOS signing and notarization extension point
+        if: matrix.target == 'macos-arm64'
+        shell: bash
+        run: echo "macOS Developer ID signing and notarization are intentionally not configured yet; add them here later."
+
+      - name: Build platform bundle
+        env:
+          MXTERM_CREATE_UPDATER_ARTIFACTS: "1"
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: pnpm run ${{ matrix.package_script }}
+
+      - name: Collect release assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p release-assets
+          bundle_root="${{ matrix.bundle_root }}"
+
+          if [ ! -d "$bundle_root" ]; then
+            echo "::error::Bundle output not found: $bundle_root"
+            exit 1
+          fi
+
+          node scripts/release-assets.mjs \
+            --bundle-root "$bundle_root" \
+            --out-dir release-assets \
+            --artifact "${{ matrix.target }}"
+
+          if [ "${{ matrix.target }}" = "windows-x64" ]; then
+            portable_root="release-assets/mXterm-portable"
+            mkdir -p "$portable_root"
+            find src-tauri/target/release -mindepth 1 -maxdepth 1 \
+              ! -name bundle \
+              ! -name build \
+              ! -name deps \
+              ! -name _up_ \
+              ! -name incremental \
+              -exec cp -R {} "$portable_root/" \;
+
+            if [ -d "src-tauri/target/release/_up_" ]; then
+              cp -R src-tauri/target/release/_up_ "$portable_root/_up_"
+            fi
+
+            printf "portable\n" > "$portable_root/portable.marker"
+            powershell -NoProfile -Command "Compress-Archive -Path 'release-assets/mXterm-portable/*' -DestinationPath 'release-assets/mXterm-portable-windows-x64.zip' -Force"
+            rm -rf "$portable_root"
+          fi
+
+          if [ "$(find release-assets -type f | wc -l | tr -d ' ')" = "0" ]; then
+            echo "::error::No release assets were collected"
+            exit 1
+          fi
+
+          find release-assets -type f -print | sort
+
+      - name: Upload platform artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: mxterm-${{ matrix.target }}
+          path: release-assets/*
+          if-no-files-found: error
+
+  prepare:
+    name: Prepare release assets
+    runs-on: ubuntu-22.04
+    needs: build
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Download platform artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: downloaded-assets
+          merge-multiple: true
+
+      - name: Prepare release assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            version="${GITHUB_REF_NAME#v}"
+            release_tag="${GITHUB_REF_NAME}"
+          else
+            version="$(node -p "require('./package.json').version")"
+            release_tag="v${version}"
+            echo "Manual validation mode: preparing assets for ${release_tag}, but no GitHub Release will be created."
+          fi
+          prefix="mXterm-${version}/"
+
+          mkdir -p release-assets
+          find downloaded-assets -maxdepth 1 -type f -exec cp {} release-assets/ \;
+
+          git archive --format=zip --prefix="$prefix" -o "release-assets/mxterm-${version}-source.zip" HEAD
+          git archive --format=tar --prefix="$prefix" HEAD | gzip -9 > "release-assets/mxterm-${version}-source.tar.gz"
+
+          node scripts/generate-latest-json.mjs release-assets "syscryer/mxterm" "$release_tag" "$version"
+
+          (
+            cd release-assets
+            find . -type f ! -name SHA256SUMS.txt -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS.txt
+          )
+
+      - name: Upload prepared release assets
+        uses: actions/upload-artifact@v4
+        with:
+          name: mxterm-release-assets
+          path: release-assets/*
+          if-no-files-found: error
+
+  publish:
+    name: Publish GitHub Release
+    runs-on: ubuntu-22.04
+    needs: prepare
+    if: startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      actions: read
+      contents: write
+    steps:
+      - name: Download prepared release assets
+        uses: actions/download-artifact@v4
+        with:
+          name: mxterm-release-assets
+          path: release-assets
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: release-assets/*
+          generate_release_notes: true

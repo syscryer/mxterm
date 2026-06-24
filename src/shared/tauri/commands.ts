@@ -87,6 +87,19 @@ export interface NativeWindowMaterial {
   id: number;
   name: string;
 }
+export type AppDistributionMode =
+  | "desktop-installer"
+  | "desktop-portable"
+  | "desktop-appimage"
+  | "desktop-package"
+  | "web";
+
+export interface AppRuntimeInfo {
+  version: string;
+  repositoryUrl: string;
+  distributionMode: AppDistributionMode;
+  isTauri: boolean;
+}
 
 export function secretVaultStatus() {
   return invoke<SecretVaultStatus>("secret_vault_status");
@@ -290,6 +303,10 @@ export function localTerminalOpen(request: LocalTerminalOpenRequest) {
 
 export function getWindowsPtyInfo() {
   return invoke<WindowsPtyInfo | null>("get_windows_pty_info");
+}
+
+export function getAppRuntimeInfoCommand() {
+  return invoke<AppRuntimeInfo>("get_app_runtime_info");
 }
 
 export function getSupportedWindowMaterialsCommand() {
