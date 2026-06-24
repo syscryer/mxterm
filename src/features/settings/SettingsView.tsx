@@ -6,6 +6,7 @@ import {
   Clock3,
   Cloud,
   Download,
+  ExternalLink,
   Eye,
   EyeOff,
   FileKey,
@@ -15,12 +16,14 @@ import {
   Keyboard,
   KeyRound,
   Layers,
+  Loader2,
   LockKeyhole,
   Monitor,
   Moon,
   Palette,
   PanelLeft,
   Plus,
+  RefreshCw,
   RotateCcw,
   Rows3,
   Save,
@@ -107,8 +110,10 @@ import { LocalTerminalIcon } from "../terminal/LocalTerminalIcons";
 import { WebDavSyncSettingsSection } from "./WebDavSyncSettingsSection";
 import { ShortcutSettingsSection } from "./ShortcutSettingsSection";
 import { defaultMcpSettings, type McpSettings } from "./mcpSettingsTypes";
+import type { UseAppUpdateResult } from "./useAppUpdate";
 
 interface SettingsViewProps {
+  appUpdate: UseAppUpdateResult;
   connections: ConnectionProfile[];
   credentials: CredentialProfile[];
   credentialError?: string | null;
@@ -117,6 +122,7 @@ interface SettingsViewProps {
   hidden?: boolean;
   settings: MxtermSettings;
   activeSection?: SettingsSectionId;
+  activeSectionRequestKey?: number;
   supportedWindowMaterials: WindowMaterialMode[];
   onReset: () => void;
   onReturnWorkspace: () => void;
@@ -163,6 +169,7 @@ const credentialKindOptions: Array<{
 ];
 
 export function SettingsView({
+  appUpdate,
   connections,
   credentials,
   credentialError,
@@ -171,6 +178,7 @@ export function SettingsView({
   hidden = false,
   settings,
   activeSection: requestedActiveSection,
+  activeSectionRequestKey,
   supportedWindowMaterials,
   onReset,
   onReturnWorkspace,
@@ -209,7 +217,7 @@ export function SettingsView({
     if (requestedActiveSection) {
       setActiveSection(requestedActiveSection);
     }
-  }, [requestedActiveSection]);
+  }, [requestedActiveSection, activeSectionRequestKey]);
 
   return (
     <section className="settings-view" hidden={hidden} aria-label="设置" aria-hidden={hidden}>
@@ -246,6 +254,7 @@ export function SettingsView({
       <div className="settings-content">
         {activeSection === "basic" ? (
           <BasicSettingsSection
+            appUpdate={appUpdate}
             commandSettings={settings.command}
             fileTransferSettings={settings.fileTransfer}
             settings={settings.basic}
@@ -1494,7 +1503,18 @@ function formatError(error: unknown) {
   return String(error);
 }
 
+async function openExternalUrl(url: string) {
+  if (hasTauriRuntime()) {
+    const { openUrl } = await import("@tauri-apps/plugin-opener");
+    await openUrl(url);
+    return;
+  }
+
+  window.open(url, "_blank", "noopener,noreferrer");
+}
+
 function BasicSettingsSection({
+  appUpdate,
   fileTransferSettings,
   commandSettings,
   settings,
@@ -1502,6 +1522,7 @@ function BasicSettingsSection({
   onUpdateCommand,
   onUpdateFileTransfer,
 }: {
+  appUpdate: UseAppUpdateResult;
   commandSettings: CommandSettings;
   fileTransferSettings: FileTransferSettings;
   settings: BasicSettings;
@@ -1533,6 +1554,71 @@ function BasicSettingsSection({
         <h1>基础设置</h1>
         <p>控制 mXterm 启动、连接失败和文件面板跟随行为。</p>
       </header>
+
+      <div className="settings-panel settings-update-panel" id="settings-app-update">
+        <SettingsRow
+          icon={Download}
+          title="应用更新"
+          description={
+            <span>
+              当前 {appUpdate.currentVersion} · {appUpdate.distributionLabel}
+            </span>
+          }
+        >
+          <div className="settings-update-control">
+            <div className="settings-update-status" role="status">
+              <strong>{appUpdate.statusLabel}</strong>
+              <small>{appUpdate.message || "通过 GitHub Release 检查新版本。"}</small>
+            </div>
+            <div className="settings-update-actions">
+              <button
+                className="settings-action-button"
+                type="button"
+                disabled={appUpdate.checking || appUpdate.installing}
+                onClick={() => void appUpdate.checkNow()}
+              >
+                <RefreshCw
+                  className={`ui-icon ${appUpdate.checking ? "spin" : ""}`}
+                  aria-hidden="true"
+                />
+                <span>{appUpdate.checking ? "检查中" : "立即检查"}</span>
+              </button>
+              <button
+                className="settings-action-button"
+                type="button"
+                disabled={!appUpdate.canInstall || appUpdate.checking || appUpdate.installing}
+                onClick={() => void appUpdate.installNow()}
+              >
+                {appUpdate.installing ? (
+                  <Loader2 className="ui-icon spin" aria-hidden="true" />
+                ) : (
+                  <Download className="ui-icon" aria-hidden="true" />
+                )}
+                <span>{appUpdate.installing ? "安装中" : "安装并重启"}</span>
+              </button>
+              <button
+                className="settings-action-button"
+                type="button"
+                onClick={() => void openExternalUrl(appUpdate.repositoryUrl)}
+              >
+                <ExternalLink className="ui-icon" aria-hidden="true" />
+                <span>GitHub</span>
+              </button>
+            </div>
+          </div>
+        </SettingsRow>
+        <SettingsRow
+          icon={RefreshCw}
+          title="自动检查更新"
+          description="启动后静默检查新版本；不会自动下载或安装。"
+        >
+          <SettingsToggle
+            checked={settings.autoCheckAppUpdate}
+            label="自动检查更新"
+            onChange={(autoCheckAppUpdate) => onUpdate({ autoCheckAppUpdate })}
+          />
+        </SettingsRow>
+      </div>
 
       <div className="settings-panel">
         <SettingsRow

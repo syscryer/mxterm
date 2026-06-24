@@ -105,6 +105,7 @@ import {
   type WindowMaterialMode,
 } from "../settings/settingsTypes";
 import { useSettings } from "../settings/useSettings";
+import { useAppUpdate } from "../settings/useAppUpdate";
 import { SecretVaultGate } from "../security/SecretVaultGate";
 import { useSecretVault } from "../security/useSecretVault";
 import { useConnections } from "../connections/useConnections";
@@ -473,6 +474,9 @@ export function WorkspaceShell() {
     updateShortcuts,
     updateTerminalTheme,
   } = useSettings();
+  const appUpdate = useAppUpdate({
+    autoCheckEnabled: settings.basic.autoCheckAppUpdate,
+  });
   const secretVault = useSecretVault({
     autoLockMinutes: settings.security.autoLockMinutes,
     masterPasswordEnabled: settings.security.masterPasswordEnabled,
@@ -504,6 +508,7 @@ export function WorkspaceShell() {
   const [activeView, setActiveView] = useState<"workspace" | "settings">("workspace");
   const [settingsSectionRequest, setSettingsSectionRequest] =
     useState<SettingsSectionId | undefined>();
+  const [settingsSectionRequestKey, setSettingsSectionRequestKey] = useState(0);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [connectionSearchOpen, setConnectionSearchOpen] = useState(false);
   const [connectionSearchQuery, setConnectionSearchQuery] = useState("");
@@ -867,8 +872,7 @@ export function WorkspaceShell() {
       },
       "settings.open": {
         run: () => {
-          setSettingsSectionRequest(undefined);
-          setActiveView("settings");
+          openSettingsSection();
         },
       },
       "terminal.closeTab": {
@@ -3834,9 +3838,19 @@ export function WorkspaceShell() {
     return localTerminalTabsRef.current.some((tab) => tab.id === tabId);
   }
 
-  function openLocalTerminalSettings() {
-    setSettingsSectionRequest("localTerminal");
+  function openSettingsSection(sectionId?: SettingsSectionId) {
+    setSettingsSectionRequest(sectionId);
+    setSettingsSectionRequestKey((current) => current + 1);
     setActiveView("settings");
+  }
+
+  function returnFromSettings() {
+    setActiveView("workspace");
+    setSettingsSectionRequest(undefined);
+  }
+
+  function openLocalTerminalSettings() {
+    openSettingsSection("localTerminal");
   }
 
   function selectConnection(connection: ConnectionProfile) {
@@ -4171,8 +4185,7 @@ export function WorkspaceShell() {
 
   function openCredentialSettings() {
     closeConnectionDialog();
-    setSettingsSectionRequest("credentials");
-    setActiveView("settings");
+    openSettingsSection("credentials");
   }
 
   async function saveConnectionFromDialog(input: ConnectionProfileInput) {
@@ -4833,6 +4846,15 @@ export function WorkspaceShell() {
 
       <AppTitlebar
         activeConnectionId={activeConnectionId}
+        appUpdateNotice={
+          appUpdate.workspaceNoticeVisible
+            ? {
+                label: appUpdate.workspaceNoticeLabel || "有可用更新",
+                onDismiss: appUpdate.dismissWorkspaceNotice,
+                onOpen: () => openSettingsSection("basic"),
+              }
+            : null
+        }
         connectionById={connectionById}
         connectionSessions={connectionSessions}
         homeActive={showingHome}
@@ -4868,7 +4890,7 @@ export function WorkspaceShell() {
           onMoveConnectionToGroup={moveConnectionToGroup}
           onOpen={openTerminal}
           onOpenSearch={() => setConnectionSearchOpen(true)}
-          onOpenSettings={() => setActiveView("settings")}
+          onOpenSettings={() => openSettingsSection()}
           onRefresh={reload}
           onSelect={selectConnection}
           onToggleFavorite={toggleConnectionFavorite}
@@ -6286,7 +6308,9 @@ export function WorkspaceShell() {
       </Dialog.Root>
 
         <SettingsView
+          appUpdate={appUpdate}
           activeSection={settingsSectionRequest}
+          activeSectionRequestKey={settingsSectionRequestKey}
           connections={connections}
           credentials={credentials}
           credentialError={credentialError}
@@ -6311,7 +6335,7 @@ export function WorkspaceShell() {
             return Boolean(nextStatus?.unlocked);
           }}
           onReset={reset}
-          onReturnWorkspace={() => setActiveView("workspace")}
+          onReturnWorkspace={returnFromSettings}
           onSaveCredential={saveCredentialFromSettings}
           onUpdateAppearance={updateAppearance}
           onUpdateBasic={updateBasic}

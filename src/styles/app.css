@@ -1634,6 +1634,44 @@ button {
   opacity: 0.64;
 }
 
+.settings-action-button {
+  text-decoration: none;
+}
+
+.settings-update-control {
+  min-width: 0;
+  display: grid;
+  justify-items: end;
+  gap: 10px;
+}
+
+.settings-update-status {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+  text-align: right;
+}
+
+.settings-update-status strong {
+  color: var(--mx-text);
+  font-size: 12px;
+  font-weight: 560;
+}
+
+.settings-update-status small {
+  color: var(--mx-muted);
+  font-size: 12px;
+  line-height: 1.38;
+}
+
+.settings-update-actions {
+  min-width: 0;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
 .settings-stepper span {
   min-width: 30px;
   color: var(--mx-text);
@@ -2477,6 +2515,66 @@ button {
   height: 16px;
   flex: 0 0 auto;
   stroke-width: 1.5;
+}
+
+.title-trailing {
+  align-self: stretch;
+  display: flex;
+  align-items: stretch;
+  justify-content: flex-end;
+  min-width: 0;
+}
+
+.title-update-entry {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 6px;
+}
+
+.title-update-pill,
+.title-update-close {
+  height: 28px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--mx-muted);
+  background: transparent;
+  font-size: 12px;
+  font-weight: 520;
+}
+
+.title-update-pill {
+  min-width: 0;
+  max-width: 220px;
+  gap: 6px;
+  padding: 0 9px;
+}
+
+.title-update-pill span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.title-update-close {
+  width: 28px;
+  padding: 0;
+}
+
+.title-update-close .title-tool-icon {
+  width: 13px;
+  height: 13px;
+}
+
+.title-update-pill:hover,
+.title-update-close:hover {
+  color: var(--mx-text);
+  background: var(--mx-active);
+  border-color: var(--mx-line);
 }
 
 .window-controls {

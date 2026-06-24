@@ -124,6 +124,15 @@ pub struct WindowsPtyInfo {
     pub build_number: Option<u32>,
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AppRuntimeInfo {
+    pub version: String,
+    pub repository_url: String,
+    pub distribution_mode: String,
+    pub is_tauri: bool,
+}
+
 #[derive(Debug, Deserialize)]
 pub struct TerminalWriteRequest {
     pub session_id: String,
@@ -538,6 +547,28 @@ pub async fn local_terminal_open(
 #[tauri::command]
 pub fn get_windows_pty_info() -> Option<WindowsPtyInfo> {
     windows_pty_info::current()
+}
+
+#[tauri::command]
+pub fn get_app_runtime_info() -> Result<AppRuntimeInfo, AppError> {
+    let executable = std::env::current_exe().map_err(|error| {
+        AppError::new(
+            "runtime_info_path_failed",
+            "运行时信息读取失败。",
+            error,
+            true,
+        )
+    })?;
+    let executable_dir = executable.parent().unwrap_or_else(|| Path::new("."));
+    let distribution_mode =
+        detect_distribution_mode(std::env::consts::OS, executable_dir, std::env::var_os("APPIMAGE"));
+
+    Ok(AppRuntimeInfo {
+        version: env!("CARGO_PKG_VERSION").to_string(),
+        repository_url: "https://github.com/syscryer/mxterm".to_string(),
+        distribution_mode: distribution_mode.to_string(),
+        is_tauri: true,
+    })
 }
 
 #[tauri::command]
@@ -2395,7 +2426,9 @@ fn remote_sftp_transfer_progress_callback(
 
 #[cfg(test)]
 mod tests {
-    use super::{ensure_local_download_directory_ready, local_tar_extract_args};
+    use super::{
+        detect_distribution_mode, ensure_local_download_directory_ready, local_tar_extract_args,
+    };
     use std::ffi::OsString;
     use std::fs;
     use std::path::Path;
@@ -2427,6 +2460,49 @@ mod tests {
         assert!(nested.exists());
 
         let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn distribution_mode_detects_windows_portable_marker() {
+        let root = std::env::temp_dir().join(format!(
+            "mxterm-portable-marker-{}",
+            crate::commands::now_millis()
+        ));
+        fs::create_dir_all(&root).expect("test directory should be created");
+        fs::write(root.join("portable.marker"), "").expect("marker should be written");
+
+        assert_eq!(detect_distribution_mode("windows", &root, None), "desktop-portable");
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn distribution_mode_detects_linux_appimage_and_package_modes() {
+        let root = std::env::temp_dir().join(format!(
+            "mxterm-linux-mode-{}",
+            crate::commands::now_millis()
+        ));
+        fs::create_dir_all(&root).expect("test directory should be created");
+
+        assert_eq!(
+            detect_distribution_mode("linux", &root, Some(OsString::from("/tmp/mXterm.AppImage"))),
+            "desktop-appimage"
+        );
+        assert_eq!(detect_distribution_mode("linux", &root, None), "desktop-package");
+        assert_eq!(
+            detect_distribution_mode("linux", &root, Some(OsString::from("  "))),
+            "desktop-package"
+        );
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn distribution_mode_defaults_to_installer_for_desktop_platforms() {
+        let root = std::env::temp_dir();
+
+        assert_eq!(detect_distribution_mode("windows", &root, None), "desktop-installer");
+        assert_eq!(detect_distribution_mode("macos", &root, None), "desktop-installer");
     }
 }
 
@@ -2577,6 +2653,30 @@ fn app_data_dir(app: &AppHandle) -> Result<PathBuf, AppError> {
             true,
         )
     })
+}
+
+pub(crate) fn detect_distribution_mode(
+    platform: &str,
+    executable_dir: &Path,
+    appimage: Option<OsString>,
+) -> &'static str {
+    if platform == "windows" && executable_dir.join("portable.marker").is_file() {
+        return "desktop-portable";
+    }
+
+    if platform == "linux" {
+        if appimage
+            .as_ref()
+            .and_then(|value| value.to_str())
+            .map(|value| !value.trim().is_empty())
+            .unwrap_or(false)
+        {
+            return "desktop-appimage";
+        }
+        return "desktop-package";
+    }
+
+    "desktop-installer"
 }
 
 fn now_timestamp() -> Result<String, AppError> {

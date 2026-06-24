@@ -28,6 +28,8 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(remote_monitor::RemoteMonitorManager::default())
         .manage(docker_tools::DockerExecSessionManager::default())
         .manage(remote_files::RemoteFileManager::default())
@@ -71,6 +73,7 @@ pub fn run() {
             mcp::mcp_executable_path,
             mcp::mcp_settings_get,
             mcp::mcp_settings_save,
+            commands::get_app_runtime_info,
             commands::get_windows_pty_info,
             commands::terminal_connect,
             commands::terminal_write,
