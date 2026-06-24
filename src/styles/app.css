@@ -4326,7 +4326,12 @@ button {
   gap: 12px;
   padding: 12px 20px;
   border-bottom: 1px solid var(--mx-line-soft);
-  background: linear-gradient(180deg, #ffffff, #fbfcfe);
+  background:
+    linear-gradient(
+      180deg,
+      color-mix(in srgb, var(--mx-panel) 96%, var(--mx-panel-soft) 4%),
+      var(--mx-panel)
+    );
 }
 
 .toolbar-left,
@@ -4471,18 +4476,17 @@ button {
   min-height: 0;
   border: 1px solid var(--mx-line);
   border-radius: 8px;
-  overflow-x: auto;
-  overflow-y: hidden;
+  overflow: hidden;
   background: var(--mx-panel);
 }
 
 .connection-head,
 .connection-row {
   display: grid;
-  grid-template-columns: 48px minmax(106px, 0.58fr) 74px minmax(220px, 1.3fr) minmax(160px, 1.1fr) var(--connection-action-width);
+  grid-template-columns: 48px minmax(92px, 0.52fr) 72px minmax(170px, 1.28fr) minmax(96px, 0.9fr) var(--connection-action-width);
   align-items: center;
   gap: 12px;
-  min-width: 720px;
+  min-width: 0;
 }
 
 .connection-head {
@@ -4490,7 +4494,7 @@ button {
   padding: 0 12px;
   border-bottom: 1px solid var(--mx-line);
   color: var(--mx-subtle);
-  background: #fbfcfe;
+  background: var(--mx-panel);
   font-size: 12px;
   font-weight: 520;
 }
@@ -4688,7 +4692,7 @@ button {
 }
 
 .action-cell {
-  position: sticky;
+  position: relative;
   right: 0;
   z-index: 2;
   width: var(--connection-action-width);
@@ -4701,11 +4705,11 @@ button {
   align-self: stretch;
   padding: 0 8px;
   background: #ffffff;
-  box-shadow: -1px 0 0 rgb(221 225 231 / 58%);
+  box-shadow: none;
 }
 
 .action-head {
-  position: sticky;
+  position: relative;
   right: 0;
   z-index: 3;
   width: var(--connection-action-width);
@@ -4717,7 +4721,7 @@ button {
   justify-content: center;
   padding: 0 8px;
   background: #fbfcfe;
-  box-shadow: -1px 0 0 rgb(221 225 231 / 58%);
+  box-shadow: none;
 }
 
 .connection-row:hover .action-cell {
@@ -10647,9 +10651,33 @@ button {
     var(--mx-material-bg, var(--mx-bg));
 }
 
+.app-shell[data-theme-mode="dark"] :where(.custom-titlebar) {
+  background: var(--mx-sidebar-surface);
+  border-bottom-color: var(--mx-chrome-line);
+}
+
+.app-shell[data-theme-mode="dark"] :where(.title-leading) {
+  border-right-color: transparent;
+}
+
 .app-shell[data-theme-mode="dark"] :where(
+  .settings-panel,
+  .appearance-preview,
   .appearance-preview-files,
+  .settings-input,
+  .settings-select,
+  .settings-segmented,
+  .settings-stepper,
+  .settings-accent-picker button,
+  .settings-accent-custom,
+  .settings-action-button,
+  .settings-path-button,
+  .repository-toolbar,
+  .repository-search,
+  .repository-primary-button,
+  .repository-icon-button,
   .connection-head,
+  .credential-form-head,
   .credential-form-actions,
   .connection-step-rail,
   .connection-step-status,
@@ -10664,9 +10692,124 @@ button {
   .connection-dialog-tabs,
   .dialog-actions,
   .remote-file-editor-compactbar,
-  .remote-file-properties div
+  .remote-file-properties div,
+  .command-sender-panel,
+  .command-sender-console,
+  .command-console-toggle,
+  .command-target-select-all,
+  .command-target,
+  .command-target-terminal-shell,
+  .command-input,
+  .command-sender-actions
 ) {
   background: var(--mx-panel);
+}
+
+.app-shell[data-theme-mode="dark"] :where(
+  .settings-segmented,
+  .settings-stepper,
+  .command-target-pane,
+  .command-sender-console-head
+) {
+  background: var(--mx-panel-soft);
+}
+
+.app-shell[data-theme-mode="dark"] :where(
+  .settings-segmented button:hover,
+  .settings-stepper button:hover:not(:disabled),
+  .settings-action-button:hover:not(:disabled),
+  .terminal-scheme-card:hover:not(.active),
+  .filter-tab:hover,
+  .repository-icon-button:hover:not(:disabled),
+  .command-console-toggle:hover,
+  .command-target-select-all:hover,
+  .command-sender-secondary:hover:not(:disabled)
+) {
+  color: var(--mx-text);
+  background: var(--mx-active);
+}
+
+.app-shell[data-theme-mode="dark"] :is(
+  .dialog-actions .primary-button,
+  .credential-form-actions .primary-button,
+  .local-terminal-status-actions .primary-button,
+  .connection-prompt-form .primary-button,
+  .host-key-confirm .primary-button,
+  .repository-primary-button,
+  .command-snippet-form-actions .primary-button,
+  .docker-dialog-actions .primary-button,
+  .webdav-sync-actions .primary-button,
+  .command-actions .primary-button,
+  .settings-toggle[aria-checked="true"]
+) {
+  border-color: color-mix(in srgb, var(--mx-primary) 36%, var(--mx-line-strong));
+  color: color-mix(in srgb, var(--mx-primary) 76%, var(--mx-text) 24%);
+  background: color-mix(in srgb, var(--mx-primary) 12%, var(--mx-panel));
+}
+
+.app-shell[data-theme-mode="dark"] :is(
+  .dialog-actions .primary-button:hover,
+  .credential-form-actions .primary-button:hover:not(:disabled),
+  .local-terminal-status-actions .primary-button:hover:not(:disabled),
+  .connection-prompt-form .primary-button:hover,
+  .host-key-confirm .primary-button:hover,
+  .repository-primary-button:hover:not(:disabled),
+  .command-snippet-form-actions .primary-button:hover,
+  .docker-dialog-actions .primary-button:hover,
+  .webdav-sync-actions .primary-button:hover:not(:disabled),
+  .command-actions .primary-button:hover:not(:disabled)
+) {
+  border-color: color-mix(in srgb, var(--mx-primary) 48%, var(--mx-line-strong));
+  color: color-mix(in srgb, var(--mx-primary) 88%, var(--mx-text) 12%);
+  background: color-mix(in srgb, var(--mx-primary) 18%, var(--mx-panel));
+}
+
+.app-shell[data-theme-mode="dark"] .connection-row:hover .action-cell {
+  background: transparent;
+  transition: none;
+}
+
+.app-shell[data-theme-mode="dark"] :where(.connection-row) {
+  transition: none;
+}
+
+.app-shell[data-theme-mode="dark"] :where(.connection-action-icon) {
+  transition: none;
+}
+
+.app-shell[data-theme-mode="dark"] :where(.connection-action-icon:hover) {
+  color: var(--mx-text);
+  background: transparent;
+}
+
+.app-shell[data-theme-mode="dark"] :where(.connection-action-icon.connect:hover) {
+  color: color-mix(in srgb, var(--mx-primary) 70%, var(--mx-text) 30%);
+  background: transparent;
+}
+
+.app-shell[data-theme-mode="dark"] :where(
+  .connection-action-icon.favorite.active,
+  .connection-action-icon.favorite:focus-visible
+) {
+  background: transparent;
+}
+
+.app-shell[data-theme-mode="dark"] :where(
+  .command-target:hover,
+  .command-target.selected,
+  .command-sender-target.selected,
+  .command-target.has-delivery,
+  .command-target.selected.has-delivery
+) {
+  background: color-mix(in srgb, var(--mx-primary) 10%, var(--mx-panel));
+}
+
+.app-shell[data-theme-mode="dark"] :where(.command-target:not(.selected)) {
+  opacity: 0.82;
+}
+
+.app-shell[data-theme-mode="dark"] :where(.command-input::placeholder) {
+  color: var(--mx-subtle);
 }
 
 .app-shell[data-theme-mode="dark"] :where(.connection-row:hover) {
@@ -10725,9 +10868,33 @@ button {
       var(--mx-material-bg, var(--mx-bg));
   }
 
+  .app-shell[data-theme-mode="system"] :where(.custom-titlebar) {
+    background: var(--mx-sidebar-surface);
+    border-bottom-color: var(--mx-chrome-line);
+  }
+
+  .app-shell[data-theme-mode="system"] :where(.title-leading) {
+    border-right-color: transparent;
+  }
+
   .app-shell[data-theme-mode="system"] :where(
+    .settings-panel,
+    .appearance-preview,
     .appearance-preview-files,
+    .settings-input,
+    .settings-select,
+    .settings-segmented,
+    .settings-stepper,
+    .settings-accent-picker button,
+    .settings-accent-custom,
+    .settings-action-button,
+    .settings-path-button,
+    .repository-toolbar,
+    .repository-search,
+    .repository-primary-button,
+    .repository-icon-button,
     .connection-head,
+    .credential-form-head,
     .credential-form-actions,
     .connection-step-rail,
     .connection-step-status,
@@ -10742,9 +10909,124 @@ button {
     .connection-dialog-tabs,
     .dialog-actions,
     .remote-file-editor-compactbar,
-    .remote-file-properties div
+    .remote-file-properties div,
+    .command-sender-panel,
+    .command-sender-console,
+    .command-console-toggle,
+    .command-target-select-all,
+    .command-target,
+    .command-target-terminal-shell,
+    .command-input,
+    .command-sender-actions
   ) {
     background: var(--mx-panel);
+  }
+
+  .app-shell[data-theme-mode="system"] :where(
+    .settings-segmented,
+    .settings-stepper,
+    .command-target-pane,
+    .command-sender-console-head
+  ) {
+    background: var(--mx-panel-soft);
+  }
+
+  .app-shell[data-theme-mode="system"] :where(
+    .settings-segmented button:hover,
+    .settings-stepper button:hover:not(:disabled),
+    .settings-action-button:hover:not(:disabled),
+    .terminal-scheme-card:hover:not(.active),
+    .filter-tab:hover,
+    .repository-icon-button:hover:not(:disabled),
+    .command-console-toggle:hover,
+    .command-target-select-all:hover,
+    .command-sender-secondary:hover:not(:disabled)
+  ) {
+    color: var(--mx-text);
+    background: var(--mx-active);
+  }
+
+  .app-shell[data-theme-mode="system"] :is(
+    .dialog-actions .primary-button,
+    .credential-form-actions .primary-button,
+    .local-terminal-status-actions .primary-button,
+    .connection-prompt-form .primary-button,
+    .host-key-confirm .primary-button,
+    .repository-primary-button,
+    .command-snippet-form-actions .primary-button,
+    .docker-dialog-actions .primary-button,
+    .webdav-sync-actions .primary-button,
+    .command-actions .primary-button,
+    .settings-toggle[aria-checked="true"]
+  ) {
+    border-color: color-mix(in srgb, var(--mx-primary) 36%, var(--mx-line-strong));
+    color: color-mix(in srgb, var(--mx-primary) 76%, var(--mx-text) 24%);
+    background: color-mix(in srgb, var(--mx-primary) 12%, var(--mx-panel));
+  }
+
+  .app-shell[data-theme-mode="system"] :is(
+    .dialog-actions .primary-button:hover,
+    .credential-form-actions .primary-button:hover:not(:disabled),
+    .local-terminal-status-actions .primary-button:hover:not(:disabled),
+    .connection-prompt-form .primary-button:hover,
+    .host-key-confirm .primary-button:hover,
+    .repository-primary-button:hover:not(:disabled),
+    .command-snippet-form-actions .primary-button:hover,
+    .docker-dialog-actions .primary-button:hover,
+    .webdav-sync-actions .primary-button:hover:not(:disabled),
+    .command-actions .primary-button:hover:not(:disabled)
+  ) {
+    border-color: color-mix(in srgb, var(--mx-primary) 48%, var(--mx-line-strong));
+    color: color-mix(in srgb, var(--mx-primary) 88%, var(--mx-text) 12%);
+    background: color-mix(in srgb, var(--mx-primary) 18%, var(--mx-panel));
+  }
+
+  .app-shell[data-theme-mode="system"] .connection-row:hover .action-cell {
+    background: transparent;
+    transition: none;
+  }
+
+  .app-shell[data-theme-mode="system"] :where(.connection-row) {
+    transition: none;
+  }
+
+  .app-shell[data-theme-mode="system"] :where(.connection-action-icon) {
+    transition: none;
+  }
+
+  .app-shell[data-theme-mode="system"] :where(.connection-action-icon:hover) {
+    color: var(--mx-text);
+    background: transparent;
+  }
+
+  .app-shell[data-theme-mode="system"] :where(.connection-action-icon.connect:hover) {
+    color: color-mix(in srgb, var(--mx-primary) 70%, var(--mx-text) 30%);
+    background: transparent;
+  }
+
+  .app-shell[data-theme-mode="system"] :where(
+    .connection-action-icon.favorite.active,
+    .connection-action-icon.favorite:focus-visible
+  ) {
+    background: transparent;
+  }
+
+  .app-shell[data-theme-mode="system"] :where(
+    .command-target:hover,
+    .command-target.selected,
+    .command-sender-target.selected,
+    .command-target.has-delivery,
+    .command-target.selected.has-delivery
+  ) {
+    background: color-mix(in srgb, var(--mx-primary) 10%, var(--mx-panel));
+  }
+
+  .app-shell[data-theme-mode="system"] :where(.command-target:not(.selected)) {
+    opacity: 0.82;
+  }
+
+  .app-shell[data-theme-mode="system"] :where(.command-input::placeholder) {
+    color: var(--mx-subtle);
   }
 
   .app-shell[data-theme-mode="system"] :where(.connection-row:hover) {
@@ -10836,7 +11118,7 @@ body {
 }
 
 .app-shell[data-window-material="auto"] .custom-titlebar {
-  background: var(--mx-chrome-fill);
+  background: var(--mx-sidebar-surface);
 }
 
 .title-leading {
@@ -10918,7 +11200,7 @@ body {
 .app-sidebar {
   position: relative;
   color: var(--mx-text);
-  background: transparent;
+  background: var(--mx-sidebar-surface);
   border-right-color: transparent;
   box-shadow: var(--mx-sidebar-shadow);
   backdrop-filter: none;
