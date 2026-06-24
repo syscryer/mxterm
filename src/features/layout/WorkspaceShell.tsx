@@ -1036,6 +1036,35 @@ export function WorkspaceShell() {
     "--right-pane-custom-width": `${rightPaneWidth.toString()}px`,
   } as CSSProperties;
 
+  useLayoutEffect(() => {
+    const body = document.body;
+    document.body.dataset.themeMode = settings.appearance.themeMode;
+    document.body.dataset.windowMaterial = effectiveWindowMaterial;
+    document.body.dataset.density = settings.appearance.density;
+    document.body.dataset.platform = desktopPlatform;
+
+    const portalThemeStyle = resolveSettingsStyle(settings);
+    for (const [name, value] of Object.entries(portalThemeStyle)) {
+      body.style.setProperty(name, value);
+    }
+
+    return () => {
+      delete document.body.dataset.themeMode;
+      delete document.body.dataset.windowMaterial;
+      delete document.body.dataset.density;
+      delete document.body.dataset.platform;
+      for (const name of Object.keys(portalThemeStyle)) {
+        body.style.removeProperty(name);
+      }
+    };
+  }, [
+    desktopPlatform,
+    effectiveWindowMaterial,
+    settings,
+    settings.appearance.density,
+    settings.appearance.themeMode,
+  ]);
+
   useEffect(() => {
     if (desktopPlatform !== "windows") {
       setWindowsPtyInfo(undefined);
