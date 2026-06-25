@@ -89,8 +89,8 @@ GitHub Secrets：
 
 ```powershell
 git status --short
-git tag v0.1.0
-git push origin v0.1.0
+git tag vX.Y.Z
+git push github vX.Y.Z
 ```
 
 Release workflow 会构建 Windows x64、macOS Apple Silicon 和 Linux x64，并生成平台安装包、源码 zip、源码 tar.gz、`latest.json` 和 `SHA256SUMS.txt`。Windows 代码签名、macOS Developer ID 签名和 notarization 暂未接入，workflow 中保留后续扩展入口。
