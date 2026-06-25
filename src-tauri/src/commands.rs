@@ -29,6 +29,11 @@ use crate::docker_tools::{
 };
 use crate::events::RemoteFileTransferProgressEvent;
 use crate::known_hosts::HostKeyInfo;
+use crate::rdp::{
+    RdpConnectionRequest, RdpLaunchPreview, RdpLaunchResult, RdpResizeRequest,
+    RdpRunnerProbeRequest, RdpRunnerProbeResult, RdpSessionCloseResult, RdpSessionManager,
+    RdpSessionRequest, RdpSessionResizeResult,
+};
 use crate::remote_files::{
     RemoteFileArchiveUploadResult, RemoteFileEntry, RemoteFileEntryMetadata, RemoteFileManager,
     RemoteFileMetadata, RemoteFilePathCheckResult, RemoteFileReadResult, RemoteFileUploadResult,
@@ -1738,6 +1743,49 @@ pub async fn connection_test_profile(
         ok: true,
         message: "连接测试通过。".to_string(),
     })
+}
+
+#[tauri::command]
+pub async fn rdp_launch_connection(
+    app: AppHandle,
+    manager: State<'_, RdpSessionManager>,
+    request: RdpConnectionRequest,
+) -> Result<RdpLaunchResult, AppError> {
+    crate::rdp::launch_connection(&app, manager.inner(), request).await
+}
+
+#[tauri::command]
+pub async fn rdp_preview_launch(
+    app: AppHandle,
+    request: RdpConnectionRequest,
+) -> Result<RdpLaunchPreview, AppError> {
+    crate::rdp::preview_launch(&app, request)
+}
+
+#[tauri::command]
+pub async fn rdp_test_runner(
+    request: RdpRunnerProbeRequest,
+) -> Result<RdpRunnerProbeResult, AppError> {
+    crate::rdp::probe_runner(request)
+}
+
+#[tauri::command]
+pub async fn rdp_close_session(
+    manager: State<'_, RdpSessionManager>,
+    request: RdpSessionRequest,
+) -> Result<RdpSessionCloseResult, AppError> {
+    Ok(crate::rdp::close_session(manager.inner(), request))
+}
+
+#[tauri::command]
+pub async fn rdp_resize_embedded_session(
+    manager: State<'_, RdpSessionManager>,
+    request: RdpResizeRequest,
+) -> Result<RdpSessionResizeResult, AppError> {
+    Ok(crate::rdp::resize_embedded_session(
+        manager.inner(),
+        request,
+    ))
 }
 
 #[tauri::command]

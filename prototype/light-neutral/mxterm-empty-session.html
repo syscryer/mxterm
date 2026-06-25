@@ -1243,9 +1243,277 @@
       line-height: 1.65;
     }
 
+    .terminal-preview[hidden] {
+      display: none;
+    }
+
     .terminal-preview pre {
       margin: 0;
       padding: 12px 14px;
+      white-space: pre-wrap;
+    }
+
+    .rdp-session-preview {
+      min-width: 0;
+      min-height: 0;
+      display: grid;
+      grid-template-rows: auto minmax(0, 1fr);
+      overflow: hidden;
+      color: var(--mx-text);
+      background: var(--mx-panel-soft);
+    }
+
+    .rdp-session-preview[hidden] {
+      display: none;
+    }
+
+    .rdp-session-head {
+      min-width: 0;
+      min-height: 52px;
+      border-bottom: 1px solid var(--mx-line);
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      align-items: center;
+      gap: 10px;
+      padding: 8px 12px 8px 14px;
+      background: color-mix(in srgb, var(--mx-panel-soft) 86%, var(--mx-panel));
+    }
+
+    .rdp-session-title {
+      min-width: 0;
+      display: grid;
+      grid-template-columns: 30px minmax(0, 1fr);
+      align-items: center;
+      gap: 8px;
+    }
+
+    .rdp-session-title .ui-icon {
+      width: 30px;
+      height: 30px;
+      border: 1px solid color-mix(in srgb, var(--mx-primary) 22%, var(--mx-line));
+      border-radius: 8px;
+      padding: 6px;
+      color: var(--mx-primary);
+      background: color-mix(in srgb, var(--mx-primary) 8%, var(--mx-panel));
+    }
+
+    .rdp-session-title span {
+      min-width: 0;
+      display: grid;
+      gap: 2px;
+    }
+
+    .rdp-session-title strong,
+    .rdp-session-title small {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .rdp-session-title strong {
+      font-size: 13px;
+      font-weight: 650;
+    }
+
+    .rdp-session-title small {
+      color: var(--mx-subtle);
+      font-family: var(--font-mono);
+      font-size: 11px;
+    }
+
+    .rdp-session-actions {
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      gap: 6px;
+      flex-wrap: wrap;
+    }
+
+    .rdp-session-actions button,
+    .rdp-tool-actions button,
+    .rdp-dialog-actions button {
+      height: 28px;
+      border: 1px solid var(--mx-line);
+      border-radius: 7px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 5px;
+      padding: 0 9px;
+      color: var(--mx-muted);
+      background: var(--mx-panel);
+      font-size: 12px;
+      font-weight: 650;
+    }
+
+    .rdp-session-actions button:hover,
+    .rdp-tool-actions button:hover,
+    .rdp-dialog-actions button:hover {
+      border-color: var(--mx-line-strong);
+      color: var(--mx-text);
+      background: var(--mx-panel-soft);
+    }
+
+    .rdp-session-actions .primary,
+    .rdp-tool-actions .primary,
+    .rdp-dialog-actions .primary {
+      border-color: color-mix(in srgb, var(--mx-primary) 56%, var(--mx-line));
+      color: #ffffff;
+      background: var(--mx-primary);
+    }
+
+    .rdp-session-body {
+      min-width: 0;
+      min-height: 0;
+      display: grid;
+      grid-template-columns: minmax(320px, 0.42fr) minmax(0, 1fr);
+      gap: 12px;
+      overflow: auto;
+      padding: 12px;
+    }
+
+    .rdp-state-list {
+      min-width: 0;
+      display: grid;
+      align-content: start;
+      gap: 8px;
+    }
+
+    .rdp-state-card {
+      min-width: 0;
+      border: 1px solid var(--mx-line-soft);
+      border-radius: 8px;
+      display: grid;
+      grid-template-columns: 28px minmax(0, 1fr) auto;
+      align-items: center;
+      gap: 8px;
+      padding: 9px;
+      color: var(--mx-muted);
+      background: color-mix(in srgb, var(--mx-panel) 88%, var(--mx-panel-soft));
+      text-align: left;
+    }
+
+    .rdp-state-card.active {
+      border-color: color-mix(in srgb, var(--mx-primary) 42%, var(--mx-line));
+      color: var(--mx-text);
+      background: color-mix(in srgb, var(--mx-primary) 8%, var(--mx-panel));
+    }
+
+    .rdp-state-card.error {
+      border-color: color-mix(in srgb, var(--mx-danger) 22%, var(--mx-line));
+      background: color-mix(in srgb, var(--mx-danger) 7%, var(--mx-panel));
+    }
+
+    .rdp-state-card .ui-icon {
+      width: 18px;
+      height: 18px;
+      color: var(--mx-primary);
+    }
+
+    .rdp-state-card.error .ui-icon {
+      color: var(--mx-danger);
+    }
+
+    .rdp-state-card span {
+      min-width: 0;
+      display: grid;
+      gap: 2px;
+    }
+
+    .rdp-state-card strong,
+    .rdp-state-card small {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .rdp-state-card strong {
+      color: var(--mx-text);
+      font-size: 12px;
+    }
+
+    .rdp-state-card small,
+    .rdp-state-card em {
+      color: var(--mx-subtle);
+      font-size: 11px;
+      font-style: normal;
+    }
+
+    .rdp-display-host {
+      min-width: 0;
+      min-height: 0;
+      border: 1px dashed color-mix(in srgb, var(--mx-primary) 28%, var(--mx-line));
+      border-radius: 8px;
+      display: grid;
+      grid-template-rows: minmax(0, 1fr) auto;
+      overflow: hidden;
+      background: color-mix(in srgb, var(--mx-panel) 80%, var(--mx-primary) 3%);
+    }
+
+    .rdp-screen-placeholder {
+      min-width: 0;
+      min-height: 0;
+      display: grid;
+      place-content: center;
+      justify-items: center;
+      gap: 10px;
+      padding: 24px;
+      text-align: center;
+    }
+
+    .rdp-screen-placeholder .ui-icon {
+      width: 44px;
+      height: 44px;
+      color: var(--mx-primary);
+    }
+
+    .rdp-screen-placeholder strong {
+      font-size: 15px;
+      font-weight: 650;
+    }
+
+    .rdp-screen-placeholder small {
+      max-width: 420px;
+      color: var(--mx-muted);
+      font-size: 12px;
+      line-height: 1.55;
+    }
+
+    .rdp-launch-preview {
+      min-width: 0;
+      border-top: 1px solid var(--mx-line);
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+      gap: 8px;
+      padding: 9px;
+      background: color-mix(in srgb, var(--mx-panel-soft) 84%, var(--mx-panel));
+    }
+
+    .rdp-preview-block {
+      min-width: 0;
+      border: 1px solid var(--mx-line-soft);
+      border-radius: 8px;
+      display: grid;
+      gap: 5px;
+      padding: 8px;
+      background: var(--mx-panel);
+    }
+
+    .rdp-preview-block strong {
+      font-size: 12px;
+    }
+
+    .rdp-preview-block code,
+    .rdp-preview-block pre {
+      min-width: 0;
+      margin: 0;
+      overflow: auto;
+      color: var(--mx-text);
+      font-family: var(--font-mono);
+      font-size: 11px;
+      line-height: 1.5;
       white-space: pre-wrap;
     }
 
@@ -1351,8 +1619,137 @@
 
     .file-browser-pane[hidden],
     .command-library-pane[hidden],
+    .rdp-tool-pane[hidden],
     .tool-placeholder-pane[hidden] {
       display: none;
+    }
+
+    .rdp-tool-pane {
+      min-width: 0;
+      min-height: 0;
+      display: grid;
+      grid-template-rows: auto auto minmax(0, 1fr);
+      gap: 10px;
+      overflow: auto;
+      padding: 10px;
+      background: var(--mx-panel);
+    }
+
+    .rdp-tool-head {
+      min-width: 0;
+      border-bottom: 1px solid var(--mx-line);
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      align-items: start;
+      gap: 8px;
+      padding-bottom: 9px;
+    }
+
+    .rdp-tool-head span:first-child {
+      min-width: 0;
+      display: grid;
+      gap: 2px;
+    }
+
+    .rdp-tool-head strong,
+    .rdp-tool-head small {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .rdp-tool-head strong {
+      font-size: 13px;
+      font-weight: 650;
+    }
+
+    .rdp-tool-head small {
+      color: var(--mx-subtle);
+      font-family: var(--font-mono);
+      font-size: 11px;
+    }
+
+    .rdp-status-pill {
+      min-height: 22px;
+      border: 1px solid color-mix(in srgb, var(--mx-success) 22%, var(--mx-line));
+      border-radius: 999px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      padding: 0 8px;
+      color: var(--mx-success);
+      background: color-mix(in srgb, var(--mx-success) 8%, var(--mx-panel));
+      font-size: 11px;
+      font-weight: 700;
+      white-space: nowrap;
+    }
+
+    .rdp-tool-actions {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      flex-wrap: wrap;
+    }
+
+    .rdp-tool-facts {
+      min-width: 0;
+      border: 1px solid var(--mx-line-soft);
+      border-radius: 8px;
+      display: grid;
+      overflow: hidden;
+      background: color-mix(in srgb, var(--mx-panel-soft) 70%, var(--mx-panel));
+    }
+
+    .rdp-tool-fact {
+      min-width: 0;
+      display: grid;
+      grid-template-columns: 72px minmax(0, 1fr);
+      gap: 8px;
+      border-bottom: 1px solid var(--mx-line-soft);
+      padding: 7px 9px;
+      font-size: 12px;
+    }
+
+    .rdp-tool-fact:last-child {
+      border-bottom: 0;
+    }
+
+    .rdp-tool-fact span:first-child {
+      color: var(--mx-subtle);
+    }
+
+    .rdp-tool-fact span:last-child {
+      min-width: 0;
+      overflow: hidden;
+      color: var(--mx-text);
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .rdp-tool-preview {
+      min-width: 0;
+      border: 1px solid var(--mx-line-soft);
+      border-radius: 8px;
+      display: grid;
+      gap: 7px;
+      padding: 9px;
+      background: color-mix(in srgb, var(--mx-panel) 90%, var(--mx-panel-soft));
+    }
+
+    .rdp-tool-preview strong {
+      font-size: 12px;
+    }
+
+    .rdp-tool-preview code,
+    .rdp-tool-preview pre {
+      min-width: 0;
+      margin: 0;
+      overflow: auto;
+      font-family: var(--font-mono);
+      font-size: 11px;
+      line-height: 1.5;
+      white-space: pre-wrap;
     }
 
     .file-tree {
@@ -2397,6 +2794,173 @@
       display: flex;
     }
 
+    .rdp-dialog-backdrop {
+      position: fixed;
+      inset: 0;
+      z-index: 30;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      padding: 28px;
+      background: rgba(15, 23, 42, 0.22);
+      backdrop-filter: blur(5px);
+    }
+
+    .rdp-dialog-backdrop.open {
+      display: flex;
+    }
+
+    .rdp-dialog {
+      width: min(660px, calc(100vw - 56px));
+      max-height: min(760px, calc(100vh - 56px));
+      border: 1px solid var(--mx-line);
+      border-radius: 12px;
+      display: grid;
+      grid-template-rows: auto auto minmax(0, 1fr) auto;
+      overflow: hidden;
+      background: rgba(255, 255, 255, 0.96);
+      box-shadow: 0 18px 40px rgba(15, 23, 42, 0.16);
+    }
+
+    .rdp-dialog-head,
+    .rdp-dialog-actions {
+      min-width: 0;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      align-items: center;
+      gap: 8px;
+      padding: 12px 14px;
+      border-bottom: 1px solid var(--mx-line);
+      background: var(--mx-panel-soft);
+    }
+
+    .rdp-dialog-head strong {
+      font-size: 15px;
+      font-weight: 650;
+    }
+
+    .rdp-protocol-switch {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      padding: 8px 14px;
+      border-bottom: 1px solid var(--mx-line);
+      background: var(--mx-panel-soft);
+    }
+
+    .rdp-protocol-chip {
+      height: 30px;
+      border: 1px solid var(--mx-line);
+      border-radius: 8px;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 0 10px;
+      color: var(--mx-muted);
+      background: var(--mx-panel);
+      font-size: 12px;
+      font-weight: 650;
+    }
+
+    .rdp-protocol-chip.active {
+      border-color: var(--mx-primary);
+      color: #ffffff;
+      background: var(--mx-primary);
+    }
+
+    .rdp-dialog-body {
+      min-width: 0;
+      min-height: 0;
+      display: grid;
+      gap: 12px;
+      overflow: auto;
+      padding: 12px 14px;
+    }
+
+    .rdp-form-section {
+      min-width: 0;
+      border-bottom: 1px solid var(--mx-line-soft);
+      display: grid;
+      gap: 9px;
+      padding-bottom: 12px;
+    }
+
+    .rdp-form-section:last-child {
+      border-bottom: 0;
+      padding-bottom: 0;
+    }
+
+    .rdp-form-title {
+      color: var(--mx-text);
+      font-size: 13px;
+      font-weight: 650;
+    }
+
+    .rdp-form-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 8px;
+    }
+
+    .rdp-form-grid label,
+    .rdp-form-section label {
+      min-width: 0;
+      display: grid;
+      gap: 4px;
+      color: var(--mx-muted);
+      font-size: 12px;
+    }
+
+    .rdp-form-grid input,
+    .rdp-form-grid select,
+    .rdp-form-section textarea {
+      width: 100%;
+      border: 1px solid var(--mx-line);
+      border-radius: 7px;
+      padding: 6px 8px;
+      color: var(--mx-text);
+      background: var(--mx-panel);
+      font: inherit;
+      font-size: 13px;
+    }
+
+    .rdp-form-section textarea {
+      min-height: 72px;
+      resize: vertical;
+    }
+
+    .rdp-check-row {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      flex-wrap: wrap;
+    }
+
+    .rdp-check-row label {
+      min-height: 30px;
+      border: 1px solid var(--mx-line);
+      border-radius: 7px;
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      padding: 0 9px;
+      background: var(--mx-panel);
+    }
+
+    .rdp-check-row input {
+      width: 14px;
+      height: 14px;
+      margin: 0;
+      accent-color: var(--mx-primary);
+    }
+
+    .rdp-dialog-actions {
+      border-top: 1px solid var(--mx-line);
+      border-bottom: 0;
+      grid-template-columns: minmax(0, 1fr) auto auto;
+      background: var(--mx-panel);
+    }
+
     .command-dialog {
       width: min(520px, calc(100vw - 56px));
       max-height: min(740px, calc(100vh - 56px));
@@ -3244,6 +3808,11 @@
           <span>192.168.10.70</span>
         </button>
         <button class="title-session-tab active" type="button">
+          <svg class="ui-icon" viewBox="0 0 16 16"><path d="M3 4.2h10v6.9H3z"/><path d="M6.2 13h3.6"/><path d="M8 11.1V13"/></svg>
+          <span>WinDesk-RDP</span>
+          <span class="title-session-close" aria-hidden="true">×</span>
+        </button>
+        <button class="title-session-tab" type="button">
           <span>192.168.10.75[Harbor]</span>
           <span class="title-session-close" aria-hidden="true">×</span>
         </button>
@@ -3329,6 +3898,11 @@
               <span>开发环境</span>
               <span class="count">3</span>
             </button>
+            <button class="file-row active" id="rdpConnectionButton" type="button">
+              <svg class="ui-icon" viewBox="0 0 16 16"><path d="M3 4.2h10v6.9H3z"/><path d="M6.2 13h3.6"/><path d="M8 11.1V13"/></svg>
+              <span>WinDesk-RDP</span>
+              <span class="count">RDP</span>
+            </button>
           </div>
         </section>
 
@@ -3342,7 +3916,12 @@
       <section class="main-workbench" aria-label="会话工作区">
         <section class="session-workspace" aria-label="终端会话">
           <nav class="session-tabs" aria-label="当前连接的终端会话">
-            <button class="session-tab active" type="button" data-session-target="192.168.10.75[Harbor] / 终端 2">
+            <button class="session-tab active" id="rdpSessionTab" type="button" data-rdp-session="embedded">
+              <svg class="ui-icon" viewBox="0 0 16 16"><path d="M3 4.2h10v6.9H3z"/><path d="M6.2 13h3.6"/><path d="M8 11.1V13"/></svg>
+              <span>RDP</span>
+              <span aria-hidden="true">×</span>
+            </button>
+            <button class="session-tab" type="button" data-session-target="192.168.10.75[Harbor] / 终端 2">
               <svg class="ui-icon" viewBox="0 0 16 16"><path d="M3.5 4.2h9v7.6h-9z"/><path d="m5.4 6.4 1.7 1.6-1.7 1.6"/><path d="M8.4 9.6h3.1"/></svg>
               <span>终端 2</span>
               <span aria-hidden="true">×</span>
@@ -3371,7 +3950,83 @@
             </button>
           </nav>
 
-          <section class="terminal-preview" aria-label="终端预览">
+          <section class="rdp-session-preview" id="rdpSessionPane" aria-label="RDP 会话预览">
+            <header class="rdp-session-head">
+              <div class="rdp-session-title">
+                <svg class="ui-icon" viewBox="0 0 16 16"><path d="M3 4.2h10v6.9H3z"/><path d="M6.2 13h3.6"/><path d="M8 11.1V13"/></svg>
+                <span>
+                  <strong>WinDesk-RDP</strong>
+                  <small>RDP · ops@10.8.4.23:3389</small>
+                </span>
+              </div>
+              <div class="rdp-session-actions">
+                <button class="primary" id="rdpPreviewButton" type="button">预览启动</button>
+                <button id="rdpOpenDialogButton" type="button">编辑配置</button>
+                <button type="button">关闭</button>
+              </div>
+            </header>
+            <div class="rdp-session-body">
+              <div class="rdp-state-list" aria-label="RDP runner 状态">
+                <button class="rdp-state-card active" type="button" data-rdp-state="embedded">
+                  <svg class="ui-icon" viewBox="0 0 16 16"><path d="M3 4.2h10v6.9H3z"/><path d="M6.2 13h3.6"/><path d="M8 11.1V13"/></svg>
+                  <span>
+                    <strong>Windows embedded</strong>
+                    <small>MSTSC ActiveX 宿主，失败时自动外部启动</small>
+                  </span>
+                  <em>可用</em>
+                </button>
+                <button class="rdp-state-card" type="button" data-rdp-state="external">
+                  <svg class="ui-icon" viewBox="0 0 16 16"><path d="M5.2 4H4v8h8v-1.2"/><path d="M8 4h4v4"/><path d="m7.5 8.5 4-4"/></svg>
+                  <span>
+                    <strong>mstsc.exe fallback</strong>
+                    <small>生成临时 .rdp 文件，不写入明文密码</small>
+                  </span>
+                  <em>后备</em>
+                </button>
+                <button class="rdp-state-card" type="button" data-rdp-state="freerdp">
+                  <svg class="ui-icon" viewBox="0 0 16 16"><path d="M3.2 4.4h9.6v7.2H3.2z"/><path d="M5.2 6.6h5.6"/><path d="M5.2 8.8h3.8"/></svg>
+                  <span>
+                    <strong>FreeRDP</strong>
+                    <small>Linux 使用 xfreerdp / wlfreerdp 外部 runner</small>
+                  </span>
+                  <em>跨平台</em>
+                </button>
+                <button class="rdp-state-card error" type="button" data-rdp-state="missing">
+                  <svg class="ui-icon" viewBox="0 0 16 16"><path d="M8 2.8 13.2 12H2.8z"/><path d="M8 6.3v2.8"/><path d="M8 11.1h.01"/></svg>
+                  <span>
+                    <strong>runner 缺失</strong>
+                    <small>无可用客户端时展示安装/配置诊断</small>
+                  </span>
+                  <em>诊断</em>
+                </button>
+              </div>
+              <div class="rdp-display-host">
+                <div class="rdp-screen-placeholder" id="rdpScreenPlaceholder">
+                  <svg class="ui-icon" viewBox="0 0 16 16"><path d="M3 4.2h10v6.9H3z"/><path d="M6.2 13h3.6"/><path d="M8 11.1V13"/></svg>
+                  <strong id="rdpScreenTitle">嵌入式 RDP 会话区域</strong>
+                  <small id="rdpScreenDetail">Windows 可用时在当前标签内承载远程桌面；混合 DPI 多屏、RemoteApp 或初始化失败时会自动切到外部 runner。</small>
+                </div>
+                <div class="rdp-launch-preview">
+                  <div class="rdp-preview-block">
+                    <strong>启动命令</strong>
+                    <code id="rdpPreviewCommand">mstsc.exe "&lt;temp&gt;\\mxterm-rdp-WinDesk.rdp"</code>
+                  </div>
+                  <div class="rdp-preview-block">
+                    <strong>.rdp 预览</strong>
+                    <pre id="rdpPreviewFile">full address:s:10.8.4.23:3389
+username:s:ops
+screen mode id:i:1
+desktopwidth:i:1440
+desktopheight:i:900
+redirectclipboard:i:1
+prompt for credentials:i:1</pre>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <section class="terminal-preview" aria-label="终端预览" hidden>
             <div class="sync-input-banner" id="syncInputBanner">
               <svg class="ui-icon" viewBox="0 0 16 16"><path d="M3 5.2h4.2v5.6H3z"/><path d="M8.8 5.2H13v5.6H8.8z"/><path d="M7.2 8h1.6"/></svg>
               <span id="syncInputBannerText">同步输入中</span>
@@ -3542,13 +4197,13 @@ SSH 认证中...</pre>
             <div class="toolbar-right">
               <button class="primary-button" type="button">
                 <svg class="ui-icon" viewBox="0 0 16 16"><path d="M3 4.2h10v7.6H3z"/><path d="M6 8h4M8 6v4"/></svg>
-                <span>新建 SSH</span>
+                <span>新建连接</span>
               </button>
             </div>
           </header>
 
           <div class="workspace-body">
-            <section class="connection-board" aria-label="SSH 连接表格">
+            <section class="connection-board" aria-label="连接表格">
               <div class="connection-head" role="row">
                 <span>系统</span>
                 <span>最后连接</span>
@@ -3778,7 +4433,7 @@ SSH 认证中...</pre>
       <aside class="right-file-pane" aria-label="右侧工具面板">
         <header class="file-panel-tabs">
           <div class="tool-tab-strip" aria-label="右侧工具">
-            <button class="file-panel-tab active" type="button" data-tool-tab="files">
+            <button class="file-panel-tab" type="button" data-tool-tab="files">
               <svg class="ui-icon" viewBox="0 0 16 16"><path d="M2.8 4.5h4l1.1 1.4h5.3v7H2.8z"/></svg>
               <span>文件</span>
             </button>
@@ -3794,6 +4449,10 @@ SSH 认证中...</pre>
               <svg class="ui-icon" viewBox="0 0 16 16"><path d="M2.8 4.2h10.4v7.6H2.8z"/><path d="m5 6.5 1.7 1.5L5 9.5"/><path d="M8.4 9.5h2.8"/></svg>
               <span>命令</span>
             </button>
+            <button class="file-panel-tab active" type="button" data-tool-tab="rdp">
+              <svg class="ui-icon" viewBox="0 0 16 16"><path d="M3 4.2h10v6.9H3z"/><path d="M6.2 13h3.6"/><path d="M8 11.1V13"/></svg>
+              <span>RDP</span>
+            </button>
             <span class="tool-pane-spacer"></span>
             <button class="right-collapse-button" type="button" aria-label="收起右侧工具面板">
               <svg class="ui-icon" viewBox="0 0 16 16"><rect x="3.3" y="3.4" width="9.4" height="9.2" rx="1.5"/><path d="M9.8 3.6v8.8"/></svg>
@@ -3801,7 +4460,7 @@ SSH 认证中...</pre>
           </div>
         </header>
 
-        <section class="file-browser-pane" id="fileBrowserPane" aria-label="远程文件">
+        <section class="file-browser-pane" id="fileBrowserPane" aria-label="远程文件" hidden>
           <div class="file-path-row">
             <input class="file-path-input" value="/opt/app" aria-label="远程路径">
           </div>
@@ -4013,6 +4672,34 @@ SSH 认证中...</pre>
           </section>
         </section>
 
+        <section class="rdp-tool-pane" id="rdpToolPane" aria-label="RDP 工具">
+          <header class="rdp-tool-head">
+            <span>
+              <strong>WinDesk-RDP</strong>
+              <small>ops@10.8.4.23:3389 · embedded 优先</small>
+            </span>
+            <span class="rdp-status-pill" id="rdpToolStatus">启动中</span>
+          </header>
+          <div class="rdp-tool-actions">
+            <button type="button"><svg class="ui-icon" viewBox="0 0 16 16"><path d="M3 4.2h10v6.9H3z"/><path d="M6.2 13h3.6"/><path d="M8 11.1V13"/></svg>预览</button>
+            <button type="button"><svg class="ui-icon" viewBox="0 0 16 16"><path d="M2.8 4.2h10.4v7.6H2.8z"/><path d="m5 6.5 1.7 1.5L5 9.5"/><path d="M8.4 9.5h2.8"/></svg>复制命令</button>
+            <button type="button"><svg class="ui-icon" viewBox="0 0 16 16"><path d="M3 4.2h10v6.9H3z"/><path d="M6.2 13h3.6"/><path d="M8 11.1V13"/></svg>复制 .rdp</button>
+            <button type="button"><svg class="ui-icon" viewBox="0 0 16 16"><path d="M13 8a5 5 0 1 1-1.45-3.55"/><path d="M13 3.7v3.2H9.8"/></svg>重试</button>
+          </div>
+          <dl class="rdp-tool-facts">
+            <div class="rdp-tool-fact"><span>Runner</span><span>Windows embedded</span></div>
+            <div class="rdp-tool-fact"><span>模式</span><span>embedded 优先</span></div>
+            <div class="rdp-tool-fact"><span>显示</span><span>1440 x 900 · 动态尺寸</span></div>
+            <div class="rdp-tool-fact"><span>资源</span><span>剪贴板 · 音频本机 · 磁盘</span></div>
+          </dl>
+          <section class="rdp-tool-preview">
+            <strong>启动材料</strong>
+            <code>mstsc.exe "&lt;temp&gt;\\mxterm-rdp-WinDesk.rdp"</code>
+            <small>预览内容会隐藏密码；外部 runner 只保留临时 .rdp 和启动参数。</small>
+            <small>Windows 宿主不可用时，会切到外部客户端并给出原因。</small>
+          </section>
+        </section>
+
         <section class="tool-placeholder-pane" id="toolPlaceholderPane" hidden>
           <span id="toolPlaceholderText">这个工具在真实项目中保持原面板，这里只验证文件与传输融合后的结构。</span>
         </section>
@@ -4049,6 +4736,121 @@ SSH 认证中...</pre>
         </section>
       </aside>
     </main>
+  </div>
+  <div class="rdp-dialog-backdrop" id="rdpDialogBackdrop" aria-hidden="true">
+    <section class="rdp-dialog" role="dialog" aria-modal="true" aria-labelledby="rdpDialogTitle">
+      <div class="rdp-dialog-head">
+        <strong id="rdpDialogTitle">编辑连接</strong>
+        <button class="command-mini-button" id="rdpDialogCloseButton" type="button">关闭</button>
+      </div>
+      <div class="rdp-protocol-switch" aria-label="协议">
+        <button class="rdp-protocol-chip" type="button">SSH</button>
+        <button class="rdp-protocol-chip active" type="button">RDP</button>
+        <button class="rdp-protocol-chip" type="button">VNC</button>
+        <button class="rdp-protocol-chip" type="button">Telnet</button>
+      </div>
+      <div class="rdp-dialog-body">
+        <section class="rdp-form-section">
+          <div class="rdp-form-title">基础</div>
+          <div class="rdp-form-grid">
+            <label>
+              <span>名称</span>
+              <input value="WinDesk-RDP">
+            </label>
+            <label>
+              <span>主机</span>
+              <input value="10.8.4.23">
+            </label>
+            <label>
+              <span>端口</span>
+              <input value="3389">
+            </label>
+            <label>
+              <span>用户名</span>
+              <input value="ops">
+            </label>
+          </div>
+        </section>
+        <section class="rdp-form-section">
+          <div class="rdp-form-title">显示与 runner</div>
+          <div class="rdp-form-grid">
+            <label>
+              <span>显示模式</span>
+              <select>
+                <option selected>嵌入式优先</option>
+                <option>窗口</option>
+                <option>全屏</option>
+                <option>全屏多显示器</option>
+              </select>
+            </label>
+            <label>
+              <span>Runner</span>
+              <select>
+                <option selected>自动选择</option>
+                <option>Windows embedded RDP</option>
+                <option>mstsc.exe</option>
+                <option>FreeRDP</option>
+                <option>自定义客户端</option>
+              </select>
+            </label>
+            <label>
+              <span>宽度</span>
+              <input value="1440">
+            </label>
+            <label>
+              <span>高度</span>
+              <input value="900">
+            </label>
+          </div>
+          <div class="rdp-check-row">
+            <label><input type="checkbox" checked>动态尺寸</label>
+            <label><input type="checkbox">多显示器</label>
+            <label><input type="checkbox" checked>剪贴板</label>
+            <label><input type="checkbox" checked>本机音频</label>
+            <label><input type="checkbox">磁盘重定向</label>
+          </div>
+        </section>
+        <section class="rdp-form-section">
+          <div class="rdp-form-title">安全与高级</div>
+          <div class="rdp-form-grid">
+            <label>
+              <span>凭据</span>
+              <select>
+                <option selected>客户端提示</option>
+                <option>保存凭据引用</option>
+                <option>系统凭据存储</option>
+              </select>
+            </label>
+            <label>
+              <span>NLA</span>
+              <select>
+                <option selected>自动</option>
+                <option>启用</option>
+                <option>禁用</option>
+              </select>
+            </label>
+            <label>
+              <span>证书</span>
+              <select>
+                <option selected>警告后可继续</option>
+                <option>信任证书错误</option>
+                <option>严格校验</option>
+              </select>
+            </label>
+          </div>
+          <label>
+            <span>原始 .rdp 设置</span>
+            <textarea>authentication level:i:2
+enablecredsspsupport:i:1</textarea>
+          </label>
+        </section>
+      </div>
+      <div class="rdp-dialog-actions">
+        <span>保存后会走协议化连接模型，SSH-only 工具不会接收 RDP 连接。</span>
+        <button id="rdpDialogTestButton" type="button">测试 runner</button>
+        <button class="primary" id="rdpDialogSaveButton" type="button">保存</button>
+      </div>
+    </section>
   </div>
   <div class="command-dialog-backdrop" id="commandDialogBackdrop" aria-hidden="true">
     <section class="command-dialog" role="dialog" aria-modal="true" aria-labelledby="commandDialogTitle">
@@ -4119,6 +4921,23 @@ SSH 认证中...</pre>
     const fileTransferDock = document.getElementById("fileTransferDock");
     const fileTransferToggle = document.getElementById("fileTransferToggle");
     const terminalOutput = document.getElementById("terminalOutput");
+    const terminalPreviewPane = terminalOutput.closest(".terminal-preview");
+    const rdpConnectionButton = document.getElementById("rdpConnectionButton");
+    const rdpSessionTab = document.getElementById("rdpSessionTab");
+    const rdpSessionPane = document.getElementById("rdpSessionPane");
+    const rdpToolPane = document.getElementById("rdpToolPane");
+    const rdpToolStatus = document.getElementById("rdpToolStatus");
+    const rdpStateButtons = Array.from(document.querySelectorAll("[data-rdp-state]"));
+    const rdpScreenTitle = document.getElementById("rdpScreenTitle");
+    const rdpScreenDetail = document.getElementById("rdpScreenDetail");
+    const rdpPreviewCommand = document.getElementById("rdpPreviewCommand");
+    const rdpPreviewFile = document.getElementById("rdpPreviewFile");
+    const rdpPreviewButton = document.getElementById("rdpPreviewButton");
+    const rdpOpenDialogButton = document.getElementById("rdpOpenDialogButton");
+    const rdpDialogBackdrop = document.getElementById("rdpDialogBackdrop");
+    const rdpDialogCloseButton = document.getElementById("rdpDialogCloseButton");
+    const rdpDialogTestButton = document.getElementById("rdpDialogTestButton");
+    const rdpDialogSaveButton = document.getElementById("rdpDialogSaveButton");
     const commandTargetCheckboxes = Array.from(document.querySelectorAll(".command-target-checkbox"));
     const commandTargetTerminalSelects = Array.from(document.querySelectorAll(".command-target-terminal"));
     const commandTargetCount = document.getElementById("commandTargetCount");
@@ -4760,11 +5579,87 @@ SSH 认证中...</pre>
       return /\b(rm\s+-rf|sudo|mkfs|shutdown|reboot|curl\s+[^|]+\|\s*sh|wget\s+[^|]+\|\s*sh)\b/i.test(command);
     }
 
+    function activateRdpWorkspace() {
+      activeSessionTarget = "WinDesk-RDP / RDP";
+      rdpSessionTab?.classList.add("active");
+      sessionTabs.forEach((tab) => tab.classList.remove("active"));
+      if (rdpSessionPane) {
+        rdpSessionPane.hidden = false;
+      }
+      if (terminalPreviewPane) {
+        terminalPreviewPane.hidden = true;
+      }
+      setRightTool("rdp");
+    }
+
+    function setRdpState(state) {
+      rdpStateButtons.forEach((button) => {
+        button.classList.toggle("active", button.dataset.rdpState === state);
+      });
+      const states = {
+        embedded: {
+          status: "嵌入式",
+          title: "嵌入式 RDP 会话区域",
+          detail: "Windows 可用时在当前标签内承载远程桌面；混合 DPI 多屏、RemoteApp 或初始化失败时会自动切到外部 runner。",
+          command: "mstscax.dll host=10.8.4.23 user=ops",
+        },
+        external: {
+          status: "外部客户端",
+          title: "mstsc.exe fallback 已准备",
+          detail: "外部模式会生成临时 .rdp 文件并启动 mstsc.exe，凭据仍由系统客户端提示。",
+          command: "mstsc.exe \"<temp>\\mxterm-rdp-WinDesk.rdp\"",
+        },
+        freerdp: {
+          status: "FreeRDP",
+          title: "FreeRDP runner 预览",
+          detail: "Linux 会优先探测 wlfreerdp / xfreerdp，不通过命令行传递明文密码。",
+          command: "xfreerdp /v:10.8.4.23:3389 /u:ops /dynamic-resolution /clipboard",
+        },
+        missing: {
+          status: "缺少 runner",
+          title: "没有可用 RDP 客户端",
+          detail: "当前平台未探测到可用 runner，需要安装 FreeRDP、配置 macOS 客户端或使用自定义 runner。",
+          command: "runner probe failed: no compatible RDP client",
+        },
+      };
+      const next = states[state] || states.embedded;
+      rdpToolStatus.textContent = next.status;
+      rdpScreenTitle.textContent = next.title;
+      rdpScreenDetail.textContent = next.detail;
+      rdpPreviewCommand.textContent = next.command;
+      if (rdpPreviewFile) {
+        rdpPreviewFile.textContent =
+          state === "external"
+            ? `full address:s:10.8.4.23:3389\nusername:s:ops\nscreen mode id:i:1\ndesktopwidth:i:1440\ndesktopheight:i:900\nredirectclipboard:i:1\nprompt for credentials:i:1`
+            : state === "freerdp"
+              ? `xfreerdp /v:10.8.4.23:3389 /u:ops /dynamic-resolution /clipboard`
+              : `screen mode id:i:1\nfull address:s:10.8.4.23:3389\nusername:s:ops\nredirectclipboard:i:1\naudiomode:i:0\nprompt for credentials:i:1`;
+      }
+    }
+
+    function openRdpDialog() {
+      rdpDialogBackdrop.classList.add("open");
+      rdpDialogBackdrop.setAttribute("aria-hidden", "false");
+    }
+
+    function closeRdpDialog() {
+      rdpDialogBackdrop.classList.remove("open");
+      rdpDialogBackdrop.setAttribute("aria-hidden", "true");
+    }
+
     function activateSession(target) {
       activeSessionTarget = target;
+      rdpSessionTab?.classList.remove("active");
+      if (rdpSessionPane) {
+        rdpSessionPane.hidden = true;
+      }
+      if (terminalPreviewPane) {
+        terminalPreviewPane.hidden = false;
+      }
       sessionTabs.forEach((tab) => {
         tab.classList.toggle("active", tab.dataset.sessionTarget === target);
       });
+      setRightTool("files");
       terminalOutput.textContent = terminalOutputByTarget[target] || `${target}\n等待终端输出...`;
     }
 
@@ -4876,6 +5771,27 @@ SSH 认证中...</pre>
       updateCommandSenderState();
     });
 
+    rdpSessionTab?.addEventListener("click", activateRdpWorkspace);
+    rdpConnectionButton?.addEventListener("click", () => {
+      activateRdpWorkspace();
+      openRdpDialog();
+    });
+    rdpPreviewButton?.addEventListener("click", () => setRdpState("external"));
+    rdpOpenDialogButton?.addEventListener("click", openRdpDialog);
+    rdpDialogCloseButton?.addEventListener("click", closeRdpDialog);
+    rdpDialogBackdrop?.addEventListener("click", (event) => {
+      if (event.target === rdpDialogBackdrop) {
+        closeRdpDialog();
+      }
+    });
+    rdpDialogTestButton?.addEventListener("click", () => setRdpState("freerdp"));
+    rdpDialogSaveButton?.addEventListener("click", closeRdpDialog);
+    rdpStateButtons.forEach((button) => {
+      button.addEventListener("click", () => {
+        setRdpState(button.dataset.rdpState || "embedded");
+      });
+    });
+
     sessionTabs.forEach((tab) => {
       tab.addEventListener("click", () => {
         activateSession(tab.dataset.sessionTarget || "192.168.10.75[Harbor] / 终端 2");
@@ -4951,7 +5867,8 @@ SSH 认证中...</pre>
       });
       fileBrowserPane.hidden = tab !== "files";
       commandLibraryPane.hidden = tab !== "command";
-      toolPlaceholderPane.hidden = tab === "files" || tab === "command";
+      rdpToolPane.hidden = tab !== "rdp";
+      toolPlaceholderPane.hidden = tab === "files" || tab === "command" || tab === "rdp";
       commandLibraryToggle.classList.toggle("active", tab === "command");
       commandLibraryToggle.setAttribute("aria-pressed", String(tab === "command"));
       if (tab !== "files") {
@@ -4964,6 +5881,9 @@ SSH 认证中...</pre>
       }
       if (tab === "tunnels") {
         toolPlaceholderText.textContent = "隧道保留独立工具面板；它不是文件操作的后续状态。";
+      }
+      if (tab === "rdp") {
+        setRdpState("embedded");
       }
     }
 

@@ -8214,6 +8214,435 @@ button {
   height: 22px;
 }
 
+.rdp-workbench-pane {
+  row-gap: 0;
+  background: var(--mx-panel);
+}
+
+.rdp-stack {
+  min-width: 0;
+  min-height: 0;
+  display: grid;
+  align-items: start;
+  overflow: hidden;
+  background: var(--mx-panel-soft);
+}
+
+.rdp-session-status {
+  grid-area: 1 / 1;
+  min-width: 0;
+  display: block;
+  padding: 10px;
+  color: var(--mx-text);
+}
+
+.rdp-session-status.is-hidden {
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.rdp-session-shell {
+  min-width: 0;
+  border: 1px solid var(--mx-line);
+  border-radius: 8px;
+  display: grid;
+  grid-template-rows: auto;
+  align-content: start;
+  gap: 8px;
+  overflow: hidden;
+  background: color-mix(in srgb, var(--mx-panel) 94%, var(--mx-panel-soft));
+  box-shadow: 0 1px 2px rgb(15 23 42 / 5%);
+}
+
+.rdp-session-head {
+  min-width: 0;
+  min-height: 48px;
+  border-bottom: 1px solid var(--mx-line);
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px 8px 12px;
+  background: color-mix(in srgb, var(--mx-panel-soft) 84%, var(--mx-panel));
+}
+
+.rdp-session-heading {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 30px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+}
+
+.rdp-session-icon {
+  width: 30px;
+  height: 30px;
+  border: 1px solid color-mix(in srgb, var(--mx-primary) 20%, var(--mx-line));
+  border-radius: 8px;
+  display: grid;
+  place-items: center;
+  color: var(--mx-primary);
+  background: color-mix(in srgb, var(--mx-primary) 7%, var(--mx-panel));
+}
+
+.rdp-session-status.error .rdp-session-icon {
+  border-color: color-mix(in srgb, var(--mx-danger) 22%, var(--mx-line));
+  color: var(--mx-danger);
+  background: color-mix(in srgb, var(--mx-danger) 8%, var(--mx-panel));
+}
+
+.rdp-session-heading .ui-icon {
+  width: 16px;
+  height: 16px;
+}
+
+.rdp-session-heading span:last-child {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.rdp-session-heading strong,
+.rdp-session-heading small {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rdp-session-heading strong {
+  color: var(--mx-text);
+  font-size: 13px;
+  font-weight: 620;
+}
+
+.rdp-session-heading small {
+  color: var(--mx-subtle);
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+.rdp-session-actions,
+.rdp-tool-actions {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.rdp-session-actions button,
+.rdp-tool-actions button {
+  height: 28px;
+  border: 1px solid var(--mx-line);
+  border-radius: 7px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  padding: 0 9px;
+  color: var(--mx-muted);
+  background: var(--mx-panel);
+  font-size: 12px;
+  font-weight: 560;
+}
+
+.rdp-session-actions button:last-child {
+  width: 28px;
+  padding: 0;
+}
+
+.rdp-session-actions button:hover:not(:disabled),
+.rdp-tool-actions button:hover:not(:disabled) {
+  border-color: var(--mx-line-strong);
+  color: var(--mx-text);
+  background: var(--mx-panel-soft);
+}
+
+.rdp-session-actions button:disabled,
+.rdp-tool-actions button:disabled {
+  cursor: not-allowed;
+  opacity: 0.48;
+}
+
+.rdp-session-actions .ui-icon,
+.rdp-tool-actions .ui-icon {
+  width: 13px;
+  height: 13px;
+}
+
+.rdp-session-summary {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 0 12px;
+  color: var(--mx-muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.rdp-session-summary > span:not(.rdp-session-badge) {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.rdp-session-badge {
+  min-height: 22px;
+  border: 1px solid color-mix(in srgb, var(--mx-primary) 24%, var(--mx-line));
+  border-radius: 999px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 8px;
+  color: color-mix(in srgb, var(--mx-primary) 82%, var(--mx-text));
+  background: color-mix(in srgb, var(--mx-primary) 8%, var(--mx-panel));
+  font-size: 11px;
+  font-weight: 650;
+  white-space: nowrap;
+}
+
+.rdp-session-badge.embedded,
+.rdp-session-badge.native,
+.rdp-session-badge.external {
+  border-color: color-mix(in srgb, var(--mx-success) 20%, var(--mx-line));
+  color: var(--mx-success);
+  background: color-mix(in srgb, var(--mx-success) 9%, var(--mx-panel));
+}
+
+.rdp-session-badge.error {
+  border-color: color-mix(in srgb, var(--mx-danger) 20%, var(--mx-line));
+  color: var(--mx-danger);
+  background: color-mix(in srgb, var(--mx-danger) 9%, var(--mx-panel));
+}
+
+.rdp-session-message {
+  margin: 0 12px;
+  color: var(--mx-muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.rdp-session-error,
+.rdp-tool-error {
+  margin: 0;
+  overflow: auto;
+  border: 1px solid color-mix(in srgb, var(--mx-danger) 22%, var(--mx-line));
+  border-radius: 8px;
+  padding: 9px 10px;
+  color: var(--mx-danger);
+  background: color-mix(in srgb, var(--mx-danger) 8%, var(--mx-panel));
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+}
+
+.rdp-session-error {
+  margin: 0 12px;
+}
+
+.rdp-session-preview-grid {
+  min-width: 0;
+  display: grid;
+  align-content: start;
+  gap: 8px;
+  overflow: visible;
+  padding: 0 10px 10px;
+}
+
+.rdp-session-preview-card,
+.rdp-tool-preview {
+  align-self: start;
+  min-width: 0;
+  border: 1px solid var(--mx-line-soft);
+  border-radius: 8px;
+  display: grid;
+  gap: 6px;
+  padding: 9px 10px;
+  background: color-mix(in srgb, var(--mx-panel) 88%, var(--mx-panel-soft));
+}
+
+.rdp-session-preview-card.subtle {
+  background: color-mix(in srgb, var(--mx-panel-soft) 88%, var(--mx-panel));
+}
+
+.rdp-session-preview-card strong,
+.rdp-tool-preview strong {
+  color: var(--mx-text);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.rdp-session-preview-card code,
+.rdp-session-preview-card pre,
+.rdp-tool-preview code {
+  min-width: 0;
+  margin: 0;
+  overflow: auto;
+  color: var(--mx-text);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.rdp-session-preview-card small,
+.rdp-tool-preview small,
+.rdp-tool-note {
+  color: var(--mx-muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.rdp-embedded-placeholder {
+  min-width: 0;
+  min-height: 0;
+  margin: 0 12px 12px;
+  border: 1px dashed color-mix(in srgb, var(--mx-primary) 28%, var(--mx-line));
+  border-radius: 8px;
+  display: grid;
+  place-content: center;
+  justify-items: center;
+  gap: 10px;
+  padding: 18px;
+  color: var(--mx-muted);
+  background: color-mix(in srgb, var(--mx-primary) 4%, var(--mx-panel));
+  text-align: center;
+}
+
+.rdp-embedded-placeholder > .ui-icon {
+  width: 32px;
+  height: 32px;
+  color: var(--mx-primary);
+}
+
+.rdp-embedded-placeholder span {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+}
+
+.rdp-embedded-placeholder strong {
+  color: var(--mx-text);
+  font-size: 13px;
+  font-weight: 620;
+}
+
+.rdp-embedded-placeholder small {
+  max-width: 420px;
+  color: var(--mx-muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.rdp-tool-panel {
+  flex: 1 1 0;
+  min-width: 0;
+  min-height: 0;
+  display: grid;
+  grid-template-rows: auto;
+  align-content: start;
+  gap: 10px;
+  overflow: auto;
+  padding: 10px;
+  color: var(--mx-text);
+  background: var(--mx-panel);
+}
+
+.rdp-tool-head {
+  min-width: 0;
+  border-bottom: 1px solid var(--mx-line);
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 8px;
+  padding-bottom: 9px;
+}
+
+.rdp-tool-head span:first-child {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.rdp-tool-head strong,
+.rdp-tool-head small {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rdp-tool-head strong {
+  color: var(--mx-text);
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.rdp-tool-head small {
+  color: var(--mx-subtle);
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+.rdp-tool-actions {
+  justify-content: flex-start;
+}
+
+.rdp-tool-facts {
+  min-width: 0;
+  margin: 0;
+  border: 1px solid var(--mx-line-soft);
+  border-radius: 8px;
+  display: grid;
+  overflow: hidden;
+  background: color-mix(in srgb, var(--mx-panel-soft) 68%, var(--mx-panel));
+}
+
+.rdp-tool-facts div {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 72px minmax(0, 1fr);
+  gap: 8px;
+  border-bottom: 1px solid var(--mx-line-soft);
+  padding: 7px 9px;
+}
+
+.rdp-tool-facts div:last-child {
+  border-bottom: 0;
+}
+
+.rdp-tool-facts dt,
+.rdp-tool-facts dd {
+  min-width: 0;
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.rdp-tool-facts dt {
+  color: var(--mx-subtle);
+}
+
+.rdp-tool-facts dd {
+  overflow: hidden;
+  color: var(--mx-text);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rdp-tool-note {
+  margin: 0;
+  border: 1px solid var(--mx-line-soft);
+  border-radius: 8px;
+  padding: 9px 10px;
+  background: color-mix(in srgb, var(--mx-panel-soft) 72%, var(--mx-panel));
+}
+
 .remote-file-editor {
   position: relative;
   z-index: 2;
@@ -9714,43 +10143,45 @@ button {
 .dialog-tabs,
 .connection-dialog-tabs {
   display: flex;
-  gap: 18px;
-  padding: 0 16px;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 16px;
   border-bottom: 1px solid var(--mx-line);
-  background: var(--mx-panel-soft);
+  background: var(--mx-material-panel-soft, var(--mx-panel-soft));
 }
 
 .dialog-tabs button,
 .connection-dialog-tabs button {
   position: relative;
-  border: 0;
-  padding: 9px 0 8px;
+  min-height: 24px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  display: inline-flex;
+  align-items: center;
+  padding: 0 10px;
   color: var(--mx-muted);
   background: transparent;
   font-size: 13px;
-  font-weight: 540;
+  font-weight: 500;
+  line-height: 1;
 }
 
 .dialog-tabs button::after,
 .connection-dialog-tabs button::after {
-  content: "";
-  position: absolute;
-  right: 0;
-  bottom: -1px;
-  left: 0;
-  height: 2px;
-  border-radius: 999px;
-  background: transparent;
+  display: none;
 }
 
 .dialog-tabs button.active,
 .connection-dialog-tabs button.active {
   color: var(--mx-text);
+  border-color: color-mix(in srgb, var(--mx-line-strong) 24%, transparent);
+  background: var(--mx-chrome-active);
 }
 
-.dialog-tabs button.active::after,
-.connection-dialog-tabs button.active::after {
-  background: var(--mx-primary);
+.dialog-tabs button:not(.active):hover,
+.connection-dialog-tabs button:not(.active):hover {
+  color: var(--mx-text);
+  background: color-mix(in srgb, var(--mx-text) 5%, transparent);
 }
 
 .dialog-body {
@@ -9759,6 +10190,10 @@ button {
   display: grid;
   gap: 12px;
   padding: 12px 16px;
+}
+
+.connection-dialog-body {
+  padding-top: 14px;
 }
 
 .dialog-section {
@@ -9816,6 +10251,40 @@ button {
   margin: 0;
   color: var(--mx-muted);
   font-size: 12px;
+}
+
+.connection-dialog-scale-check {
+  width: fit-content;
+  min-height: 30px;
+  border: 1px solid var(--mx-line);
+  border-radius: 7px;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 0 9px;
+  color: var(--mx-muted);
+  background: var(--mx-panel);
+  font-size: 12px;
+  font-weight: 540;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.connection-dialog-scale-check input {
+  width: 14px;
+  height: 14px;
+  margin: 0;
+  padding: 0;
+  accent-color: var(--mx-primary);
+  pointer-events: none;
+}
+
+.connection-dialog-note-inline {
+  border: 1px solid color-mix(in srgb, var(--mx-warning) 20%, var(--mx-line));
+  border-radius: 7px;
+  padding: 7px 9px;
+  color: color-mix(in srgb, var(--mx-warning) 58%, var(--mx-text));
+  background: color-mix(in srgb, var(--mx-warning) 7%, var(--mx-panel));
 }
 
 .connection-dialog-test-result {
@@ -9940,6 +10409,43 @@ button {
   display: grid;
   grid-template-columns: 132px minmax(0, 1fr);
   gap: 8px;
+}
+
+.connection-dialog-checks {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  flex-wrap: wrap;
+}
+
+.connection-dialog .connection-dialog-checks label {
+  min-height: 30px;
+  border: 1px solid var(--mx-line);
+  border-radius: 7px;
+  display: inline-flex;
+  grid-template-columns: none;
+  align-items: center;
+  gap: 7px;
+  padding: 0 9px;
+  color: var(--mx-muted);
+  background: var(--mx-panel);
+  font-size: 12px;
+  font-weight: 540;
+  cursor: pointer;
+}
+
+.connection-dialog .connection-dialog-checks label:hover {
+  border-color: var(--mx-line-strong);
+  color: var(--mx-text);
+  background: var(--mx-panel-soft);
+}
+
+.connection-dialog .connection-dialog-checks input[type="checkbox"] {
+  width: 14px;
+  height: 14px;
+  margin: 0;
+  padding: 0;
+  accent-color: var(--mx-primary);
 }
 
 /* ===== 错误反馈区（重做） ===== */

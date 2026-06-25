@@ -10,7 +10,7 @@ use sha2::{Digest, Sha256};
 use crate::app_error::AppError;
 use crate::connections::{
     ConnectionAdvancedConfig, ConnectionAuthKind, ConnectionCredentialMode, ConnectionJumpConfig,
-    ConnectionProxyConfig,
+    ConnectionProtocol, ConnectionProxyConfig, RdpConnectionConfig,
 };
 use crate::known_hosts::KnownHostEntry;
 use crate::storage_repository::StorageRepository;
@@ -80,6 +80,8 @@ pub struct SyncConnectionGroup {
 pub struct SyncConnectionRecord {
     pub id: String,
     pub name: String,
+    #[serde(default)]
+    pub protocol: ConnectionProtocol,
     pub group_id: Option<String>,
     pub host: String,
     pub port: u16,
@@ -93,6 +95,8 @@ pub struct SyncConnectionRecord {
     pub proxy: ConnectionProxyConfig,
     pub jump: ConnectionJumpConfig,
     pub advanced: ConnectionAdvancedConfig,
+    #[serde(default)]
+    pub rdp: Option<RdpConnectionConfig>,
     pub notes: Option<String>,
     pub is_favorite: bool,
     pub last_connected_at: Option<String>,
@@ -709,7 +713,7 @@ mod tests {
 
     use crate::connections::{
         ConnectionAdvancedConfig, ConnectionAuthKind, ConnectionCredentialMode,
-        ConnectionJumpConfig, ConnectionProfileInput, ConnectionProxyConfig,
+        ConnectionJumpConfig, ConnectionProfileInput, ConnectionProtocol, ConnectionProxyConfig,
     };
     use crate::credentials::CredentialProfileInput;
     use crate::storage_repository::StorageRepository;
@@ -915,6 +919,7 @@ mod tests {
         repo.connection_upsert(
             ConnectionProfileInput {
                 id: Some("conn-inline".to_string()),
+                protocol: ConnectionProtocol::Ssh,
                 name: Some("生产连接".to_string()),
                 group: Some("生产".to_string()),
                 host: "example.com".to_string(),
@@ -932,6 +937,7 @@ mod tests {
                 proxy: ConnectionProxyConfig::default(),
                 jump: ConnectionJumpConfig::default(),
                 advanced: ConnectionAdvancedConfig::default(),
+                rdp: None,
                 notes: Some("不要同步明文".to_string()),
                 is_favorite: Some(true),
                 last_connected_at: None,

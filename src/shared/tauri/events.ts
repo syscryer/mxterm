@@ -3,6 +3,9 @@ import type {
   DockerImagePullProgressEvent,
 } from "../../features/tools/dockerTypes";
 import type {
+  RdpSessionClosedEvent,
+} from "../../features/connections/connectionTypes";
+import type {
   RemoteFileTransferProgressEvent,
 } from "../../features/files/remoteFileTypes";
 import type {
@@ -43,4 +46,8 @@ export function listenDockerImagePullProgress(
   return listen<DockerImagePullProgressEvent>("docker:image_pull_progress", (event) =>
     handler(event.payload),
   );
+}
+
+export function listenRdpSessionClosed(handler: (event: RdpSessionClosedEvent) => void) {
+  return listen<RdpSessionClosedEvent>("rdp:session_closed", (event) => handler(event.payload));
 }

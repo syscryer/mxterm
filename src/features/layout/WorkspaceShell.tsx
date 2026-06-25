@@ -14,6 +14,7 @@ import * as Dialog from "@radix-ui/react-dialog";
 import { DismissableLayerBranch } from "@radix-ui/react-dismissable-layer";
 import { openPath, revealItemInDir } from "@tauri-apps/plugin-opener";
 import { getCurrentWebview, type DragDropEvent } from "@tauri-apps/api/webview";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import type { IWindowsPty } from "@xterm/xterm";
 import { createPortal } from "react-dom";
 import {
@@ -34,6 +35,7 @@ import {
   List,
   Loader2,
   LockKeyhole,
+  MonitorPlay,
   PanelRightClose,
   PanelRightOpen,
   Pencil,
@@ -60,9 +62,14 @@ import type {
   ConnectionRuntimeCredentialRequest,
   CredentialProfile,
   CredentialProfileInput,
+  RdpEmbeddedBounds,
   HostKeyInfo,
+  RdpCertificatePolicy,
+  RdpLaunchPreview,
+  RdpLaunchResult,
+  RdpRunnerKind,
 } from "../connections/connectionTypes";
-import { defaultJumpConfig } from "../connections/connectionTypes";
+import { defaultJumpConfig, formatRdpRunnerKind } from "../connections/connectionTypes";
 import { connectionTimestampOf, sortConnectionsByRecent } from "../connections/connectionSearch";
 import { RemoteFileEditor } from "../editor/RemoteFileEditor";
 import type { RemoteFileEditorTab } from "../editor/remoteFileEditorTypes";
@@ -166,6 +173,10 @@ import {
   remoteFileUploadLocalArchive,
   remoteFileUploadLocalFile,
   remoteFileWrite,
+  rdpCloseSession,
+  rdpLaunchConnection,
+  rdpPreviewLaunch,
+  rdpResizeEmbeddedSession,
   terminalClose,
   terminalConnect,
   terminalWrite,
@@ -174,6 +185,7 @@ import {
 import { selectLocalUploadDirectories, selectLocalUploadFiles } from "../../shared/tauri/dialog";
 import {
   listenRemoteFileTransferProgress,
+  listenRdpSessionClosed,
   listenTerminalOutput,
 } from "../../shared/tauri/events";
 import { hasTauriRuntime } from "../../shared/tauri/runtime";
@@ -198,6 +210,11 @@ import type {
   WindowsPtyInfo,
 } from "../terminal/localTerminalTypes";
 
+type RdpConnectionProfile = ConnectionProfile & { protocol: "rdp" };
+type SshConnectionProfile = ConnectionProfile & {
+  protocol?: "ssh" | null | undefined;
+};
+
 interface TerminalTab {
   connectionStep?: ConnectionStepState | null;
   error?: string | null;
@@ -210,6 +227,25 @@ interface TerminalTab {
   title: string;
   type: "connecting" | "terminal";
   warmupOutput: number[];
+}
+
+type RdpSessionStatus = "launching" | "external" | "embedded" | "native" | "error";
+
+interface RdpSessionTab {
+  connectionId: string;
+  createdAt: number;
+  error?: string | null;
+  id: string;
+  message?: string | null;
+  preview?: RdpLaunchPreview | null;
+  result?: RdpLaunchResult | null;
+  status: RdpSessionStatus;
+  title: string;
+}
+
+interface ConnectionSessionSummary {
+  connectionId: string;
+  tabs: Array<{ id: string }>;
 }
 
 type CommandSenderDeliveryStatus = "idle" | "sent" | "failed";
@@ -332,7 +368,7 @@ type ResizingPane = ResizablePaneSide | "editor-terminal";
 type TransferDirection = "upload" | "download";
 type TransferKind = "file" | "directory";
 type TransferStatus = "queued" | "running" | "success" | "error" | "skipped" | "canceled";
-type WorkspaceMode = "home" | "ssh" | "local";
+type WorkspaceMode = "home" | "ssh" | "local" | "rdp";
 
 type RemoteFileTransferRetry =
   | {
@@ -516,6 +552,49 @@ export function WorkspaceShell() {
   const [selectedConnectionId, setSelectedConnectionId] = useState<string | null>(null);
   const [terminalTabs, setTerminalTabs] = useState<TerminalTab[]>([]);
   const terminalTabsRef = useRef<TerminalTab[]>([]);
+  const [rdpSessions, setRdpSessions] = useState<RdpSessionTab[]>([]);
+  const rdpSessionsRef = useRef<RdpSessionTab[]>([]);
+  const rdpEmbeddedViewportRefs = useRef(new Map<string, HTMLDivElement>());
+  const [activeRdpSessionId, setActiveRdpSessionId] = useState<string | null>(null);
+  const rdpEmbeddedHostSuppressedRef = useRef(false);
+  const setRdpEmbeddedViewportRef = useCallback(
+    (sessionId: string, node: HTMLDivElement | null) => {
+      if (node) {
+        rdpEmbeddedViewportRefs.current.set(sessionId, node);
+      } else {
+        rdpEmbeddedViewportRefs.current.delete(sessionId);
+      }
+    },
+    [],
+  );
+  const measureRdpEmbeddedBounds = useCallback((sessionId: string) => {
+    return measureRdpEmbeddedViewport(rdpEmbeddedViewportRefs.current.get(sessionId) || null);
+  }, []);
+  const syncRdpEmbeddedBounds = useCallback(
+    (session: RdpSessionTab, bounds: RdpEmbeddedBounds | null, active: boolean) => {
+      if (!hasTauriRuntime() || !session.result?.embedded || !session.result.session_id) {
+        return;
+      }
+      const nextBounds = active && bounds ? bounds : hiddenRdpEmbeddedBounds();
+      void rdpResizeEmbeddedSession(session.result.session_id, nextBounds).catch(() => undefined);
+    },
+    [],
+  );
+  const syncActiveRdpEmbeddedBounds = useCallback(() => {
+    if (!hasTauriRuntime() || !activeRdpSessionId) {
+      return;
+    }
+    const session = rdpSessionsRef.current.find((item) => item.id === activeRdpSessionId);
+    if (!session?.result?.embedded) {
+      return;
+    }
+    if (rdpEmbeddedHostSuppressedRef.current) {
+      syncRdpEmbeddedBounds(session, null, false);
+      return;
+    }
+    const bounds = measureRdpEmbeddedBounds(session.id);
+    syncRdpEmbeddedBounds(session, bounds, true);
+  }, [activeRdpSessionId, measureRdpEmbeddedBounds, syncRdpEmbeddedBounds]);
   const terminalWarmupCaptureStopsRef = useRef(new Map<string, () => void>());
   const [commandSenderOpen, setCommandSenderOpen] = useState(false);
   const [commandSenderInput, setCommandSenderInput] = useState("");
@@ -640,6 +719,10 @@ export function WorkspaceShell() {
     terminalTabsRef.current = terminalTabs;
   }, [terminalTabs]);
 
+  useEffect(() => {
+    rdpSessionsRef.current = rdpSessions;
+  }, [rdpSessions]);
+
   useEffect(() => initializeWindowStatePersistence(), []);
 
   useEffect(() => {
@@ -731,17 +814,49 @@ export function WorkspaceShell() {
 
     return groups;
   }, [terminalTabs]);
-  const connectionSessions = useMemo(
-    () =>
-      Array.from(terminalTabsByConnection.entries()).map(([connectionId, tabs]) => ({
+  const rdpSessionsByConnection = useMemo(() => {
+    const groups = new Map<string, RdpSessionTab[]>();
+
+    rdpSessions.forEach((session) => {
+      const group = groups.get(session.connectionId) || [];
+      group.push(session);
+      groups.set(session.connectionId, group);
+    });
+
+    return groups;
+  }, [rdpSessions]);
+  const connectionSessions = useMemo<ConnectionSessionSummary[]>(() => {
+    const sessions = new Map<string, ConnectionSessionSummary>();
+
+    terminalTabsByConnection.forEach((tabs, connectionId) => {
+      sessions.set(connectionId, { connectionId, tabs });
+    });
+    rdpSessionsByConnection.forEach((tabs, connectionId) => {
+      const existing = sessions.get(connectionId);
+      sessions.set(connectionId, {
         connectionId,
-        tabs,
-      })),
-    [terminalTabsByConnection],
-  );
+        tabs: existing ? [...existing.tabs, ...tabs] : tabs,
+      });
+    });
+
+    return Array.from(sessions.values());
+  }, [rdpSessionsByConnection, terminalTabsByConnection]);
   const activeConnectionTabs = activeConnectionId
     ? terminalTabsByConnection.get(activeConnectionId) || []
     : [];
+  const activeRdpSessions = activeConnectionId
+    ? rdpSessionsByConnection.get(activeConnectionId) || []
+    : [];
+  const activeRdpSession =
+    (activeRdpSessionId
+      ? rdpSessions.find(
+          (session) =>
+            session.id === activeRdpSessionId &&
+            (!activeConnectionId || session.connectionId === activeConnectionId),
+        ) || null
+      : null) ||
+    activeRdpSessions[0] ||
+    null;
   const activeTerminalTab = activeTabId
     ? terminalTabs.find((tab) => tab.id === activeTabId) || null
     : null;
@@ -879,10 +994,16 @@ export function WorkspaceShell() {
         enabled: () =>
           activeWorkspaceMode === "local"
             ? Boolean(activeLocalTerminalTab)
-            : Boolean(activeTerminalTab),
+            : activeWorkspaceMode === "rdp"
+              ? Boolean(activeRdpSession)
+              : Boolean(activeTerminalTab),
         run: () => {
           if (activeWorkspaceMode === "local" && activeLocalTerminalTab) {
             closeLocalTerminal(activeLocalTerminalTab.id);
+            return;
+          }
+          if (activeWorkspaceMode === "rdp" && activeRdpSession) {
+            closeRdpSession(activeRdpSession.id);
             return;
           }
           if (activeTerminalTab) {
@@ -892,7 +1013,8 @@ export function WorkspaceShell() {
       },
       "terminal.newTab": {
         enabled: () =>
-          activeWorkspaceMode === "local" || Boolean(activeConnection),
+          activeWorkspaceMode === "local" ||
+          (activeWorkspaceMode === "ssh" && isSshConnection(activeConnection)),
         run: () => {
           if (activeWorkspaceMode === "local") {
             void openLocalTerminalByProfile(resolveDefaultLocalTerminalProfile());
@@ -920,6 +1042,7 @@ export function WorkspaceShell() {
       activeConnectedTerminalTab,
       activeConnection,
       activeLocalTerminalTab,
+      activeRdpSession,
       activeShortcutTerminalSearch,
       activeShortcutTerminalTabId,
       activeTerminalTab,
@@ -989,18 +1112,26 @@ export function WorkspaceShell() {
     activeRemoteFileTabs[0] ||
     null;
   const hasSessionWorkspace =
-    terminalTabs.length > 0 || remoteFileTabs.length > 0 || localTerminalTabs.length > 0;
+    terminalTabs.length > 0 ||
+    remoteFileTabs.length > 0 ||
+    localTerminalTabs.length > 0 ||
+    rdpSessions.length > 0;
   const showingHome = activeWorkspaceMode === "home" || (!hasSessionWorkspace && homeActive);
   const showingLocalTerminal = activeWorkspaceMode === "local";
+  const showingRdp = activeWorkspaceMode === "rdp";
   const showSessionWorkspace = !showingHome && activeWorkspaceMode === "ssh" && hasSessionWorkspace;
+  const showRdpWorkspace = !showingHome && showingRdp && hasSessionWorkspace;
   const showWorkspaceToolPane = !showingHome && hasSessionWorkspace;
   const activeConnectionSelectionId =
-    activeWorkspaceMode === "ssh" ? activeConnectionId : null;
+    activeWorkspaceMode === "ssh" || activeWorkspaceMode === "rdp" ? activeConnectionId : null;
   const activeTerminalDirectory = activeConnectedTerminalTab
     ? terminalDirectories[activeConnectedTerminalTab.id] || null
     : null;
-  const remoteFileConnection = activeConnectedTerminalTab ? activeConnection : null;
-  const remoteFilePanelKey = remoteFileConnection?.id || "no-active-connection";
+  const remoteFileConnection =
+    showSessionWorkspace && activeConnectedTerminalTab ? activeConnection : null;
+  const remoteFilePanelKey = showingRdp
+    ? activeRdpSession?.id || "no-rdp-session"
+    : remoteFileConnection?.id || "no-active-connection";
   const terminalColorScheme = getTerminalColorScheme(settings.terminalTheme.scheme);
   const terminalTone = getTerminalColorSchemeTone(terminalColorScheme);
   const terminalFontFamily = resolveTerminalFontFamily(settings.appearance);
@@ -1025,6 +1156,21 @@ export function WorkspaceShell() {
       )
     : [];
   const remoteFileDeleteDirtyCount = remoteFileDeleteAffectedTabs.filter((tab) => tab.dirty).length;
+  const shouldSuppressRdpEmbeddedHost =
+    dialogOpen ||
+    connectionSearchOpen ||
+    commandSnippetDialogOpen ||
+    Boolean(commandSnippetGroupDialog) ||
+    Boolean(pendingCommandSnippetDelete) ||
+    Boolean(pendingCommandSnippetGroupDelete) ||
+    Boolean(pendingCommandHistoryDelete) ||
+    commandHistoryClearOpen ||
+    Boolean(pendingRemoteFileCloseTab) ||
+    Boolean(remoteFileDeleteTarget) ||
+    Boolean(pendingRemoteFileConflictTab) ||
+    Boolean(remoteFileTextAction) ||
+    Boolean(remoteFileProperties) ||
+    Boolean(transferConflictPrompt);
   const effectiveWindowMaterial = normalizeWindowMaterial(
     settings.appearance.windowMaterial,
     supportedWindowMaterials,
@@ -1114,8 +1260,90 @@ export function WorkspaceShell() {
   }, [effectiveWindowMaterial, settings.appearance.windowMaterial, updateAppearance]);
 
   useEffect(() => {
+    rdpEmbeddedHostSuppressedRef.current = shouldSuppressRdpEmbeddedHost;
+    if (!hasTauriRuntime()) {
+      return;
+    }
+
+    if (shouldSuppressRdpEmbeddedHost) {
+      if (activeRdpSession?.result?.embedded) {
+        syncRdpEmbeddedBounds(activeRdpSession, null, false);
+      }
+      return;
+    }
+
+    const frame = window.requestAnimationFrame(syncActiveRdpEmbeddedBounds);
+    return () => {
+      window.cancelAnimationFrame(frame);
+    };
+  }, [
+    activeRdpSession,
+    shouldSuppressRdpEmbeddedHost,
+    syncActiveRdpEmbeddedBounds,
+    syncRdpEmbeddedBounds,
+  ]);
+
+  useEffect(() => {
     void setWindowMaterial(effectiveWindowMaterial);
   }, [effectiveWindowMaterial]);
+
+  useEffect(() => {
+    if (!hasTauriRuntime()) {
+      return;
+    }
+
+    const appWindow = getCurrentWindow();
+    let disposed = false;
+    let frameId: number | null = null;
+    const unlisteners: Array<() => void> = [];
+    const scheduleSync = () => {
+      if (disposed || frameId !== null) {
+        return;
+      }
+      frameId = window.requestAnimationFrame(() => {
+        frameId = null;
+        syncActiveRdpEmbeddedBounds();
+      });
+    };
+
+    void (async () => {
+      const unlistenMove = await appWindow.onMoved(scheduleSync);
+      if (disposed) {
+        unlistenMove();
+        return;
+      }
+      unlisteners.push(unlistenMove);
+
+      const unlistenResize = await appWindow.onResized(scheduleSync);
+      if (disposed) {
+        unlistenResize();
+        return;
+      }
+      unlisteners.push(unlistenResize);
+
+      const unlistenScale = await appWindow.onScaleChanged(scheduleSync);
+      if (disposed) {
+        unlistenScale();
+        return;
+      }
+      unlisteners.push(unlistenScale);
+
+      const unlistenFocus = await appWindow.onFocusChanged(scheduleSync);
+      if (disposed) {
+        unlistenFocus();
+        return;
+      }
+      unlisteners.push(unlistenFocus);
+    })();
+
+    return () => {
+      disposed = true;
+      if (frameId !== null) {
+        window.cancelAnimationFrame(frameId);
+      }
+      unlisteners.forEach((unlisten) => unlisten());
+    };
+  }, [syncActiveRdpEmbeddedBounds]);
 
   useEffect(() => {
     if (!hasTauriRuntime()) {
@@ -1141,6 +1369,39 @@ export function WorkspaceShell() {
       unlisten?.();
     };
   }, []);
+
+  useEffect(() => {
+    if (!hasTauriRuntime()) {
+      return;
+    }
+
+    let disposed = false;
+    let unlisten: (() => void) | null = null;
+    void listenRdpSessionClosed((event) => {
+      if (disposed) {
+        return;
+      }
+      const closedTabIds = rdpSessionsRef.current
+        .filter((session) => session.result?.session_id === event.session_id)
+        .map((session) => session.id);
+      if (closedTabIds.length === 0) {
+        return;
+      }
+      removeRdpSessionsLocally(closedTabIds);
+      void rdpCloseSession(event.session_id).catch(() => undefined);
+    }).then((cleanup) => {
+      if (disposed) {
+        cleanup();
+      } else {
+        unlisten = cleanup;
+      }
+    });
+
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, [activeConnectionId, activeRdpSessionId, activeWorkspaceMode, remoteFileTabs.length]);
 
   useEffect(() => {
     if (!hasTauriRuntime()) {
@@ -1618,6 +1879,7 @@ export function WorkspaceShell() {
 
   function activateRemoteFileTab(tab: RemoteFileEditorTab) {
     setHomeActive(false);
+    setActiveWorkspaceMode("ssh");
     setActiveConnectionId(tab.connectionId);
     setActiveRemoteFileTabId(tab.id);
 
@@ -1662,6 +1924,14 @@ export function WorkspaceShell() {
 
     if (nextTerminalTab) {
       activateTerminalTab(nextTerminalTab);
+      return;
+    }
+
+    const nextRdpSession = activeRdpSessionId
+      ? rdpSessions.find((session) => session.id === activeRdpSessionId) || null
+      : rdpSessions[0] || null;
+    if (nextRdpSession) {
+      activateRdpSession(nextRdpSession);
       return;
     }
 
@@ -2796,6 +3066,11 @@ export function WorkspaceShell() {
 
   async function deleteConnection(connection: ConnectionProfile) {
     await remove(connection.id);
+    closeRdpSessions(
+      rdpSessionsRef.current
+        .filter((session) => session.connectionId === connection.id)
+        .map((session) => session.id),
+    );
     const closingTabIds = terminalTabs.filter((tab) => tab.connectionId === connection.id).map((tab) => tab.id);
     closingTabIds.forEach(stopTerminalWarmupCapture);
     setTerminalDirectories((directories) => removeDirectoryState(directories, closingTabIds));
@@ -2803,7 +3078,12 @@ export function WorkspaceShell() {
     setTerminalTabs((tabs) => {
       const nextTabs = tabs.filter((tab) => tab.connectionId !== connection.id);
       terminalTabsRef.current = nextTabs;
-      if (nextTabs.length === 0 && remoteFileTabs.length === 0 && localTerminalTabsRef.current.length === 0) {
+      if (
+        nextTabs.length === 0 &&
+        remoteFileTabs.length === 0 &&
+        localTerminalTabsRef.current.length === 0 &&
+        !rdpSessionsRef.current.some((session) => session.connectionId !== connection.id)
+      ) {
         setHomeActive(true);
       }
       if (!nextTabs.some((tab) => tab.id === activeTabId)) {
@@ -3717,11 +3997,18 @@ export function WorkspaceShell() {
       if (activeLocalTerminalTabId && closingIds.has(activeLocalTerminalTabId)) {
         const nextActive = nextTabs[0] || null;
         setActiveLocalTerminalTabId(nextActive?.id || null);
-        if (!nextActive && terminalTabsRef.current.length === 0 && remoteFileTabs.length === 0) {
+        if (
+          !nextActive &&
+          terminalTabsRef.current.length === 0 &&
+          remoteFileTabs.length === 0 &&
+          rdpSessionsRef.current.length === 0
+        ) {
           setHomeActive(true);
           setActiveWorkspaceMode("home");
         } else if (!nextActive && terminalTabsRef.current.length > 0) {
           setActiveWorkspaceMode("ssh");
+        } else if (!nextActive && rdpSessionsRef.current.length > 0) {
+          activateRdpSession(rdpSessionsRef.current[0]);
         }
       }
       return nextTabs;
@@ -3887,6 +4174,11 @@ export function WorkspaceShell() {
   }
 
   function openConnectionSession(connection: ConnectionProfile) {
+    if (isRdpConnection(connection)) {
+      openRdpConnectionSession(connection);
+      return;
+    }
+
     const pendingTab = pendingTabForConnection(connection.id);
     if (pendingTab) {
       activateTerminalTab(pendingTab);
@@ -3897,7 +4189,298 @@ export function WorkspaceShell() {
   }
 
   function openTerminal(connection: ConnectionProfile) {
+    if (isRdpConnection(connection)) {
+      openRdpConnectionSession(connection);
+      return;
+    }
+
     startConnectionStep(connection, "terminal");
+  }
+
+  function openRdpConnectionSession(connection: ConnectionProfile) {
+    const existingSession = preferredRdpSessionForConnection(connection.id);
+    if (existingSession) {
+      activateRdpSession(existingSession);
+      return;
+    }
+
+    startRdpSession(connection);
+  }
+
+  function startRdpSession(connection: ConnectionProfile) {
+    const existingSession = preferredRdpSessionForConnection(connection.id);
+    if (existingSession) {
+      activateRdpSession(existingSession);
+      return;
+    }
+
+    const session = buildRdpSession(connection);
+    setRdpSessions((sessions) => {
+      const nextSessions = [...sessions, session];
+      rdpSessionsRef.current = nextSessions;
+      return nextSessions;
+    });
+    activateRdpSession(session);
+    void runRdpSession(session.id, connection);
+  }
+
+  async function runRdpSession(sessionId: string, connection: ConnectionProfile) {
+    updateRdpSession(sessionId, (session) => ({
+      ...session,
+      error: null,
+      message: "正在选择可用 RDP runner 并启动客户端。",
+      preview: null,
+      result: null,
+      status: "launching",
+    }));
+
+    if (!hasTauriRuntime()) {
+      await wait(160);
+      if (!rdpSessionExists(sessionId)) {
+        return;
+      }
+      updateRdpSession(sessionId, (session) => ({
+        ...session,
+        message: "浏览器预览模式不会启动桌面客户端，真实运行时会打开 RDP runner 或原生子窗口。",
+        preview: previewRdpLaunchForBrowser(connection),
+        status: "external",
+      }));
+      void markConnected(connection.id);
+      return;
+    }
+
+    try {
+      const result = await rdpLaunchConnection(connection.id);
+      if (!rdpSessionExists(sessionId)) {
+        if (result.session_id) {
+          await rdpCloseSession(result.session_id).catch(() => undefined);
+        }
+        return;
+      }
+      const nativeActiveX = result.runner === "mstsc_activex" && !result.embedded;
+      updateRdpSession(sessionId, (session) => ({
+        ...session,
+        error: null,
+        message:
+          result.fallback_reason ||
+          (result.embedded
+            ? "嵌入式 RDP 会话已创建。"
+            : nativeActiveX
+              ? "RDP 原生子窗口已打开。"
+            : "RDP 客户端已启动，凭据由客户端提示。"),
+        result,
+        status: result.embedded ? "embedded" : nativeActiveX ? "native" : "external",
+      }));
+      void markConnected(connection.id);
+    } catch (error) {
+      if (!rdpSessionExists(sessionId)) {
+        return;
+      }
+      updateRdpSession(sessionId, (session) => ({
+        ...session,
+        error: formatDetailedError(error),
+        message: null,
+        status: "error",
+      }));
+    }
+  }
+
+  async function previewRdpSessionLaunch(sessionId: string) {
+    const session = rdpSessionsRef.current.find((item) => item.id === sessionId);
+    if (!session) {
+      return;
+    }
+    const connection = connectionById.get(session.connectionId);
+    if (!connection) {
+      updateRdpSession(sessionId, (current) => ({
+        ...current,
+        message: "连接已删除，无法生成启动预览。",
+      }));
+      return;
+    }
+
+    updateRdpSession(sessionId, (current) => ({
+      ...current,
+      message: "正在生成启动预览。",
+    }));
+
+    try {
+      const preview = hasTauriRuntime()
+        ? await rdpPreviewLaunch(connection.id)
+        : previewRdpLaunchForBrowser(connection);
+      updateRdpSession(sessionId, (current) => ({
+        ...current,
+        message: "启动预览已更新，内容已隐藏敏感凭据。",
+        preview,
+      }));
+    } catch (error) {
+      updateRdpSession(sessionId, (current) => ({
+        ...current,
+        message: `启动预览失败：${formatError(error)}`,
+      }));
+    }
+  }
+
+  function retryRdpSession(sessionId: string) {
+    const session = rdpSessionsRef.current.find((item) => item.id === sessionId);
+    const connection = session ? connectionById.get(session.connectionId) : null;
+    if (!session || !connection) {
+      return;
+    }
+    activateRdpSession(session);
+    void runRdpSession(session.id, connection);
+  }
+
+  function activateRdpSession(session: RdpSessionTab) {
+    setActiveView("workspace");
+    setSettingsSectionRequest(undefined);
+    setActiveWorkspaceMode("rdp");
+    setHomeActive(false);
+    setActiveConnectionId(session.connectionId);
+    setActiveRdpSessionId(session.id);
+    setRightTool("tools");
+  }
+
+  function closeRdpSession(sessionId: string) {
+    closeRdpSessions([sessionId]);
+  }
+
+  function removeRdpSessionsLocally(sessionIds: string[]) {
+    if (sessionIds.length === 0) {
+      return;
+    }
+
+    const closingIds = new Set(sessionIds);
+    setRdpSessions((sessions) => {
+      const nextSessions = sessions.filter((session) => !closingIds.has(session.id));
+      rdpSessionsRef.current = nextSessions;
+      const activeRdpClosed = activeRdpSessionId
+        ? closingIds.has(activeRdpSessionId)
+        : activeWorkspaceMode === "rdp";
+
+      if (activeRdpClosed) {
+        const sameConnectionSession =
+          activeConnectionId
+            ? nextSessions.find((session) => session.connectionId === activeConnectionId) || null
+            : null;
+        const nextRdpSession = sameConnectionSession || nextSessions[0] || null;
+        if (nextRdpSession) {
+          setActiveRdpSessionId(nextRdpSession.id);
+          setActiveConnectionId(nextRdpSession.connectionId);
+          setActiveWorkspaceMode("rdp");
+          setHomeActive(false);
+        } else {
+          setActiveRdpSessionId(null);
+          const nextTerminalTab = terminalTabsRef.current[0] || null;
+          const nextLocalTerminalTab = localTerminalTabsRef.current[0] || null;
+          if (nextTerminalTab) {
+            activateTerminalTab(nextTerminalTab);
+          } else if (nextLocalTerminalTab) {
+            activateLocalTerminalTab(nextLocalTerminalTab);
+          } else if (remoteFileTabs.length === 0) {
+            setActiveConnectionId(null);
+            setActiveWorkspaceMode("home");
+            setHomeActive(true);
+          }
+        }
+      }
+
+      return nextSessions;
+    });
+  }
+
+  function closeRdpSessions(sessionIds: string[]) {
+    if (sessionIds.length === 0) {
+      return;
+    }
+
+    const closingIds = new Set(sessionIds);
+    const closingSessions = rdpSessionsRef.current.filter((session) => closingIds.has(session.id));
+    if (hasTauriRuntime()) {
+      closingSessions.forEach((session) => {
+        const backendSessionId = session.result?.session_id;
+        if (backendSessionId) {
+          void rdpCloseSession(backendSessionId).catch(() => undefined);
+        }
+      });
+    }
+
+    removeRdpSessionsLocally(sessionIds);
+  }
+
+  function closeOtherRdpSessions(sessionId: string) {
+    const session = rdpSessions.find((item) => item.id === sessionId);
+    if (!session) {
+      return;
+    }
+    closeRdpSessions(
+      rdpSessions
+        .filter((item) => item.connectionId === session.connectionId && item.id !== sessionId)
+        .map((item) => item.id),
+    );
+  }
+
+  function closeRdpSessionsToRight(sessionId: string) {
+    const session = rdpSessions.find((item) => item.id === sessionId);
+    if (!session) {
+      return;
+    }
+    const sameConnectionSessions = rdpSessions.filter((item) => item.connectionId === session.connectionId);
+    const index = sameConnectionSessions.findIndex((item) => item.id === sessionId);
+    if (index < 0) {
+      return;
+    }
+    closeRdpSessions(sameConnectionSessions.slice(index + 1).map((item) => item.id));
+  }
+
+  function closeAllRdpSessionsForConnection(connectionId: string) {
+    closeRdpSessions(rdpSessions.filter((session) => session.connectionId === connectionId).map((session) => session.id));
+  }
+
+  function preferredRdpSessionForConnection(connectionId: string) {
+    const activeSession = activeRdpSessionId
+      ? rdpSessionsRef.current.find(
+          (session) => session.id === activeRdpSessionId && session.connectionId === connectionId,
+        ) || null
+      : null;
+    return (
+      activeSession ||
+      rdpSessionsRef.current.find((session) => session.connectionId === connectionId) ||
+      null
+    );
+  }
+
+  function rdpSessionExists(sessionId: string) {
+    return rdpSessionsRef.current.some((session) => session.id === sessionId);
+  }
+
+  function buildRdpSession(connection: ConnectionProfile): RdpSessionTab {
+    const now = Date.now();
+    const index =
+      rdpSessionsRef.current.filter((session) => session.connectionId === connection.id).length + 1;
+    return {
+      connectionId: connection.id,
+      createdAt: now,
+      id: `rdp-${connection.id}-${now.toString()}`,
+      message: null,
+      preview: null,
+      result: null,
+      status: "launching",
+      title: index === 1 ? "RDP" : `RDP ${index.toString()}`,
+    };
+  }
+
+  function updateRdpSession(
+    sessionId: string,
+    updater: (session: RdpSessionTab) => RdpSessionTab,
+  ) {
+    setRdpSessions((sessions) => {
+      const nextSessions = sessions.map((session) =>
+        session.id === sessionId ? updater(session) : session,
+      );
+      rdpSessionsRef.current = nextSessions;
+      return nextSessions;
+    });
   }
 
   function closeTerminal(tabId: string) {
@@ -3920,7 +4503,12 @@ export function WorkspaceShell() {
           : null);
       const nextTabs = tabs.filter((tab) => !closingIds.has(tab.id));
       terminalTabsRef.current = nextTabs;
-      if (nextTabs.length === 0 && remoteFileTabs.length === 0 && localTerminalTabsRef.current.length === 0) {
+      if (
+        nextTabs.length === 0 &&
+        remoteFileTabs.length === 0 &&
+        localTerminalTabsRef.current.length === 0 &&
+        rdpSessionsRef.current.length === 0
+      ) {
         setHomeActive(true);
       }
 
@@ -3959,6 +4547,9 @@ export function WorkspaceShell() {
           null;
         setActiveConnectionId(nextTabs[0]?.connectionId || nextActiveFile?.connectionId || null);
         forgetActiveConnectionTabs([closingActiveConnectionTab.connectionId]);
+        if (!nextTabs[0] && !nextActiveFile && rdpSessionsRef.current.length > 0) {
+          activateRdpSession(rdpSessionsRef.current[0]);
+        }
       }
       return nextTabs;
     });
@@ -3999,6 +4590,11 @@ export function WorkspaceShell() {
 
   function closeConnectionSessions(connectionIds: string[]) {
     const closingConnectionIds = new Set(connectionIds);
+    closeRdpSessions(
+      rdpSessionsRef.current
+        .filter((session) => closingConnectionIds.has(session.connectionId))
+        .map((session) => session.id),
+    );
     const closingTabIds = terminalTabs
       .filter((tab) => closingConnectionIds.has(tab.connectionId))
       .map((tab) => tab.id);
@@ -4008,7 +4604,12 @@ export function WorkspaceShell() {
     setTerminalTabs((tabs) => {
       const nextTabs = tabs.filter((tab) => !closingConnectionIds.has(tab.connectionId));
       terminalTabsRef.current = nextTabs;
-      if (nextTabs.length === 0 && remoteFileTabs.length === 0 && localTerminalTabsRef.current.length === 0) {
+      if (
+        nextTabs.length === 0 &&
+        remoteFileTabs.length === 0 &&
+        localTerminalTabsRef.current.length === 0 &&
+        !rdpSessionsRef.current.some((session) => !closingConnectionIds.has(session.connectionId))
+      ) {
         setHomeActive(true);
       }
 
@@ -4022,6 +4623,13 @@ export function WorkspaceShell() {
         setActiveConnectionId(nextActiveTab?.connectionId || nextActiveFile?.connectionId || null);
         if (nextActiveFile) {
           setActiveRemoteFileTabId(nextActiveFile.id);
+        } else if (!nextActiveTab) {
+          const nextRdpSession = rdpSessionsRef.current.find(
+            (session) => !closingConnectionIds.has(session.connectionId),
+          );
+          if (nextRdpSession) {
+            activateRdpSession(nextRdpSession);
+          }
         }
       }
 
@@ -4046,7 +4654,7 @@ export function WorkspaceShell() {
   }
 
   function openTerminalInActiveConnection() {
-    if (activeConnection) {
+    if (isSshConnection(activeConnection)) {
       const tab = buildDirectTerminalTab(terminalTabsRef.current, activeConnection);
       setTerminalTabs((tabs) => {
         const nextTabs = [...tabs, tab];
@@ -4059,7 +4667,7 @@ export function WorkspaceShell() {
   }
 
   function openDockerContainerTerminal(container: DockerContainerSummary) {
-    if (!activeConnection) {
+    if (!isSshConnection(activeConnection)) {
       return;
     }
     const title = `容器 ${container.name || shortDockerRuntimeId(container.id)}`;
@@ -4238,6 +4846,11 @@ export function WorkspaceShell() {
   }
 
   function startConnectionStep(connection: ConnectionProfile, mode: ConnectionStepMode) {
+    if (isRdpConnection(connection)) {
+      openRdpConnectionSession(connection);
+      return;
+    }
+
     const authKind = connection.prompt_auth_kind || connection.inline_auth_kind || "password";
     const step: ConnectionStepState = {
       authKind,
@@ -4898,6 +5511,11 @@ export function WorkspaceShell() {
         onOpenHome={openHome}
         onOpenLocalTerminal={openLocalTerminalWorkspace}
         onSelectConnectionSession={(connectionId) => {
+          const rdpSession = preferredRdpSessionForConnection(connectionId);
+          if (rdpSession) {
+            activateRdpSession(rdpSession);
+            return;
+          }
           const nextTab = preferredTabForConnection(connectionId);
           if (nextTab) {
             activateTerminalTab(nextTab);
@@ -5071,12 +5689,12 @@ export function WorkspaceShell() {
 
               <section
                 className={`terminal-workbench-pane ${commandSenderOpen ? "command-sender-open" : ""} ${
-                  showingLocalTerminal ? "is-hidden" : ""
+                  showSessionWorkspace ? "" : "is-hidden"
                 }`}
                 data-workbench-surface={activeConnectedTerminalTab ? "terminal" : "panel"}
                 data-terminal-tone={terminalTone}
                 aria-label="终端区"
-                aria-hidden={showingLocalTerminal}
+                aria-hidden={!showSessionWorkspace}
               >
                 <nav className="terminal-subtabs" aria-label="当前连接终端标签">
                   {activeConnectionTabs.map((tab, index) => (
@@ -5193,7 +5811,7 @@ export function WorkspaceShell() {
                       <ConnectionStepPanel
                         key={tab.id}
                         step={tabStep}
-                        active={!showingHome && tab.id === activeTabId}
+                        active={showSessionWorkspace && tab.id === activeTabId}
                         onCancel={() => closeTerminal(tab.id)}
                         onEdit={(connection) => {
                           editConnection(connection);
@@ -5226,7 +5844,7 @@ export function WorkspaceShell() {
                       />
                     ) : tab.type === "terminal" && tab.sessionId ? (
                       <TerminalPanel
-                        active={!showingHome && tab.id === activeTabId}
+                        active={showSessionWorkspace && tab.id === activeTabId}
                         connection={connectionById.get(tab.connectionId) || null}
                         fontFamily={terminalFontFamily}
                         fontSize={settings.appearance.terminalFontSize}
@@ -5255,7 +5873,7 @@ export function WorkspaceShell() {
                       />
                     ) : tab.type === "terminal" ? (
                       <DirectTerminalStatusPanel
-                        active={!showingHome && tab.id === activeTabId}
+                        active={showSessionWorkspace && tab.id === activeTabId}
                         connection={connectionById.get(tab.connectionId) || null}
                         error={tab.error || null}
                         status={tab.status}
@@ -5465,6 +6083,103 @@ export function WorkspaceShell() {
                     </div>
                   </section>
                 ) : null}
+              </section>
+
+              <section
+                className={`terminal-workbench-pane rdp-workbench-pane ${
+                  showRdpWorkspace ? "" : "is-hidden"
+                }`}
+                data-workbench-surface="panel"
+                aria-label="RDP 会话区"
+                aria-hidden={!showRdpWorkspace}
+              >
+                <nav className="terminal-subtabs rdp-subtabs" aria-label="RDP 会话标签">
+                  {activeRdpSessions.map((session, index) => (
+                    <TabContextMenu
+                      key={session.id}
+                      actions={[
+                        {
+                          hint: "Ctrl+F4",
+                          label: "关闭",
+                          onSelect: () => closeRdpSession(session.id),
+                        },
+                        {
+                          disabled: activeRdpSessions.length <= 1,
+                          label: "关闭其他",
+                          onSelect: () => closeOtherRdpSessions(session.id),
+                        },
+                        {
+                          disabled: index >= activeRdpSessions.length - 1,
+                          label: "关闭右侧标签页",
+                          onSelect: () => closeRdpSessionsToRight(session.id),
+                        },
+                        {
+                          disabled: activeRdpSessions.length === 0,
+                          hint: "Ctrl+K W",
+                          label: "全部关闭",
+                          onSelect: () => closeAllRdpSessionsForConnection(session.connectionId),
+                        },
+                      ]}
+                    >
+                      <div
+                        className={`subtab-shell ${session.id === activeRdpSession?.id ? "active" : ""}`}
+                      >
+                        <button
+                          className="subtab rdp-subtab"
+                          type="button"
+                          title={`${session.title} · ${rdpStatusLabel(session.status)}`}
+                          onClick={() => activateRdpSession(session)}
+                        >
+                          <MonitorPlay className="ui-icon" aria-hidden="true" />
+                          <span>{session.title}</span>
+                        </button>
+                        <button
+                          className="subtab-close"
+                          type="button"
+                          aria-label={`关闭 ${session.title}`}
+                          onClick={() => closeRdpSession(session.id)}
+                        >
+                          <X className="ui-icon" aria-hidden="true" />
+                        </button>
+                      </div>
+                    </TabContextMenu>
+                  ))}
+                  <div className="terminal-subtab-actions">
+                    <Tooltip label={rightPaneCollapsed ? "展开右侧面板" : "收起右侧面板"}>
+                      <button
+                        className="add-subtab terminal-subtab-panel-toggle"
+                        type="button"
+                        aria-label={rightPaneCollapsed ? "展开右侧面板" : "收起右侧面板"}
+                        aria-expanded={!rightPaneCollapsed}
+                        onClick={() => setRightPaneCollapsed((collapsed) => !collapsed)}
+                      >
+                        {rightPaneCollapsed ? (
+                          <PanelRightOpen className="ui-icon" aria-hidden="true" />
+                        ) : (
+                          <PanelRightClose className="ui-icon" aria-hidden="true" />
+                        )}
+                      </button>
+                    </Tooltip>
+                  </div>
+                </nav>
+
+                <section className="rdp-stack" aria-label="RDP 会话状态">
+                  {rdpSessions.map((session) => (
+                    <RdpSessionStatusPanel
+                      active={showRdpWorkspace && session.id === activeRdpSession?.id}
+                      connection={connectionById.get(session.connectionId) || null}
+                      key={session.id}
+                      session={session}
+                      onEmbeddedViewportRef={setRdpEmbeddedViewportRef}
+                      onEmbeddedViewportResize={syncRdpEmbeddedBounds}
+                      onClose={() => closeRdpSession(session.id)}
+                      onCopyCommand={() => void copyText(rdpSessionCommandText(session))}
+                      onCopyRdpFile={() => void copyText(rdpSessionFileText(session))}
+                      onPreview={() => void previewRdpSessionLaunch(session.id)}
+                      onRetry={() => retryRdpSession(session.id)}
+                    />
+                  ))}
+                </section>
               </section>
 
               <section
@@ -5687,7 +6402,13 @@ export function WorkspaceShell() {
         {showWorkspaceToolPane ? (
           <RemoteFilePanel
             activeTool={rightTool}
-            availableTools={activeWorkspaceMode === "local" ? ["commands"] : undefined}
+            availableTools={
+              showingRdp
+                ? ["tools"]
+                : activeWorkspaceMode === "local"
+                  ? ["commands"]
+                  : undefined
+            }
             connection={remoteFileConnection}
             key={remoteFilePanelKey}
             refreshRequest={remoteFileRefreshRequest}
@@ -5731,15 +6452,26 @@ export function WorkspaceShell() {
               />
             }
             tunnelPanel={
-              <TunnelPanel activeConnectionId={activeConnectionId} connections={connections} />
+              <TunnelPanel activeConnectionId={showSessionWorkspace ? activeConnectionId : null} connections={connections} />
             }
             toolsPanel={
-              <DockerToolPanel
-                active={showSessionWorkspace && !rightPaneCollapsed && rightTool === "tools"}
-                connection={remoteFileConnection}
-                onCopyText={copyText}
-                onOpenContainerTerminal={openDockerContainerTerminal}
-              />
+              showingRdp ? (
+                <RdpSessionToolPanel
+                  connection={activeConnection}
+                  session={activeRdpSession}
+                  onCopyCommand={(session) => void copyText(rdpSessionCommandText(session))}
+                  onCopyRdpFile={(session) => void copyText(rdpSessionFileText(session))}
+                  onPreview={(session) => void previewRdpSessionLaunch(session.id)}
+                  onRetry={(session) => retryRdpSession(session.id)}
+                />
+              ) : (
+                <DockerToolPanel
+                  active={showSessionWorkspace && !rightPaneCollapsed && rightTool === "tools"}
+                  connection={remoteFileConnection}
+                  onCopyText={copyText}
+                  onOpenContainerTerminal={openDockerContainerTerminal}
+                />
+              )
             }
             transferPanel={
               <RemoteFileTransferPanel
@@ -6586,6 +7318,283 @@ function RemoteFileTransferPanel({
           )}
         </div>
       </div>
+    </section>
+  );
+}
+
+function RdpSessionStatusPanel({
+  active,
+  connection,
+  session,
+  onEmbeddedViewportRef,
+  onEmbeddedViewportResize,
+  onClose,
+  onCopyCommand,
+  onCopyRdpFile,
+  onPreview,
+  onRetry,
+}: {
+  active: boolean;
+  connection: ConnectionProfile | null;
+  session: RdpSessionTab;
+  onEmbeddedViewportRef: (sessionId: string, node: HTMLDivElement | null) => void;
+  onEmbeddedViewportResize: (
+    session: RdpSessionTab,
+    bounds: RdpEmbeddedBounds | null,
+    active: boolean,
+  ) => void;
+  onClose: () => void;
+  onCopyCommand: () => void;
+  onCopyRdpFile: () => void;
+  onPreview: () => void;
+  onRetry: () => void;
+}) {
+  const embeddedViewportRef = useRef<HTMLDivElement | null>(null);
+  const hasCommand = rdpSessionHasCommandText(session);
+  const hasRdpFile = rdpSessionHasRdpFileText(session);
+  const runner = session.result?.runner || session.preview?.runner || connection?.rdp?.runner.preferred_runner || null;
+  const primaryDetail = rdpSessionPrimaryDetail(session);
+  const showEmbeddedViewport = session.status === "embedded";
+  const setEmbeddedViewport = useCallback(
+    (node: HTMLDivElement | null) => {
+      embeddedViewportRef.current = node;
+      onEmbeddedViewportRef(session.id, node);
+    },
+    [onEmbeddedViewportRef, session.id],
+  );
+
+  useLayoutEffect(() => {
+    if (!session.result?.embedded) {
+      return undefined;
+    }
+
+    const emitBounds = () => {
+      const bounds = active
+        ? measureRdpEmbeddedViewport(embeddedViewportRef.current)
+        : null;
+      onEmbeddedViewportResize(session, bounds, active);
+    };
+    const viewport = embeddedViewportRef.current;
+    const observer =
+      viewport && typeof ResizeObserver !== "undefined"
+        ? new ResizeObserver(emitBounds)
+        : null;
+    if (observer && viewport) {
+      observer.observe(viewport);
+    }
+    window.addEventListener("resize", emitBounds);
+    const frameId = window.requestAnimationFrame(emitBounds);
+
+    return () => {
+      observer?.disconnect();
+      window.removeEventListener("resize", emitBounds);
+      window.cancelAnimationFrame(frameId);
+    };
+  }, [active, onEmbeddedViewportResize, session]);
+
+  return (
+    <section
+      className={`rdp-session-status ${session.status} ${active ? "" : "is-hidden"}`}
+      aria-label={`${session.title} RDP 状态`}
+      aria-hidden={!active}
+    >
+      <div className="rdp-session-shell">
+        <header className="rdp-session-head">
+          <div className="rdp-session-heading">
+            <span className="rdp-session-icon" aria-hidden="true">
+              {session.status === "launching" ? (
+                <Loader2 className="ui-icon spin" />
+              ) : session.status === "error" ? (
+                <CircleAlert className="ui-icon" />
+              ) : session.status === "embedded" || session.status === "native" ? (
+                <MonitorPlay className="ui-icon" />
+              ) : (
+                <ExternalLink className="ui-icon" />
+              )}
+            </span>
+            <span>
+              <strong>{connection?.name || session.title}</strong>
+              <small>
+                {connection ? `RDP · ${formatConnectionAddress(connection)}` : "连接已不可用"}
+              </small>
+            </span>
+          </div>
+          <div className="rdp-session-actions">
+            <button type="button" onClick={onPreview}>
+              <FileText className="ui-icon" aria-hidden="true" />
+              <span>预览</span>
+            </button>
+            <button type="button" disabled={!hasCommand} onClick={onCopyCommand}>
+              <Clipboard className="ui-icon" aria-hidden="true" />
+              <span>命令</span>
+            </button>
+            <button type="button" disabled={!hasRdpFile} onClick={onCopyRdpFile}>
+              <FileText className="ui-icon" aria-hidden="true" />
+              <span>RDP</span>
+            </button>
+            <button type="button" onClick={onRetry}>
+              <RefreshCw className="ui-icon" aria-hidden="true" />
+              <span>重试</span>
+            </button>
+            <button type="button" aria-label={`关闭 ${session.title}`} onClick={onClose}>
+              <X className="ui-icon" aria-hidden="true" />
+            </button>
+          </div>
+        </header>
+
+        <div className="rdp-session-summary">
+          <span className={`rdp-session-badge ${session.status}`}>
+            {rdpStatusLabel(session.status)}
+          </span>
+          <span>{formatRdpRunnerKind(runner)}</span>
+          {session.result?.process_id ? <span>PID {session.result.process_id.toString()}</span> : null}
+          {session.result?.rdp_file_path ? <span title={session.result.rdp_file_path}>临时 .rdp</span> : null}
+        </div>
+
+        {session.message ? (
+          <p className="rdp-session-message">{session.message}</p>
+        ) : null}
+
+        {session.error ? (
+          <pre className="rdp-session-error" role="alert">{session.error}</pre>
+        ) : null}
+
+        {showEmbeddedViewport ? (
+          <div className="rdp-embedded-placeholder" ref={setEmbeddedViewport}>
+            <MonitorPlay className="ui-icon" aria-hidden="true" />
+            <span>
+              <strong>
+                {session.status === "embedded" ? "嵌入式 RDP 会话区域" : "正在准备嵌入式会话"}
+              </strong>
+              <small>
+                {session.status === "embedded"
+                  ? "Windows 原生宿主已接管该区域，切换标签或调整窗口时会同步尺寸。"
+                  : "RDP 客户端启动后会自动挂载到这里；不可嵌入时会回退到外部窗口。"}
+              </small>
+            </span>
+          </div>
+        ) : (
+          <div className="rdp-session-preview-grid">
+            <section className="rdp-session-preview-card">
+              <strong>{primaryDetail.title}</strong>
+              <code>{primaryDetail.value}</code>
+            </section>
+            {session.preview?.rdp_file_content ? (
+              <section className="rdp-session-preview-card">
+                <strong>生成的 .rdp</strong>
+                <pre>{session.preview.rdp_file_content}</pre>
+              </section>
+            ) : null}
+            {session.preview?.warnings.length ? (
+              <section className="rdp-session-preview-card subtle">
+                <strong>提示</strong>
+                {session.preview.warnings.map((warning) => (
+                  <small key={warning}>{warning}</small>
+                ))}
+              </section>
+            ) : null}
+          </div>
+        )}
+      </div>
+    </section>
+  );
+}
+
+function RdpSessionToolPanel({
+  connection,
+  session,
+  onCopyCommand,
+  onCopyRdpFile,
+  onPreview,
+  onRetry,
+}: {
+  connection: ConnectionProfile | null;
+  session: RdpSessionTab | null;
+  onCopyCommand: (session: RdpSessionTab) => void;
+  onCopyRdpFile: (session: RdpSessionTab) => void;
+  onPreview: (session: RdpSessionTab) => void;
+  onRetry: (session: RdpSessionTab) => void;
+}) {
+  if (!connection || !session) {
+    return (
+      <section className="rdp-tool-panel">
+        <p className="file-panel-empty">打开一个 RDP 会话后显示 runner 状态。</p>
+      </section>
+    );
+  }
+
+  const hasCommand = rdpSessionHasCommandText(session);
+  const hasRdpFile = rdpSessionHasRdpFileText(session);
+  const runner = session.result?.runner || session.preview?.runner || connection.rdp?.runner.preferred_runner || null;
+  const display = connection.rdp?.display;
+  const resources = connection.rdp?.resources;
+
+  return (
+    <section className="rdp-tool-panel" aria-label="RDP 工具">
+      <header className="rdp-tool-head">
+        <span>
+          <strong>{connection.name}</strong>
+          <small>{formatConnectionAddress(connection)}</small>
+        </span>
+        <span className={`rdp-session-badge ${session.status}`}>{rdpStatusLabel(session.status)}</span>
+      </header>
+
+      <div className="rdp-tool-actions">
+        <button type="button" onClick={() => onPreview(session)}>
+          <FileText className="ui-icon" aria-hidden="true" />
+          预览
+        </button>
+        <button type="button" disabled={!hasCommand} onClick={() => onCopyCommand(session)}>
+          <Clipboard className="ui-icon" aria-hidden="true" />
+          复制命令
+        </button>
+        <button type="button" disabled={!hasRdpFile} onClick={() => onCopyRdpFile(session)}>
+          <Clipboard className="ui-icon" aria-hidden="true" />
+          复制 .rdp
+        </button>
+        <button type="button" onClick={() => onRetry(session)}>
+          <RefreshCw className="ui-icon" aria-hidden="true" />
+          重试
+        </button>
+      </div>
+
+      <dl className="rdp-tool-facts">
+        <div>
+          <dt>Runner</dt>
+          <dd>{formatRdpRunnerKind(runner)}</dd>
+        </div>
+        <div>
+          <dt>模式</dt>
+          <dd>{rdpRenderModeLabel(connection.rdp?.runner.render_mode || "embedded")}</dd>
+        </div>
+        <div>
+          <dt>显示</dt>
+          <dd>{rdpDisplaySummary(display)}</dd>
+        </div>
+        <div>
+          <dt>资源</dt>
+          <dd>{rdpResourceSummary(resources)}</dd>
+        </div>
+      </dl>
+
+      {session.error ? (
+        <pre className="rdp-tool-error">{session.error}</pre>
+      ) : null}
+
+      {session.preview || session.result ? (
+        <section className="rdp-tool-preview">
+          <strong>启动材料</strong>
+          <code>{rdpSessionCommandText(session) || "嵌入式 runner 不需要外部命令。"}</code>
+          {session.preview?.setup_hint || session.result?.setup_hint ? (
+            <small>{session.preview?.setup_hint || session.result?.setup_hint}</small>
+          ) : null}
+          {session.preview?.fallback_reason || session.result?.fallback_reason ? (
+            <small>{session.preview?.fallback_reason || session.result?.fallback_reason}</small>
+          ) : null}
+        </section>
+      ) : (
+        <p className="rdp-tool-note">启动后可在这里查看 runner、生成命令和脱敏 `.rdp` 预览。</p>
+      )}
     </section>
   );
 }
@@ -7573,7 +8582,7 @@ function ConnectionHome({
           </Tooltip>
           <button className="repository-primary-button" type="button" onClick={onCreateConnection}>
             <Plus className="ui-icon" aria-hidden="true" />
-            <span>新建 SSH</span>
+            <span>新建连接</span>
           </button>
         </div>
       </header>
@@ -8187,7 +9196,9 @@ function connectionToInput(connection: ConnectionProfile): ConnectionProfileInpu
     notes: connection.notes || undefined,
     port: connection.port,
     prompt_auth_kind: connection.prompt_auth_kind || undefined,
+    protocol: connection.protocol || "ssh",
     proxy: connection.proxy,
+    rdp: connection.rdp || undefined,
     remote_os_id: connection.remote_os_id || undefined,
     remote_os_name: connection.remote_os_name || undefined,
     remote_os_version: connection.remote_os_version || undefined,
@@ -8556,6 +9567,281 @@ function formatConnectionAddress(connection: ConnectionProfile) {
   return `${connection.username}@${connection.host}:${connection.port.toString()}`;
 }
 
+function isRdpConnection(
+  connection?: ConnectionProfile | null,
+): connection is RdpConnectionProfile {
+  return (connection?.protocol || "ssh") === "rdp";
+}
+
+function measureRdpEmbeddedViewport(element: HTMLElement | null): RdpEmbeddedBounds | null {
+  if (!element || !element.isConnected) {
+    return null;
+  }
+  const rect = element.getBoundingClientRect();
+  const scale = window.devicePixelRatio || 1;
+  const width = Math.round(rect.width * scale);
+  const height = Math.round(rect.height * scale);
+  if (width < 120 || height < 90) {
+    return null;
+  }
+  return {
+    x: Math.round(rect.left * scale),
+    y: Math.round(rect.top * scale),
+    width,
+    height,
+  };
+}
+
+function hiddenRdpEmbeddedBounds(): RdpEmbeddedBounds {
+  return {
+    x: -32000,
+    y: -32000,
+    width: 120,
+    height: 90,
+  };
+}
+
+function isSshConnection(
+  connection?: ConnectionProfile | null,
+): connection is SshConnectionProfile {
+  return (connection?.protocol || "ssh") === "ssh";
+}
+
+function rdpStatusLabel(status: RdpSessionStatus) {
+  switch (status) {
+    case "launching":
+      return "启动中";
+    case "embedded":
+      return "嵌入式";
+    case "native":
+      return "原生窗口";
+    case "external":
+      return "外部客户端";
+    case "error":
+      return "失败";
+    default:
+      return "RDP";
+  }
+}
+
+function rdpRenderModeLabel(mode: string) {
+  switch (mode) {
+    case "embedded":
+      return "嵌入式优先";
+    case "external":
+      return "外部客户端";
+    case "custom":
+      return "自定义 runner";
+    default:
+      return "自动";
+  }
+}
+
+function rdpDisplaySummary(
+  display?: NonNullable<ConnectionProfile["rdp"]>["display"] | null,
+) {
+  if (!display) {
+    return "默认显示";
+  }
+  const size =
+    display.mode === "fullscreen" || display.mode === "all_monitors"
+      ? rdpDisplayModeLabel(display.mode)
+      : `${(display.width || 1440).toString()} x ${(display.height || 900).toString()}`;
+  const flags = [
+    display.dynamic_resize ? "动态尺寸" : null,
+    display.use_multimon ? "多显示器" : null,
+  ].filter(Boolean);
+  return [size, ...flags].join(" · ");
+}
+
+function rdpDisplayModeLabel(mode: string) {
+  switch (mode) {
+    case "embedded":
+      return "嵌入";
+    case "windowed":
+      return "窗口";
+    case "fullscreen":
+      return "全屏";
+    case "all_monitors":
+      return "全屏多屏";
+    default:
+      return "默认";
+  }
+}
+
+function rdpResourceSummary(
+  resources?: NonNullable<ConnectionProfile["rdp"]>["resources"] | null,
+) {
+  if (!resources) {
+    return "默认资源";
+  }
+  const enabled = [
+    resources.clipboard ? "剪贴板" : null,
+    resources.drives ? "磁盘" : null,
+    resources.printers ? "打印机" : null,
+    resources.smart_cards ? "智能卡" : null,
+    resources.audio !== "disabled" ? `音频${rdpAudioLabel(resources.audio)}` : null,
+  ].filter(Boolean);
+  return enabled.length ? enabled.join(" · ") : "无重定向";
+}
+
+function rdpAudioLabel(mode: string) {
+  if (mode === "remote") {
+    return "远端";
+  }
+  if (mode === "disabled") {
+    return "关闭";
+  }
+  return "本机";
+}
+
+function previewRdpLaunchForBrowser(connection: ConnectionProfile): RdpLaunchPreview {
+  const config = connection.rdp;
+  const renderMode = config?.runner.render_mode || "embedded";
+  const runner: RdpRunnerKind =
+    config?.runner.preferred_runner ||
+    (renderMode === "custom"
+      ? "custom"
+      : renderMode === "embedded"
+        ? "mstsc_activex"
+        : "mstsc");
+  const executable =
+    runner === "custom"
+      ? config?.runner.custom_executable || "custom-rdp-client"
+      : runner === "freerdp"
+        ? "xfreerdp"
+        : runner === "mstsc_activex"
+          ? "mstscax.dll"
+          : "mstsc.exe";
+  const args =
+    runner === "freerdp"
+      ? [
+          `/v:${connection.host}:${connection.port.toString()}`,
+          `/u:${connection.username}`,
+          ...(config?.domain ? [`/d:${config.domain}`] : []),
+          "/dynamic-resolution",
+          "/clipboard",
+        ]
+      : runner === "custom"
+        ? [config?.runner.custom_args_template || "{rdp_file}"]
+        : runner === "mstsc_activex"
+          ? []
+          : ["<generated.rdp>"];
+  const warnings = [
+    "浏览器预览模式不会启动桌面 RDP 客户端。",
+    "预览内容不会包含密码，真实启动也不会通过命令行传递明文密码。",
+    config?.raw_rdp_settings?.trim()
+      ? "高级 .rdp 设置会在桌面运行时由后端校验后合并。"
+      : null,
+  ].filter((item): item is string => Boolean(item));
+
+  return {
+    args,
+    connection_id: connection.id,
+    executable,
+    fallback_reason: runner === "mstsc" ? "浏览器预览按 Windows 外部 runner 展示。" : null,
+    rdp_file_content: runner === "mstsc" || runner === "custom" ? previewRdpFileContent(connection) : null,
+    render_mode: renderMode,
+    runner,
+    setup_hint: null,
+    warnings,
+  };
+}
+
+function previewRdpFileContent(connection: ConnectionProfile) {
+  const rdp = connection.rdp;
+  const display = rdp?.display;
+  const resources = rdp?.resources;
+  const gateway = rdp?.gateway;
+  const lines = [
+    `full address:s:${connection.host}:${connection.port.toString()}`,
+    `username:s:${connection.username}`,
+    rdp?.domain ? `domain:s:${rdp.domain}` : null,
+    `screen mode id:i:${display?.mode === "fullscreen" || display?.mode === "all_monitors" ? "2" : "1"}`,
+    `desktopwidth:i:${(display?.width || 1440).toString()}`,
+    `desktopheight:i:${(display?.height || 900).toString()}`,
+    `use multimon:i:${display?.use_multimon ? "1" : "0"}`,
+    `redirectclipboard:i:${resources?.clipboard === false ? "0" : "1"}`,
+    `audiomode:i:${resources?.audio === "disabled" ? "2" : resources?.audio === "remote" ? "1" : "0"}`,
+    `redirectdrives:i:${resources?.drives ? "1" : "0"}`,
+    `redirectprinters:i:${resources?.printers ? "1" : "0"}`,
+    `redirectsmartcards:i:${resources?.smart_cards ? "1" : "0"}`,
+    `authentication level:i:${rdpCertificateAuthenticationLevel(rdp?.security.certificate_policy)}`,
+    gateway?.mode === "explicit" && gateway.host ? `gatewayhostname:s:${gateway.host}` : null,
+    gateway?.mode && gateway.mode !== "disabled"
+      ? `gatewayusagemethod:i:${gateway.mode === "explicit" ? "1" : "2"}`
+      : null,
+    "prompt for credentials:i:1",
+  ].filter((line): line is string => Boolean(line));
+
+  return lines.join("\n");
+}
+
+function rdpCertificateAuthenticationLevel(policy?: RdpCertificatePolicy | null) {
+  switch (policy) {
+    case "trust":
+      return "0";
+    case "strict":
+      return "1";
+    case "prompt":
+    default:
+      return "2";
+  }
+}
+
+function rdpSessionHasCommandText(session: RdpSessionTab) {
+  const material = session.result || session.preview;
+  if (material?.runner === "mstsc_activex" && material.args.length === 0) {
+    return false;
+  }
+  return Boolean(material?.executable || material?.args.length);
+}
+
+function rdpSessionHasRdpFileText(session: RdpSessionTab) {
+  return Boolean(session.preview?.rdp_file_content || session.result?.rdp_file_path);
+}
+
+function rdpSessionCommandText(session: RdpSessionTab) {
+  const material = session.result || session.preview;
+  if (!material) {
+    return "";
+  }
+  if (material.runner === "mstsc_activex" && material.args.length === 0) {
+    return "";
+  }
+  const executable = material.executable || "";
+  const args = material.args.map(quoteCommandArgForDisplay).join(" ");
+  return [executable, args].filter(Boolean).join(" ");
+}
+
+function rdpSessionFileText(session: RdpSessionTab) {
+  if (session.preview?.rdp_file_content) {
+    return session.preview.rdp_file_content;
+  }
+  return session.result?.rdp_file_path || "";
+}
+
+function rdpSessionPrimaryDetail(session: RdpSessionTab) {
+  if (session.status === "embedded") {
+    return { title: "启动方式", value: "Windows embedded RDP host" };
+  }
+  if (session.status === "native") {
+    return { title: "启动方式", value: "Windows ActiveX 原生子窗口" };
+  }
+  const command = rdpSessionCommandText(session);
+  if (command) {
+    return { title: "启动命令", value: command };
+  }
+  return { title: "启动状态", value: session.message || rdpStatusLabel(session.status) };
+}
+
+function quoteCommandArgForDisplay(value: string) {
+  if (!value) {
+    return "\"\"";
+  }
+  return /\s/.test(value) ? `"${value.replace(/"/g, "\\\"")}"` : value;
+}
+
 function commandHistoryKeyForScope(scope: CommandHistoryScope | null) {
   if (!scope) {
     return commandHistoryAllScopeKey;
@@ -8644,7 +9930,7 @@ function buildCommandHistoryScopeOptions({
       label: `当前终端（${activeProfile?.name || activeLocalTerminalTab.title}）`,
       value: defaultScopeKey,
     });
-  } else if (activeWorkspaceMode === "ssh" && activeConnection) {
+  } else if (activeWorkspaceMode === "ssh" && isSshConnection(activeConnection)) {
     addOption({
       badge: "SSH",
       label: `当前连接（${activeConnection.name}）`,
@@ -8652,7 +9938,7 @@ function buildCommandHistoryScopeOptions({
     });
   }
 
-  connections.forEach((connection) => {
+  connections.filter(isSshConnection).forEach((connection) => {
     addOption({
       badge: "SSH",
       label: connection.name,
@@ -8724,16 +10010,19 @@ function buildCommandSenderTargets({
     tabsByConnection.set(tab.connectionId, tabs);
   });
 
-  const targets = Array.from(tabsByConnection.entries()).map(([connectionId, tabs]) => {
+  const targets = Array.from(tabsByConnection.entries()).flatMap(([connectionId, tabs]) => {
     const selectedTabId =
       selectedTabByConnectionId[connectionId] || activeTabByConnectionId[connectionId];
     const selectedTab = tabs.find((tab) => tab.id === selectedTabId) || tabs[0];
     const connection = connectionById.get(connectionId) || null;
+    if (connection && !isSshConnection(connection)) {
+      return [];
+    }
     const key = commandSenderTargetKey(connectionId, selectedTab.id);
     const delivery = deliveryByKey[key];
     const tabCountText = tabs.length > 1 ? `${tabs.length.toString()} 个子 tab` : "1 个子 tab";
 
-    return {
+    return [{
       connectionId,
       deliveryMessage: delivery?.message,
       deliveryStatus: delivery?.status || "idle",
@@ -8755,7 +10044,7 @@ function buildCommandSenderTargets({
         tabId: tab.id,
       })),
       tabTitle: selectedTab.title,
-    };
+    }];
   });
 
   const connectedLocalTabs = localTerminalTabs.filter(

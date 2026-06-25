@@ -16,7 +16,7 @@ use crate::command_library::{
 };
 use crate::connections::{
     validate_profile_input, ConnectionAuthKind, ConnectionCredentialMode, ConnectionProfile,
-    ConnectionProfileInput, ConnectionRemoteSystemInfo,
+    ConnectionProfileInput, ConnectionProtocol, ConnectionRemoteSystemInfo,
 };
 use crate::credentials::{validate_credential_input, CredentialProfile, CredentialProfileInput};
 use crate::known_hosts::{HostKeyInfo, KnownHostCheck, KnownHostEntry};
@@ -63,7 +63,11 @@ pub struct RevealedCredentialSecret {
 
 struct ExistingConnectionMeta {
     created_at: String,
+    protocol: ConnectionProtocol,
     is_favorite: bool,
+    host: String,
+    port: u16,
+    username: String,
     last_connected_at: Option<String>,
     remote_os_id: Option<String>,
     remote_os_name: Option<String>,
@@ -387,21 +391,28 @@ impl StorageRepository {
                 serde_json::to_string(&connection.jump).map_err(sqlite_serialize_error)?;
             let advanced_json =
                 serde_json::to_string(&connection.advanced).map_err(sqlite_serialize_error)?;
+            let rdp_json = connection
+                .rdp
+                .as_ref()
+                .map(serde_json::to_string)
+                .transpose()
+                .map_err(sqlite_serialize_error)?;
             self.connection
                 .execute(
                     "INSERT INTO connections(
-                        id, name, group_id, host, port, username, credential_mode, credential_id,
+                        id, name, protocol, group_id, host, port, username, credential_mode, credential_id,
                         inline_auth_kind, inline_secret_ref, inline_secret_slot_id,
                         inline_private_key_path, prompt_auth_kind, proxy_json, jump_json,
-                        advanced_json, notes, is_favorite, last_connected_at, remote_os_id,
+                        advanced_json, rdp_json, notes, is_favorite, last_connected_at, remote_os_id,
                         remote_os_name, remote_os_version, created_at, updated_at
                     ) VALUES (
                         ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12,
-                        ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24
+                        ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26
                     )",
                     params![
                         connection.id,
                         connection.name,
+                        enum_value(&connection.protocol)?,
                         connection.group_id,
                         connection.host,
                         connection.port,
@@ -416,6 +427,7 @@ impl StorageRepository {
                         proxy_json,
                         jump_json,
                         advanced_json,
+                        rdp_json,
                         connection.notes,
                         if connection.is_favorite { 1 } else { 0 },
                         connection.last_connected_at,
@@ -548,9 +560,9 @@ impl StorageRepository {
         let mut statement = self
             .connection
             .prepare(
-                "SELECT id, name, group_id, host, port, username, credential_mode, credential_id,
+                "SELECT id, name, protocol, group_id, host, port, username, credential_mode, credential_id,
                         inline_auth_kind, inline_secret_slot_id, inline_private_key_path,
-                        prompt_auth_kind, proxy_json, jump_json, advanced_json, notes,
+                        prompt_auth_kind, proxy_json, jump_json, advanced_json, rdp_json, notes,
                         is_favorite, last_connected_at, remote_os_id, remote_os_name,
                         remote_os_version, created_at, updated_at
                    FROM connections ORDER BY created_at ASC, name ASC",
@@ -558,42 +570,47 @@ impl StorageRepository {
             .map_err(sqlite_repository_error)?;
         let rows = statement
             .query_map([], |row| {
-                let credential_mode: String = row.get(6)?;
-                let inline_auth_kind: Option<String> = row.get(8)?;
-                let prompt_auth_kind: Option<String> = row.get(11)?;
-                let proxy_json: String = row.get(12)?;
-                let jump_json: String = row.get(13)?;
-                let advanced_json: String = row.get(14)?;
+                let protocol: String = row.get(2)?;
+                let credential_mode: String = row.get(7)?;
+                let inline_auth_kind: Option<String> = row.get(9)?;
+                let prompt_auth_kind: Option<String> = row.get(12)?;
+                let proxy_json: String = row.get(13)?;
+                let jump_json: String = row.get(14)?;
+                let advanced_json: String = row.get(15)?;
+                let rdp_json: Option<String> = row.get(16)?;
                 let mut proxy: crate::connections::ConnectionProxyConfig =
                     serde_json::from_str(&proxy_json).map_err(from_serde_row_error)?;
                 proxy.password = None;
                 Ok(SyncConnectionRecord {
                     id: row.get(0)?,
                     name: row.get(1)?,
-                    group_id: row.get(2)?,
-                    host: row.get(3)?,
-                    port: row.get(4)?,
-                    username: row.get(5)?,
+                    protocol: serde_json::from_value(serde_json::Value::String(protocol))
+                        .map_err(from_serde_row_error)?,
+                    group_id: row.get(3)?,
+                    host: row.get(4)?,
+                    port: row.get(5)?,
+                    username: row.get(6)?,
                     credential_mode: serde_json::from_value(serde_json::Value::String(
                         credential_mode,
                     ))
                     .map_err(from_serde_row_error)?,
-                    credential_id: row.get(7)?,
+                    credential_id: row.get(8)?,
                     inline_auth_kind: optional_enum_from_string(inline_auth_kind)?,
-                    inline_secret_slot_id: row.get(9)?,
-                    inline_private_key_path: row.get(10)?,
+                    inline_secret_slot_id: row.get(10)?,
+                    inline_private_key_path: row.get(11)?,
                     prompt_auth_kind: optional_enum_from_string(prompt_auth_kind)?,
                     proxy,
                     jump: serde_json::from_str(&jump_json).map_err(from_serde_row_error)?,
                     advanced: serde_json::from_str(&advanced_json).map_err(from_serde_row_error)?,
-                    notes: row.get(15)?,
-                    is_favorite: row.get::<_, i64>(16)? != 0,
-                    last_connected_at: row.get(17)?,
-                    remote_os_id: row.get(18)?,
-                    remote_os_name: row.get(19)?,
-                    remote_os_version: row.get(20)?,
-                    created_at: row.get(21)?,
-                    updated_at: row.get(22)?,
+                    rdp: parse_optional_json(rdp_json)?,
+                    notes: row.get(17)?,
+                    is_favorite: row.get::<_, i64>(18)? != 0,
+                    last_connected_at: row.get(19)?,
+                    remote_os_id: row.get(20)?,
+                    remote_os_name: row.get(21)?,
+                    remote_os_version: row.get(22)?,
+                    created_at: row.get(23)?,
+                    updated_at: row.get(24)?,
                 })
             })
             .map_err(sqlite_repository_error)?;
@@ -672,17 +689,34 @@ impl StorageRepository {
                 .as_ref()
                 .and_then(|item| item.last_connected_at.clone())
         });
-        let remote_os_id = trim_optional(input.remote_os_id.as_ref())
-            .or_else(|| existing.as_ref().and_then(|item| item.remote_os_id.clone()));
+        let target_unchanged = existing.as_ref().is_some_and(|item| {
+            item.protocol == validated.protocol
+                && item.host == validated.host
+                && item.port == validated.port
+                && item.username == validated.username
+        });
+        let remote_os_id = trim_optional(input.remote_os_id.as_ref()).or_else(|| {
+            target_unchanged
+                .then(|| existing.as_ref().and_then(|item| item.remote_os_id.clone()))
+                .flatten()
+        });
         let remote_os_name = trim_optional(input.remote_os_name.as_ref()).or_else(|| {
-            existing
-                .as_ref()
-                .and_then(|item| item.remote_os_name.clone())
+            target_unchanged
+                .then(|| {
+                    existing
+                        .as_ref()
+                        .and_then(|item| item.remote_os_name.clone())
+                })
+                .flatten()
         });
         let remote_os_version = trim_optional(input.remote_os_version.as_ref()).or_else(|| {
-            existing
-                .as_ref()
-                .and_then(|item| item.remote_os_version.clone())
+            target_unchanged
+                .then(|| {
+                    existing
+                        .as_ref()
+                        .and_then(|item| item.remote_os_version.clone())
+                })
+                .flatten()
         });
         let group_id = match validated.group.as_deref() {
             Some(group) => Some(self.ensure_group(group, now)?),
@@ -697,21 +731,28 @@ impl StorageRepository {
         let jump_json = serde_json::to_string(&validated.jump).map_err(sqlite_serialize_error)?;
         let advanced_json =
             serde_json::to_string(&validated.advanced).map_err(sqlite_serialize_error)?;
+        let rdp_json = validated
+            .rdp
+            .as_ref()
+            .map(serde_json::to_string)
+            .transpose()
+            .map_err(sqlite_serialize_error)?;
 
         self.connection
             .execute(
                 "INSERT INTO connections(
-                    id, name, group_id, host, port, username, credential_mode, credential_id,
+                    id, name, protocol, group_id, host, port, username, credential_mode, credential_id,
                     inline_auth_kind, inline_secret_ref, inline_secret_slot_id,
                     inline_private_key_path, prompt_auth_kind, proxy_json, jump_json,
-                    advanced_json, notes, is_favorite, last_connected_at, remote_os_id,
+                    advanced_json, rdp_json, notes, is_favorite, last_connected_at, remote_os_id,
                     remote_os_name, remote_os_version, created_at, updated_at
                 ) VALUES (
                     ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12,
-                    ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24
+                    ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26
                 )
                 ON CONFLICT(id) DO UPDATE SET
                     name = excluded.name,
+                    protocol = excluded.protocol,
                     group_id = excluded.group_id,
                     host = excluded.host,
                     port = excluded.port,
@@ -726,6 +767,7 @@ impl StorageRepository {
                     proxy_json = excluded.proxy_json,
                     jump_json = excluded.jump_json,
                     advanced_json = excluded.advanced_json,
+                    rdp_json = excluded.rdp_json,
                     notes = excluded.notes,
                     is_favorite = excluded.is_favorite,
                     last_connected_at = excluded.last_connected_at,
@@ -736,6 +778,7 @@ impl StorageRepository {
                 params![
                     id,
                     validated.name,
+                    enum_value(&validated.protocol)?,
                     group_id,
                     validated.host,
                     validated.port,
@@ -753,6 +796,7 @@ impl StorageRepository {
                     proxy_json,
                     jump_json,
                     advanced_json,
+                    rdp_json,
                     validated.notes,
                     if is_favorite { 1 } else { 0 },
                     last_connected_at,
@@ -779,10 +823,10 @@ impl StorageRepository {
         let mut statement = self
             .connection
             .prepare(
-                "SELECT c.id, c.name, g.name, c.host, c.port, c.username,
+                "SELECT c.id, c.name, c.protocol, g.name, c.host, c.port, c.username,
                         c.credential_mode, c.credential_id, c.inline_auth_kind,
                         c.inline_private_key_path, c.prompt_auth_kind, c.proxy_json,
-                        c.jump_json, c.advanced_json, c.notes, c.is_favorite,
+                        c.jump_json, c.advanced_json, c.rdp_json, c.notes, c.is_favorite,
                         c.last_connected_at, c.remote_os_id, c.remote_os_name,
                         c.remote_os_version, c.created_at, c.updated_at
                    FROM connections c
@@ -913,10 +957,10 @@ impl StorageRepository {
     pub fn connection_get(&self, id: &str) -> Result<Option<ConnectionProfile>, AppError> {
         self.connection
             .query_row(
-                "SELECT c.id, c.name, g.name, c.host, c.port, c.username,
+                "SELECT c.id, c.name, c.protocol, g.name, c.host, c.port, c.username,
                         c.credential_mode, c.credential_id, c.inline_auth_kind,
                         c.inline_private_key_path, c.prompt_auth_kind, c.proxy_json,
-                        c.jump_json, c.advanced_json, c.notes, c.is_favorite,
+                        c.jump_json, c.advanced_json, c.rdp_json, c.notes, c.is_favorite,
                         c.last_connected_at, c.remote_os_id, c.remote_os_name,
                         c.remote_os_version, c.created_at, c.updated_at
                    FROM connections c
@@ -1183,6 +1227,7 @@ impl StorageRepository {
         prompt: Option<RuntimeCredentialInput>,
     ) -> Result<ResolvedSshConfig, AppError> {
         let (mut profile, inline_secret_ref) = self.stored_connection(connection_id)?;
+        ensure_ssh_profile(&profile)?;
         match profile.credential_mode {
             ConnectionCredentialMode::Inline => match profile.inline_auth_kind {
                 Some(ConnectionAuthKind::Password) => {
@@ -1208,17 +1253,93 @@ impl StorageRepository {
         }
         self.resolve_profile(profile, prompt)
     }
+
+    pub fn resolve_rdp_connection_secret(
+        &self,
+        connection_id: &str,
+    ) -> Result<Option<String>, AppError> {
+        let (profile, inline_secret_ref) = self.stored_connection(connection_id)?;
+        if profile.protocol != ConnectionProtocol::Rdp {
+            return Err(connection_protocol_unsupported(
+                connection_id,
+                &profile.protocol,
+            ));
+        }
+
+        match profile.credential_mode {
+            ConnectionCredentialMode::Prompt => Ok(None),
+            ConnectionCredentialMode::Inline => match profile.inline_auth_kind {
+                Some(ConnectionAuthKind::Password) => {
+                    let reference = inline_secret_ref.ok_or_else(|| {
+                        AppError::new(
+                            "secret_missing",
+                            "系统凭据不存在。",
+                            format!("connection_id={}", profile.id),
+                            true,
+                        )
+                    })?;
+                    Ok(Some(self.secret_store.get_secret(&reference)?))
+                }
+                Some(ConnectionAuthKind::PrivateKey) => Err(AppError::new(
+                    "rdp_credential_kind_unsupported",
+                    "RDP 连接不支持私钥凭据。",
+                    format!("connection_id={}", profile.id),
+                    true,
+                )),
+                None => Ok(None),
+            },
+            ConnectionCredentialMode::Saved => {
+                let credential_id = profile.credential_id.as_deref().ok_or_else(|| {
+                    AppError::new(
+                        "connection_credential_missing",
+                        "连接缺少保存的凭据。",
+                        format!("connection_id={}", profile.id),
+                        true,
+                    )
+                })?;
+                let (credential, secret_ref) = self.stored_credential(credential_id)?;
+                if credential.kind != ConnectionAuthKind::Password {
+                    return Err(AppError::new(
+                        "rdp_credential_kind_unsupported",
+                        "RDP 连接仅支持保存的密码凭据。",
+                        format!("credential_id={credential_id}, kind={:?}", credential.kind),
+                        true,
+                    ));
+                }
+                let reference = secret_ref.ok_or_else(|| {
+                    AppError::new(
+                        "secret_missing",
+                        "系统凭据不存在。",
+                        format!("credential_id={credential_id}"),
+                        true,
+                    )
+                })?;
+                Ok(Some(self.secret_store.get_secret(&reference)?))
+            }
+        }
+    }
+
     pub fn resolve_transient_connection(
         &self,
         input: ConnectionProfileInput,
     ) -> Result<ResolvedSshConfig, AppError> {
         let validated = validate_profile_input(&input)?;
+        if validated.protocol != ConnectionProtocol::Ssh {
+            return Err(connection_protocol_unsupported(
+                validated
+                    .id
+                    .as_deref()
+                    .unwrap_or("__transient_connection_test__"),
+                &validated.protocol,
+            ));
+        }
         let preserved_inline_connection_id = validated.id.clone();
         let inline_password_touched = validated.inline_password_touched;
         let inline_private_key_passphrase_touched = validated.inline_private_key_passphrase_touched;
         let mut profile = ConnectionProfile {
             id: "__transient_connection_test__".to_string(),
             name: validated.name,
+            protocol: validated.protocol,
             group: validated.group,
             host: validated.host,
             port: validated.port,
@@ -1233,6 +1354,7 @@ impl StorageRepository {
             proxy: validated.proxy,
             jump: validated.jump,
             advanced: validated.advanced,
+            rdp: validated.rdp,
             notes: validated.notes,
             is_favorite: false,
             last_connected_at: None,
@@ -1438,10 +1560,10 @@ impl StorageRepository {
     ) -> Result<Option<(ConnectionProfile, Option<SecretReference>)>, AppError> {
         self.connection
             .query_row(
-                "SELECT c.id, c.name, g.name, c.host, c.port, c.username,
+                "SELECT c.id, c.name, c.protocol, g.name, c.host, c.port, c.username,
                         c.credential_mode, c.credential_id, c.inline_auth_kind,
                         c.inline_private_key_path, c.prompt_auth_kind, c.proxy_json,
-                        c.jump_json, c.advanced_json, c.notes, c.is_favorite,
+                        c.jump_json, c.advanced_json, c.rdp_json, c.notes, c.is_favorite,
                         c.last_connected_at, c.remote_os_id, c.remote_os_name,
                         c.remote_os_version, c.created_at, c.updated_at,
                         c.inline_secret_ref, c.inline_secret_slot_id
@@ -1451,8 +1573,8 @@ impl StorageRepository {
                 params![id],
                 |row| {
                     let profile = row_to_connection_profile(row)?;
-                    let account: Option<String> = row.get(22)?;
-                    let slot_id: Option<String> = row.get(23)?;
+                    let account: Option<String> = row.get(24)?;
+                    let slot_id: Option<String> = row.get(25)?;
                     let reference = account.map(|account| SecretReference {
                         service: VAULT_SERVICE,
                         slot_id: slot_id.unwrap_or_else(|| account.clone()),
@@ -2099,18 +2221,23 @@ impl StorageRepository {
     ) -> Result<Option<ExistingConnectionMeta>, AppError> {
         self.connection
             .query_row(
-                "SELECT created_at, is_favorite, last_connected_at, remote_os_id,
-                        remote_os_name, remote_os_version
+                "SELECT created_at, protocol, is_favorite, host, port, username,
+                        last_connected_at, remote_os_id, remote_os_name, remote_os_version
                    FROM connections WHERE id = ?1",
                 params![id],
                 |row| {
                     Ok(ExistingConnectionMeta {
                         created_at: row.get(0)?,
-                        is_favorite: row.get::<_, i64>(1)? != 0,
-                        last_connected_at: row.get(2)?,
-                        remote_os_id: row.get(3)?,
-                        remote_os_name: row.get(4)?,
-                        remote_os_version: row.get(5)?,
+                        protocol: serde_json::from_value(serde_json::Value::String(row.get(1)?))
+                            .map_err(from_serde_row_error)?,
+                        is_favorite: row.get::<_, i64>(2)? != 0,
+                        host: row.get(3)?,
+                        port: row.get(4)?,
+                        username: row.get(5)?,
+                        last_connected_at: row.get(6)?,
+                        remote_os_id: row.get(7)?,
+                        remote_os_name: row.get(8)?,
+                        remote_os_version: row.get(9)?,
                     })
                 },
             )
@@ -2145,38 +2272,43 @@ impl StorageRepository {
 }
 
 fn row_to_connection_profile(row: &rusqlite::Row<'_>) -> rusqlite::Result<ConnectionProfile> {
-    let credential_mode: String = row.get(6)?;
-    let inline_auth_kind: Option<String> = row.get(8)?;
-    let prompt_auth_kind: Option<String> = row.get(10)?;
-    let proxy_json: String = row.get(11)?;
-    let jump_json: String = row.get(12)?;
-    let advanced_json: String = row.get(13)?;
+    let protocol: String = row.get(2)?;
+    let credential_mode: String = row.get(7)?;
+    let inline_auth_kind: Option<String> = row.get(9)?;
+    let prompt_auth_kind: Option<String> = row.get(11)?;
+    let proxy_json: String = row.get(12)?;
+    let jump_json: String = row.get(13)?;
+    let advanced_json: String = row.get(14)?;
+    let rdp_json: Option<String> = row.get(15)?;
     Ok(ConnectionProfile {
         id: row.get(0)?,
         name: row.get(1)?,
-        group: row.get(2)?,
-        host: row.get(3)?,
-        port: row.get(4)?,
-        username: row.get(5)?,
+        protocol: serde_json::from_value(serde_json::Value::String(protocol))
+            .map_err(from_serde_row_error)?,
+        group: row.get(3)?,
+        host: row.get(4)?,
+        port: row.get(5)?,
+        username: row.get(6)?,
         credential_mode: serde_json::from_value(serde_json::Value::String(credential_mode))
             .map_err(from_serde_row_error)?,
-        credential_id: row.get(7)?,
+        credential_id: row.get(8)?,
         inline_auth_kind: optional_enum_from_string(inline_auth_kind)?,
         inline_password: None,
-        inline_private_key_path: row.get(9)?,
+        inline_private_key_path: row.get(10)?,
         inline_private_key_passphrase: None,
         prompt_auth_kind: optional_enum_from_string(prompt_auth_kind)?,
         proxy: serde_json::from_str(&proxy_json).map_err(from_serde_row_error)?,
         jump: serde_json::from_str(&jump_json).map_err(from_serde_row_error)?,
         advanced: serde_json::from_str(&advanced_json).map_err(from_serde_row_error)?,
-        notes: row.get(14)?,
-        is_favorite: row.get::<_, i64>(15)? != 0,
-        last_connected_at: row.get(16)?,
-        remote_os_id: row.get(17)?,
-        remote_os_name: row.get(18)?,
-        remote_os_version: row.get(19)?,
-        created_at: row.get(20)?,
-        updated_at: row.get(21)?,
+        rdp: parse_optional_json(rdp_json)?,
+        notes: row.get(16)?,
+        is_favorite: row.get::<_, i64>(17)? != 0,
+        last_connected_at: row.get(18)?,
+        remote_os_id: row.get(19)?,
+        remote_os_name: row.get(20)?,
+        remote_os_version: row.get(21)?,
+        created_at: row.get(22)?,
+        updated_at: row.get(23)?,
         auth_kind: None,
         password: None,
         private_key_path: None,
@@ -2311,6 +2443,26 @@ fn validate_auth_material(
         _ => Ok(()),
     }
 }
+
+fn ensure_ssh_profile(profile: &ConnectionProfile) -> Result<(), AppError> {
+    if profile.protocol == ConnectionProtocol::Ssh {
+        return Ok(());
+    }
+    Err(connection_protocol_unsupported(
+        &profile.id,
+        &profile.protocol,
+    ))
+}
+
+fn connection_protocol_unsupported(connection_id: &str, protocol: &ConnectionProtocol) -> AppError {
+    AppError::new(
+        "connection_protocol_unsupported",
+        "该操作仅支持 SSH 连接。",
+        format!("connection_id={connection_id}, protocol={protocol:?}"),
+        true,
+    )
+}
+
 fn optional_enum_value<T: serde::Serialize>(value: &Option<T>) -> Result<Option<String>, AppError> {
     value
         .as_ref()
@@ -2339,6 +2491,19 @@ where
         .map(|item| {
             serde_json::from_value(serde_json::Value::String(item)).map_err(from_serde_row_error)
         })
+        .transpose()
+}
+
+fn parse_optional_json<T>(value: Option<String>) -> rusqlite::Result<Option<T>>
+where
+    T: DeserializeOwned,
+{
+    value
+        .and_then(|item| {
+            let trimmed = item.trim().to_string();
+            (!trimmed.is_empty()).then_some(trimmed)
+        })
+        .map(|item| serde_json::from_str(&item).map_err(from_serde_row_error))
         .transpose()
 }
 
@@ -2516,7 +2681,8 @@ mod tests {
     use super::StorageRepository;
     use crate::connections::{
         ConnectionAdvancedConfig, ConnectionAuthKind, ConnectionCredentialMode,
-        ConnectionJumpConfig, ConnectionProfileInput, ConnectionProxyConfig,
+        ConnectionJumpConfig, ConnectionProfileInput, ConnectionProtocol, ConnectionProxyConfig,
+        RdpConnectionConfig,
     };
     use crate::storage_vault::{InMemorySecretStore, SecretStore};
 
@@ -2650,6 +2816,143 @@ mod tests {
         assert_eq!(revealed.password, Some("secret".to_string()));
         assert_eq!(revealed.private_key_passphrase, None);
         assert_eq!(error.code, "connection_inline_secret_unavailable");
+    }
+
+    #[test]
+    fn rdp_connection_roundtrips_with_inline_password_secret() {
+        let (repo, _db_path, _secrets) = temp_repository("rdp-roundtrip");
+
+        let saved = repo
+            .connection_upsert(
+                ConnectionProfileInput {
+                    id: Some("rdp-001".to_string()),
+                    protocol: ConnectionProtocol::Rdp,
+                    port: 3389,
+                    username: "administrator".to_string(),
+                    rdp: Some(RdpConnectionConfig {
+                        domain: Some("CORP".to_string()),
+                        ..RdpConnectionConfig::default()
+                    }),
+                    ..password_connection_input()
+                },
+                "2026-06-24T00:00:00+08:00",
+            )
+            .unwrap();
+
+        assert_eq!(saved.protocol, ConnectionProtocol::Rdp);
+        assert_eq!(saved.credential_mode, ConnectionCredentialMode::Inline);
+        assert_eq!(saved.inline_auth_kind, Some(ConnectionAuthKind::Password));
+        assert_eq!(
+            saved.rdp.as_ref().and_then(|rdp| rdp.domain.as_deref()),
+            Some("CORP")
+        );
+
+        let loaded = repo.connection_get("rdp-001").unwrap().unwrap();
+        assert_eq!(loaded.protocol, ConnectionProtocol::Rdp);
+        assert_eq!(
+            loaded.rdp.as_ref().and_then(|rdp| rdp.domain.as_deref()),
+            Some("CORP")
+        );
+        assert_eq!(
+            repo.resolve_rdp_connection_secret("rdp-001").unwrap(),
+            Some("secret".to_string())
+        );
+    }
+
+    #[test]
+    fn rdp_saved_password_credential_resolves_secret() {
+        let (repo, _db_path, _secrets) = temp_repository("rdp-saved-password");
+        let credential = repo
+            .credential_upsert(password_credential_input(), "2026-06-24T00:00:00+08:00")
+            .unwrap();
+        let saved = repo
+            .connection_upsert(
+                ConnectionProfileInput {
+                    id: Some("rdp-saved".to_string()),
+                    protocol: ConnectionProtocol::Rdp,
+                    port: 3389,
+                    username: "administrator".to_string(),
+                    credential_mode: ConnectionCredentialMode::Saved,
+                    credential_id: Some(credential.id),
+                    inline_password: None,
+                    inline_password_touched: false,
+                    rdp: Some(RdpConnectionConfig::default()),
+                    ..password_connection_input()
+                },
+                "2026-06-24T00:01:00+08:00",
+            )
+            .unwrap();
+
+        assert_eq!(saved.credential_mode, ConnectionCredentialMode::Saved);
+        assert_eq!(
+            repo.resolve_rdp_connection_secret(&saved.id).unwrap(),
+            Some("secret".to_string())
+        );
+    }
+
+    #[test]
+    fn rdp_saved_private_key_credential_is_rejected_at_resolution() {
+        let (repo, _db_path, _secrets) = temp_repository("rdp-saved-private-key");
+        let credential = repo
+            .credential_upsert(
+                crate::credentials::CredentialProfileInput {
+                    id: Some("cred-key".to_string()),
+                    name: Some("Key account".to_string()),
+                    username: Some("administrator".to_string()),
+                    kind: ConnectionAuthKind::PrivateKey,
+                    password: None,
+                    password_touched: false,
+                    private_key_path: Some("~/.ssh/id_ed25519".to_string()),
+                    private_key_passphrase: None,
+                    private_key_passphrase_touched: false,
+                    notes: None,
+                },
+                "2026-06-24T00:00:00+08:00",
+            )
+            .unwrap();
+        let saved = repo
+            .connection_upsert(
+                ConnectionProfileInput {
+                    id: Some("rdp-key".to_string()),
+                    protocol: ConnectionProtocol::Rdp,
+                    port: 3389,
+                    username: "administrator".to_string(),
+                    credential_mode: ConnectionCredentialMode::Saved,
+                    credential_id: Some(credential.id),
+                    inline_password: None,
+                    inline_password_touched: false,
+                    rdp: Some(RdpConnectionConfig::default()),
+                    ..password_connection_input()
+                },
+                "2026-06-24T00:01:00+08:00",
+            )
+            .unwrap();
+
+        let error = repo.resolve_rdp_connection_secret(&saved.id).unwrap_err();
+
+        assert_eq!(error.code, "rdp_credential_kind_unsupported");
+    }
+
+    #[test]
+    fn resolve_saved_connection_rejects_rdp_protocol() {
+        let (repo, _db_path, _secrets) = temp_repository("rdp-resolve-guard");
+        let saved = repo
+            .connection_upsert(
+                ConnectionProfileInput {
+                    id: Some("rdp-guard".to_string()),
+                    protocol: ConnectionProtocol::Rdp,
+                    port: 3389,
+                    username: "administrator".to_string(),
+                    rdp: Some(RdpConnectionConfig::default()),
+                    ..password_connection_input()
+                },
+                "2026-06-24T00:00:00+08:00",
+            )
+            .unwrap();
+
+        let error = repo.resolve_saved_connection(&saved.id, None).unwrap_err();
+
+        assert_eq!(error.code, "connection_protocol_unsupported");
     }
 
     #[test]
@@ -2938,6 +3241,7 @@ mod tests {
     fn password_connection_input() -> ConnectionProfileInput {
         ConnectionProfileInput {
             id: Some("conn-001".to_string()),
+            protocol: ConnectionProtocol::Ssh,
             name: Some("生产".to_string()),
             group: Some("默认".to_string()),
             host: " example.com ".to_string(),
@@ -2955,6 +3259,7 @@ mod tests {
             proxy: ConnectionProxyConfig::default(),
             jump: ConnectionJumpConfig::default(),
             advanced: ConnectionAdvancedConfig::default(),
+            rdp: None,
             notes: None,
             is_favorite: None,
             last_connected_at: None,

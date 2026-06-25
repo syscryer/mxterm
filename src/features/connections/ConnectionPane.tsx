@@ -1006,7 +1006,7 @@ function ConnectionTreeLeaf({
         <ContextMenu.Content className="context-menu-content">
           <ContextMenu.Item className="context-menu-item" onSelect={() => onOpen(connection)}>
             <Play className="ui-icon" aria-hidden="true" />
-            <span>打开终端</span>
+            <span>{connection.protocol === "rdp" ? "打开 RDP" : "打开终端"}</span>
           </ContextMenu.Item>
           <ContextMenu.Item className="context-menu-item" onSelect={() => onEdit(connection)}>
             <Pencil className="ui-icon" aria-hidden="true" />
@@ -1032,6 +1032,9 @@ function ConnectionTreeLeaf({
 }
 
 function formatAddress(connection: ConnectionProfile) {
+  if (connection.protocol === "rdp") {
+    return `RDP · ${connection.username}@${connection.host}:${connection.port.toString()}`;
+  }
   return `${connection.username}@${connection.host}:${connection.port.toString()}`;
 }
 

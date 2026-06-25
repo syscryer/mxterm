@@ -17,21 +17,33 @@ import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 
 import { AppSelect } from "../../shared/ui/AppSelect";
 import { ConfirmDialog } from "../../shared/ui/ConfirmDialog";
-import { connectionRevealInlineSecret } from "../../shared/tauri/commands";
+import { connectionRevealInlineSecret, rdpTestRunner } from "../../shared/tauri/commands";
+import { hasTauriRuntime } from "../../shared/tauri/runtime";
 import type {
   ConnectionAuthKind,
   ConnectionCredentialMode,
+  ConnectionProtocol,
   ConnectionProfile,
   ConnectionProfileInput,
   ConnectionProxyKind,
   ConnectionTerminalEncoding,
   CredentialProfile,
   HostKeyInfo,
+  RdpAudioMode,
+  RdpCertificatePolicy,
+  RdpConnectionConfig,
+  RdpDisplayMode,
+  RdpGatewayMode,
+  RdpNetworkLevelAuthentication,
+  RdpPerformancePreset,
+  RdpRenderMode,
 } from "./connectionTypes";
 import {
   defaultAdvancedConfig,
   defaultJumpConfig,
   defaultProxyConfig,
+  defaultRdpConfig,
+  formatRdpRunnerKind,
   normalizeTerminalEncoding,
   terminalEncodingOptions,
 } from "./connectionTypes";
@@ -67,7 +79,7 @@ interface GroupOption {
   value: string;
 }
 
-type ConnectionDialogTab = "basic" | "proxy" | "advanced";
+type ConnectionDialogTab = "basic" | "proxy" | "rdp" | "advanced";
 type ConnectionTestState = "idle" | "running" | "success" | "error" | "host-key";
 type ConnectionNetworkPathMode = "direct" | "proxy" | "ssh_jump";
 
@@ -81,6 +93,7 @@ interface DialogFeedback {
 }
 
 const emptyForm: ConnectionProfileInput = {
+  protocol: "ssh",
   name: "",
   group: "",
   host: "",
@@ -98,8 +111,18 @@ const emptyForm: ConnectionProfileInput = {
   jump: defaultJumpConfig,
   proxy: defaultProxyConfig,
   advanced: defaultAdvancedConfig,
+  rdp: defaultRdpConfig,
   notes: "",
 };
+
+const protocolOptions: Array<{
+  icon: typeof Terminal;
+  label: string;
+  value: ConnectionProtocol;
+}> = [
+  { icon: Terminal, label: "SSH", value: "ssh" },
+  { icon: Monitor, label: "RDP", value: "rdp" },
+];
 
 const credentialModeOptions: Array<{
   label: string;
@@ -135,6 +158,53 @@ const proxyKindOptions: Array<{
   { label: "SOCKS5", value: "socks5" },
 ];
 
+const rdpDisplayOptions: Array<{ label: string; value: RdpDisplayMode }> = [
+  { label: "禁用", value: "embedded" },
+  { label: "允许（单显示器）", value: "fullscreen" },
+  { label: "允许（所有显示器）", value: "all_monitors" },
+];
+
+const rdpResolutionModeOptions: Array<{ label: string; value: "adaptive" | "fixed" }> = [
+  { label: "适应窗口大小", value: "adaptive" },
+  { label: "固定分辨率", value: "fixed" },
+];
+
+const rdpAudioOptions: Array<{ label: string; value: RdpAudioMode }> = [
+  { label: "本机播放", value: "local" },
+  { label: "远端播放", value: "remote" },
+  { label: "禁用", value: "disabled" },
+];
+
+const rdpGatewayOptions: Array<{ label: string; value: RdpGatewayMode }> = [
+  { label: "关闭", value: "disabled" },
+  { label: "自动", value: "auto" },
+  { label: "指定网关", value: "explicit" },
+];
+
+const rdpRunnerModeOptions: Array<{ label: string; value: RdpRenderMode }> = [
+  { label: "内置宿主", value: "embedded" },
+  { label: "mstsc.exe 模式", value: "external" },
+];
+
+const rdpPerformanceOptions: Array<{ label: string; value: RdpPerformancePreset }> = [
+  { label: "自动", value: "auto" },
+  { label: "局域网", value: "lan" },
+  { label: "均衡", value: "balanced" },
+  { label: "低带宽", value: "low_bandwidth" },
+];
+
+const rdpNlaOptions: Array<{ label: string; value: RdpNetworkLevelAuthentication }> = [
+  { label: "自动", value: "auto" },
+  { label: "启用", value: "enabled" },
+  { label: "禁用", value: "disabled" },
+];
+
+const rdpCertificateOptions: Array<{ label: string; value: RdpCertificatePolicy }> = [
+  { label: "警告后可继续", value: "prompt" },
+  { label: "信任证书错误", value: "trust" },
+  { label: "严格校验", value: "strict" },
+];
+
 export function ConnectionDialog({
   connection,
   connections,
@@ -165,6 +235,19 @@ export function ConnectionDialog({
     () => buildGroupOptions(groups, form.group || ""),
     [form.group, groups],
   );
+  const protocol = form.protocol || "ssh";
+  const isRdp = protocol === "rdp";
+  const dialogTabs: Array<[ConnectionDialogTab, string]> = isRdp
+    ? [
+        ["basic", "基本"],
+        ["rdp", "RDP"],
+        ["advanced", "高级"],
+      ]
+    : [
+        ["basic", "基本"],
+        ["proxy", "网络路径"],
+        ["advanced", "高级"],
+      ];
 
   useEffect(() => {
     if (!open) {
@@ -194,7 +277,7 @@ export function ConnectionDialog({
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    const validation = validateNetworkPath(form);
+    const validation = isRdp ? null : validateNetworkPath(form);
     if (validation) {
       setActiveTab("proxy");
       setTestState("error");
@@ -213,6 +296,11 @@ export function ConnectionDialog({
       return;
     }
 
+    if (isRdp) {
+      await runRdpRunnerProbe();
+      return;
+    }
+
     const validation = validateNetworkPath(form);
     if (validation) {
       setActiveTab("proxy");
@@ -222,6 +310,51 @@ export function ConnectionDialog({
     }
 
     await runConnectionTest(normalizeForSubmit(form, credentials));
+  }
+
+  async function runRdpRunnerProbe() {
+    busyRef.current = true;
+    setBusy(true);
+    setTestState("running");
+    setFeedback({
+      detail: "正在检查本机 RDP runner 能力，不会发起远程登录。",
+      title: "正在检查 RDP runner",
+    });
+
+    try {
+      if (!hasTauriRuntime()) {
+        setTestState("success");
+        setFeedback({
+          detail: "浏览器预览模式使用静态 runner 状态，桌面运行时会执行真实探测。",
+          title: "RDP runner 预览可用",
+        });
+        return;
+      }
+      const result = await rdpTestRunner((form.rdp || defaultRdpConfig).runner);
+      if (result.default_runner) {
+        setTestState("success");
+        setFeedback({
+          detail: `${formatRdpRunnerKind(result.default_runner)} 可用。${
+            result.supports_embedded
+              ? "当前平台支持嵌入式会话。"
+              : "嵌入式 host 暂不可用时会自动外部启动。"
+          }`,
+          title: "RDP runner 检查通过",
+        });
+      } else {
+        setTestState("error");
+        setFeedback({
+          detail: result.setup_hint || "未找到可用 RDP runner，请确认系统远程桌面组件可用。",
+          title: "未找到可用 RDP runner",
+        });
+      }
+    } catch (nextError) {
+      setTestState("error");
+      setFeedback(describeDialogError(nextError));
+    } finally {
+      busyRef.current = false;
+      setBusy(false);
+    }
   }
 
   async function trustHostKeyAndContinueTest() {
@@ -344,7 +477,11 @@ export function ConnectionDialog({
                     <strong>{connection ? "编辑连接" : "新增连接"}</strong>
                   </Dialog.Title>
                   <Dialog.Description className="dialog-subtitle">
-                    {form.host ? formatAddress(form) : "保存一条可维护的 SSH 连接配置。"}
+                    {form.host
+                      ? formatAddress(form)
+                      : isRdp
+                        ? "保存一条可跨平台启动的 RDP 连接配置。"
+                        : "保存一条可维护的 SSH 连接配置。"}
                   </Dialog.Description>
                 </div>
                 <Dialog.Close asChild>
@@ -355,19 +492,29 @@ export function ConnectionDialog({
               </header>
 
               <div className="protocol-switch" aria-label="连接协议">
-                <button className="protocol-chip active" type="button" aria-current="true"><Terminal className="ui-icon" aria-hidden="true" />SSH</button>
-                <button className="protocol-chip" type="button" disabled title="即将支持"><Monitor className="ui-icon" aria-hidden="true" />RDP <span className="chip-tag">即将</span></button>
+                {protocolOptions.map((item) => {
+                  const Icon = item.icon;
+                  const active = protocol === item.value;
+                  return (
+                    <button
+                      className={`protocol-chip ${active ? "active" : ""}`}
+                      key={item.value}
+                      type="button"
+                      aria-current={active ? "true" : undefined}
+                      onClick={() => changeProtocol(item.value)}
+                    >
+                      <Icon className="ui-icon" aria-hidden="true" />
+                      {item.label}
+                    </button>
+                  );
+                })}
                 <button className="protocol-chip" type="button" disabled title="即将支持"><TerminalSquare className="ui-icon" aria-hidden="true" />Telnet <span className="chip-tag">即将</span></button>
                 <button className="protocol-chip" type="button" disabled title="即将支持"><MonitorPlay className="ui-icon" aria-hidden="true" />VNC <span className="chip-tag">即将</span></button>
                 <button className="protocol-chip" type="button" disabled title="即将支持"><Network className="ui-icon" aria-hidden="true" />隧道 <span className="chip-tag">即将</span></button>
               </div>
 
               <nav className="connection-dialog-tabs" aria-label="连接配置页签">
-                {[
-                  ["basic", "基本"],
-                  ["proxy", "网络路径"],
-                  ["advanced", "高级"],
-                ].map(([id, label]) => (
+                {dialogTabs.map(([id, label]) => (
                   <button
                     className={activeTab === id ? "active" : ""}
                     key={id}
@@ -382,7 +529,8 @@ export function ConnectionDialog({
 
               <div className="dialog-body connection-dialog-body">
                 {activeTab === "basic" ? renderBasicTab() : null}
-                {activeTab === "proxy" ? renderProxyTab() : null}
+                {activeTab === "proxy" && !isRdp ? renderProxyTab() : null}
+                {activeTab === "rdp" && isRdp ? renderRdpTab() : null}
                 {activeTab === "advanced" ? renderAdvancedTab() : null}
               </div>
 
@@ -487,7 +635,7 @@ export function ConnectionDialog({
                     type="button"
                     onClick={testConnection}
                   >
-                    测试连接
+                    {isRdp ? "检查 Runner" : "测试连接"}
                   </button>
                 </div>
                 <div className="dialog-action-right">
@@ -523,6 +671,208 @@ export function ConnectionDialog({
     const credentialMode = form.credential_mode || "inline";
     const inlineAuthKind = form.inline_auth_kind || "password";
     const showGroupField = groupOptions.length > 0 || Boolean(form.group?.trim());
+    const rdp = form.rdp || defaultRdpConfig;
+    const passwordCredentials = credentials.filter((credential) => credential.kind === "password");
+
+    if (isRdp) {
+      return (
+        <div className="connection-dialog-fields">
+          <div className={`form-grid ${showGroupField ? "form-grid-wide" : "form-grid-single"}`}>
+            <label>
+              <span>名称</span>
+              <input
+                value={form.name || ""}
+                onChange={(event) => setForm({ ...form, name: event.target.value })}
+                placeholder="例如：办公 Windows"
+              />
+            </label>
+            {showGroupField ? (
+              <label>
+                <span>分组</span>
+                <AppSelect
+                  ariaLabel="分组"
+                  value={form.group || ""}
+                  options={[
+                    { label: "不分组", value: "" },
+                    ...groupOptions.map((group) => ({
+                      label: group.label,
+                      value: group.value,
+                    })),
+                  ]}
+                  onChange={(group) => setForm({ ...form, group })}
+                />
+              </label>
+            ) : null}
+          </div>
+
+          <div className="form-grid">
+            <label>
+              <span>主机</span>
+              <input
+                required
+                value={form.host}
+                onChange={(event) => setForm({ ...form, host: event.target.value })}
+                placeholder="192.168.1.20"
+              />
+            </label>
+            <label>
+              <span>端口</span>
+              <input
+                inputMode="numeric"
+                required
+                value={form.port.toString()}
+                onChange={(event) =>
+                  setForm({ ...form, port: Number(event.target.value) || 3389 })
+                }
+              />
+            </label>
+          </div>
+
+          <div className="form-grid form-grid-wide">
+            <label>
+              <span>账号来源</span>
+              <AppSelect
+                ariaLabel="账号来源"
+                value={credentialMode}
+                options={credentialModeOptions}
+                onChange={(credentialMode) =>
+                  setForm({
+                    ...form,
+                    credential_mode: credentialMode,
+                    credential_id: credentialMode === "saved" ? form.credential_id : "",
+                    inline_auth_kind: "password",
+                    inline_password:
+                      credentialMode === "inline" ? form.inline_password || "" : "",
+                    inline_password_touched:
+                      credentialMode === "inline" ? form.inline_password_touched || false : false,
+                    inline_private_key_path: "",
+                    inline_private_key_passphrase: "",
+                    inline_private_key_passphrase_touched: false,
+                    prompt_auth_kind: undefined,
+                  })
+                }
+              />
+            </label>
+            <label>
+              <span>域</span>
+              <input
+                value={rdp.domain || ""}
+                onChange={(event) => updateRdp({ domain: event.target.value })}
+                placeholder="可选"
+              />
+            </label>
+          </div>
+
+          {credentialMode === "saved" ? (
+            <div className="credential-select-row">
+              <label>
+                <span>选择账号</span>
+                <AppSelect
+                  ariaLabel="选择账号"
+                  value={form.credential_id || ""}
+                  options={[
+                    { label: "选择密码账号", value: "" },
+                    ...passwordCredentials.map((credential) => ({
+                      label: `${credential.name}${credential.username ? `（${credential.username}）` : ""} · 密码`,
+                      value: credential.id,
+                    })),
+                  ]}
+                  onChange={(credentialId) =>
+                    setForm({
+                      ...form,
+                      credential_id: credentialId,
+                      inline_auth_kind: "password",
+                      inline_password: "",
+                      inline_password_touched: false,
+                    })
+                  }
+                />
+              </label>
+              <button
+                className="settings-action-button credential-manage-button"
+                type="button"
+                onClick={onManageCredentials}
+              >
+                管理
+              </button>
+            </div>
+          ) : null}
+
+          {credentialMode !== "saved" ? (
+            <div className="form-grid form-grid-wide">
+              <label>
+                <span>用户名</span>
+                <input
+                  required
+                  value={form.username}
+                  onChange={(event) => setForm({ ...form, username: event.target.value })}
+                  placeholder="administrator"
+                />
+              </label>
+              {credentialMode === "inline" ? (
+                <label>
+                  <span>密码</span>
+                  <div className="input-with-toggle">
+                    <input
+                      type={showPassword ? "text" : "password"}
+                      value={form.inline_password || ""}
+                      onChange={(event) =>
+                        setForm({
+                          ...form,
+                          inline_auth_kind: "password",
+                          inline_password: event.target.value,
+                          inline_password_touched: true,
+                        })
+                      }
+                      placeholder={
+                        connection?.id && !form.inline_password
+                          ? "已保存，留空保留"
+                          : "输入 RDP 密码"
+                      }
+                    />
+                    {allowPasswordReveal ? (
+                      <button
+                        className="field-toggle"
+                        type="button"
+                        disabled={revealBusy}
+                        aria-label={showPassword ? "隐藏密码" : "显示密码"}
+                        onClick={() => void toggleInlinePasswordVisibility()}
+                      >
+                        {showPassword ? (
+                          <EyeOff className="ui-icon" aria-hidden="true" />
+                        ) : (
+                          <Eye className="ui-icon" aria-hidden="true" />
+                        )}
+                      </button>
+                    ) : null}
+                  </div>
+                </label>
+              ) : null}
+            </div>
+          ) : null}
+
+          {credentialMode === "prompt" ? (
+            <p className="connection-dialog-note">
+              连接时由系统 RDP 客户端提示凭据；内嵌模式也会保留这个安全兜底。
+            </p>
+          ) : (
+            <p className="connection-dialog-note">
+              保存的 RDP 密码只进入 mXterm vault，并且仅在 Windows 内嵌 ActiveX 模式中内存注入；外部 runner 仍会提示凭据。
+            </p>
+          )}
+
+          <label>
+            <span>说明</span>
+            <textarea
+              rows={3}
+              value={form.notes || ""}
+              onChange={(event) => setForm({ ...form, notes: event.target.value })}
+              placeholder="可记录用途、环境、连接注意事项。"
+            />
+          </label>
+        </div>
+      );
+    }
 
     return (
       <div className="connection-dialog-fields">
@@ -982,7 +1332,364 @@ export function ConnectionDialog({
     );
   }
 
+  function renderRdpTab() {
+    const rdp = withDefaultRdpConfig(form.rdp);
+    const gatewayMode = rdp.gateway?.mode || "disabled";
+    const runnerRenderMode: Exclude<RdpRenderMode, "custom"> =
+      rdp.runner.render_mode === "external" ? "external" : "embedded";
+    const fullScreenMode: RdpDisplayMode =
+      rdp.display.mode === "windowed" ? "embedded" : rdp.display.mode;
+    const resolutionMode = rdp.display.dynamic_resize ? "adaptive" : "fixed";
+    const fixedResolution = resolutionMode === "fixed";
+
+    return (
+      <div className="connection-dialog-fields">
+        <section className="dialog-section">
+          <div className="dialog-section-title">显示</div>
+          <div className="form-grid form-grid-wide">
+            <label>
+              <span>打开方式</span>
+              <AppSelect
+                ariaLabel="RDP 打开方式"
+                value={runnerRenderMode}
+                options={rdpRunnerModeOptions}
+                onChange={(renderMode) =>
+                  updateRdp({
+                    runner: {
+                      ...rdp.runner,
+                      render_mode: renderMode,
+                      preferred_runner: renderMode === "external" ? "mstsc" : undefined,
+                      custom_executable: undefined,
+                      custom_args_template: undefined,
+                    },
+                  })
+                }
+              />
+            </label>
+            <label>
+              <span>全屏模式</span>
+              <AppSelect
+                ariaLabel="RDP 全屏模式"
+                value={fullScreenMode}
+                options={rdpDisplayOptions}
+                onChange={(mode) =>
+                  updateRdp({
+                    display: {
+                      ...rdp.display,
+                      mode,
+                      use_multimon: mode === "all_monitors",
+                    },
+                  })
+                }
+              />
+            </label>
+          </div>
+          <div className="form-grid form-grid-wide">
+            <label>
+              <span>分辨率</span>
+              <AppSelect
+                ariaLabel="RDP 分辨率"
+                value={resolutionMode}
+                options={rdpResolutionModeOptions}
+                onChange={(mode) =>
+                  updateRdp({
+                    display: {
+                      ...rdp.display,
+                      dynamic_resize: mode === "adaptive",
+                    },
+                  })
+                }
+              />
+            </label>
+            {fixedResolution ? (
+              <>
+                <label>
+                  <span>宽度</span>
+                  <input
+                    inputMode="numeric"
+                    value={(rdp.display.width || "").toString()}
+                    onChange={(event) =>
+                      updateRdp({
+                        display: {
+                          ...rdp.display,
+                          width: Number(event.target.value) || undefined,
+                        },
+                      })
+                    }
+                  />
+                </label>
+                <label>
+                  <span>高度</span>
+                  <input
+                    inputMode="numeric"
+                    value={(rdp.display.height || "").toString()}
+                    onChange={(event) =>
+                      updateRdp({
+                        display: {
+                          ...rdp.display,
+                          height: Number(event.target.value) || undefined,
+                        },
+                      })
+                    }
+                  />
+                </label>
+              </>
+            ) : null}
+            <label>
+              <span>缩放</span>
+              <span className="connection-dialog-scale-check">
+                <input type="checkbox" checked readOnly />
+                <span>跟随系统</span>
+              </span>
+            </label>
+          </div>
+          {runnerRenderMode === "external" ? (
+            <p className="connection-dialog-note connection-dialog-note-inline">
+              mstsc.exe 模式会通过系统远程桌面客户端打开，适合需要系统客户端兼容行为的场景。
+            </p>
+          ) : null}
+        </section>
+
+        <section className="dialog-section">
+          <div className="dialog-section-title">资源重定向</div>
+          <div className="form-grid form-grid-wide">
+            <label>
+              <span>音频</span>
+              <AppSelect
+                ariaLabel="RDP 音频"
+                value={rdp.resources.audio}
+                options={rdpAudioOptions}
+                onChange={(audio) =>
+                  updateRdp({
+                    resources: {
+                      ...rdp.resources,
+                      audio,
+                    },
+                  })
+                }
+              />
+            </label>
+          </div>
+          <div className="connection-dialog-checks">
+            {[
+              ["clipboard", "剪贴板"],
+              ["drives", "磁盘"],
+              ["printers", "打印机"],
+              ["smart_cards", "智能卡"],
+            ].map(([key, label]) => (
+              <label key={key}>
+                <input
+                  type="checkbox"
+                  checked={Boolean(rdp.resources[key as keyof typeof rdp.resources])}
+                  onChange={(event) =>
+                    updateRdp({
+                      resources: {
+                        ...rdp.resources,
+                        [key]: event.target.checked,
+                      },
+                    })
+                  }
+                />
+                <span>{label}</span>
+              </label>
+            ))}
+          </div>
+        </section>
+
+        <section className="dialog-section">
+          <div className="dialog-section-title">网关与 RemoteApp</div>
+          <div className="form-grid form-grid-wide">
+            <label>
+              <span>网关</span>
+              <AppSelect
+                ariaLabel="RDP 网关"
+                value={gatewayMode}
+                options={rdpGatewayOptions}
+                onChange={(mode) =>
+                  updateRdp({
+                    gateway:
+                      mode === "disabled"
+                        ? { ...defaultRdpConfig.gateway!, mode: "disabled" }
+                        : {
+                            ...(rdp.gateway || defaultRdpConfig.gateway!),
+                            mode,
+                          },
+                  })
+                }
+              />
+            </label>
+            <label>
+              <span>网关主机</span>
+              <input
+                disabled={gatewayMode === "disabled"}
+                value={rdp.gateway?.host || ""}
+                onChange={(event) =>
+                  updateRdp({
+                    gateway: {
+                      ...(rdp.gateway || defaultRdpConfig.gateway!),
+                      mode: gatewayMode === "disabled" ? "explicit" : gatewayMode,
+                      host: event.target.value,
+                    },
+                  })
+                }
+                placeholder="gateway.example.com"
+              />
+            </label>
+          </div>
+
+          <div className="connection-dialog-checks">
+            <label>
+              <input
+                type="checkbox"
+                checked={rdp.remote_app.enabled}
+                onChange={(event) =>
+                  updateRdp({
+                    remote_app: {
+                      ...rdp.remote_app,
+                      enabled: event.target.checked,
+                    },
+                  })
+                }
+              />
+              <span>RemoteApp</span>
+            </label>
+          </div>
+          {rdp.remote_app.enabled ? (
+            <div className="form-grid form-grid-wide">
+              <label>
+                <span>程序</span>
+                <input
+                  value={rdp.remote_app.program || ""}
+                  onChange={(event) =>
+                    updateRdp({
+                      remote_app: {
+                        ...rdp.remote_app,
+                        program: event.target.value,
+                      },
+                    })
+                  }
+                  placeholder="RemoteApp 名称或程序路径"
+                />
+              </label>
+              <label>
+                <span>参数</span>
+                <input
+                  value={rdp.remote_app.args || ""}
+                  onChange={(event) =>
+                    updateRdp({
+                      remote_app: {
+                        ...rdp.remote_app,
+                        args: event.target.value,
+                      },
+                    })
+                  }
+                />
+              </label>
+            </div>
+          ) : null}
+        </section>
+
+      </div>
+    );
+  }
+
   function renderAdvancedTab() {
+    if (isRdp) {
+      const rdp = withDefaultRdpConfig(form.rdp);
+      return (
+        <section className="dialog-section dialog-section-last">
+          <div className="dialog-section-title">性能与安全</div>
+          <div className="form-grid form-grid-wide">
+            <label>
+              <span>性能预设</span>
+              <AppSelect
+                ariaLabel="RDP 性能预设"
+                value={rdp.performance.preset}
+                options={rdpPerformanceOptions}
+                onChange={(preset) =>
+                  updateRdp({
+                    performance: {
+                      ...rdp.performance,
+                      preset,
+                    },
+                  })
+                }
+              />
+            </label>
+          </div>
+          <p className="connection-dialog-note">
+            RDP 登录账号与密码在基础页配置；高级安全项只控制 NLA 与证书策略。
+          </p>
+          <div className="form-grid form-grid-wide">
+            <label>
+              <span>NLA</span>
+              <AppSelect
+                ariaLabel="RDP NLA"
+                value={rdp.security.nla}
+                options={rdpNlaOptions}
+                onChange={(nla) =>
+                  updateRdp({
+                    security: {
+                      ...rdp.security,
+                      nla,
+                    },
+                  })
+                }
+              />
+            </label>
+            <label>
+              <span>证书策略</span>
+              <AppSelect
+                ariaLabel="RDP 证书策略"
+                value={rdp.security.certificate_policy}
+                options={rdpCertificateOptions}
+                onChange={(certificatePolicy) =>
+                  updateRdp({
+                    security: {
+                      ...rdp.security,
+                      certificate_policy: certificatePolicy,
+                    },
+                  })
+                }
+              />
+            </label>
+          </div>
+          <div className="connection-dialog-checks">
+            {[
+              ["desktop_background", "桌面背景"],
+              ["font_smoothing", "字体平滑"],
+              ["visual_styles", "视觉样式"],
+            ].map(([key, label]) => (
+              <label key={key}>
+                <input
+                  type="checkbox"
+                  checked={Boolean(rdp.performance[key as keyof typeof rdp.performance])}
+                  onChange={(event) =>
+                    updateRdp({
+                      performance: {
+                        ...rdp.performance,
+                        [key]: event.target.checked,
+                      },
+                    })
+                  }
+                />
+                <span>{label}</span>
+              </label>
+            ))}
+          </div>
+          <label>
+            <span>原始 .rdp 设置</span>
+            <textarea
+              rows={4}
+              value={rdp.raw_rdp_settings || ""}
+              onChange={(event) => updateRdp({ raw_rdp_settings: event.target.value })}
+              placeholder="每行形如 key:type:value，不要写入 password 字段"
+            />
+          </label>
+        </section>
+      );
+    }
+
     const advanced = form.advanced || defaultAdvancedConfig;
     return (
       <section className="dialog-section dialog-section-last">
@@ -1058,6 +1765,60 @@ export function ConnectionDialog({
         </div>
       </section>
     );
+  }
+
+  function changeProtocol(nextProtocol: ConnectionProtocol) {
+    if (nextProtocol === protocol) {
+      return;
+    }
+    setFeedback(null);
+    setTestState("idle");
+    setActiveTab("basic");
+    setForm((current) => {
+      if (nextProtocol === "rdp") {
+        return {
+          ...current,
+          protocol: "rdp",
+          port: current.port === 22 ? 3389 : current.port,
+          credential_mode: current.credential_mode || "inline",
+          credential_id: current.credential_mode === "saved" ? current.credential_id || "" : "",
+          inline_auth_kind: "password",
+          inline_password: current.credential_mode === "inline" ? current.inline_password || "" : "",
+          inline_password_touched:
+            current.credential_mode === "inline" ? current.inline_password_touched || false : false,
+          inline_private_key_path: "",
+          inline_private_key_passphrase: "",
+          inline_private_key_passphrase_touched: false,
+          prompt_auth_kind: undefined,
+          proxy: defaultProxyConfig,
+          jump: defaultJumpConfig,
+          advanced: defaultAdvancedConfig,
+          rdp: withDefaultRdpConfig(current.rdp),
+        };
+      }
+
+      return {
+        ...current,
+        protocol: "ssh",
+        port: current.port === 3389 ? 22 : current.port,
+        credential_mode:
+          current.credential_mode === "prompt" ? "inline" : current.credential_mode,
+        inline_auth_kind: current.inline_auth_kind || "password",
+        proxy: current.proxy || defaultProxyConfig,
+        jump: current.jump || defaultJumpConfig,
+        advanced: current.advanced || defaultAdvancedConfig,
+      };
+    });
+  }
+
+  function updateRdp(patch: Partial<RdpConnectionConfig>) {
+    setForm((current) => ({
+      ...current,
+      rdp: withDefaultRdpConfig({
+        ...withDefaultRdpConfig(current.rdp),
+        ...patch,
+      }),
+    }));
   }
 
   function changeInlineAuthKind(authKind: ConnectionAuthKind) {
@@ -1152,6 +1913,7 @@ function formFromConnection(
 
   return {
     id: connection.id,
+    protocol: connection.protocol || "ssh",
     name: connection.name,
     group: resolveGroupName(connection.group, groups),
     host: connection.host,
@@ -1176,6 +1938,7 @@ function formFromConnection(
       ...defaultAdvancedConfig,
       ...connection.advanced,
     },
+    rdp: withDefaultRdpConfig(connection.rdp),
     notes: connection.notes || "",
     is_favorite: connection.is_favorite,
     last_connected_at: connection.last_connected_at || "",
@@ -1189,6 +1952,36 @@ function normalizeForSubmit(
   form: ConnectionProfileInput,
   credentials: CredentialProfile[],
 ): ConnectionProfileInput {
+  if ((form.protocol || "ssh") === "rdp") {
+    const savedCredential =
+      form.credential_mode === "saved" && form.credential_id
+        ? credentials.find((credential) => credential.id === form.credential_id)
+        : null;
+    const credentialMode = form.credential_mode || "prompt";
+
+    return {
+      ...form,
+      protocol: "rdp",
+      username:
+        credentialMode === "saved" ? savedCredential?.username || form.username : form.username,
+      port: Number(form.port) || 3389,
+      credential_mode: credentialMode,
+      credential_id: credentialMode === "saved" ? form.credential_id?.trim() || "" : undefined,
+      inline_auth_kind: credentialMode === "inline" ? "password" : undefined,
+      inline_password: credentialMode === "inline" ? form.inline_password : undefined,
+      inline_password_touched:
+        credentialMode === "inline" ? form.inline_password_touched || false : false,
+      inline_private_key_path: undefined,
+      inline_private_key_passphrase: undefined,
+      inline_private_key_passphrase_touched: false,
+      prompt_auth_kind: undefined,
+      proxy: { kind: "none" },
+      jump: { kind: "none" },
+      advanced: defaultAdvancedConfig,
+      rdp: withDefaultRdpConfig(form.rdp),
+    };
+  }
+
   const jump = form.jump || defaultJumpConfig;
   const proxy = form.proxy || defaultProxyConfig;
   const savedUsername =
@@ -1198,6 +1991,7 @@ function normalizeForSubmit(
 
   return {
     ...form,
+    protocol: "ssh",
     // saved 模式：用户名从所选账号回填，保证连接快照完整且后端校验通过
     username: form.credential_mode === "saved" ? savedUsername : form.username,
     port: Number(form.port) || 22,
@@ -1226,6 +2020,7 @@ function normalizeForSubmit(
         defaultAdvancedConfig.keepalive_interval_ms,
       terminal_encoding: normalizeTerminalEncoding(form.advanced.terminal_encoding),
     },
+    rdp: undefined,
   };
 }
 
@@ -1292,6 +2087,41 @@ function normalizeGroupName(value: string | null | undefined) {
   return value?.trim() || "";
 }
 
+function withDefaultRdpConfig(value?: RdpConnectionConfig | null): RdpConnectionConfig {
+  return {
+    ...defaultRdpConfig,
+    ...value,
+    display: {
+      ...defaultRdpConfig.display,
+      ...value?.display,
+    },
+    resources: {
+      ...defaultRdpConfig.resources,
+      ...value?.resources,
+    },
+    gateway: {
+      ...defaultRdpConfig.gateway!,
+      ...value?.gateway,
+    },
+    remote_app: {
+      ...defaultRdpConfig.remote_app,
+      ...value?.remote_app,
+    },
+    performance: {
+      ...defaultRdpConfig.performance,
+      ...value?.performance,
+    },
+    security: {
+      ...defaultRdpConfig.security,
+      ...value?.security,
+    },
+    runner: {
+      ...defaultRdpConfig.runner,
+      ...value?.runner,
+    },
+  };
+}
+
 function groupPathLabel(
   group: ConnectionDialogGroup,
   groupById: Map<string, ConnectionDialogGroup>,
@@ -1320,6 +2150,12 @@ function tabForError(error: unknown): ConnectionDialogTab {
       : "";
   if (code.startsWith("connection_proxy_")) {
     return "proxy";
+  }
+  if (code.startsWith("rdp_raw_") || code.startsWith("rdp_runner_")) {
+    return "advanced";
+  }
+  if (code.startsWith("rdp_")) {
+    return "rdp";
   }
   if (
     code === "connection_connect_timeout_invalid" ||
@@ -1407,6 +2243,9 @@ function describeDialogError(error: unknown): DialogFeedback {
 function formatAddress(connection: ConnectionProfileInput) {
   const username = connection.username || "user";
   const host = connection.host || "host";
+  if ((connection.protocol || "ssh") === "rdp") {
+    return `RDP ${username}@${host}:${connection.port.toString()}`;
+  }
   return `${username}@${host}:${connection.port.toString()}`;
 }
 

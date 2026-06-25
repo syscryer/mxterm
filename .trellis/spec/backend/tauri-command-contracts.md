@@ -1801,6 +1801,152 @@ if let Some(secrets) = bundle.remote_secrets_enc {
 
 The transport only moves snapshot artifacts produced by the sync layer; it never reads SQLite or vault files directly.
 
+## Scenario: RDP Connection Runner Commands
+
+### 1. Scope / Trigger
+
+- Trigger: backend code adds or changes RDP connection persistence, runner probing, `.rdp` generation, launch lifecycle, native-host events, or `rdp_*` Tauri commands.
+- Source files: `src-tauri/src/connections/mod.rs`, `src-tauri/src/storage_sqlite.rs`, `src-tauri/src/storage_repository.rs`, `src-tauri/src/rdp.rs`, `src-tauri/src/events.rs`, `src-tauri/src/commands.rs`, `src-tauri/src/lib.rs`, and `src/shared/tauri/commands.ts`.
+- This is a cross-layer storage/command boundary because Rust owns the protocol discriminator, RDP config shape, validation, runner selection, and redaction rules while React only renders forms and session state.
+
+### 2. Signatures
+
+```rust
+rdp_launch_connection(app: AppHandle, manager: State<'_, RdpSessionManager>, request: RdpConnectionRequest) -> Result<RdpLaunchResult, AppError>
+rdp_preview_launch(app: AppHandle, request: RdpConnectionRequest) -> Result<RdpLaunchPreview, AppError>
+rdp_test_runner(request: RdpRunnerProbeRequest) -> Result<RdpRunnerProbeResult, AppError>
+rdp_close_session(manager: State<'_, RdpSessionManager>, request: RdpSessionRequest) -> Result<RdpSessionCloseResult, AppError>
+rdp_resize_embedded_session(manager: State<'_, RdpSessionManager>, request: RdpResizeRequest) -> Result<RdpSessionResizeResult, AppError>
+```
+
+Native-host user closes emit `rdp:session_closed` with:
+
+```rust
+RdpSessionClosedEvent {
+    session_id: String,
+}
+```
+
+`RdpConnectionRequest` fields:
+
+```rust
+connection_id: String
+bounds?: RdpEmbeddedBounds
+```
+
+`RdpEmbeddedBounds` is the frontend-measured host area in physical pixels:
+
+```rust
+x: i32
+y: i32
+width: u32
+height: u32
+```
+
+`ConnectionProfileInput` and `ConnectionProfile` include `protocol = "ssh" | "rdp"`. RDP payloads carry `rdp: RdpConnectionConfig` with display, resources, gateway, RemoteApp, performance, security, runner, and raw advanced settings.
+
+### 3. Contracts
+
+- `StorageRepository` must persist `protocol` and `rdp_json` for RDP rows and default legacy rows to `ssh`.
+- SSH-only code paths must reject RDP rows. RDP connections must not be resolved through SSH terminal/files/monitor/tunnels/Docker/Command Sender paths.
+- `rdp_preview_launch` must return redacted preview data only. It may expose runner kind, executable path, args, and `.rdp` content, but not plaintext secrets.
+- `rdp_launch_connection` must select the runner deterministically by platform and config, then return a result that the UI can render as embedded, native-window, or external launch state.
+- Windows ActiveX v1 uses a manager-owned native RDP host window: create one owned top-level Win32 host window, reuse it for later ActiveX sessions, and expose native tabs inside that window for multiple RDP connections. Configure each MSTSC ActiveX COM object directly and keep runtime host/control HWNDs in `RdpSessionManager`. This path intentionally does not promise WebView/DOM painting because WebView composition can occlude child windows. Return `runner = "mstsc_activex"` with `embedded = false` and a fallback/status reason so the frontend renders a native-window session status instead of a DOM embedded placeholder. `rdp_close_session` must close the matching native tab/session while keeping the shared host window alive when other RDP sessions remain. When the user closes a native-host tab or the whole native-host window directly, Rust must emit `rdp:session_closed` for each affected backend `session_id` so React can remove the matching runtime tab without guessing from connection ids.
+- Classic MSTSC ActiveX fallback must prefer NotSafeForScripting-compatible registrations such as `MsTscAx.MsTscAx.13`, `MsTscAx.MsTscAx.12`, `MsTscAx.MsTscAx.11`, `MsTscAx.MsTscAx.10`, and `MsTscAx.MsTscAx.9` before ordinary `MsRDP.MsRDP.*` controls. This matches the desktop-hosted MSTSC control family that supports full COM configuration and in-memory password handoff. A control is usable only after creation and required configuration both succeed; if a candidate creates successfully but rejects required properties, destroy that child window and try the next candidate instead of immediately falling back to external `mstsc.exe`.
+- Classic MSTSC ActiveX fallback must configure through stable DISPIDs from the MSTSC type library (`Server=1`, `Domain=2`, `UserName=3`, `DesktopWidth=12`, `DesktopHeight=13`, `ColorDepth=100`, `AdvancedSettings9=701`, `TransportSettings4=800`, `Connect=30`, `Disconnect=31`) instead of first resolving member names with `IDispatch::GetIDsOfNames`. Some hosts expose the working dual interface but fail name lookup for `Server`, causing false fallback to external `mstsc.exe`.
+- RDP credentials may use `credential_mode=prompt`, `credential_mode=inline` with `inline_auth_kind=password`, or `credential_mode=saved` with a password credential. RDP must reject private-key credentials. Inline/saved passwords are resolved through the existing encrypted vault and may be passed only in memory to Windows classic MSTSC ActiveX through `IMsTscNonScriptable.ClearTextPassword`; external runners and generated `.rdp` files must still omit plaintext passwords.
+- Windows embedded saved-password direct-connect must configure prompt suppression through the MSTSC NonScriptable interfaces around the password handoff: `IMsRdpClientNonScriptable3.PromptForCredentials=false`, `WarnAboutSendingCredentials=false`, `EnableCredSspSupport` according to NLA, `IMsRdpClientNonScriptable4.PromptForCredsOnClient=false`, `AllowCredentialSaving=false`, and `IMsRdpClientNonScriptable5.AllowPromptingForCredentials=false`. Do not treat `IDispatch` property writes or `AdvancedSettings.ClearTextPassword` as the authoritative password path.
+- `RdpSessionManager` owns runtime hosted-window state only. It stores session id -> shared host HWND/control HWND/process/temp file metadata plus a transient native-host command channel so close and resize commands can target the native host. Do not persist these runtime ids on `ConnectionProfile`.
+- `rdp_resize_embedded_session` should apply viewport changes only for a future true DOM-embedded session or explicit native host bounds. For the current manager-owned native ActiveX window, the native host owns ordinary drag/resize behavior and must synchronize the active tab's MSTSC control size, remote desktop resolution, and host DPI scale on `WM_SIZE` / `WM_DPICHANGED`. Initial ActiveX configuration for dynamic-resize sessions must seed `DesktopWidth` / `DesktopHeight` from the native host content area before `Connect()`, then retry display sync briefly during the login phase because early `UpdateSessionDisplaySettings` calls can be ignored until the remote session is ready. External sessions return a non-applied result because the external client owns its window.
+- `rdp_close_session` should post a close request to manager-owned ActiveX windows and remove generated temp files when possible. External sessions remain user-managed.
+- Windows ActiveX support may fall back to `.rdp` plus external `mstsc.exe` when ActiveX hosting is unavailable or unstable.
+- Linux/macOS runner selection may use external/custom executables, but must never pass plaintext passwords in process arguments.
+- RDP certificate policy must map to mstsc `authentication level` explicitly: `trust` -> `0` (continue without warning), `prompt` -> `2` (warn and allow continue, default), `strict` -> `1` (fail on verification problems).
+- A valid RDP profile must still be usable even when the current platform has no compatible runner; the UI should get setup diagnostics instead of losing the saved connection.
+
+### 4. Validation & Error Matrix
+
+| Condition | Error code / behavior | Recoverable |
+| --- | --- | --- |
+| `protocol` blank or unknown | default to `ssh` during legacy migration, reject unknown values on new writes | true |
+| RDP host missing | `connection_host_missing` | true |
+| RDP username missing | `connection_username_missing` | true |
+| RDP port invalid | `connection_port_invalid` | true |
+| RDP `.rdp` / runner text field contains control characters | `rdp_field_invalid` / `rdp_runner_args_invalid` | true |
+| RDP raw `.rdp` contains invalid control data or secret-like password lines | reject the payload | true |
+| No runner available | return setup hint or fallback reason, not a silent failure | true |
+| Embedded launch unsupported | fall back to external launch path when possible | true |
+| Optional embedded bounds are missing or too small | current native ActiveX host window chooses a safe default size; future true DOM-embedded mode may return a non-applied resize result | true |
+| ActiveX host/control cannot be created after launch | fall back to external `mstsc.exe`, return `embedded=false` with fallback reason, and leave the external client visible | true |
+| Resize targets a non-managed session id | return `applied=false` instead of failing the caller | true |
+
+### 5. Good / Base / Bad Cases
+
+- Good: `connection_upsert` stores `protocol = "rdp"` with a fully populated RDP config and leaves SSH-only fields untouched or cleared as appropriate.
+- Good: `rdp_preview_launch` returns a redacted `.rdp` preview and no plaintext password material.
+- Good: Windows ActiveX launch creates or reuses a manager-owned native host window with native tabs, puts each MSTSC ActiveX control in its own tab, returns `runner = "mstsc_activex"` and `embedded = false` so the frontend shows native-window status, and records the host/control HWND in `RdpSessionManager` for close lifecycle.
+- Good: classic MSTSC ActiveX configuration writes required properties by fixed DISPID, records the selected control name in error context when configuration or connect fails, and continues to later registered candidates when an earlier control cannot be configured.
+- Good: saved inline/account RDP passwords resolve from the vault, set `ClearTextPassword` through `IMsTscNonScriptable`, and suppress native credential prompts through NonScriptable3/4/5 before `Connect()`.
+- Good: Windows ActiveX launch falls back to a generated temporary `.rdp` file and visible external `mstsc.exe` window when ActiveX hosting is unavailable.
+- Good: closing one RDP tab from React calls `rdp_close_session` and closes only that manager-owned native ActiveX tab/session; the shared native host stays open while other RDP sessions remain. Closing a native tab/window from the Win32 chrome emits `rdp:session_closed` so React removes the matching runtime tab and the backend manager can release stale session state. Native window drag/resize and DPI changes update the active tab's control bounds and remote display settings without DOM-bound resize synchronization; first launch already uses the host content size and login-phase resize retries so users do not need to drag the window once to correct stretching.
+- Good: default RDP certificate policy serializes to `authentication level:i:2`, not `i:1`, so self-signed certificates show a continuable mstsc warning instead of a hard failure dialog.
+- Base: Linux/macOS can keep the saved RDP profile valid even if only external/custom runner support exists.
+- Bad: backend code passes `password` or `private_key_passphrase` in command-line args, writes a plaintext password into `.rdp`, resolves an RDP row through SSH-only terminal helpers, accepts a private-key credential for RDP, stores hosted HWND/session ids in persistent connection data, tells the frontend a DOM-embedded surface is active when the ActiveX host is actually a separate native window, depends on `GetIDsOfNames("Server")` before setting classic MSTSC ActiveX connection fields, writes only `AdvancedSettings.ClearTextPassword`, or treats ActiveX creation alone as success before the required connection properties are accepted.
+
+### 6. Tests Required
+
+- Run `cargo test --manifest-path src-tauri/Cargo.toml connections --lib`, `cargo test --manifest-path src-tauri/Cargo.toml storage_sqlite --lib`, `cargo test --manifest-path src-tauri/Cargo.toml sync_snapshot --lib`, and `cargo check --manifest-path src-tauri/Cargo.toml` after changing this area.
+- Add/update tests for protocol migration, `rdp_json` persistence, RDP redacted preview, and SSH-only guardrails.
+- Add/update tests for mstsc certificate policy serialization: `trust -> authentication level:i:0`, `prompt -> authentication level:i:2`, and `strict -> authentication level:i:1`.
+- Cross-check Rust request/response field names against the typed wrappers in `src/shared/tauri/commands.ts`.
+- Manual Windows smoke test hosted mode after native-host changes: create/open an embedded-preferred RDP session with a vault-backed password, verify the MSTSC ActiveX native host window appears, verify the fallback reason no longer reports `Server` member lookup failure, verify no Windows Security password dialog appears for a valid saved password, open a second RDP connection and verify it appears as a second native tab in the same host window, drag/resize the host window and verify the active remote desktop resizes with host DPI scaling, close one RDP tab and verify other hosted sessions remain, then close the final tab and verify no orphan hosted window remains.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```rust
+let command = format!("xfreerdp /v:{} /u:{} /p:{}", host, username, password);
+```
+
+#### Correct
+
+```rust
+let preview = build_rdp_preview(&connection)?;
+let result = launch_rdp(&app, &connection, runner)?;
+```
+
+#### Wrong
+
+```rust
+// A close command cannot target the ActiveX window after launch because
+// the hosted HWND was never registered.
+let session_id = format!("rdp-{}", uuid::Uuid::new_v4());
+```
+
+#### Correct
+
+```rust
+manager.insert(session_id.clone(), ManagedRdpSession { hwnd, parent_hwnd, process_id, cleanup_path, embedded: true })?;
+```
+
+#### Wrong
+
+```rust
+// This makes self-signed server certificates fail without a continue option.
+RdpCertificatePolicy::Prompt => 1
+```
+
+#### Correct
+
+```rust
+RdpCertificatePolicy::Trust => 0,
+RdpCertificatePolicy::Prompt => 2,
+RdpCertificatePolicy::Strict => 1,
+```
+
+The backend owns redaction and launch transport; the client never receives or passes plaintext credentials through command arguments.
+
 ## Scenario: WebDAV Sync Commands
 
 ### 1. Scope / Trigger

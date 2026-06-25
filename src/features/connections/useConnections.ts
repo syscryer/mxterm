@@ -13,16 +13,19 @@ import {
   defaultAdvancedConfig,
   defaultJumpConfig,
   defaultProxyConfig,
+  defaultRdpConfig,
   normalizeTerminalEncoding,
   type ConnectionProfile,
   type ConnectionProfileInput,
   type ConnectionRuntimeCredentialRequest,
+  type RdpConnectionConfig,
 } from "./connectionTypes";
 
 const demoConnections: ConnectionProfile[] = [
   {
     id: "demo-dev-core",
     name: "开发环境 / edgs",
+    protocol: "ssh",
     host: "203.0.113.70",
     port: 22,
     username: "root",
@@ -33,6 +36,7 @@ const demoConnections: ConnectionProfile[] = [
     proxy: defaultProxyConfig,
     jump: defaultJumpConfig,
     advanced: defaultAdvancedConfig,
+    rdp: null,
     notes: "开发 收藏 k8s",
     is_favorite: true,
     last_connected_at: "demo",
@@ -42,6 +46,7 @@ const demoConnections: ConnectionProfile[] = [
   {
     id: "demo-test-web",
     name: "测试环境 / web",
+    protocol: "ssh",
     host: "203.0.113.131",
     port: 22,
     username: "root",
@@ -52,6 +57,7 @@ const demoConnections: ConnectionProfile[] = [
     proxy: defaultProxyConfig,
     jump: defaultJumpConfig,
     advanced: defaultAdvancedConfig,
+    rdp: null,
     notes: "测试 qa",
     is_favorite: false,
     last_connected_at: "demo",
@@ -61,6 +67,7 @@ const demoConnections: ConnectionProfile[] = [
   {
     id: "demo-bastion",
     name: "生产跳板",
+    protocol: "ssh",
     host: "100.93.140.33",
     port: 22,
     username: "root",
@@ -72,6 +79,7 @@ const demoConnections: ConnectionProfile[] = [
     proxy: defaultProxyConfig,
     jump: defaultJumpConfig,
     advanced: defaultAdvancedConfig,
+    rdp: null,
     notes: "跳板 tailscale bastion",
     is_favorite: false,
     last_connected_at: "demo",
@@ -81,6 +89,7 @@ const demoConnections: ConnectionProfile[] = [
   {
     id: "demo-cloud-ubuntu",
     name: "云主机 / ubuntu",
+    protocol: "ssh",
     host: "198.51.100.24",
     port: 22,
     username: "ubuntu",
@@ -95,6 +104,7 @@ const demoConnections: ConnectionProfile[] = [
       jump_connection_id: "demo-bastion",
     },
     advanced: defaultAdvancedConfig,
+    rdp: null,
     notes: "云 aws",
     is_favorite: false,
     last_connected_at: "demo",
@@ -104,6 +114,7 @@ const demoConnections: ConnectionProfile[] = [
   {
     id: "demo-dev-k8s",
     name: "dev-k8s-node2",
+    protocol: "ssh",
     host: "203.0.113.16",
     port: 22,
     username: "root",
@@ -113,6 +124,7 @@ const demoConnections: ConnectionProfile[] = [
     proxy: defaultProxyConfig,
     jump: defaultJumpConfig,
     advanced: defaultAdvancedConfig,
+    rdp: null,
     notes: "开发 k8s preview",
     is_favorite: false,
     last_connected_at: "demo",
@@ -120,8 +132,28 @@ const demoConnections: ConnectionProfile[] = [
     updated_at: "demo",
   },
   {
+    id: "demo-rdp-win",
+    name: "办公 Windows",
+    protocol: "rdp",
+    host: "198.51.100.45",
+    port: 3389,
+    username: "administrator",
+    group: "生产环境",
+    credential_mode: "prompt",
+    proxy: defaultProxyConfig,
+    jump: defaultJumpConfig,
+    advanced: defaultAdvancedConfig,
+    rdp: defaultRdpConfig,
+    notes: "rdp windows desktop",
+    is_favorite: true,
+    last_connected_at: "demo",
+    created_at: "demo",
+    updated_at: "demo",
+  },
+  {
     id: "demo-stage",
     name: "预发环境 / stage",
+    protocol: "ssh",
     host: "198.51.100.78",
     port: 22,
     username: "deploy",
@@ -132,6 +164,7 @@ const demoConnections: ConnectionProfile[] = [
     proxy: defaultProxyConfig,
     jump: defaultJumpConfig,
     advanced: defaultAdvancedConfig,
+    rdp: null,
     notes: "stage 测试",
     is_favorite: false,
     last_connected_at: "demo",
@@ -331,6 +364,47 @@ export function useConnections(options: { enabled?: boolean } = {}) {
   );
 }
 export function normalizeConnectionInput(input: ConnectionProfileInput): ConnectionProfileInput {
+  const protocol = input.protocol || "ssh";
+  if (protocol === "rdp") {
+    const trim = (value: string | undefined | null) => value?.trim() || undefined;
+    const credentialMode = input.credential_mode || "prompt";
+    const inlinePassword = trim(input.inline_password || input.password);
+    const inlinePasswordTouched =
+      typeof input.inline_password_touched === "boolean"
+        ? input.inline_password_touched
+        : Boolean(inlinePassword);
+
+    return {
+      id: trim(input.id),
+      protocol: "rdp",
+      name: trim(input.name),
+      group: trim(input.group),
+      host: input.host.trim(),
+      port: Number(input.port) || 3389,
+      username: input.username.trim(),
+      credential_mode: credentialMode,
+      credential_id: credentialMode === "saved" ? trim(input.credential_id) : undefined,
+      inline_auth_kind: credentialMode === "inline" ? "password" : undefined,
+      inline_password:
+        credentialMode === "inline" && inlinePasswordTouched ? inlinePassword : undefined,
+      inline_password_touched: credentialMode === "inline" ? inlinePasswordTouched : false,
+      inline_private_key_path: undefined,
+      inline_private_key_passphrase: undefined,
+      inline_private_key_passphrase_touched: false,
+      prompt_auth_kind: undefined,
+      proxy: { kind: "none" },
+      jump: { kind: "none" },
+      advanced: defaultAdvancedConfig,
+      rdp: normalizeRdpConfig(input.rdp),
+      notes: trim(input.notes),
+      is_favorite: input.is_favorite,
+      last_connected_at: trim(input.last_connected_at),
+      remote_os_id: trim(input.remote_os_id),
+      remote_os_name: trim(input.remote_os_name),
+      remote_os_version: trim(input.remote_os_version),
+    };
+  }
+
   const credentialMode = input.credential_mode || "inline";
   const inlineAuthKind =
     input.inline_auth_kind || input.auth_kind || (input.private_key_path ? "private_key" : "password");
@@ -352,6 +426,7 @@ export function normalizeConnectionInput(input: ConnectionProfileInput): Connect
 
   return {
     id: trim(input.id),
+    protocol: "ssh",
     name: trim(input.name),
     group: trim(input.group),
     host: input.host.trim(),
@@ -404,12 +479,85 @@ export function normalizeConnectionInput(input: ConnectionProfileInput): Connect
         defaultAdvancedConfig.keepalive_interval_ms,
       terminal_encoding: normalizeTerminalEncoding(input.advanced?.terminal_encoding),
     },
+    rdp: undefined,
     notes: trim(input.notes),
     is_favorite: input.is_favorite,
     last_connected_at: trim(input.last_connected_at),
     remote_os_id: trim(input.remote_os_id),
     remote_os_name: trim(input.remote_os_name),
     remote_os_version: trim(input.remote_os_version),
+  };
+}
+
+function normalizeRdpConfig(input?: RdpConnectionConfig | null): RdpConnectionConfig {
+  const rdp = input || defaultRdpConfig;
+  const trim = (value: string | undefined | null) => value?.trim() || undefined;
+  const gatewayMode = rdp.gateway?.mode || "disabled";
+  const remoteAppEnabled = Boolean(rdp.remote_app?.enabled);
+  const renderMode = rdp.runner?.render_mode === "external" ? "external" : "embedded";
+  const displayMode =
+    rdp.display?.mode === "windowed" ? defaultRdpConfig.display.mode : rdp.display?.mode;
+
+  return {
+    domain: trim(rdp.domain),
+    display: {
+      mode: displayMode || defaultRdpConfig.display.mode,
+      width: Number(rdp.display?.width) || defaultRdpConfig.display.width,
+      height: Number(rdp.display?.height) || defaultRdpConfig.display.height,
+      dynamic_resize: rdp.display?.dynamic_resize ?? defaultRdpConfig.display.dynamic_resize,
+      use_multimon:
+        rdp.display?.mode === "all_monitors" ||
+        Boolean(rdp.display?.use_multimon),
+    },
+    resources: {
+      clipboard: rdp.resources?.clipboard ?? defaultRdpConfig.resources.clipboard,
+      audio: rdp.resources?.audio || defaultRdpConfig.resources.audio,
+      drives: Boolean(rdp.resources?.drives),
+      printers: Boolean(rdp.resources?.printers),
+      smart_cards: Boolean(rdp.resources?.smart_cards),
+    },
+    gateway:
+      gatewayMode === "disabled"
+        ? null
+        : {
+            mode: gatewayMode,
+            host: trim(rdp.gateway?.host),
+            credential_source:
+              rdp.gateway?.credential_source ||
+              defaultRdpConfig.gateway?.credential_source ||
+              "prompt",
+          },
+    remote_app: remoteAppEnabled
+      ? {
+          enabled: true,
+          program: trim(rdp.remote_app?.program),
+          working_dir: trim(rdp.remote_app?.working_dir),
+          args: trim(rdp.remote_app?.args),
+        }
+      : { enabled: false },
+    performance: {
+      preset: rdp.performance?.preset || defaultRdpConfig.performance.preset,
+      desktop_background: Boolean(rdp.performance?.desktop_background),
+      font_smoothing:
+        rdp.performance?.font_smoothing ?? defaultRdpConfig.performance.font_smoothing,
+      visual_styles:
+        rdp.performance?.visual_styles ?? defaultRdpConfig.performance.visual_styles,
+    },
+    security: {
+      credential_mode:
+        rdp.security?.credential_mode || defaultRdpConfig.security.credential_mode,
+      nla: rdp.security?.nla || defaultRdpConfig.security.nla,
+      certificate_policy:
+        rdp.security?.certificate_policy || defaultRdpConfig.security.certificate_policy,
+    },
+    runner: {
+      render_mode: renderMode,
+      preferred_runner: renderMode === "external" ? "mstsc" : undefined,
+      custom_executable: undefined,
+      custom_args_template: undefined,
+    },
+    raw_rdp_settings: trim(rdp.raw_rdp_settings),
+    raw_runner_args: undefined,
   };
 }
 

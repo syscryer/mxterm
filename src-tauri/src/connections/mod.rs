@@ -36,6 +36,359 @@ pub enum ConnectionJumpKind {
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ConnectionProtocol {
+    Ssh,
+    Rdp,
+}
+
+impl Default for ConnectionProtocol {
+    fn default() -> Self {
+        Self::Ssh
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RdpDisplayMode {
+    Embedded,
+    Windowed,
+    Fullscreen,
+    AllMonitors,
+}
+
+impl Default for RdpDisplayMode {
+    fn default() -> Self {
+        Self::Embedded
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RdpAudioMode {
+    Local,
+    Remote,
+    Disabled,
+}
+
+impl Default for RdpAudioMode {
+    fn default() -> Self {
+        Self::Local
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RdpGatewayMode {
+    Disabled,
+    Auto,
+    Explicit,
+}
+
+impl Default for RdpGatewayMode {
+    fn default() -> Self {
+        Self::Disabled
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RdpGatewayCredentialSource {
+    Same,
+    Prompt,
+}
+
+impl Default for RdpGatewayCredentialSource {
+    fn default() -> Self {
+        Self::Prompt
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RdpPerformancePreset {
+    Auto,
+    Lan,
+    Balanced,
+    LowBandwidth,
+}
+
+impl Default for RdpPerformancePreset {
+    fn default() -> Self {
+        Self::Auto
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RdpSecurityCredentialMode {
+    Prompt,
+    Saved,
+    OsStore,
+}
+
+impl Default for RdpSecurityCredentialMode {
+    fn default() -> Self {
+        Self::Prompt
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RdpNetworkLevelAuthentication {
+    Auto,
+    Enabled,
+    Disabled,
+}
+
+impl Default for RdpNetworkLevelAuthentication {
+    fn default() -> Self {
+        Self::Auto
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RdpCertificatePolicy {
+    Trust,
+    Prompt,
+    Strict,
+}
+
+impl Default for RdpCertificatePolicy {
+    fn default() -> Self {
+        Self::Prompt
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RdpRenderMode {
+    Embedded,
+    External,
+    Custom,
+}
+
+impl Default for RdpRenderMode {
+    fn default() -> Self {
+        Self::Embedded
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RdpRunnerKind {
+    #[serde(rename = "mstsc_activex")]
+    MstscActiveX,
+    Mstsc,
+    Freerdp,
+    MacosApp,
+    Custom,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+pub struct RdpDisplayConfig {
+    #[serde(default)]
+    pub mode: RdpDisplayMode,
+    #[serde(default)]
+    pub width: Option<u16>,
+    #[serde(default)]
+    pub height: Option<u16>,
+    #[serde(default = "default_true")]
+    pub dynamic_resize: bool,
+    #[serde(default)]
+    pub use_multimon: bool,
+}
+
+impl Default for RdpDisplayConfig {
+    fn default() -> Self {
+        Self {
+            mode: RdpDisplayMode::Embedded,
+            width: Some(1440),
+            height: Some(900),
+            dynamic_resize: true,
+            use_multimon: false,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+pub struct RdpResourceConfig {
+    #[serde(default = "default_true")]
+    pub clipboard: bool,
+    #[serde(default)]
+    pub audio: RdpAudioMode,
+    #[serde(default)]
+    pub drives: bool,
+    #[serde(default)]
+    pub printers: bool,
+    #[serde(default)]
+    pub smart_cards: bool,
+}
+
+impl Default for RdpResourceConfig {
+    fn default() -> Self {
+        Self {
+            clipboard: true,
+            audio: RdpAudioMode::Local,
+            drives: false,
+            printers: false,
+            smart_cards: false,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+pub struct RdpGatewayConfig {
+    #[serde(default)]
+    pub mode: RdpGatewayMode,
+    #[serde(default)]
+    pub host: Option<String>,
+    #[serde(default)]
+    pub credential_source: RdpGatewayCredentialSource,
+}
+
+impl Default for RdpGatewayConfig {
+    fn default() -> Self {
+        Self {
+            mode: RdpGatewayMode::Disabled,
+            host: None,
+            credential_source: RdpGatewayCredentialSource::Prompt,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+pub struct RdpRemoteAppConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub program: Option<String>,
+    #[serde(default)]
+    pub working_dir: Option<String>,
+    #[serde(default)]
+    pub args: Option<String>,
+}
+
+impl Default for RdpRemoteAppConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            program: None,
+            working_dir: None,
+            args: None,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+pub struct RdpPerformanceConfig {
+    #[serde(default)]
+    pub preset: RdpPerformancePreset,
+    #[serde(default)]
+    pub desktop_background: bool,
+    #[serde(default = "default_true")]
+    pub font_smoothing: bool,
+    #[serde(default = "default_true")]
+    pub visual_styles: bool,
+}
+
+impl Default for RdpPerformanceConfig {
+    fn default() -> Self {
+        Self {
+            preset: RdpPerformancePreset::Auto,
+            desktop_background: false,
+            font_smoothing: true,
+            visual_styles: true,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+pub struct RdpSecurityConfig {
+    #[serde(default)]
+    pub credential_mode: RdpSecurityCredentialMode,
+    #[serde(default)]
+    pub nla: RdpNetworkLevelAuthentication,
+    #[serde(default)]
+    pub certificate_policy: RdpCertificatePolicy,
+}
+
+impl Default for RdpSecurityConfig {
+    fn default() -> Self {
+        Self {
+            credential_mode: RdpSecurityCredentialMode::Prompt,
+            nla: RdpNetworkLevelAuthentication::Auto,
+            certificate_policy: RdpCertificatePolicy::Prompt,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+pub struct RdpRunnerConfig {
+    #[serde(default)]
+    pub render_mode: RdpRenderMode,
+    #[serde(default)]
+    pub preferred_runner: Option<RdpRunnerKind>,
+    #[serde(default)]
+    pub custom_executable: Option<String>,
+    #[serde(default)]
+    pub custom_args_template: Option<String>,
+}
+
+impl Default for RdpRunnerConfig {
+    fn default() -> Self {
+        Self {
+            render_mode: RdpRenderMode::Embedded,
+            preferred_runner: None,
+            custom_executable: None,
+            custom_args_template: None,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+pub struct RdpConnectionConfig {
+    #[serde(default)]
+    pub domain: Option<String>,
+    #[serde(default)]
+    pub display: RdpDisplayConfig,
+    #[serde(default)]
+    pub resources: RdpResourceConfig,
+    #[serde(default)]
+    pub gateway: Option<RdpGatewayConfig>,
+    #[serde(default)]
+    pub remote_app: RdpRemoteAppConfig,
+    #[serde(default)]
+    pub performance: RdpPerformanceConfig,
+    #[serde(default)]
+    pub security: RdpSecurityConfig,
+    #[serde(default)]
+    pub runner: RdpRunnerConfig,
+    #[serde(default)]
+    pub raw_rdp_settings: Option<String>,
+    #[serde(default)]
+    pub raw_runner_args: Option<String>,
+}
+
+impl Default for RdpConnectionConfig {
+    fn default() -> Self {
+        Self {
+            domain: None,
+            display: RdpDisplayConfig::default(),
+            resources: RdpResourceConfig::default(),
+            gateway: None,
+            remote_app: RdpRemoteAppConfig::default(),
+            performance: RdpPerformanceConfig::default(),
+            security: RdpSecurityConfig::default(),
+            runner: RdpRunnerConfig::default(),
+            raw_rdp_settings: None,
+            raw_runner_args: None,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
 pub struct ConnectionProxyConfig {
     pub kind: ConnectionProxyKind,
     #[serde(default)]
@@ -101,6 +454,8 @@ pub struct ConnectionProfileInput {
     #[serde(default)]
     pub id: Option<String>,
     #[serde(default)]
+    pub protocol: ConnectionProtocol,
+    #[serde(default)]
     pub name: Option<String>,
     #[serde(default)]
     pub group: Option<String>,
@@ -132,6 +487,8 @@ pub struct ConnectionProfileInput {
     #[serde(default)]
     pub advanced: ConnectionAdvancedConfig,
     #[serde(default)]
+    pub rdp: Option<RdpConnectionConfig>,
+    #[serde(default)]
     pub notes: Option<String>,
     #[serde(default)]
     pub is_favorite: Option<bool>,
@@ -156,6 +513,7 @@ pub struct ConnectionProfileInput {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ValidatedConnectionProfileInput {
     pub id: Option<String>,
+    pub protocol: ConnectionProtocol,
     pub name: String,
     pub group: Option<String>,
     pub host: String,
@@ -173,6 +531,7 @@ pub struct ValidatedConnectionProfileInput {
     pub proxy: ConnectionProxyConfig,
     pub jump: ConnectionJumpConfig,
     pub advanced: ConnectionAdvancedConfig,
+    pub rdp: Option<RdpConnectionConfig>,
     pub notes: Option<String>,
 }
 
@@ -180,6 +539,8 @@ pub struct ValidatedConnectionProfileInput {
 pub struct ConnectionProfile {
     pub id: String,
     pub name: String,
+    #[serde(default)]
+    pub protocol: ConnectionProtocol,
     #[serde(default)]
     pub group: Option<String>,
     pub host: String,
@@ -205,6 +566,8 @@ pub struct ConnectionProfile {
     pub jump: ConnectionJumpConfig,
     #[serde(default)]
     pub advanced: ConnectionAdvancedConfig,
+    #[serde(default)]
+    pub rdp: Option<RdpConnectionConfig>,
     #[serde(default)]
     pub notes: Option<String>,
     #[serde(default)]
@@ -330,7 +693,8 @@ impl ConnectionStore {
         let last_connected_at = trim_optional(input.last_connected_at.as_ref())
             .or_else(|| existing_profile.and_then(|profile| profile.last_connected_at.clone()));
         let target_unchanged = existing_profile.is_some_and(|profile| {
-            profile.host == validated.host
+            profile.protocol == validated.protocol
+                && profile.host == validated.host
                 && profile.port == validated.port
                 && profile.username == validated.username
         });
@@ -353,6 +717,7 @@ impl ConnectionStore {
         let profile = ConnectionProfile {
             id,
             name: validated.name,
+            protocol: validated.protocol,
             group: validated.group,
             host: validated.host,
             port: validated.port,
@@ -367,6 +732,7 @@ impl ConnectionStore {
             proxy: validated.proxy,
             jump: validated.jump,
             advanced: validated.advanced,
+            rdp: validated.rdp,
             notes: validated.notes,
             is_favorite,
             last_connected_at,
@@ -508,7 +874,10 @@ pub fn validate_profile_input(
     if host.is_empty() {
         return Err(AppError::new(
             "connection_host_missing",
-            "请填写 SSH 主机。",
+            match input.protocol {
+                ConnectionProtocol::Ssh => "请填写 SSH 主机。",
+                ConnectionProtocol::Rdp => "请填写 RDP 主机。",
+            },
             "host is empty",
             true,
         ));
@@ -518,7 +887,10 @@ pub fn validate_profile_input(
     if username.is_empty() {
         return Err(AppError::new(
             "connection_username_missing",
-            "请填写 SSH 用户名。",
+            match input.protocol {
+                ConnectionProtocol::Ssh => "请填写 SSH 用户名。",
+                ConnectionProtocol::Rdp => "请填写 RDP 用户名。",
+            },
             "username is empty",
             true,
         ));
@@ -527,12 +899,26 @@ pub fn validate_profile_input(
     if input.port == 0 {
         return Err(AppError::new(
             "connection_port_invalid",
-            "SSH 端口无效。",
+            match input.protocol {
+                ConnectionProtocol::Ssh => "SSH 端口无效。",
+                ConnectionProtocol::Rdp => "RDP 端口无效。",
+            },
             "port is 0",
             true,
         ));
     }
 
+    match input.protocol {
+        ConnectionProtocol::Ssh => validate_ssh_profile_input(input, host, username),
+        ConnectionProtocol::Rdp => validate_rdp_profile_input(input, host, username),
+    }
+}
+
+fn validate_ssh_profile_input(
+    input: &ConnectionProfileInput,
+    host: String,
+    username: String,
+) -> Result<ValidatedConnectionProfileInput, AppError> {
     let credential_mode = normalize_credential_mode(input);
     let inline_auth_kind = normalize_inline_auth_kind(input);
     let inline_password = trim_optional(input.inline_password.as_ref())
@@ -644,6 +1030,7 @@ pub fn validate_profile_input(
 
     Ok(ValidatedConnectionProfileInput {
         id: trim_optional(input.id.as_ref()),
+        protocol: ConnectionProtocol::Ssh,
         name,
         group: trim_optional(input.group.as_ref()),
         host,
@@ -661,6 +1048,97 @@ pub fn validate_profile_input(
         proxy,
         jump,
         advanced,
+        rdp: None,
+        notes: trim_optional(input.notes.as_ref()),
+    })
+}
+
+fn validate_rdp_profile_input(
+    input: &ConnectionProfileInput,
+    host: String,
+    username: String,
+) -> Result<ValidatedConnectionProfileInput, AppError> {
+    let host = validate_rdp_line_value(host, "host")?;
+    let username = validate_rdp_line_value(username, "username")?;
+    let credential_mode = normalize_credential_mode(input);
+    let inline_auth_kind = normalize_inline_auth_kind(input);
+    let inline_password = trim_optional(input.inline_password.as_ref())
+        .or_else(|| trim_optional(input.password.as_ref()));
+    let inline_password_touched = input.inline_password_touched || inline_password.is_some();
+    let credential_id = trim_optional(input.credential_id.as_ref());
+    let existing_profile_id = trim_optional(input.id.as_ref());
+    let (credential_id, inline_auth_kind, inline_password, inline_password_touched) =
+        match credential_mode {
+            ConnectionCredentialMode::Saved => {
+                let Some(credential_id) = credential_id else {
+                    return Err(AppError::new(
+                        "connection_credential_missing",
+                        "请选择保存的 RDP 密码凭据。",
+                        "credential_id is empty",
+                        true,
+                    ));
+                };
+                (Some(credential_id), None, None, false)
+            }
+            ConnectionCredentialMode::Inline => {
+                let auth_kind = inline_auth_kind.unwrap_or(ConnectionAuthKind::Password);
+                if auth_kind != ConnectionAuthKind::Password {
+                    return Err(AppError::new(
+                        "rdp_credential_kind_unsupported",
+                        "RDP 内置凭据仅支持密码。",
+                        format!("inline_auth_kind={auth_kind:?}"),
+                        true,
+                    ));
+                }
+                if inline_password.is_none()
+                    && (inline_password_touched || existing_profile_id.is_none())
+                {
+                    return Err(AppError::new(
+                        "connection_password_missing",
+                        "请填写 RDP 密码。",
+                        "inline password is empty",
+                        true,
+                    ));
+                }
+                (
+                    None,
+                    Some(ConnectionAuthKind::Password),
+                    inline_password,
+                    inline_password_touched,
+                )
+            }
+            ConnectionCredentialMode::Prompt => (None, None, None, false),
+        };
+    let rdp = validate_rdp_config(input.rdp.clone().unwrap_or_default())?;
+    let name = input
+        .name
+        .as_ref()
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+        .unwrap_or_else(|| format!("{username}@{host}"));
+
+    Ok(ValidatedConnectionProfileInput {
+        id: trim_optional(input.id.as_ref()),
+        protocol: ConnectionProtocol::Rdp,
+        name,
+        group: trim_optional(input.group.as_ref()),
+        host,
+        port: input.port,
+        username,
+        credential_mode,
+        credential_id,
+        inline_auth_kind,
+        inline_password,
+        inline_password_touched,
+        inline_private_key_path: None,
+        inline_private_key_passphrase: None,
+        inline_private_key_passphrase_touched: false,
+        prompt_auth_kind: None,
+        proxy: ConnectionProxyConfig::default(),
+        jump: ConnectionJumpConfig::default(),
+        advanced: ConnectionAdvancedConfig::default(),
+        rdp: Some(rdp),
         notes: trim_optional(input.notes.as_ref()),
     })
 }
@@ -670,6 +1148,249 @@ pub fn trim_optional(value: Option<&String>) -> Option<String> {
         .map(|item| item.trim())
         .filter(|item| !item.is_empty())
         .map(ToOwned::to_owned)
+}
+
+pub fn validate_rdp_config(input: RdpConnectionConfig) -> Result<RdpConnectionConfig, AppError> {
+    let display = validate_rdp_display(input.display)?;
+    let resources = input.resources;
+    let gateway = validate_rdp_gateway(input.gateway)?;
+    let remote_app = validate_rdp_remote_app(input.remote_app)?;
+    let runner = validate_rdp_runner(input.runner)?;
+    let raw_rdp_settings = validate_raw_rdp_settings(input.raw_rdp_settings)?;
+    let raw_runner_args = validate_raw_runner_args(input.raw_runner_args)?;
+
+    Ok(RdpConnectionConfig {
+        domain: validate_optional_rdp_line_value(trim_optional(input.domain.as_ref()), "domain")?,
+        display,
+        resources,
+        gateway,
+        remote_app,
+        performance: input.performance,
+        security: input.security,
+        runner,
+        raw_rdp_settings,
+        raw_runner_args,
+    })
+}
+
+fn validate_rdp_display(input: RdpDisplayConfig) -> Result<RdpDisplayConfig, AppError> {
+    let width = validate_rdp_dimension(input.width, "width")?;
+    let height = validate_rdp_dimension(input.height, "height")?;
+    let use_multimon = input.use_multimon || matches!(input.mode, RdpDisplayMode::AllMonitors);
+
+    Ok(RdpDisplayConfig {
+        mode: input.mode,
+        width,
+        height,
+        dynamic_resize: input.dynamic_resize,
+        use_multimon,
+    })
+}
+
+fn validate_rdp_dimension(value: Option<u16>, name: &str) -> Result<Option<u16>, AppError> {
+    match value {
+        Some(value) if value < 320 => Err(AppError::new(
+            "rdp_display_dimension_invalid",
+            "RDP 分辨率无效。",
+            format!("{name}={value} is too small"),
+            true,
+        )),
+        Some(value) if value > 16_384 => Err(AppError::new(
+            "rdp_display_dimension_invalid",
+            "RDP 分辨率无效。",
+            format!("{name}={value} is too large"),
+            true,
+        )),
+        other => Ok(other),
+    }
+}
+
+fn validate_rdp_gateway(
+    input: Option<RdpGatewayConfig>,
+) -> Result<Option<RdpGatewayConfig>, AppError> {
+    let Some(input) = input else {
+        return Ok(None);
+    };
+    match input.mode {
+        RdpGatewayMode::Disabled => Ok(None),
+        RdpGatewayMode::Auto => Ok(Some(RdpGatewayConfig {
+            mode: RdpGatewayMode::Auto,
+            host: validate_optional_rdp_line_value(
+                trim_optional(input.host.as_ref()),
+                "gateway.host",
+            )?,
+            credential_source: input.credential_source,
+        })),
+        RdpGatewayMode::Explicit => {
+            let host = validate_optional_rdp_line_value(
+                trim_optional(input.host.as_ref()),
+                "gateway.host",
+            )?
+            .ok_or_else(|| {
+                AppError::new(
+                    "rdp_gateway_host_missing",
+                    "请填写 RDP 网关主机。",
+                    "rdp gateway host is empty",
+                    true,
+                )
+            })?;
+            Ok(Some(RdpGatewayConfig {
+                mode: RdpGatewayMode::Explicit,
+                host: Some(host),
+                credential_source: input.credential_source,
+            }))
+        }
+    }
+}
+
+fn validate_rdp_remote_app(input: RdpRemoteAppConfig) -> Result<RdpRemoteAppConfig, AppError> {
+    if !input.enabled {
+        return Ok(RdpRemoteAppConfig::default());
+    }
+    let program = trim_optional(input.program.as_ref()).ok_or_else(|| {
+        AppError::new(
+            "rdp_remote_app_program_missing",
+            "请填写 RemoteApp 程序路径。",
+            "remote app program is empty",
+            true,
+        )
+    })?;
+    Ok(RdpRemoteAppConfig {
+        enabled: true,
+        program: Some(validate_rdp_line_value(program, "remote_app.program")?),
+        working_dir: validate_optional_rdp_line_value(
+            trim_optional(input.working_dir.as_ref()),
+            "remote_app.working_dir",
+        )?,
+        args: validate_optional_rdp_line_value(
+            trim_optional(input.args.as_ref()),
+            "remote_app.args",
+        )?,
+    })
+}
+
+fn validate_rdp_runner(input: RdpRunnerConfig) -> Result<RdpRunnerConfig, AppError> {
+    let custom_executable = validate_optional_rdp_line_value(
+        trim_optional(input.custom_executable.as_ref()),
+        "runner.custom_executable",
+    )?;
+    if input.render_mode == RdpRenderMode::Custom && custom_executable.is_none() {
+        return Err(AppError::new(
+            "rdp_custom_runner_missing",
+            "请填写自定义 RDP 客户端路径。",
+            "custom runner executable is empty",
+            true,
+        ));
+    }
+
+    Ok(RdpRunnerConfig {
+        render_mode: input.render_mode,
+        preferred_runner: input.preferred_runner,
+        custom_executable,
+        custom_args_template: validate_raw_runner_args(trim_optional(
+            input.custom_args_template.as_ref(),
+        ))?,
+    })
+}
+
+fn validate_rdp_line_value(value: String, field: &str) -> Result<String, AppError> {
+    if value.chars().any(|ch| ch.is_control()) {
+        return Err(AppError::new(
+            "rdp_field_invalid",
+            "RDP 字段包含非法控制字符。",
+            format!("{field} contains control character"),
+            true,
+        ));
+    }
+    Ok(value)
+}
+
+fn validate_optional_rdp_line_value(
+    value: Option<String>,
+    field: &str,
+) -> Result<Option<String>, AppError> {
+    value
+        .map(|item| validate_rdp_line_value(item, field))
+        .transpose()
+}
+
+pub fn validate_raw_rdp_settings(value: Option<String>) -> Result<Option<String>, AppError> {
+    let Some(raw) = trim_optional(value.as_ref()) else {
+        return Ok(None);
+    };
+    if raw.len() > 16 * 1024 {
+        return Err(AppError::new(
+            "rdp_raw_settings_invalid",
+            "RDP 原始设置过长。",
+            format!("raw_rdp_settings length={}", raw.len()),
+            true,
+        ));
+    }
+    for line in raw.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        if line.chars().any(|ch| ch.is_control()) {
+            return Err(AppError::new(
+                "rdp_raw_settings_invalid",
+                "RDP 原始设置包含非法控制字符。",
+                "raw rdp setting contains control character",
+                true,
+            ));
+        }
+        let lowered = line.to_ascii_lowercase();
+        if lowered.starts_with("password") || lowered.contains("password 51:b:") {
+            return Err(AppError::new(
+                "rdp_raw_settings_secret_forbidden",
+                "RDP 原始设置不能包含明文或加密密码字段。",
+                "raw rdp setting contains password field",
+                true,
+            ));
+        }
+        let mut parts = line.splitn(3, ':');
+        let key = parts.next().unwrap_or_default().trim();
+        let kind = parts.next().unwrap_or_default().trim();
+        if key.is_empty()
+            || kind.len() != 1
+            || !matches!(kind, "s" | "i" | "b")
+            || parts.next().is_none()
+        {
+            return Err(AppError::new(
+                "rdp_raw_settings_invalid",
+                "RDP 原始设置格式无效。",
+                format!("invalid raw rdp setting line={line}"),
+                true,
+            ));
+        }
+    }
+    Ok(Some(raw))
+}
+
+pub fn validate_raw_runner_args(value: Option<String>) -> Result<Option<String>, AppError> {
+    let Some(raw) = trim_optional(value.as_ref()) else {
+        return Ok(None);
+    };
+    if raw.chars().any(|ch| ch.is_control()) {
+        return Err(AppError::new(
+            "rdp_runner_args_invalid",
+            "RDP runner 参数包含非法控制字符。",
+            "raw runner args contain control character",
+            true,
+        ));
+    }
+    let lowered = raw.to_ascii_lowercase();
+    for forbidden in ["password", "passwd", "/p:", "/pass:", "--from-stdin"] {
+        if lowered.contains(forbidden) {
+            return Err(AppError::new(
+                "rdp_runner_args_secret_forbidden",
+                "RDP runner 参数不能包含密码字段。",
+                format!("raw runner args contain {forbidden}"),
+                true,
+            ));
+        }
+    }
+    Ok(Some(raw))
 }
 
 fn validate_proxy_config(input: &ConnectionProxyConfig) -> Result<ConnectionProxyConfig, AppError> {
@@ -812,6 +1533,10 @@ fn strip_legacy_profile_fields(mut profile: ConnectionProfile) -> ConnectionProf
     profile
 }
 
+fn default_true() -> bool {
+    true
+}
+
 fn default_credential_mode() -> ConnectionCredentialMode {
     ConnectionCredentialMode::Inline
 }
@@ -939,13 +1664,15 @@ mod tests {
     use super::{
         parse_remote_system_probe, validate_profile_input, ConnectionAdvancedConfig,
         ConnectionAuthKind, ConnectionCredentialMode, ConnectionJumpConfig, ConnectionJumpKind,
-        ConnectionProfileInput, ConnectionProxyConfig, ConnectionProxyKind,
-        ConnectionRemoteSystemInfo, ConnectionStore,
+        ConnectionProfileInput, ConnectionProtocol, ConnectionProxyConfig, ConnectionProxyKind,
+        ConnectionRemoteSystemInfo, ConnectionStore, RdpConnectionConfig, RdpGatewayConfig,
+        RdpGatewayMode,
     };
 
     fn password_input() -> ConnectionProfileInput {
         ConnectionProfileInput {
             id: None,
+            protocol: ConnectionProtocol::Ssh,
             name: None,
             group: Some(" 生产 ".to_string()),
             host: "  example.com  ".to_string(),
@@ -963,6 +1690,7 @@ mod tests {
             proxy: ConnectionProxyConfig::default(),
             jump: ConnectionJumpConfig::default(),
             advanced: ConnectionAdvancedConfig::default(),
+            rdp: None,
             notes: None,
             is_favorite: None,
             last_connected_at: None,
@@ -973,6 +1701,26 @@ mod tests {
             password: None,
             private_key_path: None,
             private_key_passphrase: None,
+        }
+    }
+
+    fn rdp_input() -> ConnectionProfileInput {
+        ConnectionProfileInput {
+            protocol: ConnectionProtocol::Rdp,
+            port: 3389,
+            username: " administrator ".to_string(),
+            inline_password: Some("ssh-secret-ignored".to_string()),
+            inline_password_touched: true,
+            rdp: Some(RdpConnectionConfig {
+                domain: Some(" CORP ".to_string()),
+                gateway: Some(RdpGatewayConfig {
+                    mode: RdpGatewayMode::Explicit,
+                    host: Some(" gw.example.com ".to_string()),
+                    ..RdpGatewayConfig::default()
+                }),
+                ..RdpConnectionConfig::default()
+            }),
+            ..password_input()
         }
     }
 
@@ -1135,6 +1883,79 @@ mod tests {
             validated.jump.jump_connection_id,
             Some("conn-bastion-001".to_string())
         );
+    }
+
+    #[test]
+    fn validation_accepts_rdp_and_clears_ssh_only_fields() {
+        let validated = validate_profile_input(&rdp_input()).unwrap();
+
+        assert_eq!(validated.protocol, ConnectionProtocol::Rdp);
+        assert_eq!(validated.port, 3389);
+        assert_eq!(validated.username, "administrator");
+        assert_eq!(validated.credential_mode, ConnectionCredentialMode::Inline);
+        assert_eq!(
+            validated.inline_auth_kind,
+            Some(ConnectionAuthKind::Password)
+        );
+        assert_eq!(
+            validated.inline_password,
+            Some("ssh-secret-ignored".to_string())
+        );
+        assert_eq!(validated.proxy, ConnectionProxyConfig::default());
+        assert_eq!(validated.jump, ConnectionJumpConfig::default());
+        assert_eq!(
+            validated.rdp.as_ref().and_then(|rdp| rdp.domain.as_deref()),
+            Some("CORP")
+        );
+        assert_eq!(
+            validated
+                .rdp
+                .as_ref()
+                .and_then(|rdp| rdp.gateway.as_ref())
+                .and_then(|gateway| gateway.host.as_deref()),
+            Some("gw.example.com")
+        );
+    }
+
+    #[test]
+    fn validation_rejects_rdp_private_key_credentials() {
+        let input = ConnectionProfileInput {
+            inline_auth_kind: Some(ConnectionAuthKind::PrivateKey),
+            inline_password: None,
+            inline_private_key_path: Some("~/.ssh/id_ed25519".to_string()),
+            ..rdp_input()
+        };
+
+        let error = validate_profile_input(&input).unwrap_err();
+
+        assert_eq!(error.code, "rdp_credential_kind_unsupported");
+    }
+
+    #[test]
+    fn validation_rejects_raw_rdp_password_setting() {
+        let input = ConnectionProfileInput {
+            rdp: Some(RdpConnectionConfig {
+                raw_rdp_settings: Some("password 51:b:abc".to_string()),
+                ..RdpConnectionConfig::default()
+            }),
+            ..rdp_input()
+        };
+
+        let error = validate_profile_input(&input).unwrap_err();
+
+        assert_eq!(error.code, "rdp_raw_settings_secret_forbidden");
+    }
+
+    #[test]
+    fn validation_rejects_rdp_line_injection_fields() {
+        let input = ConnectionProfileInput {
+            username: "administrator\r\npassword 51:b:abc".to_string(),
+            ..rdp_input()
+        };
+
+        let error = validate_profile_input(&input).unwrap_err();
+
+        assert_eq!(error.code, "rdp_field_invalid");
     }
 
     #[test]

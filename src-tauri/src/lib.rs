@@ -7,6 +7,7 @@ mod docker_tools;
 mod events;
 mod known_hosts;
 pub mod mcp;
+mod rdp;
 mod remote_exec_pool;
 mod remote_files;
 mod remote_monitor;
@@ -34,6 +35,7 @@ pub fn run() {
         .manage(docker_tools::DockerExecSessionManager::default())
         .manage(remote_files::RemoteFileManager::default())
         .manage(terminal::manager::TerminalManager::default())
+        .manage(rdp::RdpSessionManager::default())
         .manage(tunnels::TunnelManager::default())
         .manage(webdav_sync::WebDavSyncManager::default())
         .manage(VaultState::default())
@@ -63,6 +65,11 @@ pub fn run() {
             commands::connection_probe_system,
             commands::connection_test,
             commands::connection_test_profile,
+            commands::rdp_launch_connection,
+            commands::rdp_preview_launch,
+            commands::rdp_test_runner,
+            commands::rdp_close_session,
+            commands::rdp_resize_embedded_session,
             commands::credential_list,
             commands::credential_upsert,
             commands::credential_delete,

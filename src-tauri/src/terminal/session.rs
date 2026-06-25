@@ -1801,7 +1801,8 @@ mod tests {
 
     use crate::connections::{
         ConnectionAdvancedConfig, ConnectionAuthKind, ConnectionCredentialMode,
-        ConnectionJumpConfig, ConnectionJumpKind, ConnectionProfile, ConnectionProxyConfig,
+        ConnectionJumpConfig, ConnectionJumpKind, ConnectionProfile, ConnectionProtocol,
+        ConnectionProxyConfig,
     };
 
     use super::*;
@@ -1810,6 +1811,7 @@ mod tests {
         ConnectionProfile {
             id: "jump-001".to_string(),
             name: "jump".to_string(),
+            protocol: ConnectionProtocol::Ssh,
             group: None,
             host: "jump.example.com".to_string(),
             port: 22,
@@ -1824,6 +1826,7 @@ mod tests {
             proxy: ConnectionProxyConfig::default(),
             jump,
             advanced: ConnectionAdvancedConfig::default(),
+            rdp: None,
             notes: None,
             is_favorite: false,
             last_connected_at: None,
