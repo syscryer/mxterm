@@ -13,7 +13,8 @@ use tokio::io::AsyncWriteExt;
 use crate::app_error::AppError;
 use crate::connections::{
     ConnectionAuthKind, ConnectionCredentialMode, ConnectionJumpKind, ConnectionProfile,
-    ConnectionProxyKind,
+    ConnectionProtocol, ConnectionProxyKind, RdpCertificatePolicy, RdpDisplayMode, RdpGatewayMode,
+    RdpRenderMode, RdpRunnerKind, RdpSecurityCredentialMode,
 };
 use crate::remote_exec_pool::{RemoteExecRetry, RemoteExecSessionPool};
 use crate::ssh_config::{ResolvedSshConfig, RuntimeCredentialInput};
@@ -88,6 +89,7 @@ pub struct McpStatus {
 pub struct McpConnectionDto {
     pub id: String,
     pub name: String,
+    pub protocol: ConnectionProtocol,
     pub group: Option<String>,
     pub host: String,
     pub port: u16,
@@ -100,6 +102,7 @@ pub struct McpConnectionDto {
     pub private_key_path_saved: bool,
     pub proxy: McpProxyDto,
     pub jump: McpJumpDto,
+    pub rdp: Option<McpRdpDto>,
     pub notes: Option<String>,
     pub is_favorite: bool,
     pub last_connected_at: Option<String>,
@@ -124,6 +127,22 @@ pub struct McpProxyDto {
 pub struct McpJumpDto {
     pub kind: ConnectionJumpKind,
     pub jump_connection_id: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct McpRdpDto {
+    pub domain: Option<String>,
+    pub display_mode: RdpDisplayMode,
+    pub use_multimon: bool,
+    pub dynamic_resize: bool,
+    pub render_mode: RdpRenderMode,
+    pub preferred_runner: Option<RdpRunnerKind>,
+    pub credential_mode: RdpSecurityCredentialMode,
+    pub certificate_policy: RdpCertificatePolicy,
+    pub gateway_mode: Option<RdpGatewayMode>,
+    pub remote_app_enabled: bool,
+    pub raw_rdp_settings_saved: bool,
+    pub raw_runner_args_saved: bool,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -223,9 +242,24 @@ pub fn redacted_connection(profile: ConnectionProfile) -> McpConnectionDto {
         ConnectionCredentialMode::Inline => profile.inline_auth_kind.clone(),
         ConnectionCredentialMode::Prompt => profile.prompt_auth_kind.clone(),
     };
+    let rdp = profile.rdp.as_ref().map(|rdp| McpRdpDto {
+        domain: rdp.domain.clone(),
+        display_mode: rdp.display.mode.clone(),
+        use_multimon: rdp.display.use_multimon,
+        dynamic_resize: rdp.display.dynamic_resize,
+        render_mode: rdp.runner.render_mode.clone(),
+        preferred_runner: rdp.runner.preferred_runner.clone(),
+        credential_mode: rdp.security.credential_mode.clone(),
+        certificate_policy: rdp.security.certificate_policy.clone(),
+        gateway_mode: rdp.gateway.as_ref().map(|gateway| gateway.mode.clone()),
+        remote_app_enabled: rdp.remote_app.enabled,
+        raw_rdp_settings_saved: rdp.raw_rdp_settings.is_some(),
+        raw_runner_args_saved: rdp.raw_runner_args.is_some(),
+    });
     McpConnectionDto {
         id: profile.id,
         name: profile.name,
+        protocol: profile.protocol,
         group: profile.group,
         host: profile.host,
         port: profile.port,
@@ -249,6 +283,7 @@ pub fn redacted_connection(profile: ConnectionProfile) -> McpConnectionDto {
             kind: profile.jump.kind,
             jump_connection_id: profile.jump.jump_connection_id,
         },
+        rdp,
         notes: profile.notes,
         is_favorite: profile.is_favorite,
         last_connected_at: profile.last_connected_at,
@@ -269,6 +304,10 @@ pub fn search_matches(connection: &McpConnectionDto, query: &str) -> bool {
     [
         connection.id.as_str(),
         connection.name.as_str(),
+        match connection.protocol {
+            ConnectionProtocol::Ssh => "ssh",
+            ConnectionProtocol::Rdp => "rdp",
+        },
         connection.host.as_str(),
         connection.username.as_str(),
         connection.group.as_deref().unwrap_or_default(),
@@ -1478,6 +1517,7 @@ mod tests {
         let profile = ConnectionProfile {
             id: "conn-1".to_string(),
             name: "prod".to_string(),
+            protocol: ConnectionProtocol::Ssh,
             group: Some("ops".to_string()),
             host: "10.0.0.10".to_string(),
             port: 22,
@@ -1498,6 +1538,7 @@ mod tests {
             },
             jump: Default::default(),
             advanced: ConnectionAdvancedConfig::default(),
+            rdp: None,
             notes: Some("linux".to_string()),
             is_favorite: true,
             last_connected_at: Some("123".to_string()),

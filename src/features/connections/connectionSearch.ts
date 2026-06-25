@@ -81,7 +81,8 @@ export function connectionTimestampOf(value?: string | null) {
 }
 
 export function formatConnectionAddress(connection: ConnectionProfile) {
-  return `${connection.username}@${connection.host}:${connection.port.toString()}`;
+  const address = `${connection.username}@${connection.host}:${connection.port.toString()}`;
+  return (connection.protocol || "ssh") === "rdp" ? `RDP · ${address}` : address;
 }
 
 function buildConnectionSearchEntry(
@@ -114,6 +115,7 @@ function buildConnectionSearchFields(connection: ConnectionProfile): ConnectionS
   const name = connection.name.trim();
   const searchText = [
     name,
+    connection.protocol || "ssh",
     connection.host,
     connection.port.toString(),
     connection.username,

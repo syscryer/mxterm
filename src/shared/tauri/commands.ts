@@ -9,6 +9,13 @@ import type {
   HostKeyInfo,
   RevealedConnectionSecret,
   RevealedCredentialSecret,
+  RdpLaunchPreview,
+  RdpLaunchResult,
+  RdpEmbeddedBounds,
+  RdpRunnerConfig,
+  RdpRunnerProbeResult,
+  RdpSessionCloseResult,
+  RdpSessionResizeResult,
 } from "../../features/connections/connectionTypes";
 import type {
   CommandHistoryEntry,
@@ -236,6 +243,51 @@ export function connectionTest(request: ConnectionRuntimeCredentialRequest) {
 
 export function connectionTestProfile(request: ConnectionProfileInput) {
   return invoke<ConnectionStepResult>("connection_test_profile", { request });
+}
+
+export function rdpLaunchConnection(connectionId: string, bounds?: RdpEmbeddedBounds | null) {
+  return invoke<RdpLaunchResult>("rdp_launch_connection", {
+    request: {
+      connection_id: connectionId,
+      bounds: bounds ?? undefined,
+    },
+  });
+}
+
+export function rdpPreviewLaunch(connectionId: string) {
+  return invoke<RdpLaunchPreview>("rdp_preview_launch", {
+    request: {
+      connection_id: connectionId,
+    },
+  });
+}
+
+export function rdpTestRunner(config?: RdpRunnerConfig | null) {
+  return invoke<RdpRunnerProbeResult>("rdp_test_runner", {
+    request: {
+      config,
+    },
+  });
+}
+
+export function rdpCloseSession(sessionId: string) {
+  return invoke<RdpSessionCloseResult>("rdp_close_session", {
+    request: {
+      session_id: sessionId,
+    },
+  });
+}
+
+export function rdpResizeEmbeddedSession(
+  sessionId: string,
+  bounds: { x: number; y: number; width: number; height: number },
+) {
+  return invoke<RdpSessionResizeResult>("rdp_resize_embedded_session", {
+    request: {
+      session_id: sessionId,
+      bounds,
+    },
+  });
 }
 
 export function connectionProbeSystem(request: ConnectionRuntimeCredentialRequest) {

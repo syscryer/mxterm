@@ -8,6 +8,7 @@ pub const TERMINAL_CONNECT_PROGRESS: &str = "terminal:connect_progress";
 pub const TERMINAL_ERROR: &str = "terminal:error";
 pub const REMOTE_FILE_TRANSFER_PROGRESS: &str = "remote_file:transfer_progress";
 pub const DOCKER_IMAGE_PULL_PROGRESS: &str = "docker:image_pull_progress";
+pub const RDP_SESSION_CLOSED: &str = "rdp:session_closed";
 
 #[derive(Clone, Debug, Serialize)]
 pub struct TerminalOutputEvent {
@@ -48,4 +49,9 @@ pub struct DockerImagePullProgressEvent {
     pub message: String,
     pub percent: Option<u8>,
     pub current_layer: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct RdpSessionClosedEvent {
+    pub session_id: String,
 }

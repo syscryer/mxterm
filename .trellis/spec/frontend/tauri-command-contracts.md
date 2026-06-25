@@ -1225,6 +1225,118 @@ if (appUpdate.workspaceNoticeVisible) {
 }
 ```
 
+## Scenario: RDP Connection Runner UI
+
+### 1. Scope / Trigger
+
+- Trigger: frontend code adds or changes RDP connection fields, RDP workspace tabs, RDP runner preview/launch controls, typed wrappers for `rdp_*` commands, or typed RDP event listeners.
+- Source files: `src/features/connections/connectionTypes.ts`, `src/features/connections/ConnectionDialog.tsx`, `src/features/layout/WorkspaceShell.tsx`, `src/shared/tauri/commands.ts`, `src/shared/tauri/events.ts`, and `src/styles/app.css`.
+- This is a cross-layer contract because React edits protocol-specific connection payloads while Rust owns validation, persistence, runner probing, redaction, and launch behavior.
+
+### 2. Signatures
+
+```ts
+type ConnectionProtocol = "ssh" | "rdp"
+type RdpRenderMode = "embedded" | "external" | "custom"
+type RdpRunnerKind = "mstsc_activex" | "mstsc" | "freerdp" | "macos_app" | "custom"
+
+type RdpEmbeddedBounds = { x: number; y: number; width: number; height: number }
+
+rdpLaunchConnection(connectionId: string, bounds?: RdpEmbeddedBounds | null): Promise<RdpLaunchResult>
+rdpPreviewLaunch(connectionId: string): Promise<RdpLaunchPreview>
+rdpTestRunner(config?: RdpRunnerConfig | null): Promise<RdpRunnerProbeResult>
+rdpCloseSession(sessionId: string): Promise<RdpSessionCloseResult>
+rdpResizeEmbeddedSession(sessionId: string, bounds: RdpEmbeddedBounds): Promise<RdpSessionResizeResult>
+listenRdpSessionClosed(handler: (event: RdpSessionClosedEvent) => void): Promise<UnlistenFn>
+```
+
+`ConnectionProfileInput` includes `protocol?: "ssh" | "rdp"` and `rdp?: RdpConnectionConfig | null`. SSH rows keep SSH fields; RDP rows persist RDP-specific display, resources, gateway, RemoteApp, performance, security, runner, and raw advanced settings.
+
+### 3. Contracts
+
+- Components must call typed wrappers in `src/shared/tauri/commands.ts`; do not call `invoke("rdp_*")` directly.
+- Components must listen for RDP native-host lifecycle events through `src/shared/tauri/events.ts`; do not call `listen("rdp:session_closed", ...)` directly from feature components.
+- `ConnectionDialog` owns protocol switching. When `protocol = "rdp"`, it must normalize RDP config and clear SSH-only proxy/jump assumptions that do not apply.
+- `useConnections.normalizeConnectionInput` must preserve RDP credential fields from the dialog: `credential_mode`, saved `credential_id`, and inline password plus `inline_password_touched`. Do not force RDP rows back to `credential_mode = "prompt"` during frontend normalization, or the UI will appear to save a password while `rdp_launch_connection` still has no vault secret and the native client prompts again.
+- `RdpCertificatePolicy` is `trust | prompt | strict`. The default `prompt` means Windows `.rdp` preview should show `authentication level:i:2` so mstsc warns and lets users continue when self-signed server certificates are common.
+- RDP workspace sessions are runtime UI state. Do not persist runner session ids on `ConnectionProfile`.
+- When an RDP profile requests `render_mode = "embedded"`, `WorkspaceShell` may call `rdpLaunchConnection(connection.id)` without a DOM viewport. The current Windows ActiveX implementation opens a manager-owned native RDP host window instead of painting inside the WebView.
+- On Windows, `runner = "mstsc_activex"` with `embedded = false` means the backend opened or reused a manager-owned native ActiveX host window. Multiple RDP sessions should appear as native tabs inside that same host window. Show a native-window status, keep preview/retry/close controls available, and do not display a DOM embedded placeholder. `runner = "mstsc"` remains the external `.rdp` fallback path.
+- `rdp:session_closed` carries the backend `session_id`. `WorkspaceShell` must map it back to `RdpSessionTab.result.session_id`, remove only those runtime tabs locally, and avoid inferring closure from connection id or title. This keeps native-host tab close and whole-window close in sync with React without deleting unrelated sessions on the same connection.
+- Embedded launch may still return `embedded=true` in a future true DOM-embedded implementation. Treat the returned result as authoritative and only run viewport resize synchronization when `result.embedded === true`.
+- For `embedded=true` sessions, `WorkspaceShell` must observe the viewport size and call `rdpResizeEmbeddedSession(result.session_id, bounds)` on resize/activation changes. For `runner = "mstsc_activex"` and `embedded = false`, do not call resize on app window movement or React tab activation; the native host window owns its own tabs, size, position, remote-resolution sync, and host DPI scaling.
+- The Windows ActiveX native-window path is outside normal DOM composition. App overlays cannot cover it with CSS, so the UI should describe it as a separate native RDP host window with native tabs rather than pretending it lives inside the RDP workbench pane.
+- `ConnectionDialog` exposes RDP credentials in the basic tab through the normal connection credential fields: inline password, saved password credential, or prompt. RDP must not expose private-key auth. The UI may show that saved passwords improve embedded Windows direct-connect, but external runners still prompt because frontend/backend contracts forbid plaintext passwords in command-line args or generated `.rdp` files.
+- RDP mode must hide or disable SSH-only tools: terminal creation, remote files, monitor, tunnels, Docker, Command Sender, and SSH command history targets.
+- Preview surfaces may show redacted args and `.rdp` content only. They must not show passwords, private-key passphrases, or credential payloads.
+- Browser preview may synthesize deterministic RDP preview data, but desktop launch and runner probing must stay behind Tauri wrappers.
+
+### 4. Validation & Error Matrix
+
+| Condition | Frontend behavior |
+| --- | --- |
+| No Tauri runtime | Show static runner preview and do not launch a desktop client. |
+| `rdpLaunchConnection` succeeds with `embedded=true` | Keep an RDP session tab active and render embedded-session status. |
+| `rdpLaunchConnection` succeeds with `embedded=false` and `runner="mstsc_activex"` | Render native-window status, runner, fallback/status reason, preview/retry/close controls, and no DOM embedded placeholder; later RDP launches may reuse the same native host window as another native tab. |
+| `rdp:session_closed` arrives for a known backend session id | Remove the matching RDP runtime tab locally and let normal workspace fallback choose the next tab/home state. |
+| `rdp:session_closed` arrives for an unknown backend session id | Ignore it; do not close sessions by connection id or active state. |
+| `rdpLaunchConnection` succeeds with `embedded=false` and an external runner | Render external-launch status, runner, fallback reason, and copyable redacted command/material. |
+| `rdpLaunchConnection` fails | Keep the RDP tab visible with retry, preview, and close actions. |
+| `rdpPreviewLaunch` fails | Keep the session open and show preview failure text without clearing the launch result. |
+| Embedded viewport is not measurable before launch | Call `rdpLaunchConnection(connection.id)`; the current native-window path does not require DOM bounds. |
+| Active session returns `embedded=true` and is resized, hidden, or the app window moves | Call `rdpResizeEmbeddedSession`; ignore resize failures in the UI because close/fallback races are recoverable. |
+| Active connection is RDP | SSH-only right pane tools and terminal shortcut actions must not run against it. |
+
+### 5. Good / Base / Bad Cases
+
+- Good: double-clicking an embedded-preferred RDP connection opens an RDP session tab and calls `rdpLaunchConnection(connection.id)`; if the result is `runner="mstsc_activex"` and `embedded=false`, the tab shows that a native RDP host window is open and additional RDP sessions may appear as tabs inside that host window.
+- Good: a future true embedded session keeps the native hosted window aligned when the app moves, resizes, scales, or the active RDP tab changes; the current native-window path does not run DOM-bound resize synchronization.
+- Good: the right pane shows only RDP runner tools while an RDP workspace is active.
+- Base: unsupported platforms keep saved RDP profiles valid and show setup diagnostics.
+- Bad: `WorkspaceShell` sends an RDP connection to `terminalConnect`, `remoteFileList`, Docker tools, Command Sender targets, or SSH command history scopes.
+- Bad: the UI displays an embedded placeholder for `runner="mstsc_activex"` when the backend returned `embedded=false`, making users wait for a DOM picture that cannot appear.
+
+### 6. Tests Required
+
+- Run `npm run check` after changing RDP frontend types, wrappers, dialog, workspace routing, or CSS.
+- Cross-check TypeScript `RdpConnectionConfig`, `RdpLaunchPreview`, `RdpLaunchResult`, and wrapper parameter names against Rust structs and command signatures.
+- Desktop smoke review should cover native-window ActiveX launch, multiple RDP sessions sharing one native tabbed host window, native-window resize/DPI behavior, close, external fallback, missing runner, redacted preview, SSH-only tool hiding, and true embedded resize behavior only when `embedded=true` is reintroduced.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```tsx
+await terminalConnect({ connection_id: connection.id })
+```
+
+for a row whose `connection.protocol === "rdp"`.
+
+#### Correct
+
+```tsx
+if ((connection.protocol || "ssh") === "rdp") {
+  await rdpLaunchConnection(connection.id)
+}
+```
+
+The workspace branches by protocol before invoking any SSH-only command.
+
+#### Wrong
+
+```tsx
+showEmbeddedPlaceholder(result.runner)
+```
+
+when `result.runner === "mstsc_activex"` but `result.embedded === false`.
+
+#### Correct
+
+```tsx
+const result = await rdpLaunchConnection(connection.id)
+const status = result.embedded ? "embedded" : result.runner === "mstsc_activex" ? "native" : "external"
+```
+
 ## Scenario: WebDAV Sync Settings UI
 
 ### 1. Scope / Trigger

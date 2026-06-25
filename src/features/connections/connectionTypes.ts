@@ -1,7 +1,24 @@
 export type ConnectionAuthKind = "password" | "private_key";
 export type ConnectionCredentialMode = "saved" | "inline" | "prompt";
 export type ConnectionJumpKind = "none" | "ssh_jump";
+export type ConnectionProtocol = "ssh" | "rdp";
 export type ConnectionProxyKind = "none" | "http_connect" | "socks5";
+export type RdpDisplayMode = "embedded" | "windowed" | "fullscreen" | "all_monitors";
+export type RdpAudioMode = "local" | "remote" | "disabled";
+export type RdpGatewayMode = "disabled" | "auto" | "explicit";
+export type RdpGatewayCredentialSource = "same" | "prompt";
+export type RdpPerformancePreset = "auto" | "lan" | "balanced" | "low_bandwidth";
+export type RdpSecurityCredentialMode = "prompt" | "saved" | "os_store";
+export type RdpNetworkLevelAuthentication = "auto" | "enabled" | "disabled";
+export type RdpCertificatePolicy = "trust" | "prompt" | "strict";
+export type RdpRenderMode = "embedded" | "external" | "custom";
+export type RdpRunnerKind =
+  | "mstsc_activex"
+  | "mstsc"
+  | "freerdp"
+  | "macos_app"
+  | "custom";
+export type RdpPlatform = "windows" | "linux" | "macos" | "unknown";
 export type ConnectionTerminalEncoding =
   | "utf-8"
   | "gbk"
@@ -32,9 +49,72 @@ export interface ConnectionAdvancedConfig {
   terminal_encoding: ConnectionTerminalEncoding;
 }
 
+export interface RdpDisplayConfig {
+  mode: RdpDisplayMode;
+  width?: number | null;
+  height?: number | null;
+  dynamic_resize: boolean;
+  use_multimon: boolean;
+}
+
+export interface RdpResourceConfig {
+  clipboard: boolean;
+  audio: RdpAudioMode;
+  drives: boolean;
+  printers: boolean;
+  smart_cards: boolean;
+}
+
+export interface RdpGatewayConfig {
+  mode: RdpGatewayMode;
+  host?: string | null;
+  credential_source: RdpGatewayCredentialSource;
+}
+
+export interface RdpRemoteAppConfig {
+  enabled: boolean;
+  program?: string | null;
+  working_dir?: string | null;
+  args?: string | null;
+}
+
+export interface RdpPerformanceConfig {
+  preset: RdpPerformancePreset;
+  desktop_background: boolean;
+  font_smoothing: boolean;
+  visual_styles: boolean;
+}
+
+export interface RdpSecurityConfig {
+  credential_mode: RdpSecurityCredentialMode;
+  nla: RdpNetworkLevelAuthentication;
+  certificate_policy: RdpCertificatePolicy;
+}
+
+export interface RdpRunnerConfig {
+  render_mode: RdpRenderMode;
+  preferred_runner?: RdpRunnerKind | null;
+  custom_executable?: string | null;
+  custom_args_template?: string | null;
+}
+
+export interface RdpConnectionConfig {
+  domain?: string | null;
+  display: RdpDisplayConfig;
+  resources: RdpResourceConfig;
+  gateway?: RdpGatewayConfig | null;
+  remote_app: RdpRemoteAppConfig;
+  performance: RdpPerformanceConfig;
+  security: RdpSecurityConfig;
+  runner: RdpRunnerConfig;
+  raw_rdp_settings?: string | null;
+  raw_runner_args?: string | null;
+}
+
 export interface ConnectionProfile {
   id: string;
   name: string;
+  protocol?: ConnectionProtocol | null;
   group?: string | null;
   host: string;
   port: number;
@@ -49,6 +129,7 @@ export interface ConnectionProfile {
   proxy: ConnectionProxyConfig;
   jump: ConnectionJumpConfig;
   advanced: ConnectionAdvancedConfig;
+  rdp?: RdpConnectionConfig | null;
   notes?: string | null;
   is_favorite: boolean;
   last_connected_at?: string | null;
@@ -65,6 +146,7 @@ export interface ConnectionProfile {
 
 export interface ConnectionProfileInput {
   id?: string;
+  protocol?: ConnectionProtocol;
   name?: string;
   group?: string;
   host: string;
@@ -82,6 +164,7 @@ export interface ConnectionProfileInput {
   proxy: ConnectionProxyConfig;
   jump: ConnectionJumpConfig;
   advanced: ConnectionAdvancedConfig;
+  rdp?: RdpConnectionConfig | null;
   notes?: string;
   is_favorite?: boolean;
   last_connected_at?: string;
@@ -153,6 +236,65 @@ export interface ConnectionStepResult {
   message: string;
 }
 
+export interface RdpRunnerProbeResult {
+  platform: RdpPlatform;
+  available_runners: RdpRunnerKind[];
+  default_runner?: RdpRunnerKind | null;
+  default_executable?: string | null;
+  supports_embedded: boolean;
+  supports_remote_app: boolean;
+  supports_dynamic_resize: boolean;
+  setup_hint?: string | null;
+}
+
+export interface RdpLaunchPreview {
+  connection_id: string;
+  runner?: RdpRunnerKind | null;
+  render_mode: RdpRenderMode;
+  executable?: string | null;
+  args: string[];
+  rdp_file_content?: string | null;
+  fallback_reason?: string | null;
+  setup_hint?: string | null;
+  warnings: string[];
+}
+
+export interface RdpLaunchResult {
+  session_id: string;
+  connection_id: string;
+  launched: boolean;
+  embedded: boolean;
+  runner: RdpRunnerKind;
+  executable?: string | null;
+  args: string[];
+  process_id?: number | null;
+  rdp_file_path?: string | null;
+  fallback_reason?: string | null;
+  setup_hint?: string | null;
+}
+
+export interface RdpSessionCloseResult {
+  ok: boolean;
+  message: string;
+}
+
+export interface RdpSessionResizeResult {
+  ok: boolean;
+  applied: boolean;
+  message: string;
+}
+
+export interface RdpSessionClosedEvent {
+  session_id: string;
+}
+
+export interface RdpEmbeddedBounds {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
 export const defaultProxyConfig: ConnectionProxyConfig = {
   kind: "none",
   host: "",
@@ -171,6 +313,54 @@ export const defaultAdvancedConfig: ConnectionAdvancedConfig = {
   connect_timeout_ms: 30000,
   keepalive_interval_ms: 20000,
   terminal_encoding: "utf-8",
+};
+
+export const defaultRdpConfig: RdpConnectionConfig = {
+  domain: "",
+  display: {
+    mode: "embedded",
+    width: 1440,
+    height: 900,
+    dynamic_resize: true,
+    use_multimon: false,
+  },
+  resources: {
+    clipboard: true,
+    audio: "local",
+    drives: false,
+    printers: false,
+    smart_cards: false,
+  },
+  gateway: {
+    mode: "disabled",
+    host: "",
+    credential_source: "prompt",
+  },
+  remote_app: {
+    enabled: false,
+    program: "",
+    working_dir: "",
+    args: "",
+  },
+  performance: {
+    preset: "auto",
+    desktop_background: false,
+    font_smoothing: true,
+    visual_styles: true,
+  },
+  security: {
+    credential_mode: "prompt",
+    nla: "auto",
+    certificate_policy: "prompt",
+  },
+  runner: {
+    render_mode: "embedded",
+    preferred_runner: undefined,
+    custom_executable: "",
+    custom_args_template: "",
+  },
+  raw_rdp_settings: "",
+  raw_runner_args: "",
 };
 
 export const terminalEncodingOptions: Array<{
@@ -193,4 +383,21 @@ export function normalizeTerminalEncoding(
   const normalized = (value || "").trim().toLowerCase().replace(/_/g, "-");
   const option = terminalEncodingOptions.find((item) => item.value === normalized);
   return option?.value || defaultAdvancedConfig.terminal_encoding;
+}
+
+export function formatRdpRunnerKind(runner?: RdpRunnerKind | null) {
+  switch (runner) {
+    case "mstsc_activex":
+      return "Windows embedded RDP";
+    case "mstsc":
+      return "mstsc.exe";
+    case "freerdp":
+      return "FreeRDP";
+    case "macos_app":
+      return "macOS RDP App";
+    case "custom":
+      return "自定义 RDP 客户端";
+    default:
+      return "自动选择";
+  }
 }

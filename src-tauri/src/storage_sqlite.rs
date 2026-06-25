@@ -52,6 +52,7 @@ CREATE TABLE IF NOT EXISTS credentials (
 CREATE TABLE IF NOT EXISTS connections (
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL,
+    protocol TEXT NOT NULL DEFAULT 'ssh',
     group_id TEXT,
     host TEXT NOT NULL,
     port INTEGER NOT NULL,
@@ -66,6 +67,7 @@ CREATE TABLE IF NOT EXISTS connections (
     proxy_json TEXT NOT NULL,
     jump_json TEXT NOT NULL,
     advanced_json TEXT NOT NULL,
+    rdp_json TEXT,
     notes TEXT,
     is_favorite INTEGER NOT NULL DEFAULT 0,
     last_connected_at TEXT,
@@ -203,6 +205,7 @@ impl SqliteStore {
         })?;
         self.ensure_command_snippet_group_column()?;
         self.ensure_command_history_scope_columns()?;
+        self.ensure_connection_protocol_columns()?;
         self.connection
             .execute(
                 "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (?1, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",
@@ -223,6 +226,29 @@ impl SqliteStore {
             .flatten()
             .unwrap_or(0);
         Ok(version)
+    }
+
+    fn ensure_connection_protocol_columns(&self) -> Result<(), AppError> {
+        self.add_column_if_missing(
+            "connections",
+            "protocol",
+            "ALTER TABLE connections
+             ADD COLUMN protocol TEXT NOT NULL DEFAULT 'ssh'",
+        )?;
+        self.add_column_if_missing(
+            "connections",
+            "rdp_json",
+            "ALTER TABLE connections
+             ADD COLUMN rdp_json TEXT",
+        )?;
+        self.connection
+            .execute(
+                "UPDATE connections SET protocol = 'ssh'
+                 WHERE protocol IS NULL OR TRIM(protocol) = ''",
+                [],
+            )
+            .map_err(sqlite_query_error)?;
+        Ok(())
     }
 
     fn ensure_command_snippet_group_column(&self) -> Result<(), AppError> {
