@@ -565,8 +565,11 @@ pub fn get_app_runtime_info() -> Result<AppRuntimeInfo, AppError> {
         )
     })?;
     let executable_dir = executable.parent().unwrap_or_else(|| Path::new("."));
-    let distribution_mode =
-        detect_distribution_mode(std::env::consts::OS, executable_dir, std::env::var_os("APPIMAGE"));
+    let distribution_mode = detect_distribution_mode(
+        std::env::consts::OS,
+        executable_dir,
+        std::env::var_os("APPIMAGE"),
+    );
 
     Ok(AppRuntimeInfo {
         version: env!("CARGO_PKG_VERSION").to_string(),
@@ -2519,7 +2522,10 @@ mod tests {
         fs::create_dir_all(&root).expect("test directory should be created");
         fs::write(root.join("portable.marker"), "").expect("marker should be written");
 
-        assert_eq!(detect_distribution_mode("windows", &root, None), "desktop-portable");
+        assert_eq!(
+            detect_distribution_mode("windows", &root, None),
+            "desktop-portable"
+        );
 
         let _ = fs::remove_dir_all(&root);
     }
@@ -2536,7 +2542,10 @@ mod tests {
             detect_distribution_mode("linux", &root, Some(OsString::from("/tmp/mXterm.AppImage"))),
             "desktop-appimage"
         );
-        assert_eq!(detect_distribution_mode("linux", &root, None), "desktop-package");
+        assert_eq!(
+            detect_distribution_mode("linux", &root, None),
+            "desktop-package"
+        );
         assert_eq!(
             detect_distribution_mode("linux", &root, Some(OsString::from("  "))),
             "desktop-package"
@@ -2549,8 +2558,14 @@ mod tests {
     fn distribution_mode_defaults_to_installer_for_desktop_platforms() {
         let root = std::env::temp_dir();
 
-        assert_eq!(detect_distribution_mode("windows", &root, None), "desktop-installer");
-        assert_eq!(detect_distribution_mode("macos", &root, None), "desktop-installer");
+        assert_eq!(
+            detect_distribution_mode("windows", &root, None),
+            "desktop-installer"
+        );
+        assert_eq!(
+            detect_distribution_mode("macos", &root, None),
+            "desktop-installer"
+        );
     }
 }
 
