@@ -31,7 +31,7 @@ export type RdpPlatform = "windows" | "linux" | "macos" | "unknown";
 export type VncScaleMode = "fit" | "stretch" | "actual";
 export type VncPerformancePreset = "auto" | "quality" | "balanced" | "low_bandwidth";
 export type VncSecurityCredentialMode = "prompt" | "saved";
-export type VncRenderMode = "embedded" | "external" | "custom";
+export type VncRenderMode = "embedded" | "windowed" | "external" | "custom";
 export type VncRunnerKind = "novnc" | "vncviewer" | "tigervnc" | "realvnc" | "custom";
 export type VncPlatform = "windows" | "linux" | "macos" | "unknown";
 export type ConnectionTerminalEncoding =
@@ -162,6 +162,58 @@ export interface VncConnectionConfig {
   security: VncSecurityConfig;
   runner: VncRunnerConfig;
   raw_runner_args?: string | null;
+}
+
+export const vncPerformancePresetDefaults: Record<
+  VncPerformancePreset,
+  { compression_level: number; quality_level: number }
+> = {
+  auto: {
+    compression_level: 0,
+    quality_level: 7,
+  },
+  quality: {
+    compression_level: 1,
+    quality_level: 8,
+  },
+  balanced: {
+    compression_level: 2,
+    quality_level: 6,
+  },
+  low_bandwidth: {
+    compression_level: 6,
+    quality_level: 4,
+  },
+};
+
+export function clampVncPerformanceLevel(value: number) {
+  return Math.min(9, Math.max(0, value));
+}
+
+export function resolveVncPerformanceLevels(config: VncConnectionConfig) {
+  const defaults =
+    vncPerformancePresetDefaults[config.performance.preset] ||
+    vncPerformancePresetDefaults.auto;
+  const qualityLevel =
+    typeof config.performance.quality_level === "number"
+      ? clampVncPerformanceLevel(config.performance.quality_level)
+      : defaults.quality_level;
+  const compressionLevel =
+    typeof config.performance.compression_level === "number"
+      ? clampVncPerformanceLevel(config.performance.compression_level)
+      : defaults.compression_level;
+
+  if (config.performance.preset === "auto") {
+    return {
+      compressionLevel: compressionLevel === 2 ? defaults.compression_level : compressionLevel,
+      qualityLevel: qualityLevel === 6 ? defaults.quality_level : qualityLevel,
+    };
+  }
+
+  return {
+    compressionLevel,
+    qualityLevel,
+  };
 }
 
 export interface TelnetConnectionConfig {
@@ -414,6 +466,34 @@ export interface VncSessionCloseResult {
   message: string;
 }
 
+export interface VncRunnerWindowConnectionInfo {
+  host: string;
+  name?: string | null;
+  port: number;
+  username?: string | null;
+}
+
+export interface VncRunnerWindowPayload {
+  config: VncConnectionConfig;
+  connection: VncRunnerWindowConnectionInfo;
+  result: VncLaunchResult;
+  window_label: string;
+  workspace_session_id: string;
+}
+
+export interface VncRunnerWindowReadyEvent {
+  window_label: string;
+}
+
+export interface VncRunnerWindowSessionEvent {
+  window_label: string;
+  workspace_session_id: string;
+}
+
+export interface VncRunnerWindowMessageEvent extends VncRunnerWindowSessionEvent {
+  message: string;
+}
+
 export const defaultProxyConfig: ConnectionProxyConfig = {
   kind: "none",
   host: "",
@@ -495,8 +575,8 @@ export const defaultVncConfig: VncConnectionConfig = {
   },
   performance: {
     preset: "auto",
-    quality_level: 6,
-    compression_level: 2,
+    quality_level: vncPerformancePresetDefaults.auto.quality_level,
+    compression_level: vncPerformancePresetDefaults.auto.compression_level,
   },
   security: {
     credential_mode: "prompt",

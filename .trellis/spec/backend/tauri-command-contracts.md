@@ -2009,7 +2009,10 @@ connection_id: String
 - SSH-only code paths must reject VNC rows. VNC connections must not be resolved through SSH terminal/files/monitor/tunnels/Docker/Command Sender paths.
 - `vnc_preview_launch` must return redacted preview data only. It may expose runner kind, executable path, redacted args, and an illustrative local WebSocket shape, but not plaintext secrets or live bridge tokens.
 - `vnc_launch_connection` must select the runner deterministically from the saved VNC config and platform capabilities.
-- Embedded VNC uses a Rust-owned local WebSocket-to-TCP bridge for noVNC. The bridge must bind only to `127.0.0.1`, use a per-session tokenized path, relay binary WebSocket frames to the target VNC TCP socket, and stop when `vnc_close_session` aborts the managed bridge task.
+- `VncRenderMode::Embedded` and `VncRenderMode::Windowed` both select the built-in noVNC bridge runner. The difference is frontend presentation only; Rust still returns `runner = "novnc"` and `embedded = true`.
+- Embedded/windowed VNC uses a Rust-owned local WebSocket-to-TCP bridge for noVNC. The bridge must bind only to `127.0.0.1`, use a per-session tokenized path, relay binary WebSocket frames to the target VNC TCP socket, and stop when `vnc_close_session` aborts the managed bridge task.
+- The noVNC bridge should be tuned for local-network responsiveness: connect to the target with an explicit short timeout, set `TCP_NODELAY` on both browser-side and target-side TCP streams, and use a larger target-read buffer than the 8KB baseline so framebuffer updates are not split into excessive WebSocket frames.
+- Backend VNC performance defaults must match the frontend LAN-oriented `auto` preset (`quality_level=7`, `compression_level=0`) so missing or legacy config fields do not silently reintroduce high-compression latency.
 - Bridge URLs and tokens are runtime-only data. Do not persist them to SQLite, sync snapshots, MCP output, logs, or connection profiles.
 - VNC credentials may use `credential_mode=prompt`, `credential_mode=inline` with password auth, or `credential_mode=saved` with a password credential. VNC must reject private-key credentials.
 - Inline/saved passwords are resolved through the existing encrypted vault and may be returned only as launch-time in-memory data for embedded noVNC. External/custom runners must not receive plaintext passwords in process arguments, environment variables, temp files, logs, or generated previews.
@@ -2029,6 +2032,7 @@ connection_id: String
 | VNC operation targets an SSH/RDP row | `vnc_protocol_required` | true |
 | Embedded bridge bind fails | `vnc_bridge_bind_failed` | true |
 | WebSocket path/token mismatch | reject the handshake without opening the target TCP socket | true |
+| Target VNC TCP connection times out | `vnc_target_connect_timeout` | true |
 | Target VNC TCP connection fails | `vnc_target_connect_failed` | true |
 | External/custom runner missing | `vnc_runner_missing` / `vnc_custom_runner_missing` | true |
 
@@ -2036,6 +2040,7 @@ connection_id: String
 
 - Good: `connection_upsert` stores `protocol = "vnc"` with a fully populated VNC config and clears SSH-only network path assumptions.
 - Good: embedded launch creates a tokenized local bridge, returns `runner = "novnc"`, `embedded = true`, and returns a password only when the saved profile resolves one from the vault.
+- Good: windowed launch follows the same backend result shape as embedded launch; frontend-owned runner-host events decide where to mount noVNC.
 - Good: `vnc_close_session` aborts the matching bridge task and leaves unrelated VNC/RDP/SSH sessions alone.
 - Good: external preview and launch arguments contain host/port and non-secret flags only.
 - Base: external viewer mode can fail with a setup hint while the saved VNC profile remains valid.

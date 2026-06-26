@@ -1405,10 +1405,18 @@ vncCloseSession(sessionId: string): Promise<VncSessionCloseResult>
 - `useConnections.normalizeConnectionInput` must preserve VNC credential fields from the dialog: `credential_mode`, saved `credential_id`, and inline password plus `inline_password_touched`. Do not force VNC rows back to prompt mode during frontend normalization.
 - VNC workspace sessions are runtime UI state. Do not persist bridge session ids, WebSocket URLs, passwords, or noVNC state on `ConnectionProfile`.
 - The same saved VNC connection opens at most one workspace tab. Re-opening the connection must activate the existing VNC tab instead of launching another bridge.
-- Embedded VNC uses noVNC `RFB` against the backend local WebSocket bridge. Apply `scaleViewport`, `resizeSession`, `clipViewport`, `viewOnly`, `qualityLevel`, `compressionLevel`, and shared-session settings from `VncConnectionConfig`.
+- Embedded and windowed VNC use noVNC `RFB` against the backend local WebSocket bridge. Apply `scaleViewport`, `resizeSession`, `clipViewport`, `viewOnly`, `qualityLevel`, `compressionLevel`, `showDotCursor`, and shared-session settings from `VncConnectionConfig`.
+- VNC performance preset defaults must be centralized in `connectionTypes.ts` and consumed by both the connection dialog and the noVNC surface. The `auto` preset is LAN-oriented (`qualityLevel=7`, `compressionLevel=0`) so local macOS Screen Sharing sessions do not pay unnecessary compression latency. Changing the preset in `ConnectionDialog` must update the visible numeric quality/compression fields to that preset's defaults.
+- Embedded noVNC must own the canvas CSS sizing. App CSS must not constrain the noVNC canvas with `max-width`, `max-height`, transforms, or other independent scaling because that desynchronizes pointer coordinates on high-DPI / macOS Screen Sharing sessions. Keep `dragViewport` disabled for interactive VNC so mouse drags are delivered to the remote desktop instead of panning the local viewport.
+- noVNC wheel input should be normalized in the VNC viewer surface before it reaches `RFB`. noVNC emits at most one VNC wheel step per native `wheel` event after a 50px threshold, so high-resolution trackpad or macOS Screen Sharing sessions can feel sluggish. Consume original wheel events at the VNC mount, accumulate pixel/line/page deltas, then dispatch bounded synthetic pixel-mode wheel pulses to the noVNC canvas; do not modify `node_modules`.
+- `vnc.runner.render_mode = "windowed"` means the workspace keeps a VNC status tab but sends the active noVNC bridge payload to the VNC runner host window. The host window uses the RDP-style single-layer tab chrome and may contain multiple VNC tabs for different saved connections.
+- Creating or reusing a VNC runner host with Tauri `WebviewWindow` must be matched by `src-tauri/capabilities/default.json`: the main window needs `core:webview:allow-create-webview-window`, the runner host label must be included in the capability `windows` list, and runner-host window controls need the same close/destroy/minimize/drag permissions.
+- The VNC runner host receives `websocket_url` and launch password only through Tauri runtime events after the host window reports ready. Do not put bridge URLs, tokens, passwords, or full connection profiles in the window URL, localStorage, settings, diagnostics, or persisted connection data.
+- Closing a windowed VNC workspace tab must notify the runner host to remove the matching tab. Closing the runner host tab/window must notify the workspace so `vncCloseSession(result.session_id)` can stop the backend bridge.
+- Runner-host window controls must act on the current `WebviewWindow`, not the parent main window. A runner-host tab close should remove the local child-window tab, notify the main workspace once, and close the child window when the last VNC tab is gone. The runner-host top-right close button should notify the main workspace once and then destroy the child window directly; it must not close only the parent workspace tab and leave an unclosable child window behind. A main-workspace close request should remove the child-window tab without echoing another close event back to the main workspace.
 - noVNC is a heavy, VNC-only runtime dependency. `WorkspaceShell` may import its
   type declarations, but the runtime `@novnc/novnc` value must be loaded with a
-  dynamic import inside the embedded VNC viewer when `embedded=true`. Do not
+  dynamic import inside the VNC viewer when `embedded=true`. Do not
   statically import noVNC at module scope, because ordinary startup, SSH, and
   settings views must not parse the VNC client.
 - Prompt credentials are handled inside the VNC surface through noVNC `credentialsrequired`. Saved/inline passwords may appear only in the launch result as in-memory data for the active embedded session.
@@ -1422,6 +1430,7 @@ vncCloseSession(sessionId: string): Promise<VncSessionCloseResult>
 | --- | --- |
 | No Tauri runtime | Show static VNC preview and do not create a bridge or launch a desktop client. |
 | `vncLaunchConnection` succeeds with `embedded=true` | Keep a VNC session tab active and mount noVNC against the returned local WebSocket URL. |
+| `vncLaunchConnection` succeeds with `embedded=true` and render mode is `windowed` | Keep a VNC session tab active, open/reuse the VNC runner host window, and deliver the noVNC bridge payload by runtime event. |
 | noVNC emits `credentialsrequired` without a launch password | Show an inline password prompt and call `sendCredentials(...)` without persisting the value. |
 | noVNC emits `securityfailure` or disconnects unexpectedly | Keep the VNC tab visible with retry, preview, and close actions. |
 | `vncLaunchConnection` succeeds with `embedded=false` | Render external-launch status, runner, fallback reason, and copyable redacted command material. |
@@ -1431,6 +1440,7 @@ vncCloseSession(sessionId: string): Promise<VncSessionCloseResult>
 ### 5. Good / Base / Bad Cases
 
 - Good: double-clicking an embedded-preferred VNC connection opens one VNC tab, calls `vncLaunchConnection(connection.id)`, and mounts noVNC only when the result says `embedded=true`.
+- Good: double-clicking a windowed-preferred VNC connection opens one workspace tab and one tab inside the VNC runner host; re-opening the same saved connection activates the existing workspace tab.
 - Good: closing a VNC tab calls `vncCloseSession(result.session_id)` so the backend bridge can stop.
 - Good: the right pane shows only VNC runner/bridge tools while a VNC workspace is active.
 - Base: unsupported external viewers keep saved VNC profiles valid and show setup diagnostics.
@@ -1441,7 +1451,7 @@ vncCloseSession(sessionId: string): Promise<VncSessionCloseResult>
 
 - Run `npm run check` after changing VNC frontend types, wrappers, dialog, workspace routing, noVNC surface code, or CSS.
 - Cross-check TypeScript `VncConnectionConfig`, `VncLaunchPreview`, `VncLaunchResult`, and wrapper parameter names against Rust structs and command signatures.
-- Desktop smoke review should cover embedded noVNC launch, prompt password entry, saved/inline password direct connect, duplicate-tab activation, close cleanup, external fallback diagnostics, and SSH-only tool hiding.
+- Desktop smoke review should cover embedded noVNC launch, prompt password entry, saved/inline password direct connect, windowed runner host creation, duplicate-tab activation, close cleanup, wheel scrolling over a macOS Screen Sharing session, external fallback diagnostics, and SSH-only tool hiding.
 
 ## Scenario: WebDAV Sync Settings UI
 

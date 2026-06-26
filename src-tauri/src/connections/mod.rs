@@ -441,6 +441,7 @@ impl Default for VncSecurityCredentialMode {
 #[serde(rename_all = "snake_case")]
 pub enum VncRenderMode {
     Embedded,
+    Windowed,
     External,
     Custom,
 }
@@ -515,8 +516,8 @@ impl Default for VncPerformanceConfig {
     fn default() -> Self {
         Self {
             preset: VncPerformancePreset::Auto,
-            quality_level: Some(6),
-            compression_level: Some(2),
+            quality_level: Some(7),
+            compression_level: Some(0),
         }
     }
 }
