@@ -9556,12 +9556,15 @@ button {
   min-width: 0;
   min-height: 0;
   overflow: hidden;
+  overscroll-behavior: contain;
+  touch-action: none;
+  user-select: none;
   background: var(--mx-terminal);
 }
 
 .vnc-viewer-mount canvas {
-  max-width: 100%;
-  max-height: 100%;
+  max-width: none;
+  max-height: none;
 }
 
 .vnc-password-prompt {
@@ -9588,6 +9591,229 @@ button {
   font-size: 12px;
   font-weight: 560;
   white-space: nowrap;
+}
+
+body.vnc-runner-window-body {
+  min-width: 0;
+  background: var(--mx-panel);
+}
+
+.vnc-runner-host-root {
+  --mx-scrollbar-size: 6px;
+  width: 100vw;
+  height: 100vh;
+  min-width: 0;
+  display: grid;
+  grid-template-rows: 36px minmax(0, 1fr);
+  overflow: hidden;
+  color: var(--mx-text);
+  background: var(--mx-panel);
+  font-family: var(--font-ui);
+  font-size: 13px;
+}
+
+.vnc-runner-titlebar {
+  min-width: 0;
+  border-bottom: 1px solid var(--mx-chrome-line);
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  padding: 0 6px 0 8px;
+  color: var(--mx-text);
+  background: var(--mx-chrome-fill);
+  user-select: none;
+}
+
+.vnc-runner-tabs {
+  min-width: 0;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  overflow: hidden;
+}
+
+.vnc-runner-tab {
+  min-width: 0;
+  max-width: 220px;
+  height: 27px;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  display: inline-grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  color: var(--mx-muted);
+  background: transparent;
+}
+
+.vnc-runner-tab.active {
+  border-color: color-mix(in srgb, var(--mx-chrome-line) 70%, transparent);
+  color: var(--mx-text);
+  background: var(--mx-chrome-active);
+}
+
+.vnc-runner-tab.error {
+  color: var(--mx-danger);
+}
+
+.vnc-runner-tab > button {
+  min-width: 0;
+  height: 100%;
+  border: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 8px;
+  color: inherit;
+  background: transparent;
+  font-size: 12px;
+  font-weight: 520;
+}
+
+.vnc-runner-tab > button:first-child span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.vnc-runner-tab .ui-icon {
+  width: 14px;
+  height: 14px;
+  flex: 0 0 auto;
+}
+
+.vnc-runner-tab-close {
+  width: 24px;
+  justify-content: center;
+  padding: 0;
+  opacity: 0.72;
+}
+
+.vnc-runner-tab-close:hover {
+  opacity: 1;
+  color: var(--mx-text);
+  background: color-mix(in srgb, var(--mx-text) 8%, transparent);
+}
+
+.vnc-runner-window-controls {
+  height: 100%;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.vnc-runner-window-controls button {
+  width: 34px;
+  height: 28px;
+  border: 0;
+  border-radius: 6px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--mx-muted);
+  background: transparent;
+}
+
+.vnc-runner-window-controls button:hover {
+  color: var(--mx-text);
+  background: color-mix(in srgb, var(--mx-text) 8%, transparent);
+}
+
+.vnc-runner-window-controls button.danger:hover {
+  color: var(--mx-panel);
+  background: var(--mx-danger);
+}
+
+.vnc-runner-window-controls .ui-icon {
+  width: 14px;
+  height: 14px;
+}
+
+.vnc-runner-content {
+  position: relative;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--mx-terminal);
+}
+
+.vnc-runner-pane {
+  position: absolute;
+  inset: 0;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.vnc-runner-pane.active {
+  visibility: visible;
+  pointer-events: auto;
+}
+
+.vnc-runner-viewer {
+  width: 100%;
+  min-height: 0;
+  margin: 0;
+  border: 0;
+  border-radius: 0;
+}
+
+.vnc-runner-empty,
+.vnc-runner-error {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-content: center;
+  justify-items: center;
+  gap: 8px;
+  padding: 24px;
+  color: var(--mx-muted);
+  text-align: center;
+  background: var(--mx-panel);
+}
+
+.vnc-runner-empty .ui-icon,
+.vnc-runner-error .ui-icon {
+  width: 28px;
+  height: 28px;
+}
+
+.vnc-runner-empty strong,
+.vnc-runner-error strong {
+  color: var(--mx-text);
+  font-size: 13px;
+  font-weight: 620;
+}
+
+.vnc-runner-empty span,
+.vnc-runner-error pre {
+  max-width: 520px;
+  margin: 0;
+  color: var(--mx-muted);
+  font-size: 12px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.vnc-runner-error button {
+  height: 28px;
+  border: 1px solid var(--mx-line);
+  border-radius: 7px;
+  padding: 0 10px;
+  color: var(--mx-text);
+  background: var(--mx-panel-soft);
+  font-size: 12px;
+  font-weight: 560;
+}
+
+.vnc-runner-error button:hover {
+  border-color: var(--mx-line-strong);
+  background: var(--mx-panel);
 }
 
 .rdp-tool-panel {

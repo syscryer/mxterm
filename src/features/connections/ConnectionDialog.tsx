@@ -60,6 +60,7 @@ import {
   formatVncRunnerKind,
   normalizeTerminalEncoding,
   terminalEncodingOptions,
+  vncPerformancePresetDefaults,
 } from "./connectionTypes";
 import {
   parseHostKeyError,
@@ -232,6 +233,7 @@ const rdpPerformanceOptions: Array<{ label: string; value: RdpPerformancePreset 
 
 const vncRunnerModeOptions: Array<{ label: string; value: VncRenderMode }> = [
   { label: "内嵌 noVNC", value: "embedded" },
+  { label: "RDP 窗口 noVNC", value: "windowed" },
   { label: "外部 Viewer", value: "external" },
   { label: "自定义客户端", value: "custom" },
 ];
@@ -700,7 +702,7 @@ export function ConnectionDialog({
                       : isRdp
                         ? "保存一条可跨平台启动的 RDP 连接配置。"
                         : isVnc
-                          ? "保存一条内嵌 noVNC 优先的 VNC 连接配置。"
+                          ? "保存一条 noVNC 或外部 viewer VNC 连接配置。"
                           : isTelnet
                             ? "保存一条 Telnet 字符终端连接配置。"
                             : isSerial
@@ -1361,7 +1363,7 @@ export function ConnectionDialog({
             <p className="connection-dialog-note">
               {isRdp
                 ? "保存的 RDP 密码只进入 MXterm vault，并且仅在 Windows 内嵌 ActiveX 模式中内存注入；外部 runner 仍会提示凭据。"
-                : "保存的 VNC 密码只进入 MXterm vault，并且仅在内嵌 noVNC 启动时以内存字段传入；外部 viewer 仍会提示凭据。"}
+                : "保存的 VNC 密码只进入 MXterm vault，并且仅在 noVNC 内嵌或 RDP 窗口模式中以内存字段传入；外部 viewer 仍会提示凭据。"}
             </p>
           )}
 
@@ -2117,7 +2119,10 @@ export function ConnectionDialog({
                     runner: {
                       ...vnc.runner,
                       render_mode: nextRenderMode,
-                      preferred_runner: nextRenderMode === "embedded" ? "novnc" : "vncviewer",
+                      preferred_runner:
+                        nextRenderMode === "embedded" || nextRenderMode === "windowed"
+                          ? "novnc"
+                          : "vncviewer",
                       custom_executable:
                         nextRenderMode === "custom" ? vnc.runner.custom_executable || "" : "",
                       custom_args_template:
@@ -2238,14 +2243,17 @@ export function ConnectionDialog({
                 ariaLabel="VNC 性能预设"
                 value={vnc.performance.preset}
                 options={vncPerformanceOptions}
-                onChange={(preset) =>
+                onChange={(preset) => {
+                  const presetDefaults = vncPerformancePresetDefaults[preset];
                   updateVnc({
                     performance: {
                       ...vnc.performance,
                       preset,
+                      quality_level: presetDefaults.quality_level,
+                      compression_level: presetDefaults.compression_level,
                     },
-                  })
-                }
+                  });
+                }}
               />
             </label>
             <label>
@@ -2254,7 +2262,10 @@ export function ConnectionDialog({
                 inputMode="numeric"
                 min={0}
                 max={9}
-                value={(vnc.performance.quality_level ?? 6).toString()}
+                value={(
+                  vnc.performance.quality_level ??
+                  vncPerformancePresetDefaults[vnc.performance.preset].quality_level
+                ).toString()}
                 onChange={(event) =>
                   updateVnc({
                     performance: {
@@ -2271,7 +2282,10 @@ export function ConnectionDialog({
                 inputMode="numeric"
                 min={0}
                 max={9}
-                value={(vnc.performance.compression_level ?? 2).toString()}
+                value={(
+                  vnc.performance.compression_level ??
+                  vncPerformancePresetDefaults[vnc.performance.preset].compression_level
+                ).toString()}
                 onChange={(event) =>
                   updateVnc({
                     performance: {
@@ -2331,7 +2345,7 @@ export function ConnectionDialog({
             />
           </label>
           <p className="connection-dialog-note">
-            内嵌模式使用 noVNC 和 MXterm 本地桥接；外部 viewer 不会接收保存的密码。
+            内嵌和 RDP 窗口模式使用 noVNC 与 MXterm 本地桥接；外部 viewer 不会接收保存的密码。
           </p>
         </section>
       </div>

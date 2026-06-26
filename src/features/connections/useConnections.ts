@@ -694,7 +694,7 @@ function normalizeVncConfig(input?: VncConnectionConfig | null): VncConnectionCo
     runner: {
       render_mode: renderMode,
       preferred_runner:
-        renderMode === "embedded"
+        renderMode === "embedded" || renderMode === "windowed"
           ? "novnc"
           : vnc.runner?.preferred_runner || defaultVncConfig.runner.preferred_runner,
       custom_executable: renderMode === "custom" ? trim(vnc.runner?.custom_executable) : undefined,
