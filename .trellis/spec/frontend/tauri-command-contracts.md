@@ -1623,8 +1623,13 @@ dockerContainerLogs(connectionId: string, containerId: string, tail?: number): P
 dockerContainerLogsStart(connectionId: string, containerId: string, streamId: string, tail?: number): Promise<void>
 dockerContainerLogsStop(streamId: string): Promise<void>
 dockerContainerLogsSave(localPath: string, content: string): Promise<void>
+dockerContainerInspect(connectionId: string, containerId: string): Promise<DockerContainerDetail>
+dockerContainerUpdateRestartPolicy(connectionId: string, containerId: string, policy: DockerRestartPolicyKind): Promise<DockerActionResult>
+dockerListNetworks(connectionId: string): Promise<DockerNetworkSummary[]>
+dockerContainerConnectNetwork(connectionId: string, containerId: string, networkId: string): Promise<DockerActionResult>
 dockerImagePull(connectionId: string, image: string, pullId?: string): Promise<DockerActionResult>
 dockerImageRemove(connectionId: string, imageId: string): Promise<DockerActionResult>
+dockerImageRun(connectionId: string, request: DockerImageRunRequest): Promise<DockerActionResult>
 dockerEngineStatus(connectionId: string): Promise<DockerEngineStatus>
 dockerEngineAction(connectionId: string, action: DockerEngineAction): Promise<DockerActionResult>
 dockerEngineReadConfig(connectionId: string): Promise<DockerEngineConfigResult>
@@ -1669,7 +1674,12 @@ type DockerLogStreamEvent = {
 - Docker actions require an active SSH connection. Local-terminal workspaces should not expose Docker controls unless a future task defines a local Docker model.
 - Delete container and delete image actions must use `ConfirmDialog`. Do not use `window.confirm`, bulk destructive actions, prune, or silent optimistic deletion.
 - Container terminal entry opens a new SSH terminal tab for the same saved connection and writes `docker exec -it <quoted container id> sh`. It must not embed a second terminal in the right pane or record the command as Command Sender history.
+- Clicking a container name opens a compact detail dialog backed by `dockerContainerInspect(...)` and `dockerListNetworks(...)`. The detail dialog is informational first and must not repeat list-level entry buttons such as logs, console, attach, or stats.
+- Container detail should display status, image/command metadata, ports, masked environment variables, mounts, connected networks, labels, and raw inspect JSON only behind an explicit copy action.
+- Container detail settings may update restart policy and join an existing Docker network. Restart policy selection must use the shared `AppSelect` with `no`, `always`, `unless-stopped`, and `on-failure`; network selection must use `AppSelect` and exclude networks that are already connected.
+- Updating restart policy or joining a network must keep the detail dialog open, show backend errors inline, refresh detail after success, and refresh the container list silently.
 - Image pull submits an optional frontend-generated `pullId`. The pull dialog should close after the task is accepted, and the image list should render a temporary pull row keyed by `pull_id` while `docker:image_pull_progress` events arrive. Success refreshes the real image list; failure keeps the row visible with the error message.
+- Image quick run opens from the image card, uses `dockerImageRun(...)`, and sends only structured run options plus the saved `connection_id`. The dialog must keep errors inline, close only after success, then refresh the container list.
 - Container logs use `dockerContainerLogsStart(...)` plus `docker:log_stream` events for live output. The UI must stop the active stream with `dockerContainerLogsStop(streamId)` when the log dialog closes, the container target changes, the connection changes, or the component unmounts.
 - Log stream events must be matched by `stream_id` before appending content. Stale chunks from a previous stream must not be appended into the current dialog.
 - Log output should strip ANSI control codes before rendering, keep a bounded in-memory buffer, and support follow-tail behavior that pauses when the user scrolls away from the bottom.
@@ -1691,6 +1701,10 @@ type DockerLogStreamEvent = {
 | `docker_command_missing` | Show that the remote host does not have Docker CLI available. |
 | `docker_permission_denied` | Show that the current remote user lacks Docker permission. |
 | Container/image delete fails | Keep the row visible, show the backend error, and allow refresh/retry. |
+| Container detail load fails | Keep the detail dialog open and show the backend error inside it. |
+| Restart policy update fails | Keep the detail dialog open, preserve the selected draft policy, and show the backend error inline. |
+| No joinable Docker network exists | Disable the network select and join button with a neutral empty state. |
+| Network join fails | Keep the detail dialog open, preserve the selected network, and show the backend error inline. |
 | Logs load fails | Keep the logs dialog open and show the backend error inside it. |
 | Log stream start fails | Keep the logs dialog open, clear the active stream id, and show the backend error inside it. |
 | Log stream emits `error` | Stop the streaming indicator, keep existing visible logs, and show the event message. |
@@ -1703,6 +1717,8 @@ type DockerLogStreamEvent = {
 | Pull image starts successfully | Close the pull dialog and show a running row in the image list. |
 | Pull image emits progress without a percent | Keep an indeterminate progress row and show the latest Docker stage text. |
 | Pull image fails after task creation | Keep a failed pull row in the image list; do not fake-add an image row. |
+| Image quick run fails | Keep the run dialog open, preserve the draft options, and show the Rust error message inline. |
+| Image quick run succeeds | Close the run dialog, refresh containers, and switch to the container list. |
 | Engine status is not loaded yet | Show a neutral unknown state, not a red stopped/error state. |
 | `systemctl` is unavailable | Disable service controls and show the raw reason in the engine panel. |
 | Engine config JSON is invalid | Keep the editor content intact and show an inline validation error. |
@@ -1711,21 +1727,24 @@ type DockerLogStreamEvent = {
 ### 5. Good / Base / Bad Cases
 
 - Good: Docker panel receives the current SSH connection id, loads containers and images through typed wrappers, and keeps delete rows visible until the backend confirms success.
+- Good: clicking a container name opens a Radix dialog that uses typed wrappers for inspect/network data, shared `AppSelect` controls for detail settings, and global `--mx-*` token styles.
+- Good: container detail shows masked sensitive environment values from Rust and does not try to reveal or reparse raw inspect JSON in the UI.
 - Good: opening container logs starts one live stream, appends only matching `stream_id` chunks, pauses follow-tail when the user scrolls up, and stops the stream on close.
 - Good: pausing realtime logs stops the remote `docker logs -f` process while preserving the visible buffer; enabling realtime resumes from new output without duplicating the initial tail.
 - Good: downloading logs writes the current bounded buffer to the user-selected local path without interrupting the live stream.
+- Good: image quick run uses `AppSelect` for network and restart policy, structured rows for ports/env/volumes, and the typed `dockerImageRun(...)` wrapper instead of direct invoke.
 - Good: opening a container terminal creates a normal SSH terminal tab and writes the quoted `docker exec -it ... sh` command after the terminal session is connected.
 - Good: entering the engine view loads status/config through typed wrappers and confirms service-impacting actions before calling Rust.
 - Base: browser preview has no Tauri runtime; the panel renders deterministic preview rows and keeps real persistence/remote operations out of the preview path.
-- Bad: a component calls `invoke("docker_*")` directly, passes SSH password fields into Docker commands, deletes rows optimistically before backend success, or uses `window.confirm`.
+- Bad: a component calls `invoke("docker_*")` directly, passes SSH password fields into Docker commands, deletes rows optimistically before backend success, duplicates list-level actions inside the detail dialog, or uses `window.confirm`.
 - Bad: a component calls `dockerContainerLogs(...)` repeatedly to fake live logs, leaves `docker logs -f` running after the dialog closes, appends events without checking `stream_id`, or downloads logs by re-running a separate remote command.
 
 ### 6. Tests Required
 
 - Run `npm run check` after changing Docker toolbox types, wrappers, panel props, right-pane tab integration, or workspace terminal-entry wiring when type-check runs are approved for the session.
 - Cross-check TypeScript wrapper payload field names against Rust request structs in `src-tauri/src/docker_tools.rs`.
-- Run `node scripts/check-docker-tool-refresh-source.mjs` after changing Docker auto-refresh, exec-cache, or log-stream behavior.
-- Browser/desktop visual checks should cover no connection, no containers, running/exited containers, image pull dialog, delete confirmations, streaming log dialog, follow-tail pause/resume, and dark theme token contrast.
+- Run `node scripts/check-docker-tool-refresh-source.mjs` after changing Docker auto-refresh, exec-cache, log-stream behavior, detail dialog commands, or detail styles.
+- Browser/desktop visual checks should cover no connection, no containers, running/exited containers, container detail loading/error/settings, image pull dialog, delete confirmations, streaming log dialog, follow-tail pause/resume, and dark theme token contrast.
 
 ### 7. Wrong vs Correct
 

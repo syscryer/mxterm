@@ -22,6 +22,7 @@ use crate::terminal::session::{ExecOutput, ExecOutputChunkCallback, ReusableExec
 
 const DOCKER_LIST_CONTAINERS_COMMAND: &str = "docker ps -a --no-trunc --format '{{json .}}'";
 const DOCKER_LIST_IMAGES_COMMAND: &str = "docker images --no-trunc --format '{{json .}}'";
+const DOCKER_LIST_NETWORKS_COMMAND: &str = "docker network ls --format '{{json .}}'";
 const DOCKER_ENGINE_STATUS_COMMAND: &str = r#"
 section() {
   name="$1"
@@ -141,6 +142,46 @@ pub struct DockerContainerLogsSaveRequest {
 }
 
 #[derive(Debug, Deserialize)]
+pub struct DockerContainerInspectRequest {
+    pub connection_id: String,
+    pub container_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct DockerContainerRestartPolicyRequest {
+    pub connection_id: String,
+    pub container_id: String,
+    pub policy: DockerRestartPolicyKind,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum DockerRestartPolicyKind {
+    No,
+    Always,
+    UnlessStopped,
+    OnFailure,
+}
+
+impl DockerRestartPolicyKind {
+    fn as_docker_arg(self) -> &'static str {
+        match self {
+            Self::No => "no",
+            Self::Always => "always",
+            Self::UnlessStopped => "unless-stopped",
+            Self::OnFailure => "on-failure",
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct DockerNetworkConnectRequest {
+    pub connection_id: String,
+    pub container_id: String,
+    pub network_id: String,
+}
+
+#[derive(Debug, Deserialize)]
 pub struct DockerImagePullRequest {
     pub connection_id: String,
     pub image: String,
@@ -152,6 +193,48 @@ pub struct DockerImagePullRequest {
 pub struct DockerImageRemoveRequest {
     pub connection_id: String,
     pub image_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct DockerImageRunRequest {
+    pub connection_id: String,
+    pub image: String,
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub command: Option<String>,
+    #[serde(default)]
+    pub entrypoint: Option<String>,
+    #[serde(default)]
+    pub network: Option<String>,
+    #[serde(default)]
+    pub restart_policy: Option<DockerRestartPolicyKind>,
+    #[serde(default)]
+    pub privileged: bool,
+    #[serde(default)]
+    pub ports: Vec<DockerImageRunPort>,
+    #[serde(default)]
+    pub env: Vec<DockerImageRunKeyValue>,
+    #[serde(default)]
+    pub volumes: Vec<DockerImageRunVolume>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct DockerImageRunPort {
+    pub host_port: String,
+    pub container_port: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct DockerImageRunKeyValue {
+    pub key: String,
+    pub value: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct DockerImageRunVolume {
+    pub host_path: String,
+    pub container_path: String,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
@@ -233,6 +316,76 @@ pub struct DockerLogsResult {
     pub container_id: String,
     pub tail: u16,
     pub content: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct DockerContainerDetail {
+    pub id: String,
+    pub name: String,
+    pub image: String,
+    pub image_id: Option<String>,
+    pub created: Option<String>,
+    pub started_at: Option<String>,
+    pub finished_at: Option<String>,
+    pub status: String,
+    pub running: bool,
+    pub ip_address: Option<String>,
+    pub command: Vec<String>,
+    pub entrypoint: Vec<String>,
+    pub working_dir: Option<String>,
+    pub restart_policy: DockerRestartPolicy,
+    pub ports: Vec<DockerContainerPort>,
+    pub env: Vec<DockerKeyValue>,
+    pub mounts: Vec<DockerContainerMount>,
+    pub networks: Vec<DockerContainerNetworkAttachment>,
+    pub labels: Vec<DockerKeyValue>,
+    pub raw_json: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct DockerRestartPolicy {
+    pub name: String,
+    pub maximum_retry_count: Option<u64>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct DockerContainerPort {
+    pub private_port: String,
+    pub host_ip: Option<String>,
+    pub host_port: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct DockerKeyValue {
+    pub key: String,
+    pub value: String,
+    pub sensitive: bool,
+}
+
+#[derive(Debug, Serialize)]
+pub struct DockerContainerMount {
+    pub kind: Option<String>,
+    pub source: Option<String>,
+    pub destination: String,
+    pub name: Option<String>,
+    pub driver: Option<String>,
+    pub rw: bool,
+}
+
+#[derive(Debug, Serialize)]
+pub struct DockerContainerNetworkAttachment {
+    pub name: String,
+    pub ip_address: Option<String>,
+    pub gateway: Option<String>,
+    pub mac_address: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct DockerNetworkSummary {
+    pub id: String,
+    pub name: String,
+    pub driver: Option<String>,
+    pub scope: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -496,6 +649,18 @@ struct DockerImageLine {
     size: String,
 }
 
+#[derive(Debug, Deserialize)]
+struct DockerNetworkLine {
+    #[serde(rename = "ID")]
+    id: String,
+    #[serde(rename = "Name")]
+    name: String,
+    #[serde(rename = "Driver")]
+    driver: Option<String>,
+    #[serde(rename = "Scope")]
+    scope: Option<String>,
+}
+
 pub async fn list_containers(
     app: &AppHandle,
     manager: &DockerExecSessionManager,
@@ -682,6 +847,29 @@ pub async fn image_remove(
     })
 }
 
+pub async fn image_run(
+    app: &AppHandle,
+    manager: &DockerExecSessionManager,
+    request: DockerImageRunRequest,
+) -> Result<DockerActionResult, AppError> {
+    let command = build_image_run_command(&request)?;
+    let output = exec_docker_command(
+        app,
+        manager,
+        &request.connection_id,
+        &command,
+        RemoteExecRetry::None,
+    )
+    .await?;
+    ensure_success(&output, "docker_image_run_failed", "Docker 容器运行失败。")?;
+
+    Ok(DockerActionResult {
+        ok: true,
+        message: "容器已启动。".to_string(),
+        output: output_text(&output),
+    })
+}
+
 pub async fn container_logs(
     app: &AppHandle,
     manager: &DockerExecSessionManager,
@@ -719,6 +907,131 @@ pub async fn container_logs(
         container_id: container_id.to_string(),
         tail,
         content: String::from_utf8_lossy(&output.stdout).to_string(),
+    })
+}
+
+pub async fn container_inspect(
+    app: &AppHandle,
+    manager: &DockerExecSessionManager,
+    request: DockerContainerInspectRequest,
+) -> Result<DockerContainerDetail, AppError> {
+    let container_id = require_value(
+        &request.container_id,
+        "docker_container_missing",
+        "请选择容器。",
+    )?;
+    let command = format!("docker inspect -- {}", quote_posix_shell(container_id));
+    let output = exec_docker_command(
+        app,
+        manager,
+        &request.connection_id,
+        &command,
+        RemoteExecRetry::ReconnectOnce,
+    )
+    .await?;
+    ensure_success(
+        &output,
+        "docker_container_inspect_failed",
+        "Docker 容器详情读取失败。",
+    )?;
+    parse_container_detail(&output.stdout)
+}
+
+pub async fn container_update_restart_policy(
+    app: &AppHandle,
+    manager: &DockerExecSessionManager,
+    request: DockerContainerRestartPolicyRequest,
+) -> Result<DockerActionResult, AppError> {
+    let container_id = require_value(
+        &request.container_id,
+        "docker_container_missing",
+        "请选择容器。",
+    )?;
+    let command = format!(
+        "docker update --restart {} -- {}",
+        quote_posix_shell(request.policy.as_docker_arg()),
+        quote_posix_shell(container_id)
+    );
+    let output = exec_docker_command(
+        app,
+        manager,
+        &request.connection_id,
+        &command,
+        RemoteExecRetry::None,
+    )
+    .await?;
+    ensure_success(
+        &output,
+        "docker_container_restart_policy_failed",
+        "Docker 重启策略更新失败。",
+    )?;
+
+    Ok(DockerActionResult {
+        ok: true,
+        message: "容器重启策略已更新。".to_string(),
+        output: output_text(&output),
+    })
+}
+
+pub async fn list_networks(
+    app: &AppHandle,
+    manager: &DockerExecSessionManager,
+    request: DockerConnectionRequest,
+) -> Result<Vec<DockerNetworkSummary>, AppError> {
+    let output = exec_docker_command(
+        app,
+        manager,
+        &request.connection_id,
+        DOCKER_LIST_NETWORKS_COMMAND,
+        RemoteExecRetry::ReconnectOnce,
+    )
+    .await?;
+    ensure_success(
+        &output,
+        "docker_network_list_failed",
+        "Docker 网络列表读取失败。",
+    )?;
+    parse_networks(&output.stdout)
+}
+
+pub async fn container_connect_network(
+    app: &AppHandle,
+    manager: &DockerExecSessionManager,
+    request: DockerNetworkConnectRequest,
+) -> Result<DockerActionResult, AppError> {
+    let container_id = require_value(
+        &request.container_id,
+        "docker_container_missing",
+        "请选择容器。",
+    )?;
+    let network_id = require_value(
+        &request.network_id,
+        "docker_network_missing",
+        "请选择 Docker 网络。",
+    )?;
+    let command = format!(
+        "docker network connect {} {}",
+        quote_posix_shell(network_id),
+        quote_posix_shell(container_id)
+    );
+    let output = exec_docker_command(
+        app,
+        manager,
+        &request.connection_id,
+        &command,
+        RemoteExecRetry::None,
+    )
+    .await?;
+    ensure_success(
+        &output,
+        "docker_network_connect_failed",
+        "Docker 网络加入失败。",
+    )?;
+
+    Ok(DockerActionResult {
+        ok: true,
+        message: "容器已加入网络。".to_string(),
+        output: output_text(&output),
     })
 }
 
@@ -921,6 +1234,317 @@ fn parse_images(output: &[u8]) -> Result<Vec<DockerImageSummary>, AppError> {
             })
             .collect()
     })
+}
+
+fn parse_networks(output: &[u8]) -> Result<Vec<DockerNetworkSummary>, AppError> {
+    parse_json_lines::<DockerNetworkLine>(output, "docker_network_parse_failed").map(|items| {
+        items
+            .into_iter()
+            .map(|item| DockerNetworkSummary {
+                id: item.id,
+                name: item.name,
+                driver: item.driver.filter(|value| !value.trim().is_empty()),
+                scope: item.scope.filter(|value| !value.trim().is_empty()),
+            })
+            .collect()
+    })
+}
+
+fn build_image_run_command(request: &DockerImageRunRequest) -> Result<String, AppError> {
+    let image = require_value(&request.image, "docker_image_missing", "请选择镜像。")?;
+    let mut parts = vec!["docker".to_string(), "run".to_string(), "-d".to_string()];
+
+    if let Some(name) = optional_value(request.name.as_deref()) {
+        parts.push("--name".to_string());
+        parts.push(quote_posix_shell(name));
+    }
+    if let Some(entrypoint) = optional_value(request.entrypoint.as_deref()) {
+        parts.push("--entrypoint".to_string());
+        parts.push(quote_posix_shell(entrypoint));
+    }
+    if let Some(network) = optional_value(request.network.as_deref()) {
+        parts.push("--network".to_string());
+        parts.push(quote_posix_shell(network));
+    }
+    if let Some(policy) = request.restart_policy {
+        parts.push("--restart".to_string());
+        parts.push(quote_posix_shell(policy.as_docker_arg()));
+    }
+    if request.privileged {
+        parts.push("--privileged".to_string());
+    }
+
+    for port in &request.ports {
+        let host_port = require_value(
+            &port.host_port,
+            "docker_run_port_invalid",
+            "请输入主机端口。",
+        )?;
+        let container_port = require_value(
+            &port.container_port,
+            "docker_run_port_invalid",
+            "请输入容器端口。",
+        )?;
+        parts.push("-p".to_string());
+        parts.push(quote_posix_shell(&format!("{host_port}:{container_port}")));
+    }
+
+    for item in &request.env {
+        let key = require_value(&item.key, "docker_run_env_invalid", "请输入环境变量名。")?;
+        if key.contains('=') {
+            return Err(AppError::new(
+                "docker_run_env_invalid",
+                "环境变量名不能包含等号。",
+                key,
+                true,
+            ));
+        }
+        parts.push("-e".to_string());
+        parts.push(quote_posix_shell(&format!("{}={}", key, item.value)));
+    }
+
+    for volume in &request.volumes {
+        let host_path = require_value(
+            &volume.host_path,
+            "docker_run_volume_invalid",
+            "请输入主机路径。",
+        )?;
+        let container_path = require_value(
+            &volume.container_path,
+            "docker_run_volume_invalid",
+            "请输入容器路径。",
+        )?;
+        parts.push("-v".to_string());
+        parts.push(quote_posix_shell(&format!("{host_path}:{container_path}")));
+    }
+
+    parts.push(quote_posix_shell(image));
+    if let Some(command) = optional_value(request.command.as_deref()) {
+        parts.push("sh".to_string());
+        parts.push("-lc".to_string());
+        parts.push(quote_posix_shell(command));
+    }
+
+    Ok(parts.join(" "))
+}
+
+fn parse_container_detail(output: &[u8]) -> Result<DockerContainerDetail, AppError> {
+    let text = String::from_utf8_lossy(output);
+    let values = serde_json::from_str::<Vec<Value>>(&text).map_err(|error| {
+        AppError::new(
+            "docker_container_inspect_parse_failed",
+            "Docker 容器详情解析失败。",
+            error,
+            true,
+        )
+    })?;
+    let value = values.first().ok_or_else(|| {
+        AppError::new(
+            "docker_container_inspect_empty",
+            "Docker 容器详情为空。",
+            "docker inspect returned an empty array",
+            true,
+        )
+    })?;
+    let state = value.get("State");
+    let config = value.get("Config");
+    let network_settings = value.get("NetworkSettings");
+    let host_config = value.get("HostConfig");
+    let restart_policy_value = host_config.and_then(|item| item.get("RestartPolicy"));
+    let command = value_array_strings(config.and_then(|item| item.get("Cmd")))
+        .filter(|items| !items.is_empty())
+        .unwrap_or_else(|| {
+            let mut parts = Vec::new();
+            if let Some(path) = value_string(value.get("Path")) {
+                parts.push(path);
+            }
+            if let Some(args) = value_array_strings(value.get("Args")) {
+                parts.extend(args);
+            }
+            parts
+        });
+    let raw_json = serde_json::to_string_pretty(value).unwrap_or_else(|_| text.to_string());
+
+    Ok(DockerContainerDetail {
+        id: value_string(value.get("Id")).unwrap_or_default(),
+        name: value_string(value.get("Name"))
+            .map(|name| name.trim_start_matches('/').to_string())
+            .unwrap_or_default(),
+        image: value_string(config.and_then(|item| item.get("Image"))).unwrap_or_default(),
+        image_id: value_string(value.get("Image")),
+        created: value_string(value.get("Created")),
+        started_at: value_string(state.and_then(|item| item.get("StartedAt")))
+            .filter(|value| !is_zero_docker_time(value)),
+        finished_at: value_string(state.and_then(|item| item.get("FinishedAt")))
+            .filter(|value| !is_zero_docker_time(value)),
+        status: value_string(state.and_then(|item| item.get("Status")))
+            .unwrap_or_else(|| "unknown".to_string()),
+        running: state
+            .and_then(|item| item.get("Running"))
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+        ip_address: value_string(network_settings.and_then(|item| item.get("IPAddress"))),
+        command,
+        entrypoint: value_array_strings(config.and_then(|item| item.get("Entrypoint")))
+            .unwrap_or_default(),
+        working_dir: value_string(config.and_then(|item| item.get("WorkingDir"))),
+        restart_policy: DockerRestartPolicy {
+            name: value_string(restart_policy_value.and_then(|item| item.get("Name")))
+                .unwrap_or_else(|| "no".to_string()),
+            maximum_retry_count: restart_policy_value
+                .and_then(|item| item.get("MaximumRetryCount"))
+                .and_then(Value::as_u64),
+        },
+        ports: parse_container_ports(network_settings.and_then(|item| item.get("Ports"))),
+        env: parse_env_values(config.and_then(|item| item.get("Env"))),
+        mounts: parse_mounts(value.get("Mounts")),
+        networks: parse_container_networks(network_settings.and_then(|item| item.get("Networks"))),
+        labels: parse_label_values(config.and_then(|item| item.get("Labels"))),
+        raw_json,
+    })
+}
+
+fn value_string(value: Option<&Value>) -> Option<String> {
+    value?
+        .as_str()
+        .map(str::trim)
+        .filter(|value| !value.is_empty() && *value != "<none>")
+        .map(ToString::to_string)
+}
+
+fn value_array_strings(value: Option<&Value>) -> Option<Vec<String>> {
+    match value? {
+        Value::String(item) => {
+            value_string(Some(&Value::String(item.clone()))).map(|item| vec![item])
+        }
+        Value::Array(items) => Some(
+            items
+                .iter()
+                .filter_map(|item| value_string(Some(item)))
+                .collect(),
+        ),
+        _ => None,
+    }
+}
+
+fn parse_container_ports(value: Option<&Value>) -> Vec<DockerContainerPort> {
+    let Some(Value::Object(ports)) = value else {
+        return Vec::new();
+    };
+    let mut result = Vec::new();
+    for (private_port, bindings) in ports {
+        match bindings {
+            Value::Array(items) if !items.is_empty() => {
+                for binding in items {
+                    result.push(DockerContainerPort {
+                        private_port: private_port.clone(),
+                        host_ip: value_string(binding.get("HostIp")),
+                        host_port: value_string(binding.get("HostPort")),
+                    });
+                }
+            }
+            _ => result.push(DockerContainerPort {
+                private_port: private_port.clone(),
+                host_ip: None,
+                host_port: None,
+            }),
+        }
+    }
+    result.sort_by(|left, right| left.private_port.cmp(&right.private_port));
+    result
+}
+
+fn parse_env_values(value: Option<&Value>) -> Vec<DockerKeyValue> {
+    let Some(items) = value_array_strings(value) else {
+        return Vec::new();
+    };
+    items
+        .into_iter()
+        .filter_map(|item| {
+            let (key, value) = item.split_once('=')?;
+            let sensitive = is_sensitive_env_key(key);
+            Some(DockerKeyValue {
+                key: key.to_string(),
+                value: if sensitive {
+                    "******".to_string()
+                } else {
+                    value.to_string()
+                },
+                sensitive,
+            })
+        })
+        .collect()
+}
+
+fn is_sensitive_env_key(key: &str) -> bool {
+    let key = key.to_ascii_lowercase();
+    key.contains("password")
+        || key.contains("passwd")
+        || key.ends_with("_pwd")
+        || key == "pwd"
+        || key.contains("secret")
+        || key.contains("token")
+        || key.contains("private_key")
+        || key.contains("access_key")
+}
+
+fn parse_mounts(value: Option<&Value>) -> Vec<DockerContainerMount> {
+    let Some(Value::Array(items)) = value else {
+        return Vec::new();
+    };
+    items
+        .iter()
+        .filter_map(|item| {
+            let destination = value_string(item.get("Destination"))?;
+            Some(DockerContainerMount {
+                kind: value_string(item.get("Type")),
+                source: value_string(item.get("Source")),
+                destination,
+                name: value_string(item.get("Name")),
+                driver: value_string(item.get("Driver")),
+                rw: item.get("RW").and_then(Value::as_bool).unwrap_or(false),
+            })
+        })
+        .collect()
+}
+
+fn parse_container_networks(value: Option<&Value>) -> Vec<DockerContainerNetworkAttachment> {
+    let Some(Value::Object(networks)) = value else {
+        return Vec::new();
+    };
+    let mut result = networks
+        .iter()
+        .map(|(name, item)| DockerContainerNetworkAttachment {
+            name: name.clone(),
+            ip_address: value_string(item.get("IPAddress")),
+            gateway: value_string(item.get("Gateway")),
+            mac_address: value_string(item.get("MacAddress")),
+        })
+        .collect::<Vec<_>>();
+    result.sort_by(|left, right| left.name.cmp(&right.name));
+    result
+}
+
+fn parse_label_values(value: Option<&Value>) -> Vec<DockerKeyValue> {
+    let Some(Value::Object(labels)) = value else {
+        return Vec::new();
+    };
+    let mut result = labels
+        .iter()
+        .filter_map(|(key, value)| {
+            Some(DockerKeyValue {
+                key: key.clone(),
+                value: value_string(Some(value))?,
+                sensitive: false,
+            })
+        })
+        .collect::<Vec<_>>();
+    result.sort_by(|left, right| left.key.cmp(&right.key));
+    result
+}
+
+fn is_zero_docker_time(value: &str) -> bool {
+    value.starts_with("0001-01-01T00:00:00")
 }
 
 #[derive(Debug, Default)]
@@ -1202,6 +1826,14 @@ fn ensure_success(output: &ExecOutput, code: &str, message: &str) -> Result<(), 
             true,
         ));
     }
+    if normalized.contains("no such network") {
+        return Err(AppError::new(
+            "docker_network_missing",
+            "Docker 网络不存在或已被删除。",
+            detail,
+            true,
+        ));
+    }
 
     Err(AppError::new(code, message, detail, true))
 }
@@ -1212,6 +1844,10 @@ fn require_value<'a>(value: &'a str, code: &str, message: &str) -> Result<&'a st
         return Err(AppError::new(code, message, "value is empty", true));
     }
     Ok(value)
+}
+
+fn optional_value(value: Option<&str>) -> Option<&str> {
+    value.map(str::trim).filter(|value| !value.is_empty())
 }
 
 fn output_detail(output: &ExecOutput) -> String {
@@ -1480,8 +2116,10 @@ fn parse_docker_size_bytes(value: &str) -> Option<f64> {
 #[cfg(test)]
 mod tests {
     use super::{
-        parse_containers, parse_images, parse_pull_progress_line, save_logs_to_local,
-        DockerContainerLogsSaveRequest,
+        build_image_run_command, parse_container_detail, parse_containers, parse_images,
+        parse_networks, parse_pull_progress_line, save_logs_to_local,
+        DockerContainerLogsSaveRequest, DockerImageRunKeyValue, DockerImageRunPort,
+        DockerImageRunRequest, DockerImageRunVolume,
     };
     use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -1546,5 +2184,131 @@ mod tests {
         assert_eq!(content, "容器日志\nline 2\n");
 
         let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn parse_container_detail_reads_inspect_fields() {
+        let output = br#"[{
+          "Id": "5d06bfab02bc9333ca352b943fd048973d33098c498d5bbf11fbb902bd0a0567",
+          "Name": "/dm8-8.1.2.128",
+          "Created": "2024-06-26T11:06:37.123456789Z",
+          "Path": "/bin/bash",
+          "Args": ["/opt/startup.sh"],
+          "State": {
+            "Status": "running",
+            "Running": true,
+            "StartedAt": "2026-04-20T09:08:32.000000000Z",
+            "FinishedAt": "0001-01-01T00:00:00Z"
+          },
+          "Config": {
+            "Image": "dm8:8.1.2.128",
+            "Env": ["PATH=/usr/local/bin", "SYSDba_PWD=SYSDba002"],
+            "Entrypoint": null,
+            "Cmd": ["/bin/bash", "/opt/startup.sh"],
+            "WorkingDir": "/opt/dmdbms",
+            "Labels": {"com.example.role": "database"}
+          },
+          "HostConfig": {
+            "RestartPolicy": {"Name": "always", "MaximumRetryCount": 0}
+          },
+          "NetworkSettings": {
+            "IPAddress": "172.17.0.4",
+            "Ports": {"5236/tcp": [{"HostIp": "0.0.0.0", "HostPort": "5236"}]},
+            "Networks": {
+              "bridge": {
+                "IPAddress": "172.17.0.4",
+                "Gateway": "172.17.0.1",
+                "MacAddress": "02:42:ac:11:00:04"
+              }
+            }
+          },
+          "Mounts": [{
+            "Type": "bind",
+            "Source": "/opt/dm/data",
+            "Destination": "/opt/dmdbms/data",
+            "RW": true
+          }]
+        }]"#;
+
+        let detail = parse_container_detail(output).expect("container inspect should parse");
+
+        assert_eq!(detail.name, "dm8-8.1.2.128");
+        assert_eq!(detail.ip_address.as_deref(), Some("172.17.0.4"));
+        assert_eq!(detail.restart_policy.name, "always");
+        assert_eq!(detail.command, vec!["/bin/bash", "/opt/startup.sh"]);
+        assert_eq!(detail.ports[0].private_port, "5236/tcp");
+        assert_eq!(detail.mounts[0].destination, "/opt/dmdbms/data");
+        assert_eq!(detail.networks[0].name, "bridge");
+        assert_eq!(detail.labels[0].key, "com.example.role");
+    }
+
+    #[test]
+    fn parse_container_detail_masks_sensitive_env_values() {
+        let output = br#"[{
+          "Id": "abc",
+          "Name": "/secure",
+          "Created": "2026-06-26T00:00:00Z",
+          "State": {"Status": "exited", "Running": false},
+          "Config": {
+            "Image": "redis:7",
+            "Env": ["TOKEN=abc123", "NORMAL=value"],
+            "Labels": {}
+          },
+          "HostConfig": {"RestartPolicy": {"Name": "no", "MaximumRetryCount": 0}},
+          "NetworkSettings": {"Networks": {}},
+          "Mounts": []
+        }]"#;
+
+        let detail = parse_container_detail(output).expect("container inspect should parse");
+
+        assert_eq!(detail.env[0].key, "TOKEN");
+        assert!(detail.env[0].sensitive);
+        assert_eq!(detail.env[0].value, "******");
+        assert_eq!(detail.env[1].value, "value");
+    }
+
+    #[test]
+    fn parse_networks_reads_json_lines() {
+        let output = br#"{"ID":"1f4b","Name":"bridge","Driver":"bridge","Scope":"local"}
+{"ID":"9a7c","Name":"app_net","Driver":"bridge","Scope":"local"}"#;
+
+        let networks = parse_networks(output).expect("networks parse");
+
+        assert_eq!(networks.len(), 2);
+        assert_eq!(networks[0].name, "bridge");
+        assert_eq!(networks[1].driver.as_deref(), Some("bridge"));
+    }
+
+    #[test]
+    fn build_image_run_command_quotes_runtime_options() {
+        let request = DockerImageRunRequest {
+            connection_id: "conn-1".to_string(),
+            image: "nginx:latest".to_string(),
+            name: Some("mx web".to_string()),
+            command: Some("nginx -g 'daemon off;'".to_string()),
+            entrypoint: Some("/entry point".to_string()),
+            network: Some("app net".to_string()),
+            restart_policy: Some(super::DockerRestartPolicyKind::UnlessStopped),
+            privileged: true,
+            ports: vec![DockerImageRunPort {
+                host_port: "8080".to_string(),
+                container_port: "80/tcp".to_string(),
+            }],
+            env: vec![DockerImageRunKeyValue {
+                key: "APP_ENV".to_string(),
+                value: "prod value".to_string(),
+            }],
+            volumes: vec![DockerImageRunVolume {
+                host_path: "/srv/app data".to_string(),
+                container_path: "/usr/share/nginx/html".to_string(),
+            }],
+        };
+
+        let command = build_image_run_command(&request).expect("run command should build");
+
+        assert_eq!(
+            command,
+            "docker run -d --name 'mx web' --entrypoint '/entry point' --network 'app net' --restart 'unless-stopped' --privileged -p '8080:80/tcp' -e 'APP_ENV=prod value' -v '/srv/app data:/usr/share/nginx/html' 'nginx:latest' sh -lc 'nginx -g '\\''daemon off;'\\'''"
+        );
     }
 }

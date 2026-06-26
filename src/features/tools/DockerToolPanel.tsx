@@ -1,4 +1,5 @@
 import * as Dialog from "@radix-ui/react-dialog";
+import { DismissableLayerBranch } from "@radix-ui/react-dismissable-layer";
 import { siDocker } from "simple-icons";
 import {
   ArrowDownToLine,
@@ -15,6 +16,7 @@ import {
   MemoryStick,
   Network,
   Play,
+  Plus,
   Power,
   PowerOff,
   Pause,
@@ -36,6 +38,7 @@ import {
   useState,
   type CSSProperties,
   type FormEvent,
+  type ReactNode,
   type RefObject,
   type SVGProps,
 } from "react";
@@ -43,35 +46,48 @@ import {
 import type { ConnectionProfile } from "../connections/connectionTypes";
 import {
   dockerContainerAction,
+  dockerContainerConnectNetwork,
+  dockerContainerInspect,
   dockerContainerLogsSave,
   dockerContainerLogsStart,
   dockerContainerLogsStop,
+  dockerContainerUpdateRestartPolicy,
   dockerEngineAction,
   dockerEngineReadConfig,
   dockerEngineSaveConfig,
   dockerEngineStatus,
   dockerImagePull,
   dockerImageRemove,
+  dockerImageRun,
   dockerListContainers,
   dockerListImages,
+  dockerListNetworks,
 } from "../../shared/tauri/commands";
 import { selectDockerLogSavePath } from "../../shared/tauri/dialog";
 import { hasTauriRuntime } from "../../shared/tauri/runtime";
 import { listenDockerImagePullProgress, listenDockerLogStream } from "../../shared/tauri/events";
 import { ConfirmDialog } from "../../shared/ui/ConfirmDialog";
+import { AppSelect } from "../../shared/ui/AppSelect";
 import { TabContextMenu, type TabContextMenuAction } from "../../shared/ui/TabContextMenu";
 import { Tooltip } from "../../shared/ui/Tooltip";
 import type {
   DockerContainerAction,
+  DockerContainerDetail,
   DockerContainerSummary,
   DockerEngineAction,
   DockerEngineConfigResult,
   DockerEngineStatus,
   DockerImagePullProgressEvent,
   DockerImagePullStatus,
+  DockerImageRunKeyValue,
+  DockerImageRunPort,
+  DockerImageRunRequest,
+  DockerImageRunVolume,
   DockerImageSummary,
   DockerLogStreamEvent,
   DockerLogsResult,
+  DockerNetworkSummary,
+  DockerRestartPolicyKind,
 } from "./dockerTypes";
 
 type ToolboxView = "docker" | "network" | "schedule";
@@ -101,6 +117,8 @@ interface DockerImagePullTask {
   currentLayer: string | null;
 }
 
+type DockerImageRunDraft = DockerImageRunRequest;
+
 interface DockerToolPanelProps {
   active: boolean;
   connection: ConnectionProfile | null;
@@ -117,6 +135,13 @@ const toolboxViews: Array<{ icon: LucideIcon; label: string; value: ToolboxView 
 const containerAutoRefreshMs = 10_000;
 const imageAutoRefreshMs = 30_000;
 const engineAutoRefreshMs = 30_000;
+const dockerRestartPolicyOptions: Array<{ label: string; value: DockerRestartPolicyKind }> = [
+  { label: "No", value: "no" },
+  { label: "Always", value: "always" },
+  { label: "Unless stopped", value: "unless-stopped" },
+  { label: "On failure", value: "on-failure" },
+];
+const dockerRunDefaultNetworkValue = "__mx_default__";
 
 function createRefreshRunState(): RefreshRunState {
   return {
@@ -164,6 +189,15 @@ export function DockerToolPanel({
   const [containerDeleteTarget, setContainerDeleteTarget] =
     useState<DockerContainerSummary | null>(null);
   const [imageDeleteTarget, setImageDeleteTarget] = useState<DockerImageSummary | null>(null);
+  const [detailTarget, setDetailTarget] = useState<DockerContainerSummary | null>(null);
+  const [containerDetail, setContainerDetail] = useState<DockerContainerDetail | null>(null);
+  const [dockerNetworks, setDockerNetworks] = useState<DockerNetworkSummary[]>([]);
+  const [detailLoading, setDetailLoading] = useState(false);
+  const [detailError, setDetailError] = useState<string | null>(null);
+  const [detailBusyKey, setDetailBusyKey] = useState<string | null>(null);
+  const [restartPolicyDraft, setRestartPolicyDraft] =
+    useState<DockerRestartPolicyKind>("no");
+  const [networkDraft, setNetworkDraft] = useState("");
   const [logsTarget, setLogsTarget] = useState<DockerContainerSummary | null>(null);
   const [logsContent, setLogsContent] = useState("");
   const [logsStreamId, setLogsStreamId] = useState<string | null>(null);
@@ -176,6 +210,14 @@ export function DockerToolPanel({
   const [pullImage, setPullImage] = useState("");
   const [pullError, setPullError] = useState<string | null>(null);
   const [pulling, setPulling] = useState(false);
+  const [imageRunTarget, setImageRunTarget] = useState<DockerImageSummary | null>(null);
+  const [imageRunDraft, setImageRunDraft] = useState<DockerImageRunDraft>(
+    () => createImageRunDraft(""),
+  );
+  const [imageRunNetworks, setImageRunNetworks] = useState<DockerNetworkSummary[]>([]);
+  const [imageRunNetworksLoading, setImageRunNetworksLoading] = useState(false);
+  const [imageRunError, setImageRunError] = useState<string | null>(null);
+  const [imageRunning, setImageRunning] = useState(false);
   const [documentVisible, setDocumentVisible] = useState(
     () => document.visibilityState !== "hidden",
   );
@@ -232,12 +274,26 @@ export function DockerToolPanel({
     setLogsTarget(null);
     setLogsContent("");
     setLogsStreamId(null);
+    setDetailTarget(null);
+    setContainerDetail(null);
+    setDockerNetworks([]);
+    setDetailLoading(false);
+    setDetailError(null);
+    setDetailBusyKey(null);
+    setRestartPolicyDraft("no");
+    setNetworkDraft("");
     setLogsLoading(false);
     setLogsStreaming(false);
     setLogsPaused(false);
     setFollowLogs(true);
     setLogsError(null);
     setImagePullTasks([]);
+    setImageRunTarget(null);
+    setImageRunDraft(createImageRunDraft(""));
+    setImageRunNetworks([]);
+    setImageRunNetworksLoading(false);
+    setImageRunError(null);
+    setImageRunning(false);
     setEngineActionTarget(null);
     setRestartAfterSave(false);
     dockerInitialLoadRef.current = false;
@@ -690,6 +746,96 @@ export function DockerToolPanel({
     }
   }
 
+  async function openContainerDetail(container: DockerContainerSummary) {
+    setDetailTarget(container);
+    setContainerDetail(null);
+    setDockerNetworks([]);
+    setDetailError(null);
+    setNetworkDraft("");
+    await loadContainerDetail(container);
+  }
+
+  async function loadContainerDetail(container = detailTarget) {
+    if (!connectionId || !container) {
+      return;
+    }
+    setDetailLoading(true);
+    setDetailError(null);
+    try {
+      const [detail, networks] = hasTauriRuntime()
+        ? await Promise.all([
+            dockerContainerInspect(connectionId, container.id),
+            dockerListNetworks(connectionId),
+          ])
+        : [previewDockerContainerDetail(container), previewDockerNetworks()];
+      setContainerDetail(detail);
+      setDockerNetworks(networks);
+      setRestartPolicyDraft(normalizeRestartPolicyKind(detail.restart_policy.name));
+      const connectedNames = new Set(detail.networks.map((network) => network.name));
+      const firstAvailableNetwork = networks.find((network) => !connectedNames.has(network.name));
+      setNetworkDraft(firstAvailableNetwork?.id || firstAvailableNetwork?.name || "");
+    } catch (nextError) {
+      setDetailError(formatDockerError(nextError));
+    } finally {
+      setDetailLoading(false);
+    }
+  }
+
+  function closeContainerDetail() {
+    setDetailTarget(null);
+    setContainerDetail(null);
+    setDockerNetworks([]);
+    setDetailError(null);
+    setDetailBusyKey(null);
+    setNetworkDraft("");
+    setRestartPolicyDraft("no");
+  }
+
+  async function updateContainerRestartPolicy() {
+    if (!connectionId || !detailTarget) {
+      return;
+    }
+    setDetailBusyKey("restart-policy");
+    setDetailError(null);
+    try {
+      const result = hasTauriRuntime()
+        ? await dockerContainerUpdateRestartPolicy(
+            connectionId,
+            detailTarget.id,
+            restartPolicyDraft,
+          )
+        : { ok: true, message: "容器重启策略已更新。", output: null };
+      setNotice(result.message);
+      await loadContainerDetail(detailTarget);
+      await refreshContainers({ silent: true });
+    } catch (nextError) {
+      setDetailError(formatDockerError(nextError));
+    } finally {
+      setDetailBusyKey(null);
+    }
+  }
+
+  async function connectContainerNetwork(networkId = networkDraft) {
+    if (!connectionId || !detailTarget || !networkId) {
+      setDetailError("请选择要加入的 Docker 网络。");
+      return;
+    }
+    setDetailBusyKey("network-connect");
+    setDetailError(null);
+    try {
+      const result = hasTauriRuntime()
+        ? await dockerContainerConnectNetwork(connectionId, detailTarget.id, networkId)
+        : { ok: true, message: "容器已加入网络。", output: null };
+      setNotice(result.message);
+      await loadContainerDetail(detailTarget);
+      await refreshContainers({ silent: true });
+    } catch (nextError) {
+      setDetailError(formatDockerError(nextError));
+    } finally {
+      setDetailBusyKey(null);
+    }
+  }
+
   async function openLogs(container: DockerContainerSummary) {
     await startLogsStream(container, 300, true);
   }
@@ -838,6 +984,83 @@ export function DockerToolPanel({
     } finally {
       setPulling(false);
     }
+  }
+
+  function openImageRun(image: DockerImageSummary) {
+    const nextDraft = createImageRunDraft(formatImageReference(image));
+    setImageRunTarget(image);
+    setImageRunDraft(nextDraft);
+    setImageRunError(null);
+    setNotice(null);
+    setError(null);
+    void loadImageRunNetworks();
+  }
+
+  async function loadImageRunNetworks() {
+    if (!connectionId) {
+      return;
+    }
+    setImageRunNetworksLoading(true);
+    try {
+      const networks = hasTauriRuntime()
+        ? await dockerListNetworks(connectionId)
+        : previewDockerNetworks();
+      setImageRunNetworks(networks);
+      const preferredNetwork = preferredDockerRunNetwork(networks);
+      setImageRunDraft((current) => ({
+        ...current,
+        network:
+          current.network && current.network !== dockerRunDefaultNetworkValue
+            ? current.network
+            : preferredNetwork,
+      }));
+    } catch (nextError) {
+      setImageRunError(formatDockerError(nextError));
+    } finally {
+      setImageRunNetworksLoading(false);
+    }
+  }
+
+  async function submitImageRun(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!connectionId) {
+      return;
+    }
+    const normalized = normalizeImageRunDraft(imageRunDraft);
+    if (typeof normalized === "string") {
+      setImageRunError(normalized);
+      return;
+    }
+
+    setImageRunning(true);
+    setImageRunError(null);
+    setError(null);
+    setNotice(null);
+    try {
+      const result = hasTauriRuntime()
+        ? await dockerImageRun(connectionId, normalized)
+        : { ok: true, message: "容器已启动。", output: "preview-container" };
+      setNotice(result.message);
+      setImageRunTarget(null);
+      setImageRunDraft(createImageRunDraft(""));
+      await refreshContainers();
+      setDockerView("containers");
+    } catch (nextError) {
+      setImageRunError(formatDockerError(nextError));
+    } finally {
+      setImageRunning(false);
+    }
+  }
+
+  function closeImageRunDialog() {
+    if (imageRunning) {
+      return;
+    }
+    setImageRunTarget(null);
+    setImageRunDraft(createImageRunDraft(""));
+    setImageRunNetworks([]);
+    setImageRunNetworksLoading(false);
+    setImageRunError(null);
   }
 
   function applyImagePullProgress(event: DockerImagePullProgressEvent) {
@@ -1052,6 +1275,7 @@ export function DockerToolPanel({
               containers={containers}
               loading={loadingContainers}
               onCopy={(container) => void copyValue(container.name || container.id, "容器名称")}
+              onInspect={(container) => void openContainerDetail(container)}
               onLogs={(container) => void openLogs(container)}
               onOpenTerminal={onOpenContainerTerminal}
               onRefresh={() => void refreshContainers()}
@@ -1076,6 +1300,7 @@ export function DockerToolPanel({
               }}
               onRefresh={() => void refreshImages()}
               onRemove={setImageDeleteTarget}
+              onRun={openImageRun}
             />
           ) : (
             <DockerEngineView
@@ -1131,6 +1356,39 @@ export function DockerToolPanel({
         onRealtimeToggle={logsStreaming ? () => void pauseLogStreaming() : enableLogStreaming}
         onRefresh={restartLogs}
         onScroll={handleLogOutputScroll}
+      />
+
+      <DockerContainerDetailDialog
+        busyKey={detailBusyKey}
+        content={containerDetail}
+        error={detailError}
+        loading={detailLoading}
+        networks={dockerNetworks}
+        networkValue={networkDraft}
+        restartPolicyValue={restartPolicyDraft}
+        target={detailTarget}
+        onChangeNetwork={setNetworkDraft}
+        onChangeRestartPolicy={setRestartPolicyDraft}
+        onClose={closeContainerDetail}
+        onConnectNetwork={(networkId) => void connectContainerNetwork(networkId)}
+        onCopyJson={() =>
+          containerDetail ? void copyValue(containerDetail.raw_json, "容器 Inspect JSON") : undefined
+        }
+        onRefresh={() => void loadContainerDetail()}
+        onUpdateRestartPolicy={() => void updateContainerRestartPolicy()}
+      />
+
+      <DockerImageRunDialog
+        draft={imageRunDraft}
+        error={imageRunError}
+        loadingNetworks={imageRunNetworksLoading}
+        networks={imageRunNetworks}
+        running={imageRunning}
+        target={imageRunTarget}
+        onChange={setImageRunDraft}
+        onClose={closeImageRunDialog}
+        onRefreshNetworks={() => void loadImageRunNetworks()}
+        onSubmit={submitImageRun}
       />
 
       <Dialog.Root
@@ -1473,6 +1731,7 @@ function ContainerList({
   containers,
   loading,
   onCopy,
+  onInspect,
   onLogs,
   onOpenTerminal,
   onRefresh,
@@ -1483,6 +1742,7 @@ function ContainerList({
   containers: DockerContainerSummary[];
   loading: boolean;
   onCopy: (container: DockerContainerSummary) => void;
+  onInspect: (container: DockerContainerSummary) => void;
   onLogs: (container: DockerContainerSummary) => void;
   onOpenTerminal?: (container: DockerContainerSummary) => void;
   onRefresh: () => void;
@@ -1500,12 +1760,20 @@ function ContainerList({
   }
 
   return (
-    <div className="docker-list" aria-label="Docker 容器">
+    <div className="docker-list docker-list--containers" aria-label="Docker 容器">
       {containers.map((container) => {
         const running = isContainerRunning(container);
+        const state = normalizeState(container.state);
         const detailLine = formatContainerDetailLine(container);
         const detailTitle = formatContainerDetailTitle(container);
+        const portsText = formatContainerPorts(container.ports);
+        const cardMetaText = portsText || container.status || detailLine || "-";
+        const cardTimeText = formatContainerCardTime(container);
         const contextActions: TabContextMenuAction[] = [
+          {
+            label: "查看详情",
+            onSelect: () => onInspect(container),
+          },
           {
             label: "进入终端",
             disabled: !running || !onOpenTerminal,
@@ -1525,23 +1793,28 @@ function ContainerList({
         ];
         return (
           <TabContextMenu actions={contextActions} key={container.id}>
-            <article className="docker-row docker-row--container" tabIndex={0}>
-              <div className="docker-row-primary">
-                <span className="docker-row-title">
-                  <Box className="ui-icon" aria-hidden="true" />
-                  <strong title={container.name}>
+            <article
+              className={`docker-row docker-row--container docker-container-card ${running ? "is-running" : "is-stopped"}`}
+              tabIndex={0}
+            >
+              <div className="docker-container-card-main">
+                <div className="docker-container-card-head">
+                  <span className={`docker-container-state-dot ${state}`} aria-hidden="true" />
+                  <button
+                    className="docker-row-name-button"
+                    type="button"
+                    title="查看容器详情"
+                    onClick={() => onInspect(container)}
+                  >
                     {container.name || shortDockerId(container.id)}
-                  </strong>
-                  <em className={`docker-status ${normalizeState(container.state)}`}>
-                    {container.state || "unknown"}
-                  </em>
-                </span>
-              </div>
-              <div className="docker-row-meta">
-                <code title={container.image}>{container.image}</code>
-                <small title={detailTitle}>
-                  {detailLine || "-"}
-                </small>
+                  </button>
+                </div>
+                <div className="docker-container-card-image">
+                  <code title={container.image}>{container.image}</code>
+                </div>
+                <div className="docker-container-card-foot" title={detailTitle}>
+                  <span className="docker-container-card-meta">{cardMetaText}</span>
+                </div>
               </div>
               <div className="docker-row-actions">
                 <Tooltip label={running ? "停止容器" : "启动容器"}>
@@ -1581,6 +1854,11 @@ function ContainerList({
                   </button>
                 </Tooltip>
               </div>
+              {cardTimeText ? (
+                <span className="docker-container-card-time" title={cardTimeText}>
+                  {cardTimeText}
+                </span>
+              ) : null}
             </article>
           </TabContextMenu>
         );
@@ -1603,6 +1881,7 @@ function ImageList({
   onPull,
   onRefresh,
   onRemove,
+  onRun,
   pullDisabled,
   pullTasks,
 }: {
@@ -1615,6 +1894,7 @@ function ImageList({
   onPull: () => void;
   onRefresh: () => void;
   onRemove: (image: DockerImageSummary) => void;
+  onRun: (image: DockerImageSummary) => void;
   pullDisabled: boolean;
   pullTasks: DockerImagePullTask[];
 }) {
@@ -1640,7 +1920,7 @@ function ImageList({
           description={loading ? "正在通过 SSH 执行 docker images。" : "远端 Docker 当前没有镜像。"}
         />
       ) : (
-        <div className="docker-list" aria-label="Docker 镜像">
+        <div className="docker-list docker-list--images" aria-label="Docker 镜像">
           {pullTasks.map((task) => (
             <article
               className={`docker-row docker-pull-row ${task.status}`}
@@ -1695,52 +1975,758 @@ function ImageList({
               </div>
             </article>
           ))}
-          {images.map((image) => (
-            <article className="docker-row" key={`${image.id}-${image.repository}-${image.tag}`}>
-              <div className="docker-row-main">
-                <span className="docker-row-title">
-                  <ImageIcon className="ui-icon" aria-hidden="true" />
-                  <strong title={formatImageReference(image)}>{formatImageReference(image)}</strong>
-                </span>
-                <code title={image.id}>{shortDockerId(image.id)}</code>
-                <small>
-                  {image.size}
-                  {image.created_since || image.created_at
-                    ? ` · ${image.created_since || image.created_at}`
-                    : ""}
-                </small>
-              </div>
-              <div className="docker-row-actions">
-                <Tooltip label="复制镜像名称">
-                  <button
-                    className="toolbox-icon-button"
-                    type="button"
-                    aria-label="复制镜像名称"
-                    onClick={() => onCopy(image)}
-                  >
-                    <Copy className="ui-icon" aria-hidden="true" />
-                  </button>
-                </Tooltip>
-                <Tooltip label="删除镜像">
-                  <button
-                    className="toolbox-icon-button danger"
-                    type="button"
-                    aria-label="删除镜像"
-                    disabled={busyKey === `image-remove:${image.id}`}
-                    onClick={() => onRemove(image)}
-                  >
-                    <Trash2 className="ui-icon" aria-hidden="true" />
-                  </button>
-                </Tooltip>
-              </div>
-            </article>
-          ))}
+          {images.map((image) => {
+            const imageReference = formatImageReference(image);
+            const repository = formatImageRepository(image);
+            const tag = formatImageTag(image);
+            const createdText = formatImageCreated(image);
+            return (
+              <article
+                className="docker-row docker-row--image docker-image-card"
+                key={`${image.id}-${image.repository}-${image.tag}`}
+              >
+                <div className="docker-image-card-main">
+                  <div className="docker-image-card-head">
+                    <ImageIcon className="ui-icon" aria-hidden="true" />
+                    <strong title={imageReference}>{repository}</strong>
+                  </div>
+                  <div className="docker-image-card-tag" title={`Tag: ${tag}`}>
+                    <span>tag</span>
+                    <code>{tag}</code>
+                  </div>
+                  <div className="docker-image-card-foot">
+                    <span className="docker-image-card-size" title={image.size}>
+                      {image.size}
+                    </span>
+                  </div>
+                </div>
+                <div className="docker-row-actions">
+                  <Tooltip label="快捷运行">
+                    <button
+                      className="toolbox-icon-button"
+                      type="button"
+                      aria-label="快捷运行"
+                      onClick={() => onRun(image)}
+                    >
+                      <Play className="ui-icon" aria-hidden="true" />
+                    </button>
+                  </Tooltip>
+                  <Tooltip label="复制镜像名称">
+                    <button
+                      className="toolbox-icon-button"
+                      type="button"
+                      aria-label="复制镜像名称"
+                      onClick={() => onCopy(image)}
+                    >
+                      <Copy className="ui-icon" aria-hidden="true" />
+                    </button>
+                  </Tooltip>
+                  <Tooltip label="删除镜像">
+                    <button
+                      className="toolbox-icon-button danger"
+                      type="button"
+                      aria-label="删除镜像"
+                      disabled={busyKey === `image-remove:${image.id}`}
+                      onClick={() => onRemove(image)}
+                    >
+                      <Trash2 className="ui-icon" aria-hidden="true" />
+                    </button>
+                  </Tooltip>
+                </div>
+                {createdText ? (
+                  <span className="docker-image-card-time" title={createdText}>
+                    {createdText}
+                  </span>
+                ) : null}
+              </article>
+            );
+          })}
           <button className="toolbox-refresh-row" type="button" onClick={onRefresh}>
             <RefreshCw className={`ui-icon ${loading ? "spin" : ""}`} aria-hidden="true" />
             刷新镜像
           </button>
         </div>
       )}
+    </div>
+  );
+}
+
+function DockerImageRunDialog({
+  draft,
+  error,
+  loadingNetworks,
+  networks,
+  running,
+  target,
+  onChange,
+  onClose,
+  onRefreshNetworks,
+  onSubmit,
+}: {
+  draft: DockerImageRunDraft;
+  error: string | null;
+  loadingNetworks: boolean;
+  networks: DockerNetworkSummary[];
+  running: boolean;
+  target: DockerImageSummary | null;
+  onChange: (draft: DockerImageRunDraft) => void;
+  onClose: () => void;
+  onRefreshNetworks: () => void;
+  onSubmit: (event: FormEvent<HTMLFormElement>) => void;
+}) {
+  const networkOptions = [
+    { label: "默认网络", value: dockerRunDefaultNetworkValue },
+    ...networks.map((network) => ({
+      label: `${network.name}${network.driver ? ` · ${network.driver}` : ""}`,
+      value: network.id || network.name,
+    })),
+  ];
+  const networkValue =
+    draft.network && networkOptions.some((option) => option.value === draft.network)
+      ? draft.network
+      : dockerRunDefaultNetworkValue;
+
+  function patchDraft(patch: Partial<DockerImageRunDraft>) {
+    onChange({ ...draft, ...patch });
+  }
+
+  function updatePort(index: number, patch: Partial<DockerImageRunPort>) {
+    patchDraft({
+      ports: draft.ports.map((port, currentIndex) =>
+        currentIndex === index ? { ...port, ...patch } : port,
+      ),
+    });
+  }
+
+  function updateEnv(index: number, patch: Partial<DockerImageRunKeyValue>) {
+    patchDraft({
+      env: draft.env.map((item, currentIndex) =>
+        currentIndex === index ? { ...item, ...patch } : item,
+      ),
+    });
+  }
+
+  function updateVolume(index: number, patch: Partial<DockerImageRunVolume>) {
+    patchDraft({
+      volumes: draft.volumes.map((volume, currentIndex) =>
+        currentIndex === index ? { ...volume, ...patch } : volume,
+      ),
+    });
+  }
+
+  return (
+    <Dialog.Root open={Boolean(target)} onOpenChange={(open) => !open && onClose()}>
+      <Dialog.Portal>
+        <Dialog.Overlay className="dialog-backdrop" />
+        <Dialog.Content className="docker-run-dialog">
+          <Dialog.Title className="docker-dialog-title">
+            快捷运行 {target ? formatImageReference(target) : ""}
+          </Dialog.Title>
+          <form className="docker-run-form" onSubmit={onSubmit}>
+            <div className="docker-run-body">
+              <section className="docker-run-section">
+                <label>
+                  <span>容器名称</span>
+                  <input
+                    autoFocus
+                    placeholder="mx-nginx"
+                    spellCheck={false}
+                    value={draft.name || ""}
+                    onChange={(event) => patchDraft({ name: event.currentTarget.value })}
+                  />
+                </label>
+                <label>
+                  <span>Command</span>
+                  <input
+                    placeholder="nginx -g 'daemon off;'"
+                    spellCheck={false}
+                    value={draft.command || ""}
+                    onChange={(event) => patchDraft({ command: event.currentTarget.value })}
+                  />
+                </label>
+                <label>
+                  <span>Entrypoint</span>
+                  <input
+                    placeholder="/docker-entrypoint.sh"
+                    spellCheck={false}
+                    value={draft.entrypoint || ""}
+                    onChange={(event) => patchDraft({ entrypoint: event.currentTarget.value })}
+                  />
+                </label>
+              </section>
+
+              <section className="docker-run-section docker-run-section--inline">
+                <label>
+                  <span>Network</span>
+                  <DismissableLayerBranch asChild>
+                    <div>
+                      <AppSelect
+                        ariaLabel="选择 Docker 网络"
+                        className="docker-run-select"
+                        disabled={loadingNetworks}
+                        options={networkOptions}
+                        value={networkValue}
+                        onChange={(value) =>
+                          patchDraft({
+                            network:
+                              value === dockerRunDefaultNetworkValue ? null : value,
+                          })
+                        }
+                      />
+                    </div>
+                  </DismissableLayerBranch>
+                </label>
+                <label>
+                  <span>Restart policy</span>
+                  <DismissableLayerBranch asChild>
+                    <div>
+                      <AppSelect
+                        ariaLabel="Restart policy"
+                        className="docker-run-select"
+                        options={dockerRestartPolicyOptions}
+                        value={draft.restart_policy || "no"}
+                        onChange={(value) => patchDraft({ restart_policy: value })}
+                      />
+                    </div>
+                  </DismissableLayerBranch>
+                </label>
+                <label className="docker-run-check">
+                  <input
+                    type="checkbox"
+                    checked={draft.privileged}
+                    onChange={(event) => patchDraft({ privileged: event.currentTarget.checked })}
+                  />
+                  <span>Privileged</span>
+                </label>
+                <button
+                  className="toolbox-mini-button docker-run-refresh-networks"
+                  type="button"
+                  disabled={loadingNetworks}
+                  onClick={onRefreshNetworks}
+                >
+                  <RefreshCw
+                    className={`ui-icon ${loadingNetworks ? "spin" : ""}`}
+                    aria-hidden="true"
+                  />
+                  网络
+                </button>
+              </section>
+
+              <DockerRunRows
+                title="端口映射"
+                columns={["主机端口", "容器端口"]}
+                onAdd={() =>
+                  patchDraft({
+                    ports: [...draft.ports, { host_port: "", container_port: "" }],
+                  })
+                }
+              >
+                {draft.ports.map((port, index) => (
+                  <div className="docker-run-row" key={index.toString()}>
+                    <input
+                      placeholder="8080"
+                      value={port.host_port}
+                      onChange={(event) =>
+                        updatePort(index, { host_port: event.currentTarget.value })
+                      }
+                    />
+                    <input
+                      placeholder="80/tcp"
+                      value={port.container_port}
+                      onChange={(event) =>
+                        updatePort(index, { container_port: event.currentTarget.value })
+                      }
+                    />
+                    <button
+                      className="toolbox-icon-button"
+                      type="button"
+                      aria-label="删除端口映射"
+                      onClick={() =>
+                        patchDraft({
+                          ports: draft.ports.filter((_, currentIndex) => currentIndex !== index),
+                        })
+                      }
+                    >
+                      <X className="ui-icon" aria-hidden="true" />
+                    </button>
+                  </div>
+                ))}
+              </DockerRunRows>
+
+              <DockerRunRows
+                title="环境变量"
+                columns={["Key", "Value"]}
+                onAdd={() =>
+                  patchDraft({
+                    env: [...draft.env, { key: "", value: "" }],
+                  })
+                }
+              >
+                {draft.env.map((item, index) => (
+                  <div className="docker-run-row" key={index.toString()}>
+                    <input
+                      placeholder="APP_ENV"
+                      value={item.key}
+                      onChange={(event) => updateEnv(index, { key: event.currentTarget.value })}
+                    />
+                    <input
+                      placeholder="production"
+                      value={item.value}
+                      onChange={(event) => updateEnv(index, { value: event.currentTarget.value })}
+                    />
+                    <button
+                      className="toolbox-icon-button"
+                      type="button"
+                      aria-label="删除环境变量"
+                      onClick={() =>
+                        patchDraft({
+                          env: draft.env.filter((_, currentIndex) => currentIndex !== index),
+                        })
+                      }
+                    >
+                      <X className="ui-icon" aria-hidden="true" />
+                    </button>
+                  </div>
+                ))}
+              </DockerRunRows>
+
+              <DockerRunRows
+                title="数据卷"
+                columns={["主机路径", "容器路径"]}
+                onAdd={() =>
+                  patchDraft({
+                    volumes: [...draft.volumes, { host_path: "", container_path: "" }],
+                  })
+                }
+              >
+                {draft.volumes.map((volume, index) => (
+                  <div className="docker-run-row" key={index.toString()}>
+                    <input
+                      placeholder="/srv/app"
+                      value={volume.host_path}
+                      onChange={(event) =>
+                        updateVolume(index, { host_path: event.currentTarget.value })
+                      }
+                    />
+                    <input
+                      placeholder="/app"
+                      value={volume.container_path}
+                      onChange={(event) =>
+                        updateVolume(index, { container_path: event.currentTarget.value })
+                      }
+                    />
+                    <button
+                      className="toolbox-icon-button"
+                      type="button"
+                      aria-label="删除数据卷"
+                      onClick={() =>
+                        patchDraft({
+                          volumes: draft.volumes.filter(
+                            (_, currentIndex) => currentIndex !== index,
+                          ),
+                        })
+                      }
+                    >
+                      <X className="ui-icon" aria-hidden="true" />
+                    </button>
+                  </div>
+                ))}
+              </DockerRunRows>
+
+              {error ? <p className="docker-form-error">{error}</p> : null}
+            </div>
+            <footer className="docker-dialog-actions">
+              <button className="secondary-button" type="button" disabled={running} onClick={onClose}>
+                取消
+              </button>
+              <button className="primary-button" type="submit" disabled={running}>
+                {running ? (
+                  <LoaderCircle className="ui-icon spin" aria-hidden="true" />
+                ) : (
+                  <Play className="ui-icon" aria-hidden="true" />
+                )}
+                运行容器
+              </button>
+            </footer>
+          </form>
+        </Dialog.Content>
+      </Dialog.Portal>
+    </Dialog.Root>
+  );
+}
+
+function DockerRunRows({
+  children,
+  columns,
+  title,
+  onAdd,
+}: {
+  children: ReactNode;
+  columns: [string, string];
+  title: string;
+  onAdd: () => void;
+}) {
+  return (
+    <section className="docker-run-section docker-run-list-section">
+      <header>
+        <span>{title}</span>
+        <button className="toolbox-mini-button" type="button" onClick={onAdd}>
+          <Plus className="ui-icon" aria-hidden="true" />
+          添加
+        </button>
+      </header>
+      <div className="docker-run-row docker-run-row-head">
+        <span>{columns[0]}</span>
+        <span>{columns[1]}</span>
+        <span />
+      </div>
+      {children}
+    </section>
+  );
+}
+
+function DockerContainerDetailDialog({
+  busyKey,
+  content,
+  error,
+  loading,
+  networks,
+  networkValue,
+  restartPolicyValue,
+  target,
+  onChangeNetwork,
+  onChangeRestartPolicy,
+  onClose,
+  onConnectNetwork,
+  onCopyJson,
+  onRefresh,
+  onUpdateRestartPolicy,
+}: {
+  busyKey: string | null;
+  content: DockerContainerDetail | null;
+  error: string | null;
+  loading: boolean;
+  networks: DockerNetworkSummary[];
+  networkValue: string;
+  restartPolicyValue: DockerRestartPolicyKind;
+  target: DockerContainerSummary | null;
+  onChangeNetwork: (value: string) => void;
+  onChangeRestartPolicy: (value: DockerRestartPolicyKind) => void;
+  onClose: () => void;
+  onConnectNetwork: (networkId: string) => void;
+  onCopyJson: () => void;
+  onRefresh: () => void;
+  onUpdateRestartPolicy: () => void;
+}) {
+  const connectedNetworkNames = new Set(content?.networks.map((network) => network.name) || []);
+  const networkOptions = networks
+    .filter((network) => !connectedNetworkNames.has(network.name))
+    .map((network) => ({
+      label: `${network.name}${network.driver ? ` · ${network.driver}` : ""}`,
+      value: network.id || network.name,
+    }));
+  const effectiveNetworkValue =
+    networkOptions.some((option) => option.value === networkValue)
+      ? networkValue
+      : networkOptions[0]?.value || "";
+  const statusRows: Array<[string, string]> = content
+    ? [
+        ["ID", content.id],
+        ["Name", content.name],
+        ["IP address", content.ip_address || "-"],
+        ["Status", formatContainerDetailStatus(content)],
+        ["Created", formatDockerTimestamp(content.created)],
+        ["Start time", formatDockerTimestamp(content.started_at)],
+      ]
+    : [];
+  const detailRows: Array<[string, string]> = content
+    ? [
+        ["Image", content.image || "-"],
+        ["Image ID", content.image_id || "-"],
+        ["CMD", content.command.length ? content.command.join(" ") : "-"],
+        ["Entrypoint", content.entrypoint.length ? content.entrypoint.join(" ") : "-"],
+        ["WorkingDir", content.working_dir || "-"],
+        [
+          "Restart policy",
+          formatRestartPolicy(content.restart_policy.name, content.restart_policy.maximum_retry_count),
+        ],
+      ]
+    : [];
+
+  return (
+    <Dialog.Root open={Boolean(target)} onOpenChange={(open) => !open && onClose()}>
+      <Dialog.Portal>
+        <Dialog.Overlay className="dialog-backdrop" />
+        <Dialog.Content className="docker-detail-dialog">
+          <header className="docker-detail-head">
+            <div className="docker-detail-title">
+              <span className="docker-detail-icon">
+                <Box className="ui-icon" aria-hidden="true" />
+              </span>
+              <div>
+                <Dialog.Title>
+                  {target ? `${target.name || shortDockerId(target.id)} 详情` : "容器详情"}
+                </Dialog.Title>
+                <span>{content?.image || target?.image || "Docker container"}</span>
+              </div>
+            </div>
+            <div className="docker-detail-actions">
+              <Tooltip label="刷新详情">
+                <button
+                  className="toolbox-icon-button"
+                  type="button"
+                  aria-label="刷新详情"
+                  disabled={loading}
+                  onClick={onRefresh}
+                >
+                  <RefreshCw className={`ui-icon ${loading ? "spin" : ""}`} aria-hidden="true" />
+                </button>
+              </Tooltip>
+              <Tooltip label="复制 Inspect JSON">
+                <button
+                  className="toolbox-icon-button"
+                  type="button"
+                  aria-label="复制 Inspect JSON"
+                  disabled={!content?.raw_json}
+                  onClick={onCopyJson}
+                >
+                  <Copy className="ui-icon" aria-hidden="true" />
+                </button>
+              </Tooltip>
+              <Dialog.Close asChild>
+                <button className="toolbox-icon-button" type="button" aria-label="关闭详情">
+                  <X className="ui-icon" aria-hidden="true" />
+                </button>
+              </Dialog.Close>
+            </div>
+          </header>
+          {error ? <div className="docker-detail-error">{error}</div> : null}
+          <div className="docker-detail-body">
+            {loading && !content ? (
+              <ToolboxEmptyState
+                icon={LoaderCircle}
+                title="正在读取详情..."
+                description="正在通过 SSH 执行 docker inspect。"
+              />
+            ) : content ? (
+              <>
+                <DockerDetailSection title="Container status" icon={Box}>
+                  <DockerDetailRows rows={statusRows} />
+                </DockerDetailSection>
+                <DockerDetailSection title="Container details" icon={FileJson}>
+                  <DockerDetailRows rows={detailRows} />
+                </DockerDetailSection>
+                <DockerDetailSection title="Port configuration" icon={Network}>
+                  <DockerPortTable ports={content.ports} />
+                </DockerDetailSection>
+                <DockerDetailSection title="Environment" icon={Settings2}>
+                  <DockerKeyValueTable emptyLabel="没有环境变量。" items={content.env} />
+                </DockerDetailSection>
+                <DockerDetailSection title="Volumes" icon={HardDrive}>
+                  <DockerMountTable mounts={content.mounts} />
+                </DockerDetailSection>
+                <DockerDetailSection title="Connected networks" icon={Network}>
+                  <DockerNetworkTable networks={content.networks} />
+                </DockerDetailSection>
+                <DockerDetailSection title="Labels" icon={FileJson}>
+                  <DockerKeyValueTable emptyLabel="没有标签。" items={content.labels} />
+                </DockerDetailSection>
+                <DockerDetailSection title="Settings" icon={Settings2}>
+                  <div className="docker-detail-settings">
+                    <label>
+                      <span>Restart policy</span>
+                      <DismissableLayerBranch asChild>
+                        <div>
+                          <AppSelect
+                            ariaLabel="Restart policy"
+                            className="docker-detail-select"
+                            options={dockerRestartPolicyOptions}
+                            value={restartPolicyValue}
+                            onChange={onChangeRestartPolicy}
+                          />
+                        </div>
+                      </DismissableLayerBranch>
+                      <button
+                        className="toolbox-mini-button docker-detail-action-button"
+                        type="button"
+                        disabled={busyKey === "restart-policy" || restartPolicyValue === normalizeRestartPolicyKind(content.restart_policy.name)}
+                        onClick={onUpdateRestartPolicy}
+                      >
+                        {busyKey === "restart-policy" ? (
+                          <LoaderCircle className="ui-icon spin" aria-hidden="true" />
+                        ) : (
+                          <Save className="ui-icon" aria-hidden="true" />
+                        )}
+                        更新
+                      </button>
+                    </label>
+                    <label>
+                      <span>Join network</span>
+                      <DismissableLayerBranch asChild>
+                        <div>
+                          <AppSelect
+                            ariaLabel="选择 Docker 网络"
+                            className="docker-detail-select"
+                            disabled={networkOptions.length === 0}
+                            options={networkOptions}
+                            placeholder="没有可加入的网络"
+                            value={effectiveNetworkValue}
+                            onChange={onChangeNetwork}
+                          />
+                        </div>
+                      </DismissableLayerBranch>
+                      <button
+                        className="toolbox-mini-button docker-detail-action-button"
+                        type="button"
+                        disabled={busyKey === "network-connect" || networkOptions.length === 0}
+                        onClick={() => onConnectNetwork(effectiveNetworkValue)}
+                      >
+                        {busyKey === "network-connect" ? (
+                          <LoaderCircle className="ui-icon spin" aria-hidden="true" />
+                        ) : (
+                          <Network className="ui-icon" aria-hidden="true" />
+                        )}
+                        加入
+                      </button>
+                    </label>
+                  </div>
+                </DockerDetailSection>
+              </>
+            ) : (
+              <ToolboxEmptyState
+                icon={Box}
+                title="未选择容器"
+                description="点击容器名称可以查看详情。"
+              />
+            )}
+          </div>
+        </Dialog.Content>
+      </Dialog.Portal>
+    </Dialog.Root>
+  );
+}
+
+function DockerDetailSection({
+  children,
+  icon: Icon,
+  title,
+}: {
+  children: ReactNode;
+  icon: LucideIcon;
+  title: string;
+}) {
+  return (
+    <section className="docker-detail-section">
+      <h3>
+        <Icon className="ui-icon" aria-hidden="true" />
+        {title}
+      </h3>
+      {children}
+    </section>
+  );
+}
+
+function DockerDetailRows({ rows }: { rows: Array<[string, string]> }) {
+  return (
+    <dl className="docker-detail-rows">
+      {rows.map(([label, value]) => (
+        <div key={label}>
+          <dt>{label}</dt>
+          <dd title={value}>{value}</dd>
+        </div>
+      ))}
+    </dl>
+  );
+}
+
+function DockerPortTable({ ports }: { ports: DockerContainerDetail["ports"] }) {
+  if (ports.length === 0) {
+    return <p className="docker-detail-empty">没有端口映射。</p>;
+  }
+  return (
+    <div className="docker-detail-table">
+      <div className="docker-detail-table-head">
+        <span>Container</span>
+        <span>Host</span>
+      </div>
+      {ports.map((port, index) => (
+        <div key={`${port.private_port}-${index.toString()}`}>
+          <code>{port.private_port}</code>
+          <span>{formatPortBinding(port)}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function DockerKeyValueTable({
+  emptyLabel,
+  items,
+}: {
+  emptyLabel: string;
+  items: DockerContainerDetail["env"];
+}) {
+  if (items.length === 0) {
+    return <p className="docker-detail-empty">{emptyLabel}</p>;
+  }
+  return (
+    <div className="docker-detail-table docker-detail-table--key-value">
+      {items.map((item) => (
+        <div key={item.key}>
+          <code>{item.key}</code>
+          <span title={item.sensitive ? "敏感值已脱敏" : item.value}>{item.value}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function DockerMountTable({ mounts }: { mounts: DockerContainerDetail["mounts"] }) {
+  if (mounts.length === 0) {
+    return <p className="docker-detail-empty">没有卷挂载。</p>;
+  }
+  return (
+    <div className="docker-detail-table docker-detail-table--mounts">
+      <div className="docker-detail-table-head">
+        <span>Host / volume</span>
+        <span>Path in container</span>
+        <span>Mode</span>
+      </div>
+      {mounts.map((mount) => (
+        <div key={`${mount.destination}-${mount.source || mount.name || ""}`}>
+          <span title={mount.source || mount.name || "-"}>{mount.source || mount.name || "-"}</span>
+          <code title={mount.destination}>{mount.destination}</code>
+          <span>{mount.rw ? "RW" : "RO"}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function DockerNetworkTable({
+  networks,
+}: {
+  networks: DockerContainerDetail["networks"];
+}) {
+  if (networks.length === 0) {
+    return <p className="docker-detail-empty">没有连接网络。</p>;
+  }
+  return (
+    <div className="docker-detail-table docker-detail-table--networks">
+      <div className="docker-detail-table-head">
+        <span>Network</span>
+        <span>IP Address</span>
+        <span>Gateway</span>
+        <span>MAC Address</span>
+      </div>
+      {networks.map((network) => (
+        <div key={network.name}>
+          <code>{network.name}</code>
+          <span>{network.ip_address || "-"}</span>
+          <span>{network.gateway || "-"}</span>
+          <span>{network.mac_address || "-"}</span>
+        </div>
+      ))}
     </div>
   );
 }
@@ -1928,8 +2914,16 @@ function formatContainerDetailLine(container: DockerContainerSummary) {
 }
 
 function formatContainerDetailTitle(container: DockerContainerSummary) {
-  const parts = [container.status, container.ports || ""].filter(Boolean);
+  const parts = [
+    container.status,
+    container.ports || "",
+    formatContainerCardTime(container),
+  ].filter(Boolean);
   return parts.join(" · ");
+}
+
+function formatContainerCardTime(container: DockerContainerSummary) {
+  return container.running_for || container.created_at || "";
 }
 
 function formatContainerPorts(ports: string | null | undefined) {
@@ -1972,6 +2966,132 @@ function formatImageReference(image: DockerImageSummary) {
     return `${repository}:${tag}`;
   }
   return repository || shortDockerId(image.id);
+}
+
+function formatImageRepository(image: DockerImageSummary) {
+  return image.repository && image.repository !== "<none>"
+    ? image.repository
+    : shortDockerId(image.id);
+}
+
+function formatImageTag(image: DockerImageSummary) {
+  return image.tag && image.tag !== "<none>" ? image.tag : "untagged";
+}
+
+function formatImageCreated(image: DockerImageSummary) {
+  return image.created_since || image.created_at || "";
+}
+
+function createImageRunDraft(image: string): DockerImageRunDraft {
+  return {
+    image,
+    name: image ? defaultContainerNameForImage(image) : "",
+    command: "",
+    entrypoint: "",
+    network: dockerRunDefaultNetworkValue,
+    restart_policy: "no",
+    privileged: false,
+    ports: [],
+    env: [],
+    volumes: [],
+  };
+}
+
+function defaultContainerNameForImage(image: string) {
+  const base = image
+    .replace(/^sha256:/, "")
+    .split(/[/:@]/)
+    .find((part) => part.trim().length > 0);
+  const normalized = (base || "container")
+    .toLowerCase()
+    .replace(/[^a-z0-9_.-]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 42);
+  return `${normalized || "container"}-quick`;
+}
+
+function preferredDockerRunNetwork(networks: DockerNetworkSummary[]) {
+  const bridge = networks.find((network) => network.name === "bridge");
+  const first = bridge || networks[0];
+  return first ? first.id || first.name : dockerRunDefaultNetworkValue;
+}
+
+function normalizeImageRunDraft(draft: DockerImageRunDraft): DockerImageRunRequest | string {
+  const image = draft.image.trim();
+  if (!image) {
+    return "请选择镜像。";
+  }
+  const ports = normalizeImageRunPairs(
+    draft.ports,
+    "host_port",
+    "container_port",
+    "请补全端口映射。",
+  );
+  if (typeof ports === "string") {
+    return ports;
+  }
+  const env = normalizeImageRunPairs(draft.env, "key", "value", "请补全环境变量。");
+  if (typeof env === "string") {
+    return env;
+  }
+  if (env.some((item) => item.key.includes("="))) {
+    return "环境变量名不能包含等号。";
+  }
+  const volumes = normalizeImageRunPairs(
+    draft.volumes,
+    "host_path",
+    "container_path",
+    "请补全数据卷路径。",
+  );
+  if (typeof volumes === "string") {
+    return volumes;
+  }
+
+  return {
+    image,
+    name: normalizeOptionalString(draft.name),
+    command: normalizeOptionalString(draft.command),
+    entrypoint: normalizeOptionalString(draft.entrypoint),
+    network:
+      draft.network && draft.network !== dockerRunDefaultNetworkValue
+        ? draft.network.trim()
+        : null,
+    restart_policy: draft.restart_policy || "no",
+    privileged: draft.privileged,
+    ports,
+    env,
+    volumes,
+  };
+}
+
+function normalizeImageRunPairs<T, K1 extends keyof T, K2 extends keyof T>(
+  items: T[],
+  leftKey: K1,
+  rightKey: K2,
+  errorMessage: string,
+): T[] | string {
+  const result: T[] = [];
+  for (const item of items) {
+    const left = String(item[leftKey] ?? "").trim();
+    const right = String(item[rightKey] ?? "").trim();
+    if (!left && !right) {
+      continue;
+    }
+    if (!left || !right) {
+      return errorMessage;
+    }
+    result.push({
+      ...item,
+      [leftKey]: left,
+      [rightKey]: right,
+    } as T);
+  }
+  return result;
+}
+
+function normalizeOptionalString(value: string | null | undefined) {
+  const trimmed = value?.trim() || "";
+  return trimmed ? trimmed : null;
 }
 
 function createDockerPullId() {
@@ -2027,6 +3147,47 @@ function trimDockerLogContent(content: string) {
     return content;
   }
   return content.slice(content.length - maxLogChars);
+}
+
+function normalizeRestartPolicyKind(value: string | null | undefined): DockerRestartPolicyKind {
+  if (
+    value === "always" ||
+    value === "unless-stopped" ||
+    value === "on-failure" ||
+    value === "no"
+  ) {
+    return value;
+  }
+  return "no";
+}
+
+function formatRestartPolicy(name: string, maximumRetryCount?: number | null) {
+  if (name === "on-failure" && maximumRetryCount) {
+    return `${name} (${maximumRetryCount.toString()})`;
+  }
+  return name || "no";
+}
+
+function formatDockerTimestamp(value: string | null | undefined) {
+  if (!value) {
+    return "-";
+  }
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return value;
+  }
+  return date.toLocaleString();
+}
+
+function formatContainerDetailStatus(detail: DockerContainerDetail) {
+  return `${detail.running ? "Running" : "Stopped"} · ${detail.status || "unknown"}`;
+}
+
+function formatPortBinding(port: DockerContainerDetail["ports"][number]) {
+  if (!port.host_port) {
+    return "-";
+  }
+  return `${port.host_ip || "0.0.0.0"}:${port.host_port}`;
 }
 
 function formatPullStatus(status: DockerImagePullStatus) {
@@ -2271,4 +3432,65 @@ function previewDockerLogs(container: DockerContainerSummary): DockerLogsResult 
       `${container.name}: request completed in 18ms`,
     ].join("\n"),
   };
+}
+
+function previewDockerContainerDetail(container: DockerContainerSummary): DockerContainerDetail {
+  const now = new Date().toISOString();
+  return {
+    id: container.id,
+    name: container.name || shortDockerId(container.id),
+    image: container.image,
+    image_id: "sha256:51d7f7f8d3a0d0f4e3b2a1c9e8f7d6c5b4a392817263544536271809aabbccdd",
+    created: container.created_at || now,
+    started_at: isContainerRunning(container) ? now : null,
+    finished_at: isContainerRunning(container) ? null : now,
+    status: container.status,
+    running: isContainerRunning(container),
+    ip_address: "172.17.0.4",
+    command: container.command ? [container.command] : ["/bin/sh", "-c", "sleep infinity"],
+    entrypoint: [],
+    working_dir: "/app",
+    restart_policy: {
+      name: "unless-stopped",
+      maximum_retry_count: 0,
+    },
+    ports: [
+      {
+        private_port: "80/tcp",
+        host_ip: "0.0.0.0",
+        host_port: "8080",
+      },
+    ],
+    env: [
+      { key: "PATH", value: "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin", sensitive: false },
+      { key: "APP_TOKEN", value: "******", sensitive: true },
+    ],
+    mounts: [
+      {
+        kind: "bind",
+        source: "/opt/app/data",
+        destination: "/app/data",
+        name: null,
+        driver: null,
+        rw: true,
+      },
+    ],
+    networks: [
+      {
+        name: "bridge",
+        ip_address: "172.17.0.4",
+        gateway: "172.17.0.1",
+        mac_address: "02:42:ac:11:00:04",
+      },
+    ],
+    labels: [{ key: "com.docker.compose.project", value: "preview", sensitive: false }],
+    raw_json: JSON.stringify({ Id: container.id, Name: container.name, Image: container.image }, null, 2),
+  };
+}
+
+function previewDockerNetworks(): DockerNetworkSummary[] {
+  return [
+    { id: "bridge", name: "bridge", driver: "bridge", scope: "local" },
+    { id: "app_net", name: "app_net", driver: "bridge", scope: "local" },
+  ];
 }

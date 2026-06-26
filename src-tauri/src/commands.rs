@@ -22,11 +22,13 @@ use crate::connections::{
 use crate::credentials::{CredentialProfile, CredentialProfileInput};
 use crate::docker_tools::{
     DockerActionResult, DockerConnectionRequest, DockerContainerActionRequest,
-    DockerContainerLogsRequest, DockerContainerLogsSaveRequest, DockerContainerLogsStartRequest,
-    DockerContainerLogsStopRequest, DockerContainerSummary, DockerEngineActionRequest,
-    DockerEngineConfigRequest, DockerEngineConfigResult, DockerEngineSaveConfigRequest,
-    DockerEngineStatus, DockerExecSessionManager, DockerImagePullRequest, DockerImageRemoveRequest,
-    DockerImageSummary, DockerLogStreamManager, DockerLogsResult,
+    DockerContainerDetail, DockerContainerInspectRequest, DockerContainerLogsRequest,
+    DockerContainerLogsSaveRequest, DockerContainerLogsStartRequest,
+    DockerContainerLogsStopRequest, DockerContainerRestartPolicyRequest, DockerContainerSummary,
+    DockerEngineActionRequest, DockerEngineConfigRequest, DockerEngineConfigResult,
+    DockerEngineSaveConfigRequest, DockerEngineStatus, DockerExecSessionManager,
+    DockerImagePullRequest, DockerImageRemoveRequest, DockerImageRunRequest, DockerImageSummary,
+    DockerLogStreamManager, DockerLogsResult, DockerNetworkConnectRequest, DockerNetworkSummary,
 };
 use crate::events::RemoteFileTransferProgressEvent;
 use crate::known_hosts::HostKeyInfo;
@@ -710,6 +712,42 @@ pub async fn docker_container_logs(
 }
 
 #[tauri::command]
+pub async fn docker_container_inspect(
+    app: AppHandle,
+    manager: State<'_, DockerExecSessionManager>,
+    request: DockerContainerInspectRequest,
+) -> Result<DockerContainerDetail, AppError> {
+    crate::docker_tools::container_inspect(&app, &manager, request).await
+}
+
+#[tauri::command]
+pub async fn docker_container_update_restart_policy(
+    app: AppHandle,
+    manager: State<'_, DockerExecSessionManager>,
+    request: DockerContainerRestartPolicyRequest,
+) -> Result<DockerActionResult, AppError> {
+    crate::docker_tools::container_update_restart_policy(&app, &manager, request).await
+}
+
+#[tauri::command]
+pub async fn docker_list_networks(
+    app: AppHandle,
+    manager: State<'_, DockerExecSessionManager>,
+    request: DockerConnectionRequest,
+) -> Result<Vec<DockerNetworkSummary>, AppError> {
+    crate::docker_tools::list_networks(&app, &manager, request).await
+}
+
+#[tauri::command]
+pub async fn docker_container_connect_network(
+    app: AppHandle,
+    manager: State<'_, DockerExecSessionManager>,
+    request: DockerNetworkConnectRequest,
+) -> Result<DockerActionResult, AppError> {
+    crate::docker_tools::container_connect_network(&app, &manager, request).await
+}
+
+#[tauri::command]
 pub async fn docker_container_logs_start(
     app: AppHandle,
     manager: State<'_, DockerLogStreamManager>,
@@ -747,6 +785,15 @@ pub async fn docker_image_remove(
     request: DockerImageRemoveRequest,
 ) -> Result<DockerActionResult, AppError> {
     crate::docker_tools::image_remove(&app, &manager, request).await
+}
+
+#[tauri::command]
+pub async fn docker_image_run(
+    app: AppHandle,
+    manager: State<'_, DockerExecSessionManager>,
+    request: DockerImageRunRequest,
+) -> Result<DockerActionResult, AppError> {
+    crate::docker_tools::image_run(&app, &manager, request).await
 }
 
 #[tauri::command]

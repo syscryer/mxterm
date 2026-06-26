@@ -2167,6 +2167,10 @@ docker_container_logs(app: AppHandle, manager: State<DockerExecSessionManager>, 
 docker_container_logs_start(app: AppHandle, manager: State<DockerLogStreamManager>, request: DockerContainerLogsStartRequest) -> Result<(), AppError>
 docker_container_logs_stop(manager: State<DockerLogStreamManager>, request: DockerContainerLogsStopRequest) -> Result<(), AppError>
 docker_container_logs_save(request: DockerContainerLogsSaveRequest) -> Result<(), AppError>
+docker_container_inspect(app: AppHandle, manager: State<DockerExecSessionManager>, request: DockerContainerInspectRequest) -> Result<DockerContainerDetail, AppError>
+docker_container_update_restart_policy(app: AppHandle, manager: State<DockerExecSessionManager>, request: DockerContainerRestartPolicyRequest) -> Result<DockerActionResult, AppError>
+docker_list_networks(app: AppHandle, manager: State<DockerExecSessionManager>, request: DockerConnectionRequest) -> Result<Vec<DockerNetworkSummary>, AppError>
+docker_container_connect_network(app: AppHandle, manager: State<DockerExecSessionManager>, request: DockerNetworkConnectRequest) -> Result<DockerActionResult, AppError>
 docker_image_pull(app: AppHandle, manager: State<DockerExecSessionManager>, request: DockerImagePullRequest) -> Result<DockerActionResult, AppError>
 docker_image_remove(app: AppHandle, manager: State<DockerExecSessionManager>, request: DockerImageRemoveRequest) -> Result<DockerActionResult, AppError>
 docker_engine_status(app: AppHandle, manager: State<DockerExecSessionManager>, request: DockerConnectionRequest) -> Result<DockerEngineStatus, AppError>
@@ -2211,25 +2215,48 @@ DockerContainerLogsSaveRequest {
 }
 ```
 
+`DockerImageRunRequest` starts a detached container from an image:
+
+```rust
+DockerImageRunRequest {
+    connection_id: String,
+    image: String,
+    name: Option<String>,
+    command: Option<String>,
+    entrypoint: Option<String>,
+    network: Option<String>,
+    restart_policy: Option<DockerRestartPolicyKind>,
+    privileged: bool,
+    ports: Vec<DockerImageRunPort>,
+    env: Vec<DockerImageRunKeyValue>,
+    volumes: Vec<DockerImageRunVolume>,
+}
+```
+
 ### 3. Contracts
 
 - Docker commands accept a saved `connection_id` only. They must not accept SSH passwords, private-key passphrases, proxy passwords, or raw SSH target fields.
 - Commands must call `resolve_saved_connection(app, connection_id, None)` and execute through `DockerExecSessionManager`, backed by `RemoteExecSessionPool`, so proxy, SSH jump, known-host verification, vault secrets, and timeouts match terminal/remote-file behavior without creating a fresh SSH exec connection for every Docker command.
 - `RemoteExecSessionPool` caches sessions by saved `connection_id`, validates `ResolvedSshConfig::signature()` before reuse, expires idle sessions, tracks in-flight commands, and invalidates cached sessions after SSH exec failures. Idle cleanup must not close a session while a command such as `docker pull` is still running.
-- Read-only Docker commands may reconnect and retry once when a cached SSH exec session is stale: container list, image list, container logs, engine status, and engine config read. Side-effecting commands must not auto-retry after an exec failure: container start/stop/restart/remove, image pull/remove, engine start/stop/restart, and engine config save.
+- Read-only Docker commands may reconnect and retry once when a cached SSH exec session is stale: container list, image list, container logs, container inspect, network list, engine status, and engine config read. Side-effecting commands must not auto-retry after an exec failure: container start/stop/restart/remove, restart-policy update, network connect, image pull/remove, engine start/stop/restart, and engine config save.
 - Live container log streams use `DockerLogStreamManager`, not the shared short-command `DockerExecSessionManager`. A `docker logs -f` command must have its own `ReusableExecSession` so an open log dialog cannot block container/image refreshes on the pooled exec-session mutex.
 - `docker_container_logs_start` must quote the container id, run `docker logs -f --tail <tail> -- <container> 2>&1`, stream stdout chunks through `docker:log_stream`, and avoid accumulating unbounded stdout in memory. `tail = 0` is valid for resuming realtime output without replaying historical log lines.
 - `docker_container_logs_stop` must be idempotent for unknown or already-closed `stream_id` values, but blank `stream_id` remains a validation error. Stopping a stream must close the SSH exec session so the remote `docker logs -f` process exits.
 - `docker_container_logs_save` writes UTF-8 text to the selected local file path only. It must validate a nonblank path and nonempty content, must not execute remote Docker commands, and must not accept SSH credential fields.
+- `docker_container_inspect` must quote the container id, run `docker inspect -- <container>`, parse the first JSON array item into a structured `DockerContainerDetail`, mask sensitive environment values, and keep a pretty `raw_json` copy for explicit user copy actions only.
+- `docker_container_update_restart_policy` may accept only `no`, `always`, `unless-stopped`, or `on-failure`, then run `docker update --restart <policy> -- <container>` without automatic retry.
+- `docker_list_networks` must parse newline-delimited JSON from `docker network ls --format '{{json .}}'`; do not parse table output.
+- `docker_container_connect_network` must quote both network id/name and container id, then run `docker network connect <network> <container>` without automatic retry.
+- `docker_image_run` must quote every image, name, entrypoint, network, port, env, volume, and command value before building `docker run -d ...`. It is a side-effecting command and must not auto-retry after an exec failure.
 - When a live log stream finishes naturally, Rust should remove it from `DockerLogStreamManager` and emit `kind = "finished"` unless the stream was explicitly stopped. On stream errors, emit `kind = "error"` with a user-facing message.
 - Do not hold storage locks across SSH connection or remote command execution.
-- User-controlled Docker arguments such as container id, image id, and image name must be quoted with the shared POSIX shell quoting helper before being appended to the command string.
+- User-controlled Docker arguments such as container id, image id, image name, and network id/name must be quoted with the shared POSIX shell quoting helper before being appended to the command string.
 - Container/image listing must parse newline-delimited JSON produced by Docker's `--format '{{json .}}'`; do not parse table output.
 - Image pull must merge Docker CLI progress output into stdout, parse line/carriage-return updates, and emit progress events. Percent is best-effort from current-layer `loaded/total` output only; do not invent a total pull percentage when Docker does not provide one.
 - Engine status may collect service state, `docker info`, network/volume counts, daemon process usage, Docker root disk usage, and Docker system disk usage. It should return a structured status with `raw_error` for partial failures instead of failing the whole status panel when one optional probe fails.
 - Engine service actions use `systemctl start|stop|restart docker` in v1. Do not implement sudo password prompts or silently fall back to another service manager without a new contract update.
 - Engine config reads and writes are limited to `/etc/docker/daemon.json`. Save must validate JSON before remote execution, write through a temporary file, and back up the previous config before overwriting.
-- Delete operations are single-item only. Do not add prune, batch delete, build, push, compose, volume, or network management without a new task and contract update.
+- Delete operations are single-item only. Network management is limited to joining an existing network from the container detail dialog. Do not add prune, batch delete, build, push, compose, volume, network create, network remove, or network disconnect without a new task and contract update.
 - Tauri commands must be registered in both `src-tauri/src/commands.rs` and `src-tauri/src/lib.rs`, with matching typed wrappers in `src/shared/tauri/commands.ts`.
 
 ### 4. Validation & Error Matrix
@@ -2242,12 +2269,18 @@ DockerContainerLogsSaveRequest {
 | Blank log save path | `docker_log_save_path_missing` | true |
 | Empty log save content | `docker_log_save_content_missing` | true |
 | Log save write fails | `docker_log_save_failed` | true |
+| Blank network id/name | `docker_network_missing` | true |
 | Blank image name/id | `docker_image_missing` | true |
+| Image quick run port/env/volume row is incomplete | `docker_run_port_invalid` / `docker_run_env_invalid` / `docker_run_volume_invalid` | true |
 | Remote `docker` command missing | `docker_command_missing` | true |
 | Docker daemon permission denied | `docker_permission_denied` | true |
 | Docker reports missing container | `docker_container_missing` | true |
 | Docker reports missing image | `docker_image_missing` | true |
-| Docker JSON line cannot parse | `docker_container_parse_failed` / `docker_image_parse_failed` | true |
+| Docker reports missing network | `docker_network_missing` | true |
+| Docker JSON line cannot parse | `docker_container_parse_failed` / `docker_image_parse_failed` / `docker_network_parse_failed` | true |
+| Docker inspect JSON cannot parse | `docker_container_inspect_parse_failed` | true |
+| Docker inspect returns an empty array | `docker_container_inspect_empty` | true |
+| Container inspect, restart policy update, network list, or network connect fails | `docker_container_inspect_failed` / `docker_container_restart_policy_failed` / `docker_network_list_failed` / `docker_network_connect_failed` | true |
 | Other non-zero Docker command status | operation-specific `docker_*_failed` | true |
 | Live log stream command exits non-zero | `docker:log_stream` event with `kind = "error"` | true |
 | Invalid daemon config JSON | `docker_engine_config_json_invalid` | true |
@@ -2259,6 +2292,9 @@ DockerContainerLogsSaveRequest {
 - Good: `docker_container_action` receives only `connection_id`, `container_id`, and `action`, resolves the saved connection, quotes the container id, executes the Docker CLI, and returns a structured `DockerActionResult`.
 - Good: `docker_container_logs_start` opens a dedicated exec session for `docker logs -f`, emits chunks without buffering the full stream, and `docker_container_logs_stop` closes that session when the UI closes the dialog.
 - Good: `docker_container_logs_save` writes the current UI log buffer to the chosen local path without touching the remote SSH session.
+- Good: `docker_container_inspect` returns a structured detail payload plus copied raw inspect JSON, with sensitive environment values masked before React receives them.
+- Good: `docker_container_update_restart_policy` and `docker_container_connect_network` use saved `connection_id`, quote every user-controlled CLI argument, and do not auto-retry side effects after an exec failure.
+- Good: `docker_image_run` receives only saved `connection_id` plus structured run options, quotes all user-controlled Docker CLI arguments, executes `docker run -d`, and returns the container id/output through `DockerActionResult.output`.
 - Good: list commands parse Docker JSON lines and fail on malformed nonblank output with a recoverable parse error that includes a truncated raw line.
 - Good: `docker_engine_status` tolerates partial probe failures and surfaces them through `raw_error`, while mutating commands still fail explicitly.
 - Good: `docker_engine_save_config` validates JSON and backs up the existing daemon config before replacing it.
@@ -2269,8 +2305,10 @@ DockerContainerLogsSaveRequest {
 ### 6. Tests Required
 
 - Unit-test container and image JSON-line parsing, including empty output and malformed nonblank lines.
+- Unit-test container inspect parsing, sensitive environment masking, and Docker network JSON-line parsing.
+- Unit-test image quick-run command construction, including quoting for spaces and single quotes.
 - Cross-check backend request/response field names with `src/features/tools/dockerTypes.ts` and `src/shared/tauri/commands.ts`.
-- Source-check Docker log stream command/event registration through `node scripts/check-docker-tool-refresh-source.mjs`.
+- Source-check Docker refresh, log stream, detail command, and command registration contracts through `node scripts/check-docker-tool-refresh-source.mjs`.
 - Run `cargo fmt --manifest-path src-tauri/Cargo.toml --check` after changing Docker backend code.
 - Run `cargo check --manifest-path src-tauri/Cargo.toml` after adding or changing Docker command registrations, event structs, or stream manager state.
 - Run targeted Rust tests for `docker_tools` when Rust test runs are approved for the session.
