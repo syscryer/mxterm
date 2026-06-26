@@ -397,17 +397,23 @@ impl StorageRepository {
                 .map(serde_json::to_string)
                 .transpose()
                 .map_err(sqlite_serialize_error)?;
+            let vnc_json = connection
+                .vnc
+                .as_ref()
+                .map(serde_json::to_string)
+                .transpose()
+                .map_err(sqlite_serialize_error)?;
             self.connection
                 .execute(
                     "INSERT INTO connections(
                         id, name, protocol, group_id, host, port, username, credential_mode, credential_id,
                         inline_auth_kind, inline_secret_ref, inline_secret_slot_id,
                         inline_private_key_path, prompt_auth_kind, proxy_json, jump_json,
-                        advanced_json, rdp_json, notes, is_favorite, last_connected_at, remote_os_id,
+                        advanced_json, rdp_json, vnc_json, notes, is_favorite, last_connected_at, remote_os_id,
                         remote_os_name, remote_os_version, created_at, updated_at
                     ) VALUES (
                         ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12,
-                        ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26
+                        ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27
                     )",
                     params![
                         connection.id,
@@ -428,6 +434,7 @@ impl StorageRepository {
                         jump_json,
                         advanced_json,
                         rdp_json,
+                        vnc_json,
                         connection.notes,
                         if connection.is_favorite { 1 } else { 0 },
                         connection.last_connected_at,
@@ -562,7 +569,8 @@ impl StorageRepository {
             .prepare(
                 "SELECT id, name, protocol, group_id, host, port, username, credential_mode, credential_id,
                         inline_auth_kind, inline_secret_slot_id, inline_private_key_path,
-                        prompt_auth_kind, proxy_json, jump_json, advanced_json, rdp_json, notes,
+                        prompt_auth_kind, proxy_json, jump_json, advanced_json, rdp_json, vnc_json,
+                        notes,
                         is_favorite, last_connected_at, remote_os_id, remote_os_name,
                         remote_os_version, created_at, updated_at
                    FROM connections ORDER BY created_at ASC, name ASC",
@@ -578,6 +586,7 @@ impl StorageRepository {
                 let jump_json: String = row.get(14)?;
                 let advanced_json: String = row.get(15)?;
                 let rdp_json: Option<String> = row.get(16)?;
+                let vnc_json: Option<String> = row.get(17)?;
                 let mut proxy: crate::connections::ConnectionProxyConfig =
                     serde_json::from_str(&proxy_json).map_err(from_serde_row_error)?;
                 proxy.password = None;
@@ -603,14 +612,15 @@ impl StorageRepository {
                     jump: serde_json::from_str(&jump_json).map_err(from_serde_row_error)?,
                     advanced: serde_json::from_str(&advanced_json).map_err(from_serde_row_error)?,
                     rdp: parse_optional_json(rdp_json)?,
-                    notes: row.get(17)?,
-                    is_favorite: row.get::<_, i64>(18)? != 0,
-                    last_connected_at: row.get(19)?,
-                    remote_os_id: row.get(20)?,
-                    remote_os_name: row.get(21)?,
-                    remote_os_version: row.get(22)?,
-                    created_at: row.get(23)?,
-                    updated_at: row.get(24)?,
+                    vnc: parse_optional_json(vnc_json)?,
+                    notes: row.get(18)?,
+                    is_favorite: row.get::<_, i64>(19)? != 0,
+                    last_connected_at: row.get(20)?,
+                    remote_os_id: row.get(21)?,
+                    remote_os_name: row.get(22)?,
+                    remote_os_version: row.get(23)?,
+                    created_at: row.get(24)?,
+                    updated_at: row.get(25)?,
                 })
             })
             .map_err(sqlite_repository_error)?;
@@ -737,6 +747,12 @@ impl StorageRepository {
             .map(serde_json::to_string)
             .transpose()
             .map_err(sqlite_serialize_error)?;
+        let vnc_json = validated
+            .vnc
+            .as_ref()
+            .map(serde_json::to_string)
+            .transpose()
+            .map_err(sqlite_serialize_error)?;
 
         self.connection
             .execute(
@@ -744,11 +760,11 @@ impl StorageRepository {
                     id, name, protocol, group_id, host, port, username, credential_mode, credential_id,
                     inline_auth_kind, inline_secret_ref, inline_secret_slot_id,
                     inline_private_key_path, prompt_auth_kind, proxy_json, jump_json,
-                    advanced_json, rdp_json, notes, is_favorite, last_connected_at, remote_os_id,
+                    advanced_json, rdp_json, vnc_json, notes, is_favorite, last_connected_at, remote_os_id,
                     remote_os_name, remote_os_version, created_at, updated_at
                 ) VALUES (
                     ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12,
-                    ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26
+                    ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27
                 )
                 ON CONFLICT(id) DO UPDATE SET
                     name = excluded.name,
@@ -768,6 +784,7 @@ impl StorageRepository {
                     jump_json = excluded.jump_json,
                     advanced_json = excluded.advanced_json,
                     rdp_json = excluded.rdp_json,
+                    vnc_json = excluded.vnc_json,
                     notes = excluded.notes,
                     is_favorite = excluded.is_favorite,
                     last_connected_at = excluded.last_connected_at,
@@ -797,6 +814,7 @@ impl StorageRepository {
                     jump_json,
                     advanced_json,
                     rdp_json,
+                    vnc_json,
                     validated.notes,
                     if is_favorite { 1 } else { 0 },
                     last_connected_at,
@@ -826,7 +844,7 @@ impl StorageRepository {
                 "SELECT c.id, c.name, c.protocol, g.name, c.host, c.port, c.username,
                         c.credential_mode, c.credential_id, c.inline_auth_kind,
                         c.inline_private_key_path, c.prompt_auth_kind, c.proxy_json,
-                        c.jump_json, c.advanced_json, c.rdp_json, c.notes, c.is_favorite,
+                        c.jump_json, c.advanced_json, c.rdp_json, c.vnc_json, c.notes, c.is_favorite,
                         c.last_connected_at, c.remote_os_id, c.remote_os_name,
                         c.remote_os_version, c.created_at, c.updated_at
                    FROM connections c
@@ -960,7 +978,7 @@ impl StorageRepository {
                 "SELECT c.id, c.name, c.protocol, g.name, c.host, c.port, c.username,
                         c.credential_mode, c.credential_id, c.inline_auth_kind,
                         c.inline_private_key_path, c.prompt_auth_kind, c.proxy_json,
-                        c.jump_json, c.advanced_json, c.rdp_json, c.notes, c.is_favorite,
+                        c.jump_json, c.advanced_json, c.rdp_json, c.vnc_json, c.notes, c.is_favorite,
                         c.last_connected_at, c.remote_os_id, c.remote_os_name,
                         c.remote_os_version, c.created_at, c.updated_at
                    FROM connections c
@@ -1319,6 +1337,71 @@ impl StorageRepository {
         }
     }
 
+    pub fn resolve_vnc_connection_secret(
+        &self,
+        connection_id: &str,
+    ) -> Result<Option<String>, AppError> {
+        let (profile, inline_secret_ref) = self.stored_connection(connection_id)?;
+        if profile.protocol != ConnectionProtocol::Vnc {
+            return Err(connection_protocol_unsupported(
+                connection_id,
+                &profile.protocol,
+            ));
+        }
+
+        match profile.credential_mode {
+            ConnectionCredentialMode::Prompt => Ok(None),
+            ConnectionCredentialMode::Inline => match profile.inline_auth_kind {
+                Some(ConnectionAuthKind::Password) => {
+                    let reference = inline_secret_ref.ok_or_else(|| {
+                        AppError::new(
+                            "secret_missing",
+                            "系统凭据不存在。",
+                            format!("connection_id={}", profile.id),
+                            true,
+                        )
+                    })?;
+                    Ok(Some(self.secret_store.get_secret(&reference)?))
+                }
+                Some(ConnectionAuthKind::PrivateKey) => Err(AppError::new(
+                    "vnc_credential_kind_unsupported",
+                    "VNC 连接不支持私钥凭据。",
+                    format!("connection_id={}", profile.id),
+                    true,
+                )),
+                None => Ok(None),
+            },
+            ConnectionCredentialMode::Saved => {
+                let credential_id = profile.credential_id.as_deref().ok_or_else(|| {
+                    AppError::new(
+                        "connection_credential_missing",
+                        "连接缺少保存的凭据。",
+                        format!("connection_id={}", profile.id),
+                        true,
+                    )
+                })?;
+                let (credential, secret_ref) = self.stored_credential(credential_id)?;
+                if credential.kind != ConnectionAuthKind::Password {
+                    return Err(AppError::new(
+                        "vnc_credential_kind_unsupported",
+                        "VNC 连接仅支持保存的密码凭据。",
+                        format!("credential_id={credential_id}, kind={:?}", credential.kind),
+                        true,
+                    ));
+                }
+                let reference = secret_ref.ok_or_else(|| {
+                    AppError::new(
+                        "secret_missing",
+                        "系统凭据不存在。",
+                        format!("credential_id={credential_id}"),
+                        true,
+                    )
+                })?;
+                Ok(Some(self.secret_store.get_secret(&reference)?))
+            }
+        }
+    }
+
     pub fn resolve_transient_connection(
         &self,
         input: ConnectionProfileInput,
@@ -1355,6 +1438,7 @@ impl StorageRepository {
             jump: validated.jump,
             advanced: validated.advanced,
             rdp: validated.rdp,
+            vnc: validated.vnc,
             notes: validated.notes,
             is_favorite: false,
             last_connected_at: None,
@@ -1563,7 +1647,7 @@ impl StorageRepository {
                 "SELECT c.id, c.name, c.protocol, g.name, c.host, c.port, c.username,
                         c.credential_mode, c.credential_id, c.inline_auth_kind,
                         c.inline_private_key_path, c.prompt_auth_kind, c.proxy_json,
-                        c.jump_json, c.advanced_json, c.rdp_json, c.notes, c.is_favorite,
+                        c.jump_json, c.advanced_json, c.rdp_json, c.vnc_json, c.notes, c.is_favorite,
                         c.last_connected_at, c.remote_os_id, c.remote_os_name,
                         c.remote_os_version, c.created_at, c.updated_at,
                         c.inline_secret_ref, c.inline_secret_slot_id
@@ -1573,8 +1657,8 @@ impl StorageRepository {
                 params![id],
                 |row| {
                     let profile = row_to_connection_profile(row)?;
-                    let account: Option<String> = row.get(24)?;
-                    let slot_id: Option<String> = row.get(25)?;
+                    let account: Option<String> = row.get(25)?;
+                    let slot_id: Option<String> = row.get(26)?;
                     let reference = account.map(|account| SecretReference {
                         service: VAULT_SERVICE,
                         slot_id: slot_id.unwrap_or_else(|| account.clone()),
@@ -2280,6 +2364,7 @@ fn row_to_connection_profile(row: &rusqlite::Row<'_>) -> rusqlite::Result<Connec
     let jump_json: String = row.get(13)?;
     let advanced_json: String = row.get(14)?;
     let rdp_json: Option<String> = row.get(15)?;
+    let vnc_json: Option<String> = row.get(16)?;
     Ok(ConnectionProfile {
         id: row.get(0)?,
         name: row.get(1)?,
@@ -2301,14 +2386,15 @@ fn row_to_connection_profile(row: &rusqlite::Row<'_>) -> rusqlite::Result<Connec
         jump: serde_json::from_str(&jump_json).map_err(from_serde_row_error)?,
         advanced: serde_json::from_str(&advanced_json).map_err(from_serde_row_error)?,
         rdp: parse_optional_json(rdp_json)?,
-        notes: row.get(16)?,
-        is_favorite: row.get::<_, i64>(17)? != 0,
-        last_connected_at: row.get(18)?,
-        remote_os_id: row.get(19)?,
-        remote_os_name: row.get(20)?,
-        remote_os_version: row.get(21)?,
-        created_at: row.get(22)?,
-        updated_at: row.get(23)?,
+        vnc: parse_optional_json(vnc_json)?,
+        notes: row.get(17)?,
+        is_favorite: row.get::<_, i64>(18)? != 0,
+        last_connected_at: row.get(19)?,
+        remote_os_id: row.get(20)?,
+        remote_os_name: row.get(21)?,
+        remote_os_version: row.get(22)?,
+        created_at: row.get(23)?,
+        updated_at: row.get(24)?,
         auth_kind: None,
         password: None,
         private_key_path: None,
@@ -2682,7 +2768,7 @@ mod tests {
     use crate::connections::{
         ConnectionAdvancedConfig, ConnectionAuthKind, ConnectionCredentialMode,
         ConnectionJumpConfig, ConnectionProfileInput, ConnectionProtocol, ConnectionProxyConfig,
-        RdpConnectionConfig,
+        RdpConnectionConfig, VncConnectionConfig, VncPerformanceConfig, VncPerformancePreset,
     };
     use crate::storage_vault::{InMemorySecretStore, SecretStore};
 
@@ -2886,6 +2972,85 @@ mod tests {
         assert_eq!(saved.credential_mode, ConnectionCredentialMode::Saved);
         assert_eq!(
             repo.resolve_rdp_connection_secret(&saved.id).unwrap(),
+            Some("secret".to_string())
+        );
+    }
+
+    #[test]
+    fn vnc_connection_roundtrips_with_inline_password_secret() {
+        let (repo, _db_path, _secrets) = temp_repository("vnc-roundtrip");
+
+        let saved = repo
+            .connection_upsert(
+                ConnectionProfileInput {
+                    id: Some("vnc-001".to_string()),
+                    protocol: ConnectionProtocol::Vnc,
+                    port: 5900,
+                    username: "vncuser".to_string(),
+                    vnc: Some(VncConnectionConfig {
+                        performance: VncPerformanceConfig {
+                            preset: VncPerformancePreset::LowBandwidth,
+                            quality_level: Some(4),
+                            compression_level: Some(6),
+                        },
+                        ..VncConnectionConfig::default()
+                    }),
+                    ..password_connection_input()
+                },
+                "2026-06-26T00:00:00+08:00",
+            )
+            .unwrap();
+
+        assert_eq!(saved.protocol, ConnectionProtocol::Vnc);
+        assert_eq!(saved.credential_mode, ConnectionCredentialMode::Inline);
+        assert_eq!(saved.inline_auth_kind, Some(ConnectionAuthKind::Password));
+        assert_eq!(
+            saved.vnc.as_ref().map(|vnc| &vnc.performance.preset),
+            Some(&VncPerformancePreset::LowBandwidth)
+        );
+
+        let loaded = repo.connection_get("vnc-001").unwrap().unwrap();
+        assert_eq!(loaded.protocol, ConnectionProtocol::Vnc);
+        assert_eq!(
+            loaded
+                .vnc
+                .as_ref()
+                .and_then(|vnc| vnc.performance.compression_level),
+            Some(6)
+        );
+        assert_eq!(
+            repo.resolve_vnc_connection_secret("vnc-001").unwrap(),
+            Some("secret".to_string())
+        );
+    }
+
+    #[test]
+    fn vnc_saved_password_credential_resolves_secret() {
+        let (repo, _db_path, _secrets) = temp_repository("vnc-saved-password");
+        let credential = repo
+            .credential_upsert(password_credential_input(), "2026-06-26T00:00:00+08:00")
+            .unwrap();
+        let saved = repo
+            .connection_upsert(
+                ConnectionProfileInput {
+                    id: Some("vnc-saved".to_string()),
+                    protocol: ConnectionProtocol::Vnc,
+                    port: 5900,
+                    username: "vncuser".to_string(),
+                    credential_mode: ConnectionCredentialMode::Saved,
+                    credential_id: Some(credential.id),
+                    inline_password: None,
+                    inline_password_touched: false,
+                    vnc: Some(VncConnectionConfig::default()),
+                    ..password_connection_input()
+                },
+                "2026-06-26T00:01:00+08:00",
+            )
+            .unwrap();
+
+        assert_eq!(saved.credential_mode, ConnectionCredentialMode::Saved);
+        assert_eq!(
+            repo.resolve_vnc_connection_secret(&saved.id).unwrap(),
             Some("secret".to_string())
         );
     }
@@ -3260,6 +3425,7 @@ mod tests {
             jump: ConnectionJumpConfig::default(),
             advanced: ConnectionAdvancedConfig::default(),
             rdp: None,
+            vnc: None,
             notes: None,
             is_favorite: None,
             last_connected_at: None,

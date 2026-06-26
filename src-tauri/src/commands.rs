@@ -58,6 +58,10 @@ use crate::terminal::session::ExecProgressCallback;
 use crate::tunnels::{
     TunnelManager, TunnelRuleIdRequest, TunnelRuleInput, TunnelRuleWithState, TunnelStartRequest,
 };
+use crate::vnc::{
+    VncConnectionRequest, VncLaunchPreview, VncLaunchResult, VncRunnerProbeRequest,
+    VncRunnerProbeResult, VncSessionCloseResult, VncSessionManager, VncSessionRequest,
+};
 use crate::webdav::ensure_collection;
 use crate::webdav_sync::{
     client_for_settings, fetch_remote_info_with_transport, import_downloaded_bundle,
@@ -1789,6 +1793,38 @@ pub async fn rdp_resize_embedded_session(
         manager.inner(),
         request,
     ))
+}
+
+#[tauri::command]
+pub async fn vnc_launch_connection(
+    app: AppHandle,
+    manager: State<'_, VncSessionManager>,
+    request: VncConnectionRequest,
+) -> Result<VncLaunchResult, AppError> {
+    crate::vnc::launch_connection(&app, manager.inner(), request).await
+}
+
+#[tauri::command]
+pub async fn vnc_preview_launch(
+    app: AppHandle,
+    request: VncConnectionRequest,
+) -> Result<VncLaunchPreview, AppError> {
+    crate::vnc::preview_launch(&app, request)
+}
+
+#[tauri::command]
+pub async fn vnc_test_runner(
+    request: VncRunnerProbeRequest,
+) -> Result<VncRunnerProbeResult, AppError> {
+    crate::vnc::probe_runner(request)
+}
+
+#[tauri::command]
+pub async fn vnc_close_session(
+    manager: State<'_, VncSessionManager>,
+    request: VncSessionRequest,
+) -> Result<VncSessionCloseResult, AppError> {
+    Ok(crate::vnc::close_session(manager.inner(), request))
 }
 
 #[tauri::command]

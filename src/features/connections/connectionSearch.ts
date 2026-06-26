@@ -82,7 +82,14 @@ export function connectionTimestampOf(value?: string | null) {
 
 export function formatConnectionAddress(connection: ConnectionProfile) {
   const address = `${connection.username}@${connection.host}:${connection.port.toString()}`;
-  return (connection.protocol || "ssh") === "rdp" ? `RDP · ${address}` : address;
+  switch (connection.protocol || "ssh") {
+    case "rdp":
+      return `RDP · ${address}`;
+    case "vnc":
+      return `VNC · ${address}`;
+    default:
+      return address;
+  }
 }
 
 function buildConnectionSearchEntry(

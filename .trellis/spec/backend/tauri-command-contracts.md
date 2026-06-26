@@ -1947,6 +1947,75 @@ RdpCertificatePolicy::Strict => 1,
 
 The backend owns redaction and launch transport; the client never receives or passes plaintext credentials through command arguments.
 
+## Scenario: VNC Connection Runner Commands
+
+### 1. Scope / Trigger
+
+- Trigger: backend code adds or changes VNC connection persistence, runner probing, local WebSocket bridge lifecycle, external viewer launch, or `vnc_*` Tauri commands.
+- Source files: `src-tauri/src/connections/mod.rs`, `src-tauri/src/storage_sqlite.rs`, `src-tauri/src/storage_repository.rs`, `src-tauri/src/vnc.rs`, `src-tauri/src/commands.rs`, `src-tauri/src/lib.rs`, and `src/shared/tauri/commands.ts`.
+- This is a cross-layer storage/command boundary because Rust owns the protocol discriminator, VNC config shape, validation, bridge lifecycle, credential resolution, runner selection, and redaction rules while React renders forms and runtime session state.
+
+### 2. Signatures
+
+```rust
+vnc_launch_connection(app: AppHandle, manager: State<'_, VncSessionManager>, request: VncConnectionRequest) -> Result<VncLaunchResult, AppError>
+vnc_preview_launch(app: AppHandle, request: VncConnectionRequest) -> Result<VncLaunchPreview, AppError>
+vnc_test_runner(request: VncRunnerProbeRequest) -> Result<VncRunnerProbeResult, AppError>
+vnc_close_session(manager: State<'_, VncSessionManager>, request: VncSessionRequest) -> VncSessionCloseResult
+```
+
+`VncConnectionRequest` fields:
+
+```rust
+connection_id: String
+```
+
+`ConnectionProfileInput` and `ConnectionProfile` include `protocol = "ssh" | "rdp" | "vnc"`. VNC payloads carry `vnc: VncConnectionConfig` with display, input, performance, security, runner, and raw runner settings.
+
+### 3. Contracts
+
+- `StorageRepository` must persist `protocol` and `vnc_json` for VNC rows and default legacy rows to `ssh`.
+- SSH-only code paths must reject VNC rows. VNC connections must not be resolved through SSH terminal/files/monitor/tunnels/Docker/Command Sender paths.
+- `vnc_preview_launch` must return redacted preview data only. It may expose runner kind, executable path, redacted args, and an illustrative local WebSocket shape, but not plaintext secrets or live bridge tokens.
+- `vnc_launch_connection` must select the runner deterministically from the saved VNC config and platform capabilities.
+- Embedded VNC uses a Rust-owned local WebSocket-to-TCP bridge for noVNC. The bridge must bind only to `127.0.0.1`, use a per-session tokenized path, relay binary WebSocket frames to the target VNC TCP socket, and stop when `vnc_close_session` aborts the managed bridge task.
+- Bridge URLs and tokens are runtime-only data. Do not persist them to SQLite, sync snapshots, MCP output, logs, or connection profiles.
+- VNC credentials may use `credential_mode=prompt`, `credential_mode=inline` with password auth, or `credential_mode=saved` with a password credential. VNC must reject private-key credentials.
+- Inline/saved passwords are resolved through the existing encrypted vault and may be returned only as launch-time in-memory data for embedded noVNC. External/custom runners must not receive plaintext passwords in process arguments, environment variables, temp files, logs, or generated previews.
+- External/custom viewer launch may pass host/port plus non-secret viewer flags only. Password entry remains the external viewer's responsibility until a platform-secure handoff contract exists.
+- A valid VNC profile must remain usable even when the current platform has no compatible external viewer; embedded noVNC is the preferred path and external viewer absence should surface as diagnostics only when external/custom mode is requested.
+
+### 4. Validation & Error Matrix
+
+| Condition | Error code / behavior | Recoverable |
+| --- | --- | --- |
+| `protocol` blank or unknown | default to `ssh` during legacy migration, reject unknown values on new writes | true |
+| VNC host missing | `connection_host_missing` | true |
+| VNC username missing | `connection_username_missing` | true |
+| VNC port invalid | `connection_port_invalid` | true |
+| VNC runner text field contains control characters | `vnc_runner_args_invalid` / `vnc_field_invalid` | true |
+| VNC raw runner args contain secret-like password material | reject the payload | true |
+| VNC operation targets an SSH/RDP row | `vnc_protocol_required` | true |
+| Embedded bridge bind fails | `vnc_bridge_bind_failed` | true |
+| WebSocket path/token mismatch | reject the handshake without opening the target TCP socket | true |
+| Target VNC TCP connection fails | `vnc_target_connect_failed` | true |
+| External/custom runner missing | `vnc_runner_missing` / `vnc_custom_runner_missing` | true |
+
+### 5. Good / Base / Bad Cases
+
+- Good: `connection_upsert` stores `protocol = "vnc"` with a fully populated VNC config and clears SSH-only network path assumptions.
+- Good: embedded launch creates a tokenized local bridge, returns `runner = "novnc"`, `embedded = true`, and returns a password only when the saved profile resolves one from the vault.
+- Good: `vnc_close_session` aborts the matching bridge task and leaves unrelated VNC/RDP/SSH sessions alone.
+- Good: external preview and launch arguments contain host/port and non-secret flags only.
+- Base: external viewer mode can fail with a setup hint while the saved VNC profile remains valid.
+- Bad: backend code passes VNC passwords through command-line args/env/temp files, writes bridge URLs to persistent data, resolves a VNC row through SSH-only helpers, accepts private-key credentials for VNC, or logs live bridge tokens.
+
+### 6. Tests Required
+
+- Run `cargo test --manifest-path src-tauri/Cargo.toml connections --lib`, `cargo test --manifest-path src-tauri/Cargo.toml storage_sqlite --lib`, `cargo test --manifest-path src-tauri/Cargo.toml storage_repository --lib`, `cargo test --manifest-path src-tauri/Cargo.toml sync_snapshot --lib`, `cargo test --manifest-path src-tauri/Cargo.toml vnc --lib`, and `cargo check --manifest-path src-tauri/Cargo.toml` after changing this area.
+- Add/update tests for protocol migration, `vnc_json` persistence, saved-password resolution, VNC redacted preview, raw runner validation, and SSH-only guardrails.
+- Cross-check Rust request/response field names against the typed wrappers in `src/shared/tauri/commands.ts`.
+
 ## Scenario: WebDAV Sync Commands
 
 ### 1. Scope / Trigger

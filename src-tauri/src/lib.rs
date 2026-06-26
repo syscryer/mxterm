@@ -20,6 +20,7 @@ pub mod storage_vault;
 pub mod sync_snapshot;
 mod terminal;
 mod tunnels;
+mod vnc;
 mod webdav;
 mod webdav_sync;
 use storage_vault::VaultState;
@@ -36,6 +37,7 @@ pub fn run() {
         .manage(remote_files::RemoteFileManager::default())
         .manage(terminal::manager::TerminalManager::default())
         .manage(rdp::RdpSessionManager::default())
+        .manage(vnc::VncSessionManager::default())
         .manage(tunnels::TunnelManager::default())
         .manage(webdav_sync::WebDavSyncManager::default())
         .manage(VaultState::default())
@@ -70,6 +72,10 @@ pub fn run() {
             commands::rdp_test_runner,
             commands::rdp_close_session,
             commands::rdp_resize_embedded_session,
+            commands::vnc_launch_connection,
+            commands::vnc_preview_launch,
+            commands::vnc_test_runner,
+            commands::vnc_close_session,
             commands::credential_list,
             commands::credential_upsert,
             commands::credential_delete,

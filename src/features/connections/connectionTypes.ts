@@ -1,7 +1,7 @@
 export type ConnectionAuthKind = "password" | "private_key";
 export type ConnectionCredentialMode = "saved" | "inline" | "prompt";
 export type ConnectionJumpKind = "none" | "ssh_jump";
-export type ConnectionProtocol = "ssh" | "rdp";
+export type ConnectionProtocol = "ssh" | "rdp" | "vnc";
 export type ConnectionProxyKind = "none" | "http_connect" | "socks5";
 export type RdpDisplayMode = "embedded" | "windowed" | "fullscreen" | "all_monitors";
 export type RdpAudioMode = "local" | "remote" | "disabled";
@@ -19,6 +19,12 @@ export type RdpRunnerKind =
   | "macos_app"
   | "custom";
 export type RdpPlatform = "windows" | "linux" | "macos" | "unknown";
+export type VncScaleMode = "fit" | "stretch" | "actual";
+export type VncPerformancePreset = "auto" | "quality" | "balanced" | "low_bandwidth";
+export type VncSecurityCredentialMode = "prompt" | "saved";
+export type VncRenderMode = "embedded" | "external" | "custom";
+export type VncRunnerKind = "novnc" | "vncviewer" | "tigervnc" | "realvnc" | "custom";
+export type VncPlatform = "windows" | "linux" | "macos" | "unknown";
 export type ConnectionTerminalEncoding =
   | "utf-8"
   | "gbk"
@@ -111,6 +117,44 @@ export interface RdpConnectionConfig {
   raw_runner_args?: string | null;
 }
 
+export interface VncDisplayConfig {
+  scale_mode: VncScaleMode;
+  resize_session: boolean;
+  clip_viewport: boolean;
+}
+
+export interface VncInputConfig {
+  view_only: boolean;
+  clipboard: boolean;
+  shared: boolean;
+}
+
+export interface VncPerformanceConfig {
+  preset: VncPerformancePreset;
+  quality_level?: number | null;
+  compression_level?: number | null;
+}
+
+export interface VncSecurityConfig {
+  credential_mode: VncSecurityCredentialMode;
+}
+
+export interface VncRunnerConfig {
+  render_mode: VncRenderMode;
+  preferred_runner?: VncRunnerKind | null;
+  custom_executable?: string | null;
+  custom_args_template?: string | null;
+}
+
+export interface VncConnectionConfig {
+  display: VncDisplayConfig;
+  input: VncInputConfig;
+  performance: VncPerformanceConfig;
+  security: VncSecurityConfig;
+  runner: VncRunnerConfig;
+  raw_runner_args?: string | null;
+}
+
 export interface ConnectionProfile {
   id: string;
   name: string;
@@ -130,6 +174,7 @@ export interface ConnectionProfile {
   jump: ConnectionJumpConfig;
   advanced: ConnectionAdvancedConfig;
   rdp?: RdpConnectionConfig | null;
+  vnc?: VncConnectionConfig | null;
   notes?: string | null;
   is_favorite: boolean;
   last_connected_at?: string | null;
@@ -165,6 +210,7 @@ export interface ConnectionProfileInput {
   jump: ConnectionJumpConfig;
   advanced: ConnectionAdvancedConfig;
   rdp?: RdpConnectionConfig | null;
+  vnc?: VncConnectionConfig | null;
   notes?: string;
   is_favorite?: boolean;
   last_connected_at?: string;
@@ -295,6 +341,51 @@ export interface RdpEmbeddedBounds {
   height: number;
 }
 
+export interface VncRunnerProbeResult {
+  platform: VncPlatform;
+  available_runners: VncRunnerKind[];
+  default_runner?: VncRunnerKind | null;
+  default_executable?: string | null;
+  supports_embedded: boolean;
+  supports_clipboard: boolean;
+  supports_resize_session: boolean;
+  setup_hint?: string | null;
+}
+
+export interface VncLaunchPreview {
+  connection_id: string;
+  runner?: VncRunnerKind | null;
+  render_mode: VncRenderMode;
+  embedded: boolean;
+  executable?: string | null;
+  args: string[];
+  websocket_url?: string | null;
+  fallback_reason?: string | null;
+  setup_hint?: string | null;
+  warnings: string[];
+}
+
+export interface VncLaunchResult {
+  session_id: string;
+  connection_id: string;
+  launched: boolean;
+  embedded: boolean;
+  runner: VncRunnerKind;
+  websocket_url?: string | null;
+  password?: string | null;
+  executable?: string | null;
+  args: string[];
+  process_id?: number | null;
+  fallback_reason?: string | null;
+  setup_hint?: string | null;
+  warnings: string[];
+}
+
+export interface VncSessionCloseResult {
+  ok: boolean;
+  message: string;
+}
+
 export const defaultProxyConfig: ConnectionProxyConfig = {
   kind: "none",
   host: "",
@@ -363,6 +454,34 @@ export const defaultRdpConfig: RdpConnectionConfig = {
   raw_runner_args: "",
 };
 
+export const defaultVncConfig: VncConnectionConfig = {
+  display: {
+    scale_mode: "fit",
+    resize_session: true,
+    clip_viewport: true,
+  },
+  input: {
+    view_only: false,
+    clipboard: true,
+    shared: true,
+  },
+  performance: {
+    preset: "auto",
+    quality_level: 6,
+    compression_level: 2,
+  },
+  security: {
+    credential_mode: "prompt",
+  },
+  runner: {
+    render_mode: "embedded",
+    preferred_runner: "novnc",
+    custom_executable: "",
+    custom_args_template: "",
+  },
+  raw_runner_args: "",
+};
+
 export const terminalEncodingOptions: Array<{
   label: string;
   value: ConnectionTerminalEncoding;
@@ -397,6 +516,23 @@ export function formatRdpRunnerKind(runner?: RdpRunnerKind | null) {
       return "macOS RDP App";
     case "custom":
       return "自定义 RDP 客户端";
+    default:
+      return "自动选择";
+  }
+}
+
+export function formatVncRunnerKind(runner?: VncRunnerKind | null) {
+  switch (runner) {
+    case "novnc":
+      return "noVNC 内嵌";
+    case "vncviewer":
+      return "VNC Viewer";
+    case "tigervnc":
+      return "TigerVNC";
+    case "realvnc":
+      return "RealVNC";
+    case "custom":
+      return "自定义 VNC 客户端";
     default:
       return "自动选择";
   }

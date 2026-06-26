@@ -68,6 +68,7 @@ CREATE TABLE IF NOT EXISTS connections (
     jump_json TEXT NOT NULL,
     advanced_json TEXT NOT NULL,
     rdp_json TEXT,
+    vnc_json TEXT,
     notes TEXT,
     is_favorite INTEGER NOT NULL DEFAULT 0,
     last_connected_at TEXT,
@@ -240,6 +241,12 @@ impl SqliteStore {
             "rdp_json",
             "ALTER TABLE connections
              ADD COLUMN rdp_json TEXT",
+        )?;
+        self.add_column_if_missing(
+            "connections",
+            "vnc_json",
+            "ALTER TABLE connections
+             ADD COLUMN vnc_json TEXT",
         )?;
         self.connection
             .execute(

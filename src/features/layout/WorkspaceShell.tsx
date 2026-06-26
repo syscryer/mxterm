@@ -16,6 +16,7 @@ import { openPath, revealItemInDir } from "@tauri-apps/plugin-opener";
 import { getCurrentWebview, type DragDropEvent } from "@tauri-apps/api/webview";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import type { IWindowsPty } from "@xterm/xterm";
+import RFB from "@novnc/novnc";
 import { createPortal } from "react-dom";
 import {
   AlertTriangle,
@@ -68,8 +69,17 @@ import type {
   RdpLaunchPreview,
   RdpLaunchResult,
   RdpRunnerKind,
+  VncConnectionConfig,
+  VncLaunchPreview,
+  VncLaunchResult,
+  VncRunnerKind,
 } from "../connections/connectionTypes";
-import { defaultJumpConfig, formatRdpRunnerKind } from "../connections/connectionTypes";
+import {
+  defaultJumpConfig,
+  defaultVncConfig,
+  formatRdpRunnerKind,
+  formatVncRunnerKind,
+} from "../connections/connectionTypes";
 import { connectionTimestampOf, sortConnectionsByRecent } from "../connections/connectionSearch";
 import { RemoteFileEditor } from "../editor/RemoteFileEditor";
 import type { RemoteFileEditorTab } from "../editor/remoteFileEditorTypes";
@@ -177,6 +187,9 @@ import {
   rdpLaunchConnection,
   rdpPreviewLaunch,
   rdpResizeEmbeddedSession,
+  vncCloseSession,
+  vncLaunchConnection,
+  vncPreviewLaunch,
   terminalClose,
   terminalConnect,
   terminalWrite,
@@ -211,6 +224,7 @@ import type {
 } from "../terminal/localTerminalTypes";
 
 type RdpConnectionProfile = ConnectionProfile & { protocol: "rdp" };
+type VncConnectionProfile = ConnectionProfile & { protocol: "vnc" };
 type SshConnectionProfile = ConnectionProfile & {
   protocol?: "ssh" | null | undefined;
 };
@@ -240,6 +254,20 @@ interface RdpSessionTab {
   preview?: RdpLaunchPreview | null;
   result?: RdpLaunchResult | null;
   status: RdpSessionStatus;
+  title: string;
+}
+
+type VncSessionStatus = "launching" | "embedded" | "external" | "error";
+
+interface VncSessionTab {
+  connectionId: string;
+  createdAt: number;
+  error?: string | null;
+  id: string;
+  message?: string | null;
+  preview?: VncLaunchPreview | null;
+  result?: VncLaunchResult | null;
+  status: VncSessionStatus;
   title: string;
 }
 
@@ -368,7 +396,7 @@ type ResizingPane = ResizablePaneSide | "editor-terminal";
 type TransferDirection = "upload" | "download";
 type TransferKind = "file" | "directory";
 type TransferStatus = "queued" | "running" | "success" | "error" | "skipped" | "canceled";
-type WorkspaceMode = "home" | "ssh" | "local" | "rdp";
+type WorkspaceMode = "home" | "ssh" | "local" | "rdp" | "vnc";
 
 type RemoteFileTransferRetry =
   | {
@@ -554,8 +582,11 @@ export function WorkspaceShell() {
   const terminalTabsRef = useRef<TerminalTab[]>([]);
   const [rdpSessions, setRdpSessions] = useState<RdpSessionTab[]>([]);
   const rdpSessionsRef = useRef<RdpSessionTab[]>([]);
+  const [vncSessions, setVncSessions] = useState<VncSessionTab[]>([]);
+  const vncSessionsRef = useRef<VncSessionTab[]>([]);
   const rdpEmbeddedViewportRefs = useRef(new Map<string, HTMLDivElement>());
   const [activeRdpSessionId, setActiveRdpSessionId] = useState<string | null>(null);
+  const [activeVncSessionId, setActiveVncSessionId] = useState<string | null>(null);
   const rdpEmbeddedHostSuppressedRef = useRef(false);
   const setRdpEmbeddedViewportRef = useCallback(
     (sessionId: string, node: HTMLDivElement | null) => {
@@ -723,6 +754,10 @@ export function WorkspaceShell() {
     rdpSessionsRef.current = rdpSessions;
   }, [rdpSessions]);
 
+  useEffect(() => {
+    vncSessionsRef.current = vncSessions;
+  }, [vncSessions]);
+
   useEffect(() => initializeWindowStatePersistence(), []);
 
   useEffect(() => {
@@ -825,6 +860,17 @@ export function WorkspaceShell() {
 
     return groups;
   }, [rdpSessions]);
+  const vncSessionsByConnection = useMemo(() => {
+    const groups = new Map<string, VncSessionTab[]>();
+
+    vncSessions.forEach((session) => {
+      const group = groups.get(session.connectionId) || [];
+      group.push(session);
+      groups.set(session.connectionId, group);
+    });
+
+    return groups;
+  }, [vncSessions]);
   const connectionSessions = useMemo<ConnectionSessionSummary[]>(() => {
     const sessions = new Map<string, ConnectionSessionSummary>();
 
@@ -838,9 +884,16 @@ export function WorkspaceShell() {
         tabs: existing ? [...existing.tabs, ...tabs] : tabs,
       });
     });
+    vncSessionsByConnection.forEach((tabs, connectionId) => {
+      const existing = sessions.get(connectionId);
+      sessions.set(connectionId, {
+        connectionId,
+        tabs: existing ? [...existing.tabs, ...tabs] : tabs,
+      });
+    });
 
     return Array.from(sessions.values());
-  }, [rdpSessionsByConnection, terminalTabsByConnection]);
+  }, [rdpSessionsByConnection, terminalTabsByConnection, vncSessionsByConnection]);
   const activeConnectionTabs = activeConnectionId
     ? terminalTabsByConnection.get(activeConnectionId) || []
     : [];
@@ -856,6 +909,19 @@ export function WorkspaceShell() {
         ) || null
       : null) ||
     activeRdpSessions[0] ||
+    null;
+  const activeVncSessions = activeConnectionId
+    ? vncSessionsByConnection.get(activeConnectionId) || []
+    : [];
+  const activeVncSession =
+    (activeVncSessionId
+      ? vncSessions.find(
+          (session) =>
+            session.id === activeVncSessionId &&
+            (!activeConnectionId || session.connectionId === activeConnectionId),
+        ) || null
+      : null) ||
+    activeVncSessions[0] ||
     null;
   const activeTerminalTab = activeTabId
     ? terminalTabs.find((tab) => tab.id === activeTabId) || null
@@ -917,7 +983,9 @@ export function WorkspaceShell() {
   const activeShortcutTerminalTabId =
     activeWorkspaceMode === "local"
       ? activeLocalTerminalTab?.id || null
-      : activeConnectedTerminalTab?.id || null;
+      : activeWorkspaceMode === "ssh"
+        ? activeConnectedTerminalTab?.id || null
+        : null;
   const activeShortcutTerminalSearch = activeShortcutTerminalTabId
     ? terminalSearchByTabId[activeShortcutTerminalTabId]
     : null;
@@ -996,6 +1064,8 @@ export function WorkspaceShell() {
             ? Boolean(activeLocalTerminalTab)
             : activeWorkspaceMode === "rdp"
               ? Boolean(activeRdpSession)
+              : activeWorkspaceMode === "vnc"
+                ? Boolean(activeVncSession)
               : Boolean(activeTerminalTab),
         run: () => {
           if (activeWorkspaceMode === "local" && activeLocalTerminalTab) {
@@ -1004,6 +1074,10 @@ export function WorkspaceShell() {
           }
           if (activeWorkspaceMode === "rdp" && activeRdpSession) {
             closeRdpSession(activeRdpSession.id);
+            return;
+          }
+          if (activeWorkspaceMode === "vnc" && activeVncSession) {
+            closeVncSession(activeVncSession.id);
             return;
           }
           if (activeTerminalTab) {
@@ -1043,6 +1117,7 @@ export function WorkspaceShell() {
       activeConnection,
       activeLocalTerminalTab,
       activeRdpSession,
+      activeVncSession,
       activeShortcutTerminalSearch,
       activeShortcutTerminalTabId,
       activeTerminalTab,
@@ -1115,15 +1190,20 @@ export function WorkspaceShell() {
     terminalTabs.length > 0 ||
     remoteFileTabs.length > 0 ||
     localTerminalTabs.length > 0 ||
-    rdpSessions.length > 0;
+    rdpSessions.length > 0 ||
+    vncSessions.length > 0;
   const showingHome = activeWorkspaceMode === "home" || (!hasSessionWorkspace && homeActive);
   const showingLocalTerminal = activeWorkspaceMode === "local";
   const showingRdp = activeWorkspaceMode === "rdp";
+  const showingVnc = activeWorkspaceMode === "vnc";
   const showSessionWorkspace = !showingHome && activeWorkspaceMode === "ssh" && hasSessionWorkspace;
   const showRdpWorkspace = !showingHome && showingRdp && hasSessionWorkspace;
+  const showVncWorkspace = !showingHome && showingVnc && hasSessionWorkspace;
   const showWorkspaceToolPane = !showingHome && hasSessionWorkspace;
   const activeConnectionSelectionId =
-    activeWorkspaceMode === "ssh" || activeWorkspaceMode === "rdp" ? activeConnectionId : null;
+    activeWorkspaceMode === "ssh" || activeWorkspaceMode === "rdp" || activeWorkspaceMode === "vnc"
+      ? activeConnectionId
+      : null;
   const activeTerminalDirectory = activeConnectedTerminalTab
     ? terminalDirectories[activeConnectedTerminalTab.id] || null
     : null;
@@ -1131,7 +1211,9 @@ export function WorkspaceShell() {
     showSessionWorkspace && activeConnectedTerminalTab ? activeConnection : null;
   const remoteFilePanelKey = showingRdp
     ? activeRdpSession?.id || "no-rdp-session"
-    : remoteFileConnection?.id || "no-active-connection";
+    : showingVnc
+      ? activeVncSession?.id || "no-vnc-session"
+      : remoteFileConnection?.id || "no-active-connection";
   const terminalColorScheme = getTerminalColorScheme(settings.terminalTheme.scheme);
   const terminalTone = getTerminalColorSchemeTone(terminalColorScheme);
   const terminalFontFamily = resolveTerminalFontFamily(settings.appearance);
@@ -1932,6 +2014,14 @@ export function WorkspaceShell() {
       : rdpSessions[0] || null;
     if (nextRdpSession) {
       activateRdpSession(nextRdpSession);
+      return;
+    }
+
+    const nextVncSession = activeVncSessionId
+      ? vncSessions.find((session) => session.id === activeVncSessionId) || null
+      : vncSessions[0] || null;
+    if (nextVncSession) {
+      activateVncSession(nextVncSession);
       return;
     }
 
@@ -3071,6 +3161,11 @@ export function WorkspaceShell() {
         .filter((session) => session.connectionId === connection.id)
         .map((session) => session.id),
     );
+    closeVncSessions(
+      vncSessionsRef.current
+        .filter((session) => session.connectionId === connection.id)
+        .map((session) => session.id),
+    );
     const closingTabIds = terminalTabs.filter((tab) => tab.connectionId === connection.id).map((tab) => tab.id);
     closingTabIds.forEach(stopTerminalWarmupCapture);
     setTerminalDirectories((directories) => removeDirectoryState(directories, closingTabIds));
@@ -3082,7 +3177,8 @@ export function WorkspaceShell() {
         nextTabs.length === 0 &&
         remoteFileTabs.length === 0 &&
         localTerminalTabsRef.current.length === 0 &&
-        !rdpSessionsRef.current.some((session) => session.connectionId !== connection.id)
+        !rdpSessionsRef.current.some((session) => session.connectionId !== connection.id) &&
+        !vncSessionsRef.current.some((session) => session.connectionId !== connection.id)
       ) {
         setHomeActive(true);
       }
@@ -4001,7 +4097,8 @@ export function WorkspaceShell() {
           !nextActive &&
           terminalTabsRef.current.length === 0 &&
           remoteFileTabs.length === 0 &&
-          rdpSessionsRef.current.length === 0
+          rdpSessionsRef.current.length === 0 &&
+          vncSessionsRef.current.length === 0
         ) {
           setHomeActive(true);
           setActiveWorkspaceMode("home");
@@ -4009,6 +4106,8 @@ export function WorkspaceShell() {
           setActiveWorkspaceMode("ssh");
         } else if (!nextActive && rdpSessionsRef.current.length > 0) {
           activateRdpSession(rdpSessionsRef.current[0]);
+        } else if (!nextActive && vncSessionsRef.current.length > 0) {
+          activateVncSession(vncSessionsRef.current[0]);
         }
       }
       return nextTabs;
@@ -4178,6 +4277,10 @@ export function WorkspaceShell() {
       openRdpConnectionSession(connection);
       return;
     }
+    if (isVncConnection(connection)) {
+      openVncConnectionSession(connection);
+      return;
+    }
 
     const pendingTab = pendingTabForConnection(connection.id);
     if (pendingTab) {
@@ -4191,6 +4294,10 @@ export function WorkspaceShell() {
   function openTerminal(connection: ConnectionProfile) {
     if (isRdpConnection(connection)) {
       openRdpConnectionSession(connection);
+      return;
+    }
+    if (isVncConnection(connection)) {
+      openVncConnectionSession(connection);
       return;
     }
 
@@ -4371,9 +4478,12 @@ export function WorkspaceShell() {
           setHomeActive(false);
         } else {
           setActiveRdpSessionId(null);
+          const nextVncSession = vncSessionsRef.current[0] || null;
           const nextTerminalTab = terminalTabsRef.current[0] || null;
           const nextLocalTerminalTab = localTerminalTabsRef.current[0] || null;
-          if (nextTerminalTab) {
+          if (nextVncSession) {
+            activateVncSession(nextVncSession);
+          } else if (nextTerminalTab) {
             activateTerminalTab(nextTerminalTab);
           } else if (nextLocalTerminalTab) {
             activateLocalTerminalTab(nextLocalTerminalTab);
@@ -4483,6 +4593,292 @@ export function WorkspaceShell() {
     });
   }
 
+  function openVncConnectionSession(connection: ConnectionProfile) {
+    const existingSession = preferredVncSessionForConnection(connection.id);
+    if (existingSession) {
+      activateVncSession(existingSession);
+      return;
+    }
+
+    startVncSession(connection);
+  }
+
+  function startVncSession(connection: ConnectionProfile) {
+    const existingSession = preferredVncSessionForConnection(connection.id);
+    if (existingSession) {
+      activateVncSession(existingSession);
+      return;
+    }
+
+    const session = buildVncSession(connection);
+    setVncSessions((sessions) => {
+      const nextSessions = [...sessions, session];
+      vncSessionsRef.current = nextSessions;
+      return nextSessions;
+    });
+    activateVncSession(session);
+    void runVncSession(session.id, connection);
+  }
+
+  async function runVncSession(sessionId: string, connection: ConnectionProfile) {
+    updateVncSession(sessionId, (session) => ({
+      ...session,
+      error: null,
+      message: "正在创建 VNC 本地桥接并启动 noVNC。",
+      preview: null,
+      result: null,
+      status: "launching",
+    }));
+
+    if (!hasTauriRuntime()) {
+      await wait(160);
+      if (!vncSessionExists(sessionId)) {
+        return;
+      }
+      updateVncSession(sessionId, (session) => ({
+        ...session,
+        message: "浏览器预览模式不会创建 VNC 桥接，真实运行时会打开 noVNC 内嵌画面。",
+        preview: previewVncLaunchForBrowser(connection),
+        status: "external",
+      }));
+      void markConnected(connection.id);
+      return;
+    }
+
+    try {
+      const result = await vncLaunchConnection(connection.id);
+      if (!vncSessionExists(sessionId)) {
+        if (result.session_id) {
+          await vncCloseSession(result.session_id).catch(() => undefined);
+        }
+        return;
+      }
+      updateVncSession(sessionId, (session) => ({
+        ...session,
+        error: null,
+        message:
+          result.fallback_reason ||
+          (result.embedded
+            ? "VNC 桥接已创建，正在连接远程画面。"
+            : "VNC 客户端已启动，凭据由客户端提示。"),
+        result,
+        status: result.embedded ? "embedded" : "external",
+      }));
+      void markConnected(connection.id);
+    } catch (error) {
+      if (!vncSessionExists(sessionId)) {
+        return;
+      }
+      updateVncSession(sessionId, (session) => ({
+        ...session,
+        error: formatDetailedError(error),
+        message: null,
+        status: "error",
+      }));
+    }
+  }
+
+  async function previewVncSessionLaunch(sessionId: string) {
+    const session = vncSessionsRef.current.find((item) => item.id === sessionId);
+    if (!session) {
+      return;
+    }
+    const connection = connectionById.get(session.connectionId);
+    if (!connection) {
+      updateVncSession(sessionId, (current) => ({
+        ...current,
+        message: "连接已删除，无法生成启动预览。",
+      }));
+      return;
+    }
+
+    updateVncSession(sessionId, (current) => ({
+      ...current,
+      message: "正在生成 VNC 启动预览。",
+    }));
+
+    try {
+      const preview = hasTauriRuntime()
+        ? await vncPreviewLaunch(connection.id)
+        : previewVncLaunchForBrowser(connection);
+      updateVncSession(sessionId, (current) => ({
+        ...current,
+        message: "VNC 启动预览已更新，内容已隐藏敏感凭据。",
+        preview,
+      }));
+    } catch (error) {
+      updateVncSession(sessionId, (current) => ({
+        ...current,
+        message: `VNC 启动预览失败：${formatError(error)}`,
+      }));
+    }
+  }
+
+  function retryVncSession(sessionId: string) {
+    const session = vncSessionsRef.current.find((item) => item.id === sessionId);
+    const connection = session ? connectionById.get(session.connectionId) : null;
+    if (!session || !connection) {
+      return;
+    }
+    activateVncSession(session);
+    void runVncSession(session.id, connection);
+  }
+
+  function activateVncSession(session: VncSessionTab) {
+    setActiveView("workspace");
+    setSettingsSectionRequest(undefined);
+    setActiveWorkspaceMode("vnc");
+    setHomeActive(false);
+    setActiveConnectionId(session.connectionId);
+    setActiveVncSessionId(session.id);
+    setRightTool("tools");
+  }
+
+  function closeVncSession(sessionId: string) {
+    closeVncSessions([sessionId]);
+  }
+
+  function removeVncSessionsLocally(sessionIds: string[]) {
+    if (sessionIds.length === 0) {
+      return;
+    }
+
+    const closingIds = new Set(sessionIds);
+    setVncSessions((sessions) => {
+      const nextSessions = sessions.filter((session) => !closingIds.has(session.id));
+      vncSessionsRef.current = nextSessions;
+      const activeVncClosed = activeVncSessionId
+        ? closingIds.has(activeVncSessionId)
+        : activeWorkspaceMode === "vnc";
+
+      if (activeVncClosed) {
+        const sameConnectionSession =
+          activeConnectionId
+            ? nextSessions.find((session) => session.connectionId === activeConnectionId) || null
+            : null;
+        const nextVncSession = sameConnectionSession || nextSessions[0] || null;
+        if (nextVncSession) {
+          setActiveVncSessionId(nextVncSession.id);
+          setActiveConnectionId(nextVncSession.connectionId);
+          setActiveWorkspaceMode("vnc");
+          setHomeActive(false);
+        } else {
+          setActiveVncSessionId(null);
+          const nextRdpSession = rdpSessionsRef.current[0] || null;
+          const nextTerminalTab = terminalTabsRef.current[0] || null;
+          const nextLocalTerminalTab = localTerminalTabsRef.current[0] || null;
+          if (nextRdpSession) {
+            activateRdpSession(nextRdpSession);
+          } else if (nextTerminalTab) {
+            activateTerminalTab(nextTerminalTab);
+          } else if (nextLocalTerminalTab) {
+            activateLocalTerminalTab(nextLocalTerminalTab);
+          } else if (remoteFileTabs.length === 0) {
+            setActiveConnectionId(null);
+            setActiveWorkspaceMode("home");
+            setHomeActive(true);
+          }
+        }
+      }
+
+      return nextSessions;
+    });
+  }
+
+  function closeVncSessions(sessionIds: string[]) {
+    if (sessionIds.length === 0) {
+      return;
+    }
+
+    const closingIds = new Set(sessionIds);
+    const closingSessions = vncSessionsRef.current.filter((session) => closingIds.has(session.id));
+    if (hasTauriRuntime()) {
+      closingSessions.forEach((session) => {
+        const backendSessionId = session.result?.session_id;
+        if (backendSessionId) {
+          void vncCloseSession(backendSessionId).catch(() => undefined);
+        }
+      });
+    }
+
+    removeVncSessionsLocally(sessionIds);
+  }
+
+  function closeOtherVncSessions(sessionId: string) {
+    const session = vncSessions.find((item) => item.id === sessionId);
+    if (!session) {
+      return;
+    }
+    closeVncSessions(
+      vncSessions
+        .filter((item) => item.connectionId === session.connectionId && item.id !== sessionId)
+        .map((item) => item.id),
+    );
+  }
+
+  function closeVncSessionsToRight(sessionId: string) {
+    const session = vncSessions.find((item) => item.id === sessionId);
+    if (!session) {
+      return;
+    }
+    const sameConnectionSessions = vncSessions.filter((item) => item.connectionId === session.connectionId);
+    const index = sameConnectionSessions.findIndex((item) => item.id === sessionId);
+    if (index < 0) {
+      return;
+    }
+    closeVncSessions(sameConnectionSessions.slice(index + 1).map((item) => item.id));
+  }
+
+  function closeAllVncSessionsForConnection(connectionId: string) {
+    closeVncSessions(vncSessions.filter((session) => session.connectionId === connectionId).map((session) => session.id));
+  }
+
+  function preferredVncSessionForConnection(connectionId: string) {
+    const activeSession = activeVncSessionId
+      ? vncSessionsRef.current.find(
+          (session) => session.id === activeVncSessionId && session.connectionId === connectionId,
+        ) || null
+      : null;
+    return (
+      activeSession ||
+      vncSessionsRef.current.find((session) => session.connectionId === connectionId) ||
+      null
+    );
+  }
+
+  function vncSessionExists(sessionId: string) {
+    return vncSessionsRef.current.some((session) => session.id === sessionId);
+  }
+
+  function buildVncSession(connection: ConnectionProfile): VncSessionTab {
+    const now = Date.now();
+    const index =
+      vncSessionsRef.current.filter((session) => session.connectionId === connection.id).length + 1;
+    return {
+      connectionId: connection.id,
+      createdAt: now,
+      id: `vnc-${connection.id}-${now.toString()}`,
+      message: null,
+      preview: null,
+      result: null,
+      status: "launching",
+      title: index === 1 ? "VNC" : `VNC ${index.toString()}`,
+    };
+  }
+
+  function updateVncSession(
+    sessionId: string,
+    updater: (session: VncSessionTab) => VncSessionTab,
+  ) {
+    setVncSessions((sessions) => {
+      const nextSessions = sessions.map((session) =>
+        session.id === sessionId ? updater(session) : session,
+      );
+      vncSessionsRef.current = nextSessions;
+      return nextSessions;
+    });
+  }
+
   function closeTerminal(tabId: string) {
     closeTerminalTabs([tabId]);
   }
@@ -4507,7 +4903,8 @@ export function WorkspaceShell() {
         nextTabs.length === 0 &&
         remoteFileTabs.length === 0 &&
         localTerminalTabsRef.current.length === 0 &&
-        rdpSessionsRef.current.length === 0
+        rdpSessionsRef.current.length === 0 &&
+        vncSessionsRef.current.length === 0
       ) {
         setHomeActive(true);
       }
@@ -4549,6 +4946,8 @@ export function WorkspaceShell() {
         forgetActiveConnectionTabs([closingActiveConnectionTab.connectionId]);
         if (!nextTabs[0] && !nextActiveFile && rdpSessionsRef.current.length > 0) {
           activateRdpSession(rdpSessionsRef.current[0]);
+        } else if (!nextTabs[0] && !nextActiveFile && vncSessionsRef.current.length > 0) {
+          activateVncSession(vncSessionsRef.current[0]);
         }
       }
       return nextTabs;
@@ -4595,6 +4994,11 @@ export function WorkspaceShell() {
         .filter((session) => closingConnectionIds.has(session.connectionId))
         .map((session) => session.id),
     );
+    closeVncSessions(
+      vncSessionsRef.current
+        .filter((session) => closingConnectionIds.has(session.connectionId))
+        .map((session) => session.id),
+    );
     const closingTabIds = terminalTabs
       .filter((tab) => closingConnectionIds.has(tab.connectionId))
       .map((tab) => tab.id);
@@ -4608,7 +5012,8 @@ export function WorkspaceShell() {
         nextTabs.length === 0 &&
         remoteFileTabs.length === 0 &&
         localTerminalTabsRef.current.length === 0 &&
-        !rdpSessionsRef.current.some((session) => !closingConnectionIds.has(session.connectionId))
+        !rdpSessionsRef.current.some((session) => !closingConnectionIds.has(session.connectionId)) &&
+        !vncSessionsRef.current.some((session) => !closingConnectionIds.has(session.connectionId))
       ) {
         setHomeActive(true);
       }
@@ -4629,6 +5034,13 @@ export function WorkspaceShell() {
           );
           if (nextRdpSession) {
             activateRdpSession(nextRdpSession);
+          } else {
+            const nextVncSession = vncSessionsRef.current.find(
+              (session) => !closingConnectionIds.has(session.connectionId),
+            );
+            if (nextVncSession) {
+              activateVncSession(nextVncSession);
+            }
           }
         }
       }
@@ -4848,6 +5260,10 @@ export function WorkspaceShell() {
   function startConnectionStep(connection: ConnectionProfile, mode: ConnectionStepMode) {
     if (isRdpConnection(connection)) {
       openRdpConnectionSession(connection);
+      return;
+    }
+    if (isVncConnection(connection)) {
+      openVncConnectionSession(connection);
       return;
     }
 
@@ -5514,6 +5930,11 @@ export function WorkspaceShell() {
           const rdpSession = preferredRdpSessionForConnection(connectionId);
           if (rdpSession) {
             activateRdpSession(rdpSession);
+            return;
+          }
+          const vncSession = preferredVncSessionForConnection(connectionId);
+          if (vncSession) {
+            activateVncSession(vncSession);
             return;
           }
           const nextTab = preferredTabForConnection(connectionId);
@@ -6183,6 +6604,114 @@ export function WorkspaceShell() {
               </section>
 
               <section
+                className={`terminal-workbench-pane rdp-workbench-pane vnc-workbench-pane ${
+                  showVncWorkspace ? "" : "is-hidden"
+                }`}
+                data-workbench-surface="panel"
+                aria-label="VNC 会话区"
+                aria-hidden={!showVncWorkspace}
+              >
+                <nav className="terminal-subtabs rdp-subtabs vnc-subtabs" aria-label="VNC 会话标签">
+                  {activeVncSessions.map((session, index) => (
+                    <TabContextMenu
+                      key={session.id}
+                      actions={[
+                        {
+                          hint: "Ctrl+F4",
+                          label: "关闭",
+                          onSelect: () => closeVncSession(session.id),
+                        },
+                        {
+                          disabled: activeVncSessions.length <= 1,
+                          label: "关闭其他",
+                          onSelect: () => closeOtherVncSessions(session.id),
+                        },
+                        {
+                          disabled: index >= activeVncSessions.length - 1,
+                          label: "关闭右侧标签页",
+                          onSelect: () => closeVncSessionsToRight(session.id),
+                        },
+                        {
+                          disabled: activeVncSessions.length === 0,
+                          hint: "Ctrl+K W",
+                          label: "全部关闭",
+                          onSelect: () => closeAllVncSessionsForConnection(session.connectionId),
+                        },
+                      ]}
+                    >
+                      <div
+                        className={`subtab-shell ${session.id === activeVncSession?.id ? "active" : ""}`}
+                      >
+                        <button
+                          className="subtab rdp-subtab vnc-subtab"
+                          type="button"
+                          title={`${session.title} · ${vncStatusLabel(session.status)}`}
+                          onClick={() => activateVncSession(session)}
+                        >
+                          <MonitorPlay className="ui-icon" aria-hidden="true" />
+                          <span>{session.title}</span>
+                        </button>
+                        <button
+                          className="subtab-close"
+                          type="button"
+                          aria-label={`关闭 ${session.title}`}
+                          onClick={() => closeVncSession(session.id)}
+                        >
+                          <X className="ui-icon" aria-hidden="true" />
+                        </button>
+                      </div>
+                    </TabContextMenu>
+                  ))}
+                  <div className="terminal-subtab-actions">
+                    <Tooltip label={rightPaneCollapsed ? "展开右侧面板" : "收起右侧面板"}>
+                      <button
+                        className="add-subtab terminal-subtab-panel-toggle"
+                        type="button"
+                        aria-label={rightPaneCollapsed ? "展开右侧面板" : "收起右侧面板"}
+                        aria-expanded={!rightPaneCollapsed}
+                        onClick={() => setRightPaneCollapsed((collapsed) => !collapsed)}
+                      >
+                        {rightPaneCollapsed ? (
+                          <PanelRightOpen className="ui-icon" aria-hidden="true" />
+                        ) : (
+                          <PanelRightClose className="ui-icon" aria-hidden="true" />
+                        )}
+                      </button>
+                    </Tooltip>
+                  </div>
+                </nav>
+
+                <section className="rdp-stack vnc-stack" aria-label="VNC 会话状态">
+                  {vncSessions.map((session) => (
+                    <VncSessionStatusPanel
+                      active={showVncWorkspace && session.id === activeVncSession?.id}
+                      connection={connectionById.get(session.connectionId) || null}
+                      key={session.id}
+                      session={session}
+                      onClose={() => closeVncSession(session.id)}
+                      onCopyCommand={() => void copyText(vncSessionCommandText(session))}
+                      onMessage={(message) =>
+                        updateVncSession(session.id, (current) => ({
+                          ...current,
+                          message,
+                        }))
+                      }
+                      onError={(message) =>
+                        updateVncSession(session.id, (current) => ({
+                          ...current,
+                          error: message,
+                          message: null,
+                          status: "error",
+                        }))
+                      }
+                      onPreview={() => void previewVncSessionLaunch(session.id)}
+                      onRetry={() => retryVncSession(session.id)}
+                    />
+                  ))}
+                </section>
+              </section>
+
+              <section
                 className={`terminal-workbench-pane ${commandSenderOpen ? "command-sender-open" : ""} ${
                   showingLocalTerminal ? "" : "is-hidden"
                 }`}
@@ -6403,7 +6932,7 @@ export function WorkspaceShell() {
           <RemoteFilePanel
             activeTool={rightTool}
             availableTools={
-              showingRdp
+              showingRdp || showingVnc
                 ? ["tools"]
                 : activeWorkspaceMode === "local"
                   ? ["commands"]
@@ -6463,6 +6992,14 @@ export function WorkspaceShell() {
                   onCopyRdpFile={(session) => void copyText(rdpSessionFileText(session))}
                   onPreview={(session) => void previewRdpSessionLaunch(session.id)}
                   onRetry={(session) => retryRdpSession(session.id)}
+                />
+              ) : showingVnc ? (
+                <VncSessionToolPanel
+                  connection={activeConnection}
+                  session={activeVncSession}
+                  onCopyCommand={(session) => void copyText(vncSessionCommandText(session))}
+                  onPreview={(session) => void previewVncSessionLaunch(session.id)}
+                  onRetry={(session) => retryVncSession(session.id)}
                 />
               ) : (
                 <DockerToolPanel
@@ -7594,6 +8131,425 @@ function RdpSessionToolPanel({
         </section>
       ) : (
         <p className="rdp-tool-note">启动后可在这里查看 runner、生成命令和脱敏 `.rdp` 预览。</p>
+      )}
+    </section>
+  );
+}
+
+function VncSessionStatusPanel({
+  active,
+  connection,
+  session,
+  onClose,
+  onCopyCommand,
+  onError,
+  onMessage,
+  onPreview,
+  onRetry,
+}: {
+  active: boolean;
+  connection: ConnectionProfile | null;
+  session: VncSessionTab;
+  onClose: () => void;
+  onCopyCommand: () => void;
+  onError: (message: string) => void;
+  onMessage: (message: string) => void;
+  onPreview: () => void;
+  onRetry: () => void;
+}) {
+  const hasCommand = vncSessionHasCommandText(session);
+  const runner = session.result?.runner || session.preview?.runner || connection?.vnc?.runner.preferred_runner || null;
+  const primaryDetail = vncSessionPrimaryDetail(session);
+  const config = connection?.vnc || defaultVncConfig;
+  const showEmbeddedViewer =
+    session.status === "embedded" &&
+    Boolean(session.result?.embedded && session.result.websocket_url);
+
+  return (
+    <section
+      className={`rdp-session-status vnc-session-status ${session.status} ${active ? "" : "is-hidden"}`}
+      aria-label={`${session.title} VNC 状态`}
+      aria-hidden={!active}
+    >
+      <div className="rdp-session-shell vnc-session-shell">
+        <header className="rdp-session-head">
+          <div className="rdp-session-heading">
+            <span className="rdp-session-icon" aria-hidden="true">
+              {session.status === "launching" ? (
+                <Loader2 className="ui-icon spin" />
+              ) : session.status === "error" ? (
+                <CircleAlert className="ui-icon" />
+              ) : session.status === "embedded" ? (
+                <MonitorPlay className="ui-icon" />
+              ) : (
+                <ExternalLink className="ui-icon" />
+              )}
+            </span>
+            <span>
+              <strong>{connection?.name || session.title}</strong>
+              <small>
+                {connection ? `VNC · ${formatConnectionAddress(connection)}` : "连接已不可用"}
+              </small>
+            </span>
+          </div>
+          <div className="rdp-session-actions">
+            <button type="button" onClick={onPreview}>
+              <FileText className="ui-icon" aria-hidden="true" />
+              <span>预览</span>
+            </button>
+            <button type="button" disabled={!hasCommand} onClick={onCopyCommand}>
+              <Clipboard className="ui-icon" aria-hidden="true" />
+              <span>命令</span>
+            </button>
+            <button type="button" onClick={onRetry}>
+              <RefreshCw className="ui-icon" aria-hidden="true" />
+              <span>重试</span>
+            </button>
+            <button type="button" aria-label={`关闭 ${session.title}`} onClick={onClose}>
+              <X className="ui-icon" aria-hidden="true" />
+            </button>
+          </div>
+        </header>
+
+        <div className="rdp-session-summary">
+          <span className={`rdp-session-badge ${session.status}`}>
+            {vncStatusLabel(session.status)}
+          </span>
+          <span>{formatVncRunnerKind(runner)}</span>
+          {session.result?.process_id ? <span>PID {session.result.process_id.toString()}</span> : null}
+          {session.result?.embedded ? <span>本地桥接</span> : null}
+        </div>
+
+        {session.message ? (
+          <p className="rdp-session-message">{session.message}</p>
+        ) : null}
+
+        {session.error ? (
+          <pre className="rdp-session-error" role="alert">{session.error}</pre>
+        ) : null}
+
+        {showEmbeddedViewer && session.result ? (
+          <VncEmbeddedViewer
+            active={active}
+            config={config}
+            connection={connection}
+            result={session.result}
+            onError={onError}
+            onMessage={onMessage}
+          />
+        ) : (
+          <div className="rdp-session-preview-grid">
+            <section className="rdp-session-preview-card">
+              <strong>{primaryDetail.title}</strong>
+              <code>{primaryDetail.value}</code>
+            </section>
+            {session.preview?.warnings.length || session.result?.warnings.length ? (
+              <section className="rdp-session-preview-card subtle">
+                <strong>提示</strong>
+                {(session.preview?.warnings || session.result?.warnings || []).map((warning) => (
+                  <small key={warning}>{warning}</small>
+                ))}
+              </section>
+            ) : null}
+          </div>
+        )}
+      </div>
+    </section>
+  );
+}
+
+function VncEmbeddedViewer({
+  active,
+  config,
+  connection,
+  result,
+  onError,
+  onMessage,
+}: {
+  active: boolean;
+  config: VncConnectionConfig;
+  connection: ConnectionProfile | null;
+  result: VncLaunchResult;
+  onError: (message: string) => void;
+  onMessage: (message: string) => void;
+}) {
+  const mountRef = useRef<HTMLDivElement | null>(null);
+  const rfbRef = useRef<RFB | null>(null);
+  const onErrorRef = useRef(onError);
+  const onMessageRef = useRef(onMessage);
+  const [connected, setConnected] = useState(false);
+  const [desktopName, setDesktopName] = useState("");
+  const [passwordRequired, setPasswordRequired] = useState(false);
+  const [passwordDraft, setPasswordDraft] = useState("");
+  const [clipboardDraft, setClipboardDraft] = useState("");
+
+  useEffect(() => {
+    onErrorRef.current = onError;
+  }, [onError]);
+
+  useEffect(() => {
+    onMessageRef.current = onMessage;
+  }, [onMessage]);
+
+  useEffect(() => {
+    const mount = mountRef.current;
+    const websocketUrl = result.websocket_url;
+    if (!mount || !websocketUrl) {
+      return undefined;
+    }
+
+    mount.replaceChildren();
+    setConnected(false);
+    setDesktopName("");
+    setPasswordRequired(false);
+    setPasswordDraft("");
+
+    const credentials =
+      result.password || connection?.username
+        ? {
+            password: result.password || undefined,
+            username: connection?.username || undefined,
+          }
+        : undefined;
+    const rfb = new RFB(mount, websocketUrl, {
+      credentials,
+      shared: config.input.shared,
+    });
+    rfbRef.current = rfb;
+    applyVncRfbSettings(rfb, config);
+
+    const handleConnect = () => {
+      setConnected(true);
+      setPasswordRequired(false);
+      setPasswordDraft("");
+      onMessageRef.current("VNC 画面已连接。");
+    };
+    const handleDisconnect = (event: CustomEvent<{ clean: boolean }>) => {
+      setConnected(false);
+      onMessageRef.current(event.detail.clean ? "VNC 画面已断开。" : "VNC 连接已中断。");
+    };
+    const handleCredentialsRequired = () => {
+      if (result.password) {
+        rfb.sendCredentials({
+          password: result.password,
+          username: connection?.username || undefined,
+        });
+        return;
+      }
+      setPasswordRequired(true);
+      onMessageRef.current("VNC 服务端要求输入密码。");
+    };
+    const handleSecurityFailure = (event: CustomEvent<{ reason: string; status: number }>) => {
+      onErrorRef.current(event.detail.reason || `VNC 安全协商失败（${event.detail.status.toString()}）。`);
+    };
+    const handleDesktopName = (event: CustomEvent<{ name: string }>) => {
+      setDesktopName(event.detail.name || "");
+    };
+
+    rfb.addEventListener("connect", handleConnect);
+    rfb.addEventListener("disconnect", handleDisconnect);
+    rfb.addEventListener("credentialsrequired", handleCredentialsRequired);
+    rfb.addEventListener("securityfailure", handleSecurityFailure);
+    rfb.addEventListener("desktopname", handleDesktopName);
+    rfb.focus();
+
+    return () => {
+      rfb.removeEventListener("connect", handleConnect);
+      rfb.removeEventListener("disconnect", handleDisconnect as EventListener);
+      rfb.removeEventListener("credentialsrequired", handleCredentialsRequired);
+      rfb.removeEventListener("securityfailure", handleSecurityFailure as EventListener);
+      rfb.removeEventListener("desktopname", handleDesktopName as EventListener);
+      rfb.disconnect();
+      rfbRef.current = null;
+      mount.replaceChildren();
+    };
+  }, [
+    config,
+    connection?.username,
+    result.password,
+    result.session_id,
+    result.websocket_url,
+  ]);
+
+  useEffect(() => {
+    if (rfbRef.current) {
+      applyVncRfbSettings(rfbRef.current, config);
+    }
+  }, [config]);
+
+  useEffect(() => {
+    if (active && connected) {
+      rfbRef.current?.focus();
+    }
+  }, [active, connected]);
+
+  function submitPassword(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const password = passwordDraft;
+    if (!password) {
+      return;
+    }
+    rfbRef.current?.sendCredentials({
+      password,
+      username: connection?.username || undefined,
+    });
+    setPasswordDraft("");
+    setPasswordRequired(false);
+  }
+
+  function sendCtrlAltDel() {
+    rfbRef.current?.sendCtrlAltDel();
+    rfbRef.current?.focus();
+  }
+
+  function pasteClipboard() {
+    if (!clipboardDraft) {
+      return;
+    }
+    rfbRef.current?.clipboardPasteFrom(clipboardDraft);
+    rfbRef.current?.focus();
+  }
+
+  return (
+    <div
+      className="vnc-viewer-shell"
+      data-connected={connected ? "true" : "false"}
+      data-scale-mode={config.display.scale_mode}
+    >
+      <div className="vnc-viewer-toolbar">
+        <span>
+          {connected ? "已连接" : "连接中"}
+          {desktopName ? ` · ${desktopName}` : ""}
+        </span>
+        <div>
+          {config.input.clipboard ? (
+            <>
+              <input
+                aria-label="VNC 剪贴板文本"
+                value={clipboardDraft}
+                onChange={(event) => setClipboardDraft(event.target.value)}
+                placeholder="剪贴板文本"
+              />
+              <button type="button" disabled={!clipboardDraft} onClick={pasteClipboard}>
+                <Clipboard className="ui-icon" aria-hidden="true" />
+                <span>粘贴</span>
+              </button>
+            </>
+          ) : null}
+          <button type="button" disabled={!connected || config.input.view_only} onClick={sendCtrlAltDel}>
+            <KeyRound className="ui-icon" aria-hidden="true" />
+            <span>Ctrl+Alt+Del</span>
+          </button>
+        </div>
+      </div>
+      <div className="vnc-viewer-mount" ref={mountRef} />
+      {passwordRequired ? (
+        <form className="vnc-password-prompt" onSubmit={submitPassword}>
+          <span>VNC 密码</span>
+          <input
+            autoFocus
+            aria-label="VNC 密码"
+            type="password"
+            value={passwordDraft}
+            onChange={(event) => setPasswordDraft(event.target.value)}
+          />
+          <button type="submit" disabled={!passwordDraft}>
+            <KeyRound className="ui-icon" aria-hidden="true" />
+            <span>发送</span>
+          </button>
+        </form>
+      ) : null}
+    </div>
+  );
+}
+
+function VncSessionToolPanel({
+  connection,
+  session,
+  onCopyCommand,
+  onPreview,
+  onRetry,
+}: {
+  connection: ConnectionProfile | null;
+  session: VncSessionTab | null;
+  onCopyCommand: (session: VncSessionTab) => void;
+  onPreview: (session: VncSessionTab) => void;
+  onRetry: (session: VncSessionTab) => void;
+}) {
+  if (!connection || !session) {
+    return (
+      <section className="rdp-tool-panel vnc-tool-panel">
+        <p className="file-panel-empty">打开一个 VNC 会话后显示 runner 状态。</p>
+      </section>
+    );
+  }
+
+  const hasCommand = vncSessionHasCommandText(session);
+  const runner = session.result?.runner || session.preview?.runner || connection.vnc?.runner.preferred_runner || null;
+  const display = connection.vnc?.display;
+  const input = connection.vnc?.input;
+
+  return (
+    <section className="rdp-tool-panel vnc-tool-panel" aria-label="VNC 工具">
+      <header className="rdp-tool-head">
+        <span>
+          <strong>{connection.name}</strong>
+          <small>{formatConnectionAddress(connection)}</small>
+        </span>
+        <span className={`rdp-session-badge ${session.status}`}>{vncStatusLabel(session.status)}</span>
+      </header>
+
+      <div className="rdp-tool-actions">
+        <button type="button" onClick={() => onPreview(session)}>
+          <FileText className="ui-icon" aria-hidden="true" />
+          预览
+        </button>
+        <button type="button" disabled={!hasCommand} onClick={() => onCopyCommand(session)}>
+          <Clipboard className="ui-icon" aria-hidden="true" />
+          复制命令
+        </button>
+        <button type="button" onClick={() => onRetry(session)}>
+          <RefreshCw className="ui-icon" aria-hidden="true" />
+          重试
+        </button>
+      </div>
+
+      <dl className="rdp-tool-facts">
+        <div>
+          <dt>Runner</dt>
+          <dd>{formatVncRunnerKind(runner)}</dd>
+        </div>
+        <div>
+          <dt>模式</dt>
+          <dd>{vncRenderModeLabel(connection.vnc?.runner.render_mode || "embedded")}</dd>
+        </div>
+        <div>
+          <dt>显示</dt>
+          <dd>{vncDisplaySummary(display)}</dd>
+        </div>
+        <div>
+          <dt>输入</dt>
+          <dd>{vncInputSummary(input)}</dd>
+        </div>
+      </dl>
+
+      {session.error ? (
+        <pre className="rdp-tool-error">{session.error}</pre>
+      ) : null}
+
+      {session.preview || session.result ? (
+        <section className="rdp-tool-preview">
+          <strong>启动材料</strong>
+          <code>{vncSessionCommandText(session) || "noVNC 内嵌模式不需要外部命令。"}</code>
+          {session.preview?.setup_hint || session.result?.setup_hint ? (
+            <small>{session.preview?.setup_hint || session.result?.setup_hint}</small>
+          ) : null}
+          {session.preview?.fallback_reason || session.result?.fallback_reason ? (
+            <small>{session.preview?.fallback_reason || session.result?.fallback_reason}</small>
+          ) : null}
+        </section>
+      ) : (
+        <p className="rdp-tool-note">启动后可在这里查看 bridge、runner 和脱敏命令预览。</p>
       )}
     </section>
   );
@@ -9199,6 +10155,7 @@ function connectionToInput(connection: ConnectionProfile): ConnectionProfileInpu
     protocol: connection.protocol || "ssh",
     proxy: connection.proxy,
     rdp: connection.rdp || undefined,
+    vnc: connection.vnc || undefined,
     remote_os_id: connection.remote_os_id || undefined,
     remote_os_name: connection.remote_os_name || undefined,
     remote_os_version: connection.remote_os_version || undefined,
@@ -9573,6 +10530,12 @@ function isRdpConnection(
   return (connection?.protocol || "ssh") === "rdp";
 }
 
+function isVncConnection(
+  connection?: ConnectionProfile | null,
+): connection is VncConnectionProfile {
+  return (connection?.protocol || "ssh") === "vnc";
+}
+
 function measureRdpEmbeddedViewport(element: HTMLElement | null): RdpEmbeddedBounds | null {
   if (!element || !element.isConnected) {
     return null;
@@ -9833,6 +10796,162 @@ function rdpSessionPrimaryDetail(session: RdpSessionTab) {
     return { title: "启动命令", value: command };
   }
   return { title: "启动状态", value: session.message || rdpStatusLabel(session.status) };
+}
+
+function vncStatusLabel(status: VncSessionStatus) {
+  switch (status) {
+    case "launching":
+      return "启动中";
+    case "embedded":
+      return "内嵌画面";
+    case "external":
+      return "外部客户端";
+    case "error":
+      return "失败";
+    default:
+      return "VNC";
+  }
+}
+
+function vncRenderModeLabel(mode: string) {
+  switch (mode) {
+    case "embedded":
+      return "noVNC 内嵌";
+    case "external":
+      return "外部客户端";
+    case "custom":
+      return "自定义 runner";
+    default:
+      return "自动";
+  }
+}
+
+function vncDisplaySummary(
+  display?: NonNullable<ConnectionProfile["vnc"]>["display"] | null,
+) {
+  if (!display) {
+    return "默认显示";
+  }
+  const scale =
+    display.scale_mode === "actual"
+      ? "原始尺寸"
+      : display.scale_mode === "stretch"
+        ? "拉伸适配"
+        : "适应窗口";
+  const flags = [
+    display.resize_session ? "远端自适应" : null,
+    display.clip_viewport ? "裁剪视口" : null,
+  ].filter(Boolean);
+  return [scale, ...flags].join(" · ");
+}
+
+function vncInputSummary(
+  input?: NonNullable<ConnectionProfile["vnc"]>["input"] | null,
+) {
+  if (!input) {
+    return "默认输入";
+  }
+  const enabled = [
+    input.view_only ? "只看" : "键鼠",
+    input.clipboard ? "剪贴板" : null,
+    input.shared ? "共享会话" : null,
+  ].filter(Boolean);
+  return enabled.join(" · ");
+}
+
+function applyVncRfbSettings(rfb: RFB, config: VncConnectionConfig) {
+  const qualityLevel =
+    typeof config.performance.quality_level === "number"
+      ? Math.min(9, Math.max(0, config.performance.quality_level))
+      : 6;
+  const compressionLevel =
+    typeof config.performance.compression_level === "number"
+      ? Math.min(9, Math.max(0, config.performance.compression_level))
+      : 2;
+
+  rfb.viewOnly = config.input.view_only;
+  rfb.focusOnClick = true;
+  rfb.clipViewport = config.display.clip_viewport;
+  rfb.dragViewport = config.display.clip_viewport;
+  rfb.scaleViewport = config.display.scale_mode !== "actual";
+  rfb.resizeSession = config.display.resize_session;
+  rfb.qualityLevel = qualityLevel;
+  rfb.compressionLevel = compressionLevel;
+}
+
+function previewVncLaunchForBrowser(connection: ConnectionProfile): VncLaunchPreview {
+  const config = connection.vnc || defaultVncConfig;
+  const renderMode = config.runner.render_mode || "embedded";
+  const runner: VncRunnerKind =
+    config.runner.preferred_runner ||
+    (renderMode === "custom"
+      ? "custom"
+      : renderMode === "embedded"
+        ? "novnc"
+        : "vncviewer");
+  const executable =
+    runner === "novnc"
+      ? null
+      : runner === "custom"
+        ? config.runner.custom_executable || "custom-vnc-client"
+        : runner === "realvnc"
+          ? "vncviewer.exe"
+          : "vncviewer";
+  const args =
+    runner === "novnc"
+      ? []
+      : runner === "custom"
+        ? [config.runner.custom_args_template || "{host}::{port}"]
+        : [`${connection.host}::${connection.port.toString()}`];
+  const warnings = [
+    "浏览器预览模式不会创建本地 VNC 桥接。",
+    "预览内容不会包含密码，外部 VNC 客户端也不会通过命令行接收明文密码。",
+    config.raw_runner_args?.trim()
+      ? "高级 runner 参数会在桌面运行时由后端校验后合并。"
+      : null,
+  ].filter((item): item is string => Boolean(item));
+
+  return {
+    args,
+    connection_id: connection.id,
+    embedded: runner === "novnc",
+    executable,
+    fallback_reason: runner === "novnc" ? null : "浏览器预览按外部 VNC runner 展示。",
+    render_mode: renderMode,
+    runner,
+    setup_hint: null,
+    warnings,
+    websocket_url: runner === "novnc" ? "ws://127.0.0.1:<port>/vnc/<session>/<token>" : null,
+  };
+}
+
+function vncSessionHasCommandText(session: VncSessionTab) {
+  const material = session.result || session.preview;
+  if (!material || material.runner === "novnc") {
+    return false;
+  }
+  return Boolean(material.executable || material.args.length);
+}
+
+function vncSessionCommandText(session: VncSessionTab) {
+  const material = session.result || session.preview;
+  if (!material || material.runner === "novnc") {
+    return "";
+  }
+  const executable = material.executable || "";
+  const args = material.args.map(quoteCommandArgForDisplay).join(" ");
+  return [executable, args].filter(Boolean).join(" ");
+}
+
+function vncSessionPrimaryDetail(session: VncSessionTab) {
+  if (session.status === "embedded") {
+    return { title: "启动方式", value: "noVNC 本地桥接" };
+  }
+  const command = vncSessionCommandText(session);
+  if (command) {
+    return { title: "启动命令", value: command };
+  }
+  return { title: "启动状态", value: session.message || vncStatusLabel(session.status) };
 }
 
 function quoteCommandArgForDisplay(value: string) {

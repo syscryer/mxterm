@@ -14,7 +14,8 @@ use crate::app_error::AppError;
 use crate::connections::{
     ConnectionAuthKind, ConnectionCredentialMode, ConnectionJumpKind, ConnectionProfile,
     ConnectionProtocol, ConnectionProxyKind, RdpCertificatePolicy, RdpDisplayMode, RdpGatewayMode,
-    RdpRenderMode, RdpRunnerKind, RdpSecurityCredentialMode,
+    RdpRenderMode, RdpRunnerKind, RdpSecurityCredentialMode, VncPerformancePreset, VncRenderMode,
+    VncRunnerKind, VncScaleMode, VncSecurityCredentialMode,
 };
 use crate::remote_exec_pool::{RemoteExecRetry, RemoteExecSessionPool};
 use crate::ssh_config::{ResolvedSshConfig, RuntimeCredentialInput};
@@ -103,6 +104,7 @@ pub struct McpConnectionDto {
     pub proxy: McpProxyDto,
     pub jump: McpJumpDto,
     pub rdp: Option<McpRdpDto>,
+    pub vnc: Option<McpVncDto>,
     pub notes: Option<String>,
     pub is_favorite: bool,
     pub last_connected_at: Option<String>,
@@ -142,6 +144,23 @@ pub struct McpRdpDto {
     pub gateway_mode: Option<RdpGatewayMode>,
     pub remote_app_enabled: bool,
     pub raw_rdp_settings_saved: bool,
+    pub raw_runner_args_saved: bool,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct McpVncDto {
+    pub scale_mode: VncScaleMode,
+    pub resize_session: bool,
+    pub clip_viewport: bool,
+    pub view_only: bool,
+    pub clipboard: bool,
+    pub shared: bool,
+    pub performance_preset: VncPerformancePreset,
+    pub quality_level: Option<u8>,
+    pub compression_level: Option<u8>,
+    pub render_mode: VncRenderMode,
+    pub preferred_runner: Option<VncRunnerKind>,
+    pub credential_mode: VncSecurityCredentialMode,
     pub raw_runner_args_saved: bool,
 }
 
@@ -256,6 +275,21 @@ pub fn redacted_connection(profile: ConnectionProfile) -> McpConnectionDto {
         raw_rdp_settings_saved: rdp.raw_rdp_settings.is_some(),
         raw_runner_args_saved: rdp.raw_runner_args.is_some(),
     });
+    let vnc = profile.vnc.as_ref().map(|vnc| McpVncDto {
+        scale_mode: vnc.display.scale_mode.clone(),
+        resize_session: vnc.display.resize_session,
+        clip_viewport: vnc.display.clip_viewport,
+        view_only: vnc.input.view_only,
+        clipboard: vnc.input.clipboard,
+        shared: vnc.input.shared,
+        performance_preset: vnc.performance.preset.clone(),
+        quality_level: vnc.performance.quality_level,
+        compression_level: vnc.performance.compression_level,
+        render_mode: vnc.runner.render_mode.clone(),
+        preferred_runner: vnc.runner.preferred_runner.clone(),
+        credential_mode: vnc.security.credential_mode.clone(),
+        raw_runner_args_saved: vnc.raw_runner_args.is_some(),
+    });
     McpConnectionDto {
         id: profile.id,
         name: profile.name,
@@ -284,6 +318,7 @@ pub fn redacted_connection(profile: ConnectionProfile) -> McpConnectionDto {
             jump_connection_id: profile.jump.jump_connection_id,
         },
         rdp,
+        vnc,
         notes: profile.notes,
         is_favorite: profile.is_favorite,
         last_connected_at: profile.last_connected_at,
@@ -307,6 +342,7 @@ pub fn search_matches(connection: &McpConnectionDto, query: &str) -> bool {
         match connection.protocol {
             ConnectionProtocol::Ssh => "ssh",
             ConnectionProtocol::Rdp => "rdp",
+            ConnectionProtocol::Vnc => "vnc",
         },
         connection.host.as_str(),
         connection.username.as_str(),
@@ -1539,6 +1575,7 @@ mod tests {
             jump: Default::default(),
             advanced: ConnectionAdvancedConfig::default(),
             rdp: None,
+            vnc: None,
             notes: Some("linux".to_string()),
             is_favorite: true,
             last_connected_at: Some("123".to_string()),
