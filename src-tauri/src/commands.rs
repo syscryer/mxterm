@@ -2600,7 +2600,7 @@ mod tests {
         fs::create_dir_all(&root).expect("test directory should be created");
 
         assert_eq!(
-            detect_distribution_mode("linux", &root, Some(OsString::from("/tmp/mXterm.AppImage"))),
+            detect_distribution_mode("linux", &root, Some(OsString::from("/tmp/MXterm.AppImage"))),
             "desktop-appimage"
         );
         assert_eq!(

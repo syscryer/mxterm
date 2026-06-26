@@ -128,7 +128,7 @@ export function ShortcutSettingsSection({
       <header className="settings-section-head settings-section-head-row">
         <div>
           <h1>快捷键</h1>
-          <p>管理 mXterm 应用内快捷键，不影响系统级热键。</p>
+          <p>管理 MXterm 应用内快捷键，不影响系统级热键。</p>
         </div>
         <button className="settings-action-button" type="button" onClick={resetAll}>
           <RotateCcw className="ui-icon" aria-hidden="true" />

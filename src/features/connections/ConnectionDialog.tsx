@@ -1352,8 +1352,8 @@ export function ConnectionDialog({
           ) : (
             <p className="connection-dialog-note">
               {isRdp
-                ? "保存的 RDP 密码只进入 mXterm vault，并且仅在 Windows 内嵌 ActiveX 模式中内存注入；外部 runner 仍会提示凭据。"
-                : "保存的 VNC 密码只进入 mXterm vault，并且仅在内嵌 noVNC 启动时以内存字段传入；外部 viewer 仍会提示凭据。"}
+                ? "保存的 RDP 密码只进入 MXterm vault，并且仅在 Windows 内嵌 ActiveX 模式中内存注入；外部 runner 仍会提示凭据。"
+                : "保存的 VNC 密码只进入 MXterm vault，并且仅在内嵌 noVNC 启动时以内存字段传入；外部 viewer 仍会提示凭据。"}
             </p>
           )}
 
@@ -2323,7 +2323,7 @@ export function ConnectionDialog({
             />
           </label>
           <p className="connection-dialog-note">
-            内嵌模式使用 noVNC 和 mXterm 本地桥接；外部 viewer 不会接收保存的密码。
+            内嵌模式使用 noVNC 和 MXterm 本地桥接；外部 viewer 不会接收保存的密码。
           </p>
         </section>
       </div>

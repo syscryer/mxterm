@@ -24,6 +24,7 @@ export function useSecretVault({
   masterPasswordEnabled: boolean;
 }) {
   const isTauri = hasTauriRuntime();
+  const canAutoUnlockLocal = isTauri && !masterPasswordEnabled;
   const [status, setStatus] = useState<SecretVaultStatus>(
     isTauri ? { initialized: false, unlocked: false } : previewStatus,
   );
@@ -55,8 +56,11 @@ export function useSecretVault({
   }, [isTauri]);
 
   useEffect(() => {
+    if (canAutoUnlockLocal) {
+      return;
+    }
     void refresh();
-  }, [refresh]);
+  }, [canAutoUnlockLocal, refresh]);
 
   useEffect(() => {
     localAutoUnlockAttemptedRef.current = false;
@@ -92,6 +96,7 @@ export function useSecretVault({
     }
 
     setUnlocking(true);
+    setLoading(true);
     setError(null);
     try {
       const nextStatus = await secretVaultUnlockLocal();
@@ -102,8 +107,17 @@ export function useSecretVault({
       return null;
     } finally {
       setUnlocking(false);
+      setLoading(false);
     }
   }, [isTauri]);
+
+  useEffect(() => {
+    if (!canAutoUnlockLocal || localAutoUnlockAttemptedRef.current) {
+      return;
+    }
+    localAutoUnlockAttemptedRef.current = true;
+    void unlockLocal();
+  }, [canAutoUnlockLocal, unlockLocal]);
 
   const lock = useCallback(async () => {
     if (!isTauri) {
@@ -125,6 +139,7 @@ export function useSecretVault({
   useEffect(() => {
     if (
       !isTauri ||
+      canAutoUnlockLocal ||
       masterPasswordEnabled ||
       loading ||
       unlocking ||
@@ -135,7 +150,15 @@ export function useSecretVault({
     }
     localAutoUnlockAttemptedRef.current = true;
     void unlockLocal();
-  }, [isTauri, loading, masterPasswordEnabled, status.unlocked, unlockLocal, unlocking]);
+  }, [
+    canAutoUnlockLocal,
+    isTauri,
+    loading,
+    masterPasswordEnabled,
+    status.unlocked,
+    unlockLocal,
+    unlocking,
+  ]);
 
   useEffect(() => {
     if (!isTauri || !masterPasswordEnabled || !status.unlocked || autoLockMinutes === 0) {

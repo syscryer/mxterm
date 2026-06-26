@@ -192,7 +192,7 @@ export function WebDavSyncSettingsSection() {
       <header className="settings-section-head settings-section-head-row">
         <span>
           <h1>同步</h1>
-          <p>配置 WebDAV 手动同步，上传和下载 mXterm 的连接、账号、隧道和安全快照。</p>
+          <p>配置 WebDAV 手动同步，上传和下载 MXterm 的连接、账号、隧道和安全快照。</p>
         </span>
         <span className={`webdav-sync-state ${form.enabled ? "enabled" : ""}`}>
           {form.enabled ? "已启用" : "未启用"}

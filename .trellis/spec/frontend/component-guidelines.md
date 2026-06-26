@@ -58,6 +58,11 @@ Ant Design, Mantine, or similar libraries just to fix one modal or button.
   focused must be explicitly marked `allowInTerminal`; ordinary shell/readline
   combinations such as `Ctrl+C`, `Ctrl+L`, or `Ctrl+A` must remain reserved for
   the terminal and rejected by shortcut validation.
+- Terminal `Ctrl+C` / `Cmd+C` must branch on the xterm selection state. When
+  `TerminalPanel` has an active selection, copy `terminal.getSelection()` through
+  the shared clipboard helper and stop the key event before it reaches the PTY.
+  When there is no selection, let xterm continue normally so shells and remote
+  processes still receive interrupt.
 
 ---
 
@@ -193,6 +198,12 @@ Ant Design, Mantine, or similar libraries just to fix one modal or button.
   Do not navigate into the located folder's child listing, auto-follow every
   `cd`, execute probe commands, or write `cd` back into the interactive
   terminal.
+- Terminal current-directory fallback should only resolve complete user input
+  that can be reconstructed locally, such as a simple typed `cd /path` line.
+  If the line contains Tab completion, history navigation, cursor editing, or
+  other control/escape input, do not guess the final directory from the partial
+  bytes sent to the PTY. Keep the last trusted directory and wait for OSC7 or a
+  later complete `cd` line instead.
 - Remote file trees keep two directory concepts separate. The tree root path
   owns the top-level listing currently rendered, while the active directory path
   owns the path input, toolbar actions, blank-area context menu, and blank-area
@@ -445,6 +456,14 @@ Ant Design, Mantine, or similar libraries just to fix one modal or button.
 
 ## Performance Boundaries
 
+- Tauri release startup should keep the native window hidden until the remembered
+  size/position and startup theme tokens have been applied. `main.tsx` should
+  run lightweight startup work before rendering and before showing the window;
+  avoid static `App` imports in the entry file when they would parse the full
+  workspace module graph before that startup work. Load the app shell
+  dynamically, restore/show the current window through shared Tauri helpers, and
+  keep first-visible theme data on `document.body` in sync with
+  `WorkspaceShell`.
 - Heavy feature dependencies and large static datasets must stay out of the
   startup path. Use dynamic imports at the first real feature boundary, or an
   idle-task preload after the initial workspace has settled. Do not import

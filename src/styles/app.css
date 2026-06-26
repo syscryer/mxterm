@@ -2388,7 +2388,7 @@ button {
 }
 
 .right-pane-resizer::after {
-  left: 3px;
+  left: 4px;
 }
 
 .app-shell[data-left-collapsed="true"] .connection-pane,
@@ -4955,7 +4955,12 @@ button {
 }
 
 .terminal-workbench-pane {
-  background: var(--mx-terminal);
+  background:
+    linear-gradient(
+      to bottom,
+      var(--mx-panel) 0 var(--terminal-glassbar-height),
+      var(--mx-terminal) var(--terminal-glassbar-height) 100%
+    );
   row-gap: 6px;
 }
 
@@ -4981,6 +4986,7 @@ button {
   isolation: isolate;
   gap: 4px;
   height: var(--terminal-glassbar-height);
+  border-top-left-radius: 12px;
   overflow-x: auto;
   overflow-y: hidden;
   padding: 0 12px 0 18px;
@@ -5002,6 +5008,7 @@ button {
   content: "";
   position: absolute;
   inset: 0;
+  border-top-left-radius: inherit;
   pointer-events: none;
 }
 

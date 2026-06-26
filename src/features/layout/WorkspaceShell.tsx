@@ -137,6 +137,7 @@ import { SecretVaultGate } from "../security/SecretVaultGate";
 import { useSecretVault } from "../security/useSecretVault";
 import { useConnections } from "../connections/useConnections";
 import { useCredentials } from "../connections/useCredentials";
+import { copyTextToClipboard } from "../../shared/clipboard";
 import type {
   CommandHistoryEntry,
   CommandHistoryScope,
@@ -11606,20 +11607,7 @@ function isClosableSavedRemoteFileTab(tab: RemoteFileEditorTab) {
 }
 
 async function copyText(text: string) {
-  if (navigator.clipboard?.writeText) {
-    await navigator.clipboard.writeText(text);
-    return;
-  }
-
-  const textArea = document.createElement("textarea");
-  textArea.value = text;
-  textArea.style.position = "fixed";
-  textArea.style.left = "-9999px";
-  document.body.appendChild(textArea);
-  textArea.focus();
-  textArea.select();
-  document.execCommand("copy");
-  document.body.removeChild(textArea);
+  await copyTextToClipboard(text);
 }
 
 function isValidRemoteBaseName(name: string) {

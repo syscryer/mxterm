@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "mXterm",
+  "productName": "MXterm",
   "version": "0.1.1",
   "identifier": "com.mxterm.app",
   "build": {
@@ -12,11 +12,12 @@
   "app": {
     "windows": [
       {
-        "title": "mXterm",
+        "title": "MXterm",
         "width": 1440,
         "height": 900,
         "minWidth": 1100,
         "minHeight": 720,
+        "visible": false,
         "decorations": false,
         "transparent": true,
         "windowEffects": {

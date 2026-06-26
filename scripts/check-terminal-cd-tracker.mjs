@@ -73,6 +73,9 @@ try {
   result = applyTerminalInputDirectoryData(state, "\u001b[200~cd /opt/app\r\u001b[201~");
   assert.equal(result.directory, "/opt/app");
 
+  result = applyTerminalInputDirectoryData(state, "cd /opt/ap\t\r");
+  assert.equal(result.directory, null);
+
   console.log("Terminal cd tracker check passed.");
 } finally {
   rmSync(outDir, { recursive: true, force: true });

@@ -495,7 +495,7 @@ pub async fn launch_connection(
                     process_id: None,
                     rdp_file_path: None,
                     fallback_reason: Some(
-                        "已打开 mXterm 原生 RDP 子窗口，密码会通过 Windows ActiveX 内存通道注入。"
+                        "已打开 MXterm 原生 RDP 子窗口，密码会通过 Windows ActiveX 内存通道注入。"
                             .to_string(),
                     ),
                     setup_hint: None,
@@ -898,7 +898,7 @@ fn build_freerdp_plan(resolved: &ResolvedRdpConnection) -> Result<LaunchPlan, Ap
         rdp_file_path: None,
         cleanup_path: None,
         warnings: vec![
-            "外部 FreeRDP runner 将自行提示凭据，mXterm 不会通过命令行传递密码。".to_string(),
+            "外部 FreeRDP runner 将自行提示凭据，MXterm 不会通过命令行传递密码。".to_string(),
         ],
     })
 }
@@ -1447,7 +1447,7 @@ impl ActiveXRdpConfig {
 
         Ok(Self {
             title: format!(
-                "mXterm RDP - {}",
+                "MXterm RDP - {}",
                 if resolved.profile.name.trim().is_empty() {
                     resolved.profile.host.as_str()
                 } else {
@@ -2086,7 +2086,7 @@ fn resize_activex_host_window(hwnd: windows::Win32::Foundation::HWND, bounds: &R
 fn rdp_tab_title(config: &ActiveXRdpConfig) -> String {
     let title = config
         .title
-        .strip_prefix("mXterm RDP - ")
+        .strip_prefix("MXterm RDP - ")
         .unwrap_or(config.title.as_str())
         .trim();
     if title.is_empty() {
@@ -3551,8 +3551,8 @@ fn update_native_host_title(
     let title = state
         .sessions
         .get(state.active_index)
-        .map(|session| format!("mXterm RDP - {}", session.title))
-        .unwrap_or_else(|| "mXterm RDP".to_string());
+        .map(|session| format!("MXterm RDP - {}", session.title))
+        .unwrap_or_else(|| "MXterm RDP".to_string());
     let wide = to_wide_null(&title);
     unsafe {
         let _ = SetWindowTextW(hwnd, PCWSTR(wide.as_ptr()));
