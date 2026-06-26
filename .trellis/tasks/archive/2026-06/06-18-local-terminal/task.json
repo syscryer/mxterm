@@ -1,0 +1,29 @@
+{
+  "id": "local-terminal",
+  "name": "local-terminal",
+  "title": "本地终端",
+  "description": "",
+  "status": "completed",
+  "dev_type": null,
+  "scope": null,
+  "package": null,
+  "priority": "P2",
+  "creator": "MNL",
+  "assignee": "MNL",
+  "createdAt": "2026-06-18",
+  "completedAt": "2026-06-26",
+  "branch": null,
+  "base_branch": "master",
+  "worktree_path": null,
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [
+    "06-18-fix-terminal-resize-debounce",
+    "06-18-fix-terminal-ime-unicode11"
+  ],
+  "parent": null,
+  "relatedFiles": [],
+  "notes": "",
+  "meta": {}
+}
