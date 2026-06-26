@@ -262,6 +262,9 @@ export function RemoteFilePanel({
         onToolChange={onToolChange}
         onToggleRightPane={onToggleRightPane}
       />
+      <div className="tool-panel-slot" hidden={effectiveActiveTool !== "tools"}>
+        {toolsPanel || <p className="file-panel-empty">打开一个 SSH 会话后显示工具。</p>}
+      </div>
       {effectiveActiveTool === "monitor" ? (
         <div className="monitor-tool-body">
           {monitorPanel || <p className="file-panel-empty">打开一个 SSH 会话后显示监控。</p>}
@@ -270,9 +273,7 @@ export function RemoteFilePanel({
         tunnelPanel || <p className="file-panel-empty">还没有隧道规则。</p>
       ) : effectiveActiveTool === "commands" ? (
         commandPanel || <p className="file-panel-empty">还没有命令片段。</p>
-      ) : effectiveActiveTool === "tools" ? (
-        toolsPanel || <p className="file-panel-empty">打开一个 SSH 会话后显示工具。</p>
-      ) : (
+      ) : effectiveActiveTool === "files" ? (
         <FilePanelShell
           disabled={disabled}
           hasExpandedDirectories={hasExpandedDirectories}
@@ -331,7 +332,7 @@ export function RemoteFilePanel({
           )}
           {transferPanel ? <div className="file-transfer-dock-wrap">{transferPanel}</div> : null}
         </FilePanelShell>
-      )}
+      ) : null}
     </aside>
   );
 

@@ -1,19 +1,23 @@
 import * as Dialog from "@radix-ui/react-dialog";
 import { siDocker } from "simple-icons";
 import {
+  ArrowDownToLine,
   Box,
   Copy,
   Cpu,
+  Eraser,
   Download,
   FileJson,
   HardDrive,
   Image as ImageIcon,
+  ListRestart,
   LoaderCircle,
   MemoryStick,
   Network,
   Play,
   Power,
   PowerOff,
+  Pause,
   RefreshCw,
   RotateCw,
   ScrollText,
@@ -28,16 +32,20 @@ import {
 import {
   useEffect,
   useMemo,
+  useRef,
   useState,
   type CSSProperties,
   type FormEvent,
+  type RefObject,
   type SVGProps,
 } from "react";
 
 import type { ConnectionProfile } from "../connections/connectionTypes";
 import {
   dockerContainerAction,
-  dockerContainerLogs,
+  dockerContainerLogsSave,
+  dockerContainerLogsStart,
+  dockerContainerLogsStop,
   dockerEngineAction,
   dockerEngineReadConfig,
   dockerEngineSaveConfig,
@@ -47,8 +55,9 @@ import {
   dockerListContainers,
   dockerListImages,
 } from "../../shared/tauri/commands";
+import { selectDockerLogSavePath } from "../../shared/tauri/dialog";
 import { hasTauriRuntime } from "../../shared/tauri/runtime";
-import { listenDockerImagePullProgress } from "../../shared/tauri/events";
+import { listenDockerImagePullProgress, listenDockerLogStream } from "../../shared/tauri/events";
 import { ConfirmDialog } from "../../shared/ui/ConfirmDialog";
 import { TabContextMenu, type TabContextMenuAction } from "../../shared/ui/TabContextMenu";
 import { Tooltip } from "../../shared/ui/Tooltip";
@@ -61,11 +70,26 @@ import type {
   DockerImagePullProgressEvent,
   DockerImagePullStatus,
   DockerImageSummary,
+  DockerLogStreamEvent,
   DockerLogsResult,
 } from "./dockerTypes";
 
 type ToolboxView = "docker" | "network" | "schedule";
 type DockerView = "containers" | "images" | "engine";
+type DockerRefreshKind = "containers" | "images" | "engine" | "engineConfig";
+
+interface RefreshRunState {
+  inFlight: boolean;
+  pending: boolean;
+  runId: number;
+}
+
+interface RefreshOptions {
+  onlyIfMissing?: boolean;
+  preserveDirty?: boolean;
+  queueIfBusy?: boolean;
+  silent?: boolean;
+}
 
 interface DockerImagePullTask {
   pullId: string;
@@ -89,6 +113,30 @@ const toolboxViews: Array<{ icon: LucideIcon; label: string; value: ToolboxView 
   { icon: Network, label: "网络诊断", value: "network" },
   { icon: Timer, label: "定时任务", value: "schedule" },
 ];
+
+const containerAutoRefreshMs = 10_000;
+const imageAutoRefreshMs = 30_000;
+const engineAutoRefreshMs = 30_000;
+
+function createRefreshRunState(): RefreshRunState {
+  return {
+    inFlight: false,
+    pending: false,
+    runId: 0,
+  };
+}
+
+function formatDockerJsonConfig(content: string) {
+  const trimmed = content.trim();
+  if (!trimmed) {
+    return "";
+  }
+  try {
+    return `${JSON.stringify(JSON.parse(trimmed), null, 2)}\n`;
+  } catch {
+    return content;
+  }
+}
 
 export function DockerToolPanel({
   active,
@@ -117,21 +165,63 @@ export function DockerToolPanel({
     useState<DockerContainerSummary | null>(null);
   const [imageDeleteTarget, setImageDeleteTarget] = useState<DockerImageSummary | null>(null);
   const [logsTarget, setLogsTarget] = useState<DockerContainerSummary | null>(null);
-  const [logsResult, setLogsResult] = useState<DockerLogsResult | null>(null);
+  const [logsContent, setLogsContent] = useState("");
+  const [logsStreamId, setLogsStreamId] = useState<string | null>(null);
   const [logsError, setLogsError] = useState<string | null>(null);
   const [logsLoading, setLogsLoading] = useState(false);
+  const [logsStreaming, setLogsStreaming] = useState(false);
+  const [logsPaused, setLogsPaused] = useState(false);
+  const [followLogs, setFollowLogs] = useState(true);
   const [pullDialogOpen, setPullDialogOpen] = useState(false);
   const [pullImage, setPullImage] = useState("");
   const [pullError, setPullError] = useState<string | null>(null);
   const [pulling, setPulling] = useState(false);
+  const [documentVisible, setDocumentVisible] = useState(
+    () => document.visibilityState !== "hidden",
+  );
 
   const connectionId = connection?.id || null;
+  const containersRefreshRef = useRef<RefreshRunState>(createRefreshRunState());
+  const imagesRefreshRef = useRef<RefreshRunState>(createRefreshRunState());
+  const engineRefreshRef = useRef<RefreshRunState>(createRefreshRunState());
+  const engineConfigRefreshRef = useRef<RefreshRunState>(createRefreshRunState());
+  const engineConfigRef = useRef<DockerEngineConfigResult | null>(null);
+  const engineConfigDraftRef = useRef("");
+  const connectionIdRef = useRef<string | null>(connectionId);
+  const logsStreamIdRef = useRef<string | null>(null);
+  const logOutputRef = useRef<HTMLPreElement | null>(null);
+  const dockerInitialLoadRef = useRef(false);
+  const engineInitialLoadRef = useRef(false);
   const runningCount = useMemo(
     () => containers.filter((container) => isContainerRunning(container)).length,
     [containers],
   );
+  const dockerAutoRefreshActive = active && toolboxView === "docker" && Boolean(connectionId) && documentVisible;
 
   useEffect(() => {
+    engineConfigRef.current = engineConfig;
+  }, [engineConfig]);
+
+  useEffect(() => {
+    engineConfigDraftRef.current = engineConfigDraft;
+  }, [engineConfigDraft]);
+
+  useEffect(() => {
+    function handleVisibilityChange() {
+      setDocumentVisible(document.visibilityState !== "hidden");
+    }
+
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    return () => document.removeEventListener("visibilitychange", handleVisibilityChange);
+  }, []);
+
+  useEffect(() => {
+    connectionIdRef.current = connectionId;
+    const previousStreamId = logsStreamIdRef.current;
+    if (previousStreamId && hasTauriRuntime()) {
+      void dockerContainerLogsStop(previousStreamId);
+    }
+    logsStreamIdRef.current = null;
     setContainers([]);
     setImages([]);
     setEngineStatus(null);
@@ -140,12 +230,27 @@ export function DockerToolPanel({
     setError(null);
     setNotice(null);
     setLogsTarget(null);
-    setLogsResult(null);
+    setLogsContent("");
+    setLogsStreamId(null);
+    setLogsLoading(false);
+    setLogsStreaming(false);
+    setLogsPaused(false);
+    setFollowLogs(true);
     setLogsError(null);
     setImagePullTasks([]);
     setEngineActionTarget(null);
     setRestartAfterSave(false);
+    dockerInitialLoadRef.current = false;
+    engineInitialLoadRef.current = false;
+    containersRefreshRef.current = createRefreshRunState();
+    imagesRefreshRef.current = createRefreshRunState();
+    engineRefreshRef.current = createRefreshRunState();
+    engineConfigRefreshRef.current = createRefreshRunState();
   }, [connectionId]);
+
+  useEffect(() => {
+    logsStreamIdRef.current = logsStreamId;
+  }, [logsStreamId]);
 
   useEffect(() => {
     if (!hasTauriRuntime()) {
@@ -182,55 +287,156 @@ export function DockerToolPanel({
   }, [connectionId]);
 
   useEffect(() => {
-    if (!active || toolboxView !== "docker" || !connectionId) {
+    if (!hasTauriRuntime()) {
       return;
     }
-    void refreshDocker();
-  }, [active, toolboxView, connectionId]);
+    let disposed = false;
+    let unlisten: (() => void) | null = null;
+    void listenDockerLogStream((event) => {
+      if (disposed || event.stream_id !== logsStreamIdRef.current) {
+        return;
+      }
+      applyDockerLogStreamEvent(event);
+    }).then((nextUnlisten) => {
+      if (disposed) {
+        nextUnlisten();
+      } else {
+        unlisten = nextUnlisten;
+      }
+    });
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, []);
 
   useEffect(() => {
-    if (!active || toolboxView !== "docker" || dockerView !== "engine" || !connectionId) {
+    if (!followLogs) {
       return;
     }
+    scrollLogsToBottom();
+  }, [logsContent, followLogs]);
+
+  useEffect(() => {
+    return () => {
+      const streamId = logsStreamIdRef.current;
+      if (streamId && hasTauriRuntime()) {
+        void dockerContainerLogsStop(streamId);
+      }
+      logsStreamIdRef.current = null;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!dockerAutoRefreshActive || dockerInitialLoadRef.current) {
+      return;
+    }
+    dockerInitialLoadRef.current = true;
+    void refreshDocker();
+  }, [dockerAutoRefreshActive, connectionId]);
+
+  useEffect(() => {
+    if (
+      !dockerAutoRefreshActive ||
+      dockerView !== "engine" ||
+      !connectionId ||
+      engineInitialLoadRef.current
+    ) {
+      return;
+    }
+    engineInitialLoadRef.current = true;
     void refreshEngineView();
-  }, [active, toolboxView, dockerView, connectionId]);
+  }, [dockerAutoRefreshActive, dockerView, connectionId]);
+
+  useEffect(() => {
+    if (!dockerAutoRefreshActive) {
+      return;
+    }
+    const timer = window.setInterval(() => {
+      void refreshContainers({ silent: true, queueIfBusy: true });
+    }, containerAutoRefreshMs);
+    return () => window.clearInterval(timer);
+  }, [dockerAutoRefreshActive, connectionId]);
+
+  useEffect(() => {
+    if (!dockerAutoRefreshActive) {
+      return;
+    }
+    const timer = window.setInterval(() => {
+      void refreshImages({ silent: true, queueIfBusy: true });
+    }, imageAutoRefreshMs);
+    return () => window.clearInterval(timer);
+  }, [dockerAutoRefreshActive, connectionId]);
+
+  useEffect(() => {
+    if (!dockerAutoRefreshActive || dockerView !== "engine") {
+      return;
+    }
+    const timer = window.setInterval(() => {
+      void refreshEngineStatus({ silent: true, queueIfBusy: true });
+      void refreshEngineConfig({ preserveDirty: true, silent: true, onlyIfMissing: true });
+    }, engineAutoRefreshMs);
+    return () => window.clearInterval(timer);
+  }, [dockerAutoRefreshActive, dockerView, connectionId]);
 
   async function refreshDocker() {
     await Promise.all([refreshContainers(), refreshImages()]);
   }
 
-  async function refreshContainers() {
+  async function refreshContainers(options: RefreshOptions = {}) {
     if (!connectionId) {
       return;
     }
-    setLoadingContainers(true);
-    setError(null);
-    try {
-      setContainers(
-        hasTauriRuntime()
-          ? await dockerListContainers(connectionId)
-          : previewDockerContainers(),
-      );
-    } catch (nextError) {
-      setError(formatDockerError(nextError));
-    } finally {
-      setLoadingContainers(false);
-    }
+    await runRefresh("containers", containersRefreshRef.current, options, async (runId, requestConnectionId) => {
+      if (!options.silent) {
+        setLoadingContainers(true);
+      }
+      setError(null);
+      try {
+        const nextContainers = hasTauriRuntime()
+          ? await dockerListContainers(requestConnectionId)
+          : previewDockerContainers();
+        if (isCurrentRefresh("containers", runId, requestConnectionId)) {
+          setContainers(nextContainers);
+        }
+      } catch (nextError) {
+        if (isCurrentRefresh("containers", runId, requestConnectionId)) {
+          setError(formatDockerError(nextError));
+        }
+      } finally {
+        if (isCurrentRefresh("containers", runId, requestConnectionId)) {
+          setLoadingContainers(false);
+        }
+      }
+    });
   }
 
-  async function refreshImages() {
+  async function refreshImages(options: RefreshOptions = {}) {
     if (!connectionId) {
       return;
     }
-    setLoadingImages(true);
-    setError(null);
-    try {
-      setImages(hasTauriRuntime() ? await dockerListImages(connectionId) : previewDockerImages());
-    } catch (nextError) {
-      setError(formatDockerError(nextError));
-    } finally {
-      setLoadingImages(false);
-    }
+    await runRefresh("images", imagesRefreshRef.current, options, async (runId, requestConnectionId) => {
+      if (!options.silent) {
+        setLoadingImages(true);
+      }
+      setError(null);
+      try {
+        const nextImages = hasTauriRuntime()
+          ? await dockerListImages(requestConnectionId)
+          : previewDockerImages();
+        if (isCurrentRefresh("images", runId, requestConnectionId)) {
+          setImages(nextImages);
+        }
+      } catch (nextError) {
+        if (isCurrentRefresh("images", runId, requestConnectionId)) {
+          setError(formatDockerError(nextError));
+        }
+      } finally {
+        if (isCurrentRefresh("images", runId, requestConnectionId)) {
+          setLoadingImages(false);
+        }
+      }
+    });
   }
 
   async function refreshEngineView() {
@@ -240,43 +446,128 @@ export function DockerToolPanel({
     ]);
   }
 
-  async function refreshEngineStatus() {
+  async function refreshEngineStatus(options: RefreshOptions = {}) {
     if (!connectionId) {
       return;
     }
-    setLoadingEngine(true);
-    setError(null);
-    try {
-      setEngineStatus(
-        hasTauriRuntime() ? await dockerEngineStatus(connectionId) : previewDockerEngineStatus(),
-      );
-    } catch (nextError) {
-      setError(formatDockerError(nextError));
-    } finally {
-      setLoadingEngine(false);
+    await runRefresh("engine", engineRefreshRef.current, options, async (runId, requestConnectionId) => {
+      if (!options.silent) {
+        setLoadingEngine(true);
+      }
+      setError(null);
+      try {
+        const nextStatus = hasTauriRuntime()
+          ? await dockerEngineStatus(requestConnectionId)
+          : previewDockerEngineStatus();
+        if (isCurrentRefresh("engine", runId, requestConnectionId)) {
+          setEngineStatus(nextStatus);
+        }
+      } catch (nextError) {
+        if (isCurrentRefresh("engine", runId, requestConnectionId)) {
+          setError(formatDockerError(nextError));
+        }
+      } finally {
+        if (isCurrentRefresh("engine", runId, requestConnectionId)) {
+          setLoadingEngine(false);
+        }
+      }
+    });
+  }
+
+  async function refreshEngineConfig(options: RefreshOptions = {}) {
+    if (!connectionId) {
+      return;
+    }
+    if (options.onlyIfMissing && engineConfigRef.current) {
+      return;
+    }
+    await runRefresh("engineConfig", engineConfigRefreshRef.current, options, async (runId, requestConnectionId) => {
+      if (!options.silent) {
+        setLoadingEngineConfig(true);
+      }
+      setError(null);
+      try {
+        const result = hasTauriRuntime()
+          ? await dockerEngineReadConfig(requestConnectionId)
+          : previewDockerEngineConfig();
+        if (!isCurrentRefresh("engineConfig", runId, requestConnectionId)) {
+          return;
+        }
+        const formattedContent = formatDockerJsonConfig(result.content);
+        const formattedResult = {
+          ...result,
+          content: formattedContent,
+        };
+        setEngineConfig(formattedResult);
+        const currentConfig = engineConfigRef.current;
+        const draftDirty = Boolean(currentConfig && currentConfig.content !== engineConfigDraftRef.current);
+        if (!options.preserveDirty || !draftDirty) {
+          setEngineConfigDraft(formattedContent);
+        }
+      } catch (nextError) {
+        if (isCurrentRefresh("engineConfig", runId, requestConnectionId)) {
+          setError(formatDockerError(nextError));
+        }
+      } finally {
+        if (isCurrentRefresh("engineConfig", runId, requestConnectionId)) {
+          setLoadingEngineConfig(false);
+        }
+      }
+    });
+  }
+
+  async function runRefresh(
+    kind: DockerRefreshKind,
+    state: RefreshRunState,
+    options: RefreshOptions,
+    task: (runId: number, requestConnectionId: string) => Promise<void>,
+  ) {
+    if (!connectionId) {
+      return;
+    }
+    if (state.inFlight) {
+      if (options.queueIfBusy) {
+        state.pending = true;
+      }
+      return;
+    }
+
+    state.inFlight = true;
+    state.pending = false;
+    state.runId += 1;
+    const runId = state.runId;
+    const requestConnectionId = connectionId;
+    await task(runId, requestConnectionId);
+    state.inFlight = false;
+
+    if (state.pending && connectionIdRef.current === requestConnectionId) {
+      state.pending = false;
+      await runRefresh(kind, state, { ...options, queueIfBusy: false }, task);
     }
   }
 
-  async function refreshEngineConfig(options: { preserveDirty?: boolean } = {}) {
-    if (!connectionId) {
-      return;
+  function isCurrentRefresh(
+    kind: DockerRefreshKind,
+    runId: number,
+    requestConnectionId: string,
+  ) {
+    return (
+      connectionIdRef.current === requestConnectionId &&
+      refreshStateForKind(kind).runId === runId
+    );
+  }
+
+  function refreshStateForKind(kind: DockerRefreshKind) {
+    if (kind === "containers") {
+      return containersRefreshRef.current;
     }
-    setLoadingEngineConfig(true);
-    setError(null);
-    try {
-      const result = hasTauriRuntime()
-        ? await dockerEngineReadConfig(connectionId)
-        : previewDockerEngineConfig();
-      setEngineConfig(result);
-      const draftDirty = Boolean(engineConfig && engineConfig.content !== engineConfigDraft);
-      if (!options.preserveDirty || !draftDirty) {
-        setEngineConfigDraft(result.content);
-      }
-    } catch (nextError) {
-      setError(formatDockerError(nextError));
-    } finally {
-      setLoadingEngineConfig(false);
+    if (kind === "images") {
+      return imagesRefreshRef.current;
     }
+    if (kind === "engine") {
+      return engineRefreshRef.current;
+    }
+    return engineConfigRefreshRef.current;
   }
 
   async function runContainerAction(
@@ -400,23 +691,98 @@ export function DockerToolPanel({
   }
 
   async function openLogs(container: DockerContainerSummary) {
+    await startLogsStream(container, 300, true);
+  }
+
+  async function startLogsStream(
+    container: DockerContainerSummary,
+    tail: number,
+    resetContent: boolean,
+  ) {
     if (!connectionId) {
       return;
     }
+    const previousStreamId = logsStreamIdRef.current;
+    if (previousStreamId && hasTauriRuntime()) {
+      void dockerContainerLogsStop(previousStreamId);
+    }
+    const streamId = createDockerLogStreamId(container.id);
+    logsStreamIdRef.current = streamId;
     setLogsTarget(container);
-    setLogsResult(null);
+    setLogsStreamId(streamId);
+    if (resetContent) {
+      setLogsContent("");
+    }
     setLogsError(null);
+    setLogsStreaming(false);
+    setLogsPaused(false);
+    setFollowLogs(true);
     setLogsLoading(true);
-    try {
-      setLogsResult(
-        hasTauriRuntime()
-          ? await dockerContainerLogs(connectionId, container.id, 120)
-          : previewDockerLogs(container),
-      );
-    } catch (nextError) {
-      setLogsError(formatDockerError(nextError));
-    } finally {
+
+    if (!hasTauriRuntime()) {
+      const preview = previewDockerLogs(container);
+      if (resetContent) {
+        setLogsContent(preview.content);
+      }
       setLogsLoading(false);
+      setLogsStreaming(true);
+      return;
+    }
+
+    try {
+      await dockerContainerLogsStart(connectionId, container.id, streamId, tail);
+      setLogsStreaming(true);
+    } catch (nextError) {
+      if (logsStreamIdRef.current === streamId) {
+        setLogsError(formatDockerError(nextError));
+        setLogsStreamId(null);
+        logsStreamIdRef.current = null;
+        setLogsPaused(false);
+      }
+    } finally {
+      if (logsStreamIdRef.current === streamId) {
+        setLogsLoading(false);
+      }
+    }
+  }
+
+  async function closeLogs() {
+    const streamId = logsStreamIdRef.current;
+    if (streamId && hasTauriRuntime()) {
+      void dockerContainerLogsStop(streamId);
+    }
+    logsStreamIdRef.current = null;
+    setLogsTarget(null);
+    setLogsStreamId(null);
+    setLogsContent("");
+    setLogsError(null);
+    setLogsLoading(false);
+    setLogsStreaming(false);
+    setLogsPaused(false);
+    setFollowLogs(true);
+  }
+
+  function restartLogs() {
+    if (logsTarget) {
+      void openLogs(logsTarget);
+    }
+  }
+
+  async function pauseLogStreaming() {
+    const streamId = logsStreamIdRef.current;
+    if (streamId && hasTauriRuntime()) {
+      void dockerContainerLogsStop(streamId);
+    }
+    logsStreamIdRef.current = null;
+    setLogsStreamId(null);
+    setLogsLoading(false);
+    setLogsStreaming(false);
+    setLogsPaused(true);
+  }
+
+  function enableLogStreaming() {
+    if (logsTarget) {
+      void startLogsStream(logsTarget, 0, false);
     }
   }
 
@@ -493,6 +859,58 @@ export function DockerToolPanel({
     });
   }
 
+  function applyDockerLogStreamEvent(event: DockerLogStreamEvent) {
+    if (event.kind === "chunk") {
+      const chunk = stripAnsiControlCodes(event.content || "");
+      if (!chunk) {
+        return;
+      }
+      setLogsContent((content) => trimDockerLogContent(`${content}${chunk}`));
+      setLogsLoading(false);
+      setLogsStreaming(true);
+      return;
+    }
+
+    setLogsLoading(false);
+    setLogsStreaming(false);
+    if (event.kind === "error") {
+      setLogsError(event.message || "Docker 容器日志读取失败。");
+    }
+  }
+
+  function scrollLogsToBottom() {
+    window.requestAnimationFrame(() => {
+      const output = logOutputRef.current;
+      if (!output) {
+        return;
+      }
+      output.scrollTop = output.scrollHeight;
+    });
+  }
+
+  function handleLogOutputScroll() {
+    const output = logOutputRef.current;
+    if (!output) {
+      return;
+    }
+    const distanceToBottom = output.scrollHeight - output.scrollTop - output.clientHeight;
+    if (distanceToBottom < 24) {
+      setFollowLogs(true);
+    } else {
+      setFollowLogs(false);
+    }
+  }
+
+  function resumeLogFollowing() {
+    setFollowLogs(true);
+    scrollLogsToBottom();
+  }
+
+  function clearLogs() {
+    setLogsContent("");
+    setLogsError(null);
+  }
+
   async function copyValue(value: string, label: string) {
     try {
       if (onCopyText) {
@@ -503,6 +921,39 @@ export function DockerToolPanel({
       setNotice(`已复制${label}。`);
     } catch (nextError) {
       setError(`复制失败：${formatDockerError(nextError)}`);
+    }
+  }
+
+  async function copyLogs() {
+    if (!logsContent.trim()) {
+      setLogsError("当前没有可复制的日志。");
+      return;
+    }
+    await copyValue(logsContent, "日志");
+  }
+
+  async function downloadLogs() {
+    if (!logsTarget || !logsContent.trim()) {
+      setLogsError("当前没有可下载的日志。");
+      return;
+    }
+    const fileName = dockerLogFileName(logsTarget);
+    try {
+      if (!hasTauriRuntime()) {
+        downloadBrowserTextFile(fileName, logsContent);
+        setLogsError(null);
+        setNotice("日志已下载。");
+        return;
+      }
+      const localPath = await selectDockerLogSavePath(fileName);
+      if (!localPath) {
+        return;
+      }
+      await dockerContainerLogsSave(localPath, logsContent);
+      setLogsError(null);
+      setNotice(`日志已保存：${localPath}`);
+    } catch (nextError) {
+      setLogsError(formatDockerError(nextError));
     }
   }
 
@@ -664,16 +1115,22 @@ export function DockerToolPanel({
       )}
 
       <DockerLogsDialog
+        content={logsContent}
         loading={logsLoading}
-        result={logsResult}
+        outputRef={logOutputRef}
+        following={followLogs}
+        paused={logsPaused}
+        streaming={logsStreaming}
         target={logsTarget}
         error={logsError}
-        onClose={() => {
-          setLogsTarget(null);
-          setLogsResult(null);
-          setLogsError(null);
-        }}
-        onRefresh={() => logsTarget && void openLogs(logsTarget)}
+        onClear={clearLogs}
+        onClose={() => void closeLogs()}
+        onCopy={() => void copyLogs()}
+        onDownload={() => void downloadLogs()}
+        onFollow={resumeLogFollowing}
+        onRealtimeToggle={logsStreaming ? () => void pauseLogStreaming() : enableLogStreaming}
+        onRefresh={restartLogs}
+        onScroll={handleLogOutputScroll}
       />
 
       <Dialog.Root
@@ -1046,6 +1503,8 @@ function ContainerList({
     <div className="docker-list" aria-label="Docker 容器">
       {containers.map((container) => {
         const running = isContainerRunning(container);
+        const detailLine = formatContainerDetailLine(container);
+        const detailTitle = formatContainerDetailTitle(container);
         const contextActions: TabContextMenuAction[] = [
           {
             label: "进入终端",
@@ -1080,9 +1539,8 @@ function ContainerList({
               </div>
               <div className="docker-row-meta">
                 <code title={container.image}>{container.image}</code>
-                <small title={container.status}>
-                  {container.status}
-                  {container.ports ? ` · ${container.ports}` : ""}
+                <small title={detailTitle}>
+                  {detailLine || "-"}
                 </small>
               </div>
               <div className="docker-row-actions">
@@ -1288,37 +1746,102 @@ function ImageList({
 }
 
 function DockerLogsDialog({
+  content,
   error,
+  following,
   loading,
-  result,
+  outputRef,
+  paused,
+  streaming,
   target,
+  onClear,
   onClose,
+  onCopy,
+  onDownload,
+  onFollow,
+  onRealtimeToggle,
   onRefresh,
+  onScroll,
 }: {
+  content: string;
   error: string | null;
+  following: boolean;
   loading: boolean;
-  result: DockerLogsResult | null;
+  outputRef: RefObject<HTMLPreElement | null>;
+  paused: boolean;
+  streaming: boolean;
   target: DockerContainerSummary | null;
+  onClear: () => void;
   onClose: () => void;
+  onCopy: () => void;
+  onDownload: () => void;
+  onFollow: () => void;
+  onRealtimeToggle: () => void;
   onRefresh: () => void;
+  onScroll: () => void;
 }) {
+  const statusLabel = loading ? "连接中" : streaming ? "实时" : paused ? "已暂停" : "已结束";
+  const displayContent = loading && !content ? "正在连接日志流..." : content || "没有日志输出。";
+
   return (
     <Dialog.Root open={Boolean(target)} onOpenChange={(open) => !open && onClose()}>
       <Dialog.Portal>
         <Dialog.Overlay className="dialog-backdrop" />
         <Dialog.Content className="docker-logs-dialog">
           <header className="docker-logs-head">
-            <Dialog.Title>{target ? `${target.name || shortDockerId(target.id)} 日志` : "容器日志"}</Dialog.Title>
+            <div className="docker-logs-title">
+              <Dialog.Title>
+                {target ? `${target.name || shortDockerId(target.id)} 日志` : "容器日志"}
+              </Dialog.Title>
+              <span
+                className={`docker-log-state ${streaming ? "streaming" : paused ? "paused" : ""}`}
+              >
+                {statusLabel}
+              </span>
+            </div>
             <div className="docker-logs-actions">
-              <Tooltip label="刷新日志">
+              <Tooltip label="重连日志流">
                 <button
                   className="toolbox-icon-button"
                   type="button"
-                  aria-label="刷新日志"
+                  aria-label="重连日志流"
                   disabled={loading}
                   onClick={onRefresh}
                 >
-                  <RefreshCw className={`ui-icon ${loading ? "spin" : ""}`} aria-hidden="true" />
+                  <ListRestart className={`ui-icon ${loading ? "spin" : ""}`} aria-hidden="true" />
+                </button>
+              </Tooltip>
+              <Tooltip label="复制日志">
+                <button
+                  className="toolbox-icon-button"
+                  type="button"
+                  aria-label="复制日志"
+                  disabled={!content.trim()}
+                  onClick={onCopy}
+                >
+                  <Copy className="ui-icon" aria-hidden="true" />
+                </button>
+              </Tooltip>
+              <Tooltip label="下载日志">
+                <button
+                  className="toolbox-icon-button"
+                  type="button"
+                  aria-label="下载日志"
+                  disabled={!content.trim()}
+                  onClick={onDownload}
+                >
+                  <Download className="ui-icon" aria-hidden="true" />
+                </button>
+              </Tooltip>
+              <Tooltip label="清空显示">
+                <button
+                  className="toolbox-icon-button"
+                  type="button"
+                  aria-label="清空显示"
+                  disabled={!content && !error}
+                  onClick={onClear}
+                >
+                  <Eraser className="ui-icon" aria-hidden="true" />
                 </button>
               </Tooltip>
               <Dialog.Close asChild>
@@ -1328,9 +1851,40 @@ function DockerLogsDialog({
               </Dialog.Close>
             </div>
           </header>
-          {error ? <p className="docker-form-error">{error}</p> : null}
-          <pre className="docker-log-output">
-            {loading ? "正在读取日志..." : result?.content || "没有日志输出。"}
+          <div className="docker-logs-toolbar">
+            {error ? <p className="docker-form-error">{error}</p> : <span />}
+            <div className="docker-log-toolbar-actions">
+              <button
+                className={`docker-log-live ${streaming ? "active" : "paused"}`}
+                type="button"
+                aria-pressed={streaming}
+                disabled={loading}
+                onClick={onRealtimeToggle}
+              >
+                {streaming ? (
+                  <Pause className="ui-icon" aria-hidden="true" />
+                ) : (
+                  <Play className="ui-icon" aria-hidden="true" />
+                )}
+                {streaming ? "暂停实时" : "启用实时"}
+              </button>
+              <button
+                className={`docker-log-follow ${following ? "active" : "paused"}`}
+                type="button"
+                aria-pressed={following}
+                onClick={onFollow}
+              >
+                <ArrowDownToLine className="ui-icon" aria-hidden="true" />
+                {following ? "跟随尾部" : "恢复跟随"}
+              </button>
+            </div>
+          </div>
+          <pre
+            className={`docker-log-output ${following ? "is-following" : ""}`}
+            ref={outputRef}
+            onScroll={onScroll}
+          >
+            {displayContent}
           </pre>
         </Dialog.Content>
       </Dialog.Portal>
@@ -1368,6 +1922,49 @@ function shortDockerId(id: string) {
   return id.replace(/^sha256:/, "").slice(0, 12) || id;
 }
 
+function formatContainerDetailLine(container: DockerContainerSummary) {
+  const parts = [container.status, formatContainerPorts(container.ports)].filter(Boolean);
+  return parts.join(" · ");
+}
+
+function formatContainerDetailTitle(container: DockerContainerSummary) {
+  const parts = [container.status, container.ports || ""].filter(Boolean);
+  return parts.join(" · ");
+}
+
+function formatContainerPorts(ports: string | null | undefined) {
+  if (!ports) {
+    return "";
+  }
+  const summaries = ports
+    .split(",")
+    .map((part) => formatContainerPortSegment(part))
+    .filter(Boolean);
+  const uniqueSummaries = Array.from(new Set(summaries));
+  if (uniqueSummaries.length === 0) {
+    return "";
+  }
+  if (uniqueSummaries.length <= 2) {
+    return uniqueSummaries.join(", ");
+  }
+  return `${uniqueSummaries.slice(0, 2).join(", ")} +${(uniqueSummaries.length - 2).toString()}`;
+}
+
+function formatContainerPortSegment(segment: string) {
+  const text = segment.trim();
+  if (!text) {
+    return "";
+  }
+  const mapping = text.match(/(?:(?:0\.0\.0\.0|\[?:::\]?|\*)\s*:)?(\d+)->(\d+\/[a-z]+)/i);
+  if (mapping) {
+    return `${mapping[1]}->${mapping[2]}`;
+  }
+  return text
+    .replace(/^0\.0\.0\.0:/, "")
+    .replace(/^\[?:::\]?:/, "")
+    .replace(/^\*:/, "");
+}
+
 function formatImageReference(image: DockerImageSummary) {
   const repository = image.repository && image.repository !== "<none>" ? image.repository : "";
   const tag = image.tag && image.tag !== "<none>" ? image.tag : "";
@@ -1379,6 +1976,57 @@ function formatImageReference(image: DockerImageSummary) {
 
 function createDockerPullId() {
   return `pull-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function createDockerLogStreamId(containerId: string) {
+  return `logs-${shortDockerId(containerId)}-${Date.now().toString(36)}-${Math.random()
+    .toString(36)
+    .slice(2, 8)}`;
+}
+
+function dockerLogFileName(container: DockerContainerSummary) {
+  const targetName = sanitizeLocalFileName(container.name || shortDockerId(container.id));
+  const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+  return `${targetName}-${timestamp}.log`;
+}
+
+function sanitizeLocalFileName(value: string) {
+  const name = Array.from(value)
+    .map((character) => (character.charCodeAt(0) < 32 ? "_" : character))
+    .join("")
+    .trim()
+    .replace(/[<>:"/\\|?*]/g, "_")
+    .replace(/[ .]+$/g, "");
+  return name || "docker-container";
+}
+
+function downloadBrowserTextFile(fileName: string, content: string) {
+  const blob = new Blob([content], { type: "text/plain;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = fileName;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+}
+
+function stripAnsiControlCodes(content: string) {
+  const escape = String.fromCharCode(27);
+  const bell = String.fromCharCode(7);
+  return content
+    .replace(new RegExp(`${escape}\\[[0-?]*[ -/]*[@-~]`, "g"), "")
+    .replace(new RegExp(`${escape}\\][^${bell}]*(?:${bell}|${escape}\\\\)`, "g"), "")
+    .replace(new RegExp(`${escape}[PX^_].*?${escape}\\\\`, "g"), "");
+}
+
+function trimDockerLogContent(content: string) {
+  const maxLogChars = 400_000;
+  if (content.length <= maxLogChars) {
+    return content;
+  }
+  return content.slice(content.length - maxLogChars);
 }
 
 function formatPullStatus(status: DockerImagePullStatus) {

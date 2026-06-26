@@ -1,6 +1,7 @@
 import { listen } from "@tauri-apps/api/event";
 import type {
   DockerImagePullProgressEvent,
+  DockerLogStreamEvent,
 } from "../../features/tools/dockerTypes";
 import type {
   RdpSessionClosedEvent,
@@ -46,6 +47,10 @@ export function listenDockerImagePullProgress(
   return listen<DockerImagePullProgressEvent>("docker:image_pull_progress", (event) =>
     handler(event.payload),
   );
+}
+
+export function listenDockerLogStream(handler: (event: DockerLogStreamEvent) => void) {
+  return listen<DockerLogStreamEvent>("docker:log_stream", (event) => handler(event.payload));
 }
 
 export function listenRdpSessionClosed(handler: (event: RdpSessionClosedEvent) => void) {

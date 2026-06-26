@@ -1,15 +1,24 @@
 use base64::{engine::general_purpose, Engine as _};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::HashMap;
+use std::fs;
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Emitter};
+use tokio::sync::Mutex as AsyncMutex;
+use tokio::task::JoinHandle;
 
 use crate::app_error::AppError;
-use crate::events::{DockerImagePullProgressEvent, DOCKER_IMAGE_PULL_PROGRESS};
+use crate::events::{
+    DockerImagePullProgressEvent, DockerLogStreamEvent, DOCKER_IMAGE_PULL_PROGRESS,
+    DOCKER_LOG_STREAM_EVENT,
+};
 use crate::remote_exec_pool::{RemoteExecRetry, RemoteExecSessionPool};
 use crate::remote_files::quote_posix_shell;
 use crate::ssh_config::resolve_saved_connection;
-use crate::terminal::session::{ExecOutput, ExecOutputChunkCallback};
+use crate::terminal::session::{ExecOutput, ExecOutputChunkCallback, ReusableExecSession};
 
 const DOCKER_LIST_CONTAINERS_COMMAND: &str = "docker ps -a --no-trunc --format '{{json .}}'";
 const DOCKER_LIST_IMAGES_COMMAND: &str = "docker images --no-trunc --format '{{json .}}'";
@@ -42,6 +51,25 @@ const DEFAULT_LOG_TAIL: u16 = 120;
 const MAX_LOG_TAIL: u16 = 500;
 
 pub type DockerExecSessionManager = RemoteExecSessionPool;
+
+#[derive(Clone)]
+pub struct DockerLogStreamManager {
+    streams: Arc<AsyncMutex<HashMap<String, DockerLogStreamHandle>>>,
+}
+
+struct DockerLogStreamHandle {
+    session: Arc<ReusableExecSession>,
+    stopped: Arc<AtomicBool>,
+    task: JoinHandle<()>,
+}
+
+impl Default for DockerLogStreamManager {
+    fn default() -> Self {
+        Self {
+            streams: Arc::new(AsyncMutex::new(HashMap::new())),
+        }
+    }
+}
 
 #[derive(Debug, Deserialize)]
 pub struct DockerConnectionRequest {
@@ -90,6 +118,26 @@ pub struct DockerContainerLogsRequest {
     pub container_id: String,
     #[serde(default)]
     pub tail: Option<u16>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct DockerContainerLogsStartRequest {
+    pub connection_id: String,
+    pub container_id: String,
+    pub stream_id: String,
+    #[serde(default)]
+    pub tail: Option<u16>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct DockerContainerLogsStopRequest {
+    pub stream_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct DockerContainerLogsSaveRequest {
+    pub local_path: String,
+    pub content: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -217,6 +265,195 @@ pub struct DockerEngineConfigResult {
     pub path: String,
     pub exists: bool,
     pub content: String,
+}
+
+impl DockerLogStreamManager {
+    async fn start(
+        &self,
+        app: AppHandle,
+        request: DockerContainerLogsStartRequest,
+    ) -> Result<(), AppError> {
+        let connection_id = require_value(
+            &request.connection_id,
+            "docker_connection_missing",
+            "请选择活动连接。",
+        )?
+        .to_string();
+        let container_id = require_value(
+            &request.container_id,
+            "docker_container_missing",
+            "请选择容器。",
+        )?
+        .to_string();
+        let stream_id = require_value(
+            &request.stream_id,
+            "docker_log_stream_missing",
+            "日志流标识缺失。",
+        )?
+        .to_string();
+        let tail = request.tail.unwrap_or(DEFAULT_LOG_TAIL).min(MAX_LOG_TAIL);
+        let command = format!(
+            "docker logs -f --tail {} -- {} 2>&1",
+            tail,
+            quote_posix_shell(&container_id)
+        );
+        let config = resolve_saved_connection(&app, &connection_id, None)?;
+        let session = Arc::new(ReusableExecSession::connect_resolved(&app, &config).await?);
+        let stopped = Arc::new(AtomicBool::new(false));
+        let callback = docker_log_stream_callback(&app, &stream_id, &connection_id, &container_id);
+        let manager = self.clone();
+        let task_session = Arc::clone(&session);
+        let task_stopped = Arc::clone(&stopped);
+        let task_stream_id = stream_id.clone();
+        let task_connection_id = connection_id.clone();
+        let task_container_id = container_id.clone();
+        let task = tokio::spawn(async move {
+            let result = task_session
+                .exec_streaming_stdout_chunks(&command, callback)
+                .await;
+
+            if !task_stopped.load(Ordering::SeqCst) {
+                match result {
+                    Ok(output) if output.exit_status.is_some_and(|status| status != 0) => {
+                        emit_log_stream_error(
+                            &app,
+                            &task_stream_id,
+                            &task_connection_id,
+                            &task_container_id,
+                            "Docker 容器日志读取失败。",
+                        );
+                    }
+                    Ok(_) => emit_log_stream_finished(
+                        &app,
+                        &task_stream_id,
+                        &task_connection_id,
+                        &task_container_id,
+                    ),
+                    Err(error) => emit_log_stream_error(
+                        &app,
+                        &task_stream_id,
+                        &task_connection_id,
+                        &task_container_id,
+                        &error.message,
+                    ),
+                }
+            }
+
+            task_stopped.store(true, Ordering::SeqCst);
+            task_session.close().await;
+            manager.finish_stream(&task_stream_id, &task_session).await;
+        });
+
+        let previous = {
+            let mut streams = self.streams.lock().await;
+            streams.insert(
+                stream_id,
+                DockerLogStreamHandle {
+                    session,
+                    stopped,
+                    task,
+                },
+            )
+        };
+        close_log_stream_handle(previous).await;
+
+        Ok(())
+    }
+
+    async fn stop(&self, request: DockerContainerLogsStopRequest) -> Result<(), AppError> {
+        let stream_id = require_value(
+            &request.stream_id,
+            "docker_log_stream_missing",
+            "日志流标识缺失。",
+        )?;
+        self.stop_stream(stream_id).await;
+        Ok(())
+    }
+
+    async fn stop_stream(&self, stream_id: &str) {
+        let removed = self.streams.lock().await.remove(stream_id);
+        close_log_stream_handle(removed).await;
+    }
+
+    async fn finish_stream(&self, stream_id: &str, session: &Arc<ReusableExecSession>) {
+        let removed = {
+            let mut streams = self.streams.lock().await;
+            if streams
+                .get(stream_id)
+                .is_some_and(|handle| Arc::ptr_eq(&handle.session, session))
+            {
+                streams.remove(stream_id)
+            } else {
+                None
+            }
+        };
+        if let Some(handle) = removed {
+            handle.stopped.store(true, Ordering::SeqCst);
+        }
+    }
+}
+
+pub async fn start_log_stream(
+    app: &AppHandle,
+    manager: &DockerLogStreamManager,
+    request: DockerContainerLogsStartRequest,
+) -> Result<(), AppError> {
+    manager.start(app.clone(), request).await
+}
+
+pub async fn stop_log_stream(
+    manager: &DockerLogStreamManager,
+    request: DockerContainerLogsStopRequest,
+) -> Result<(), AppError> {
+    manager.stop(request).await
+}
+
+pub fn save_logs_to_local(request: DockerContainerLogsSaveRequest) -> Result<(), AppError> {
+    let local_path = require_value(
+        &request.local_path,
+        "docker_log_save_path_missing",
+        "请选择日志保存位置。",
+    )?;
+    if request.content.is_empty() {
+        return Err(AppError::new(
+            "docker_log_save_content_missing",
+            "当前没有可保存的日志。",
+            "content is empty",
+            true,
+        ));
+    }
+
+    let path = PathBuf::from(local_path);
+    if path.is_dir() {
+        return Err(AppError::new(
+            "docker_log_save_path_invalid",
+            "请选择有效的日志文件路径。",
+            local_path,
+            true,
+        ));
+    }
+    if let Some(parent) = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
+        if !parent.exists() {
+            return Err(AppError::new(
+                "docker_log_save_parent_missing",
+                "日志保存目录不存在。",
+                parent.to_string_lossy(),
+                true,
+            ));
+        }
+    }
+
+    fs::write(&path, request.content.as_bytes()).map_err(|error| {
+        AppError::new(
+            "docker_log_save_failed",
+            "Docker 容器日志保存失败。",
+            error,
+            true,
+        )
+    })
 }
 
 #[derive(Debug, Deserialize)]
@@ -1063,6 +1300,82 @@ fn emit_pull_progress(
     );
 }
 
+fn docker_log_stream_callback(
+    app: &AppHandle,
+    stream_id: &str,
+    connection_id: &str,
+    container_id: &str,
+) -> ExecOutputChunkCallback {
+    let app = app.clone();
+    let stream_id = stream_id.to_string();
+    let connection_id = connection_id.to_string();
+    let container_id = container_id.to_string();
+    Arc::new(move |chunk| {
+        let content = String::from_utf8_lossy(chunk).to_string();
+        if content.is_empty() {
+            return;
+        }
+        let _ = app.emit(
+            DOCKER_LOG_STREAM_EVENT,
+            DockerLogStreamEvent {
+                stream_id: stream_id.clone(),
+                connection_id: connection_id.clone(),
+                container_id: container_id.clone(),
+                kind: "chunk".to_string(),
+                content: Some(content),
+                message: None,
+            },
+        );
+    })
+}
+
+fn emit_log_stream_error(
+    app: &AppHandle,
+    stream_id: &str,
+    connection_id: &str,
+    container_id: &str,
+    message: &str,
+) {
+    let _ = app.emit(
+        DOCKER_LOG_STREAM_EVENT,
+        DockerLogStreamEvent {
+            stream_id: stream_id.to_string(),
+            connection_id: connection_id.to_string(),
+            container_id: container_id.to_string(),
+            kind: "error".to_string(),
+            content: None,
+            message: Some(message.to_string()),
+        },
+    );
+}
+
+fn emit_log_stream_finished(
+    app: &AppHandle,
+    stream_id: &str,
+    connection_id: &str,
+    container_id: &str,
+) {
+    let _ = app.emit(
+        DOCKER_LOG_STREAM_EVENT,
+        DockerLogStreamEvent {
+            stream_id: stream_id.to_string(),
+            connection_id: connection_id.to_string(),
+            container_id: container_id.to_string(),
+            kind: "finished".to_string(),
+            content: None,
+            message: Some("日志流已结束。".to_string()),
+        },
+    );
+}
+
+async fn close_log_stream_handle(handle: Option<DockerLogStreamHandle>) {
+    if let Some(handle) = handle {
+        handle.stopped.store(true, Ordering::SeqCst);
+        handle.session.close().await;
+        handle.task.abort();
+    }
+}
+
 #[derive(Default)]
 struct DockerPullProgressParser {
     line_buffer: String,
@@ -1166,7 +1479,12 @@ fn parse_docker_size_bytes(value: &str) -> Option<f64> {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_containers, parse_images, parse_pull_progress_line};
+    use super::{
+        parse_containers, parse_images, parse_pull_progress_line, save_logs_to_local,
+        DockerContainerLogsSaveRequest,
+    };
+    use std::fs;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
     fn parse_containers_reads_json_lines() {
@@ -1208,5 +1526,25 @@ mod tests {
         assert_eq!(progress.current_layer, None);
         assert_eq!(progress.percent, None);
         assert_eq!(progress.message, "latest: Pulling from library/nginx");
+    }
+
+    #[test]
+    fn save_logs_to_local_writes_utf8_text() {
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be valid")
+            .as_millis();
+        let path = std::env::temp_dir().join(format!("mxterm-docker-log-{timestamp}.log"));
+
+        save_logs_to_local(DockerContainerLogsSaveRequest {
+            local_path: path.to_string_lossy().to_string(),
+            content: "容器日志\nline 2\n".to_string(),
+        })
+        .expect("log save should succeed");
+
+        let content = fs::read_to_string(&path).expect("saved log should be readable");
+        assert_eq!(content, "容器日志\nline 2\n");
+
+        let _ = fs::remove_file(path);
     }
 }

@@ -501,6 +501,39 @@ export function dockerContainerLogs(connectionId: string, containerId: string, t
   });
 }
 
+export function dockerContainerLogsStart(
+  connectionId: string,
+  containerId: string,
+  streamId: string,
+  tail = 300,
+) {
+  return invoke<void>("docker_container_logs_start", {
+    request: {
+      connection_id: connectionId,
+      container_id: containerId,
+      stream_id: streamId,
+      tail,
+    },
+  });
+}
+
+export function dockerContainerLogsStop(streamId: string) {
+  return invoke<void>("docker_container_logs_stop", {
+    request: {
+      stream_id: streamId,
+    },
+  });
+}
+
+export function dockerContainerLogsSave(localPath: string, content: string) {
+  return invoke<void>("docker_container_logs_save", {
+    request: {
+      content,
+      local_path: localPath,
+    },
+  });
+}
+
 export function dockerImagePull(connectionId: string, image: string, pullId?: string) {
   return invoke<DockerActionResult>("docker_image_pull", {
     request: {
@@ -550,6 +583,14 @@ export function dockerEngineSaveConfig(connectionId: string, content: string) {
     request: {
       connection_id: connectionId,
       content,
+    },
+  });
+}
+
+export function dockerExecInvalidateConnection(connectionId: string) {
+  return invoke<void>("docker_exec_invalidate_connection", {
+    request: {
+      connection_id: connectionId,
     },
   });
 }

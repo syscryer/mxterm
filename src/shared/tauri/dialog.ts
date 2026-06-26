@@ -1,4 +1,4 @@
-import { open } from "@tauri-apps/plugin-dialog";
+import { open, save } from "@tauri-apps/plugin-dialog";
 
 function normalizeSelectedPaths(selected: string | string[] | null) {
   if (!selected) {
@@ -40,4 +40,17 @@ export async function selectLocalPrivateKeyFile() {
     title: "选择私钥文件",
   });
   return normalizeSelectedPaths(selected)[0] || null;
+}
+
+export async function selectDockerLogSavePath(defaultName: string) {
+  return save({
+    defaultPath: defaultName,
+    filters: [
+      {
+        extensions: ["log", "txt"],
+        name: "日志文件",
+      },
+    ],
+    title: "保存容器日志",
+  });
 }

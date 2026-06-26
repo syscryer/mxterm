@@ -141,6 +141,14 @@ const emptyForm: ConnectionProfileInput = {
   notes: "",
 };
 
+const protocolDefaultPorts = {
+  ssh: 22,
+  rdp: 3389,
+  vnc: 5900,
+  telnet: 23,
+  serial: 1,
+} as const;
+
 const protocolOptions: Array<{
   icon: typeof Terminal;
   label: string;
@@ -1408,7 +1416,7 @@ export function ConnectionDialog({
               required
               value={form.host}
               onChange={(event) => setForm({ ...form, host: event.target.value })}
-              placeholder="203.0.113.70"
+              placeholder="192.168.1.20"
             />
           </label>
           <label>
@@ -2523,11 +2531,17 @@ export function ConnectionDialog({
     setTestState("idle");
     setActiveTab("basic");
     setForm((current) => {
+      const serialEndpoint = usesSerialEndpoint(current);
       if (nextProtocol === "rdp") {
         return {
           ...current,
           protocol: "rdp",
-          port: current.port === 22 ? 3389 : current.port,
+          host: serialEndpoint ? "" : current.host,
+          port: serialEndpoint
+            ? protocolDefaultPorts.rdp
+            : current.port === protocolDefaultPorts.ssh
+              ? protocolDefaultPorts.rdp
+              : current.port,
           credential_mode: current.credential_mode || "inline",
           credential_id: current.credential_mode === "saved" ? current.credential_id || "" : "",
           inline_auth_kind: "password",
@@ -2550,7 +2564,12 @@ export function ConnectionDialog({
         return {
           ...current,
           protocol: "vnc",
-          port: current.port === 22 || current.port === 3389 ? 5900 : current.port,
+          host: serialEndpoint ? "" : current.host,
+          port: serialEndpoint
+            ? protocolDefaultPorts.vnc
+            : current.port === protocolDefaultPorts.ssh || current.port === protocolDefaultPorts.rdp
+              ? protocolDefaultPorts.vnc
+              : current.port,
           credential_mode: current.credential_mode || "inline",
           credential_id: current.credential_mode === "saved" ? current.credential_id || "" : "",
           inline_auth_kind: "password",
@@ -2573,7 +2592,14 @@ export function ConnectionDialog({
         return {
           ...current,
           protocol: "telnet",
-          port: current.port === 22 || current.port === 3389 || current.port === 5900 ? 23 : current.port,
+          host: serialEndpoint ? "" : current.host,
+          port: serialEndpoint
+            ? protocolDefaultPorts.telnet
+            : current.port === protocolDefaultPorts.ssh ||
+                current.port === protocolDefaultPorts.rdp ||
+                current.port === protocolDefaultPorts.vnc
+              ? protocolDefaultPorts.telnet
+              : current.port,
           username: "",
           credential_mode: "prompt",
           credential_id: "",
@@ -2624,7 +2650,15 @@ export function ConnectionDialog({
       return {
         ...current,
         protocol: "ssh",
-        port: current.port === 3389 || current.port === 5900 || current.port === 23 || current.port === 1 ? 22 : current.port,
+        host: serialEndpoint ? "" : current.host,
+        port: serialEndpoint
+          ? protocolDefaultPorts.ssh
+          : current.port === protocolDefaultPorts.rdp ||
+              current.port === protocolDefaultPorts.vnc ||
+              current.port === protocolDefaultPorts.telnet ||
+              current.port === protocolDefaultPorts.serial
+            ? protocolDefaultPorts.ssh
+            : current.port,
         credential_mode:
           current.credential_mode === "prompt" ? "inline" : current.credential_mode,
         inline_auth_kind: current.inline_auth_kind || "password",
@@ -3095,6 +3129,14 @@ function withDefaultSerialConfig(value?: SerialConnectionConfig | null): SerialC
     baud_rate: Number(value?.baud_rate) || defaultSerialConfig.baud_rate,
     port_name: value?.port_name || "",
   };
+}
+
+function usesSerialEndpoint(form: ConnectionProfileInput): boolean {
+  const serial = withDefaultSerialConfig(form.serial);
+  return (
+    (form.protocol || "ssh") === "serial" ||
+    (form.port === protocolDefaultPorts.serial && Boolean(serial.port_name) && form.host === serial.port_name)
+  );
 }
 
 function groupPathLabel(

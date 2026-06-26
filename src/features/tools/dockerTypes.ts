@@ -47,6 +47,17 @@ export interface DockerLogsResult {
   content: string;
 }
 
+export type DockerLogStreamEventKind = "chunk" | "error" | "finished";
+
+export interface DockerLogStreamEvent {
+  stream_id: string;
+  connection_id: string;
+  container_id: string;
+  kind: DockerLogStreamEventKind;
+  content?: string | null;
+  message?: string | null;
+}
+
 export interface DockerEngineStatus {
   installed: boolean;
   running: boolean;

@@ -1620,6 +1620,9 @@ dockerListContainers(connectionId: string): Promise<DockerContainerSummary[]>
 dockerListImages(connectionId: string): Promise<DockerImageSummary[]>
 dockerContainerAction(connectionId: string, containerId: string, action: DockerContainerAction): Promise<DockerActionResult>
 dockerContainerLogs(connectionId: string, containerId: string, tail?: number): Promise<DockerLogsResult>
+dockerContainerLogsStart(connectionId: string, containerId: string, streamId: string, tail?: number): Promise<void>
+dockerContainerLogsStop(streamId: string): Promise<void>
+dockerContainerLogsSave(localPath: string, content: string): Promise<void>
 dockerImagePull(connectionId: string, image: string, pullId?: string): Promise<DockerActionResult>
 dockerImageRemove(connectionId: string, imageId: string): Promise<DockerActionResult>
 dockerEngineStatus(connectionId: string): Promise<DockerEngineStatus>
@@ -1644,6 +1647,21 @@ type DockerImagePullProgressEvent = {
 }
 ```
 
+Docker container logs stream through a typed event wrapper:
+
+```ts
+listenDockerLogStream(handler: (event: DockerLogStreamEvent) => void)
+
+type DockerLogStreamEvent = {
+  stream_id: string
+  connection_id: string
+  container_id: string
+  kind: "chunk" | "error" | "finished"
+  content?: string | null
+  message?: string | null
+}
+```
+
 ### 3. Contracts
 
 - Components must use the typed wrappers in `src/shared/tauri/commands.ts`; do not call `invoke("docker_*")` directly from UI components.
@@ -1652,6 +1670,11 @@ type DockerImagePullProgressEvent = {
 - Delete container and delete image actions must use `ConfirmDialog`. Do not use `window.confirm`, bulk destructive actions, prune, or silent optimistic deletion.
 - Container terminal entry opens a new SSH terminal tab for the same saved connection and writes `docker exec -it <quoted container id> sh`. It must not embed a second terminal in the right pane or record the command as Command Sender history.
 - Image pull submits an optional frontend-generated `pullId`. The pull dialog should close after the task is accepted, and the image list should render a temporary pull row keyed by `pull_id` while `docker:image_pull_progress` events arrive. Success refreshes the real image list; failure keeps the row visible with the error message.
+- Container logs use `dockerContainerLogsStart(...)` plus `docker:log_stream` events for live output. The UI must stop the active stream with `dockerContainerLogsStop(streamId)` when the log dialog closes, the container target changes, the connection changes, or the component unmounts.
+- Log stream events must be matched by `stream_id` before appending content. Stale chunks from a previous stream must not be appended into the current dialog.
+- Log output should strip ANSI control codes before rendering, keep a bounded in-memory buffer, and support follow-tail behavior that pauses when the user scrolls away from the bottom.
+- Realtime streaming and follow-tail are separate controls. `暂停实时` stops the backend log stream and keeps the current buffer visible; `启用实时` starts a new stream with `tail = 0` so only new log lines append. `跟随尾部` / `恢复跟随` only controls scroll behavior.
+- Log download saves the current visible log buffer through `dockerContainerLogsSave(...)` after a save dialog path is chosen. It must not re-run `docker logs`, append stale stream chunks, or require SSH credentials in the UI.
 - The Docker page has `containers`, `images`, and `engine` internal views. Entering the engine view may load Docker status and daemon config; ordinary container/image refreshes must not run expensive engine disk probes.
 - Engine service stop, restart, and "save config then restart" require `ConfirmDialog`. Starting the service can run directly.
 - Engine config editing is limited to `/etc/docker/daemon.json`. The UI may normalize JSON before save, but Rust remains authoritative for validation and backup/write behavior.
@@ -1669,6 +1692,13 @@ type DockerImagePullProgressEvent = {
 | `docker_permission_denied` | Show that the current remote user lacks Docker permission. |
 | Container/image delete fails | Keep the row visible, show the backend error, and allow refresh/retry. |
 | Logs load fails | Keep the logs dialog open and show the backend error inside it. |
+| Log stream start fails | Keep the logs dialog open, clear the active stream id, and show the backend error inside it. |
+| Log stream emits `error` | Stop the streaming indicator, keep existing visible logs, and show the event message. |
+| User pauses realtime logs | Stop the active backend stream, show a paused state, preserve the current visible buffer, and keep copy/download available. |
+| User enables realtime logs after pause | Start a new stream with `tail = 0` and append only new chunks. |
+| Log dialog closes | Stop the active backend stream idempotently; repeated close/cleanup calls must not surface errors to the user. |
+| Log download has no content | Keep the dialog open and show that there is no log content to save. |
+| Log download save fails | Keep the current log buffer visible and show the Rust error message inside the dialog. |
 | Pull image validation fails before task creation | Keep the pull dialog open and show the error near the input. |
 | Pull image starts successfully | Close the pull dialog and show a running row in the image list. |
 | Pull image emits progress without a percent | Keep an indeterminate progress row and show the latest Docker stage text. |
@@ -1681,16 +1711,21 @@ type DockerImagePullProgressEvent = {
 ### 5. Good / Base / Bad Cases
 
 - Good: Docker panel receives the current SSH connection id, loads containers and images through typed wrappers, and keeps delete rows visible until the backend confirms success.
+- Good: opening container logs starts one live stream, appends only matching `stream_id` chunks, pauses follow-tail when the user scrolls up, and stops the stream on close.
+- Good: pausing realtime logs stops the remote `docker logs -f` process while preserving the visible buffer; enabling realtime resumes from new output without duplicating the initial tail.
+- Good: downloading logs writes the current bounded buffer to the user-selected local path without interrupting the live stream.
 - Good: opening a container terminal creates a normal SSH terminal tab and writes the quoted `docker exec -it ... sh` command after the terminal session is connected.
 - Good: entering the engine view loads status/config through typed wrappers and confirms service-impacting actions before calling Rust.
 - Base: browser preview has no Tauri runtime; the panel renders deterministic preview rows and keeps real persistence/remote operations out of the preview path.
 - Bad: a component calls `invoke("docker_*")` directly, passes SSH password fields into Docker commands, deletes rows optimistically before backend success, or uses `window.confirm`.
+- Bad: a component calls `dockerContainerLogs(...)` repeatedly to fake live logs, leaves `docker logs -f` running after the dialog closes, appends events without checking `stream_id`, or downloads logs by re-running a separate remote command.
 
 ### 6. Tests Required
 
 - Run `npm run check` after changing Docker toolbox types, wrappers, panel props, right-pane tab integration, or workspace terminal-entry wiring when type-check runs are approved for the session.
 - Cross-check TypeScript wrapper payload field names against Rust request structs in `src-tauri/src/docker_tools.rs`.
-- Browser/desktop visual checks should cover no connection, no containers, running/exited containers, image pull dialog, delete confirmations, log dialog, and dark theme token contrast.
+- Run `node scripts/check-docker-tool-refresh-source.mjs` after changing Docker auto-refresh, exec-cache, or log-stream behavior.
+- Browser/desktop visual checks should cover no connection, no containers, running/exited containers, image pull dialog, delete confirmations, streaming log dialog, follow-tail pause/resume, and dark theme token contrast.
 
 ### 7. Wrong vs Correct
 
@@ -1701,6 +1736,24 @@ await invoke("docker_container_action", {
   connection_id: connection.id,
   container_id: container.id,
   action: "remove",
+});
+```
+
+#### Wrong
+
+```tsx
+const result = await dockerContainerLogs(connection.id, container.id, 120);
+setInterval(() => setLogs(result.content), 1000);
+```
+
+#### Correct
+
+```tsx
+await dockerContainerLogsStart(connection.id, container.id, streamId, 300);
+const unlisten = await listenDockerLogStream((event) => {
+  if (event.stream_id === streamId && event.kind === "chunk") {
+    appendLogChunk(event.content || "");
+  }
 });
 ```
 
