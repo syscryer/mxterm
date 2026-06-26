@@ -14,11 +14,13 @@ import {
   defaultJumpConfig,
   defaultProxyConfig,
   defaultRdpConfig,
+  defaultVncConfig,
   normalizeTerminalEncoding,
   type ConnectionProfile,
   type ConnectionProfileInput,
   type ConnectionRuntimeCredentialRequest,
   type RdpConnectionConfig,
+  type VncConnectionConfig,
 } from "./connectionTypes";
 
 const demoConnections: ConnectionProfile[] = [
@@ -144,8 +146,29 @@ const demoConnections: ConnectionProfile[] = [
     jump: defaultJumpConfig,
     advanced: defaultAdvancedConfig,
     rdp: defaultRdpConfig,
+    vnc: null,
     notes: "rdp windows desktop",
     is_favorite: true,
+    last_connected_at: "demo",
+    created_at: "demo",
+    updated_at: "demo",
+  },
+  {
+    id: "demo-vnc-linux",
+    name: "Linux 图形桌面",
+    protocol: "vnc",
+    host: "198.51.100.88",
+    port: 5900,
+    username: "vncuser",
+    group: "生产环境",
+    credential_mode: "prompt",
+    proxy: defaultProxyConfig,
+    jump: defaultJumpConfig,
+    advanced: defaultAdvancedConfig,
+    rdp: null,
+    vnc: defaultVncConfig,
+    notes: "vnc desktop",
+    is_favorite: false,
     last_connected_at: "demo",
     created_at: "demo",
     updated_at: "demo",
@@ -396,6 +419,48 @@ export function normalizeConnectionInput(input: ConnectionProfileInput): Connect
       jump: { kind: "none" },
       advanced: defaultAdvancedConfig,
       rdp: normalizeRdpConfig(input.rdp),
+      vnc: undefined,
+      notes: trim(input.notes),
+      is_favorite: input.is_favorite,
+      last_connected_at: trim(input.last_connected_at),
+      remote_os_id: trim(input.remote_os_id),
+      remote_os_name: trim(input.remote_os_name),
+      remote_os_version: trim(input.remote_os_version),
+    };
+  }
+
+  if (protocol === "vnc") {
+    const trim = (value: string | undefined | null) => value?.trim() || undefined;
+    const credentialMode = input.credential_mode || "prompt";
+    const inlinePassword = trim(input.inline_password || input.password);
+    const inlinePasswordTouched =
+      typeof input.inline_password_touched === "boolean"
+        ? input.inline_password_touched
+        : Boolean(inlinePassword);
+
+    return {
+      id: trim(input.id),
+      protocol: "vnc",
+      name: trim(input.name),
+      group: trim(input.group),
+      host: input.host.trim(),
+      port: Number(input.port) || 5900,
+      username: input.username.trim(),
+      credential_mode: credentialMode,
+      credential_id: credentialMode === "saved" ? trim(input.credential_id) : undefined,
+      inline_auth_kind: credentialMode === "inline" ? "password" : undefined,
+      inline_password:
+        credentialMode === "inline" && inlinePasswordTouched ? inlinePassword : undefined,
+      inline_password_touched: credentialMode === "inline" ? inlinePasswordTouched : false,
+      inline_private_key_path: undefined,
+      inline_private_key_passphrase: undefined,
+      inline_private_key_passphrase_touched: false,
+      prompt_auth_kind: undefined,
+      proxy: { kind: "none" },
+      jump: { kind: "none" },
+      advanced: defaultAdvancedConfig,
+      rdp: undefined,
+      vnc: normalizeVncConfig(input.vnc),
       notes: trim(input.notes),
       is_favorite: input.is_favorite,
       last_connected_at: trim(input.last_connected_at),
@@ -480,12 +545,57 @@ export function normalizeConnectionInput(input: ConnectionProfileInput): Connect
       terminal_encoding: normalizeTerminalEncoding(input.advanced?.terminal_encoding),
     },
     rdp: undefined,
+    vnc: undefined,
     notes: trim(input.notes),
     is_favorite: input.is_favorite,
     last_connected_at: trim(input.last_connected_at),
     remote_os_id: trim(input.remote_os_id),
     remote_os_name: trim(input.remote_os_name),
     remote_os_version: trim(input.remote_os_version),
+  };
+}
+
+function normalizeVncConfig(input?: VncConnectionConfig | null): VncConnectionConfig {
+  const vnc = input || defaultVncConfig;
+  const trim = (value: string | undefined | null) => value?.trim() || undefined;
+  const renderMode = vnc.runner?.render_mode || defaultVncConfig.runner.render_mode;
+
+  return {
+    display: {
+      scale_mode: vnc.display?.scale_mode || defaultVncConfig.display.scale_mode,
+      resize_session: vnc.display?.resize_session ?? defaultVncConfig.display.resize_session,
+      clip_viewport: vnc.display?.clip_viewport ?? defaultVncConfig.display.clip_viewport,
+    },
+    input: {
+      view_only: Boolean(vnc.input?.view_only),
+      clipboard: vnc.input?.clipboard ?? defaultVncConfig.input.clipboard,
+      shared: vnc.input?.shared ?? defaultVncConfig.input.shared,
+    },
+    performance: {
+      preset: vnc.performance?.preset || defaultVncConfig.performance.preset,
+      quality_level:
+        typeof vnc.performance?.quality_level === "number"
+          ? Math.min(9, Math.max(0, vnc.performance.quality_level))
+          : defaultVncConfig.performance.quality_level,
+      compression_level:
+        typeof vnc.performance?.compression_level === "number"
+          ? Math.min(9, Math.max(0, vnc.performance.compression_level))
+          : defaultVncConfig.performance.compression_level,
+    },
+    security: {
+      credential_mode: vnc.security?.credential_mode || defaultVncConfig.security.credential_mode,
+    },
+    runner: {
+      render_mode: renderMode,
+      preferred_runner:
+        renderMode === "embedded"
+          ? "novnc"
+          : vnc.runner?.preferred_runner || defaultVncConfig.runner.preferred_runner,
+      custom_executable: renderMode === "custom" ? trim(vnc.runner?.custom_executable) : undefined,
+      custom_args_template:
+        renderMode === "custom" ? trim(vnc.runner?.custom_args_template) : undefined,
+    },
+    raw_runner_args: trim(vnc.raw_runner_args),
   };
 }
 

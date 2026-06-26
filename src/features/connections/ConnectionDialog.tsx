@@ -17,7 +17,11 @@ import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 
 import { AppSelect } from "../../shared/ui/AppSelect";
 import { ConfirmDialog } from "../../shared/ui/ConfirmDialog";
-import { connectionRevealInlineSecret, rdpTestRunner } from "../../shared/tauri/commands";
+import {
+  connectionRevealInlineSecret,
+  rdpTestRunner,
+  vncTestRunner,
+} from "../../shared/tauri/commands";
 import { hasTauriRuntime } from "../../shared/tauri/runtime";
 import type {
   ConnectionAuthKind,
@@ -37,13 +41,19 @@ import type {
   RdpNetworkLevelAuthentication,
   RdpPerformancePreset,
   RdpRenderMode,
+  VncConnectionConfig,
+  VncPerformancePreset,
+  VncRenderMode,
+  VncScaleMode,
 } from "./connectionTypes";
 import {
   defaultAdvancedConfig,
   defaultJumpConfig,
   defaultProxyConfig,
   defaultRdpConfig,
+  defaultVncConfig,
   formatRdpRunnerKind,
+  formatVncRunnerKind,
   normalizeTerminalEncoding,
   terminalEncodingOptions,
 } from "./connectionTypes";
@@ -79,7 +89,7 @@ interface GroupOption {
   value: string;
 }
 
-type ConnectionDialogTab = "basic" | "proxy" | "rdp" | "advanced";
+type ConnectionDialogTab = "basic" | "proxy" | "rdp" | "vnc" | "advanced";
 type ConnectionTestState = "idle" | "running" | "success" | "error" | "host-key";
 type ConnectionNetworkPathMode = "direct" | "proxy" | "ssh_jump";
 
@@ -112,6 +122,7 @@ const emptyForm: ConnectionProfileInput = {
   proxy: defaultProxyConfig,
   advanced: defaultAdvancedConfig,
   rdp: defaultRdpConfig,
+  vnc: defaultVncConfig,
   notes: "",
 };
 
@@ -122,6 +133,7 @@ const protocolOptions: Array<{
 }> = [
   { icon: Terminal, label: "SSH", value: "ssh" },
   { icon: Monitor, label: "RDP", value: "rdp" },
+  { icon: MonitorPlay, label: "VNC", value: "vnc" },
 ];
 
 const credentialModeOptions: Array<{
@@ -193,6 +205,25 @@ const rdpPerformanceOptions: Array<{ label: string; value: RdpPerformancePreset 
   { label: "低带宽", value: "low_bandwidth" },
 ];
 
+const vncRunnerModeOptions: Array<{ label: string; value: VncRenderMode }> = [
+  { label: "内嵌 noVNC", value: "embedded" },
+  { label: "外部 Viewer", value: "external" },
+  { label: "自定义客户端", value: "custom" },
+];
+
+const vncScaleModeOptions: Array<{ label: string; value: VncScaleMode }> = [
+  { label: "适应窗口", value: "fit" },
+  { label: "拉伸填满", value: "stretch" },
+  { label: "原始尺寸", value: "actual" },
+];
+
+const vncPerformanceOptions: Array<{ label: string; value: VncPerformancePreset }> = [
+  { label: "自动", value: "auto" },
+  { label: "画质优先", value: "quality" },
+  { label: "均衡", value: "balanced" },
+  { label: "低带宽", value: "low_bandwidth" },
+];
+
 const rdpNlaOptions: Array<{ label: string; value: RdpNetworkLevelAuthentication }> = [
   { label: "自动", value: "auto" },
   { label: "启用", value: "enabled" },
@@ -237,12 +268,19 @@ export function ConnectionDialog({
   );
   const protocol = form.protocol || "ssh";
   const isRdp = protocol === "rdp";
+  const isVnc = protocol === "vnc";
   const dialogTabs: Array<[ConnectionDialogTab, string]> = isRdp
     ? [
         ["basic", "基本"],
         ["rdp", "RDP"],
         ["advanced", "高级"],
       ]
+    : isVnc
+      ? [
+          ["basic", "基本"],
+          ["vnc", "VNC"],
+          ["advanced", "高级"],
+        ]
     : [
         ["basic", "基本"],
         ["proxy", "网络路径"],
@@ -277,7 +315,7 @@ export function ConnectionDialog({
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    const validation = isRdp ? null : validateNetworkPath(form);
+    const validation = isRdp || isVnc ? null : validateNetworkPath(form);
     if (validation) {
       setActiveTab("proxy");
       setTestState("error");
@@ -298,6 +336,11 @@ export function ConnectionDialog({
 
     if (isRdp) {
       await runRdpRunnerProbe();
+      return;
+    }
+
+    if (isVnc) {
+      await runVncRunnerProbe();
       return;
     }
 
@@ -346,6 +389,49 @@ export function ConnectionDialog({
         setFeedback({
           detail: result.setup_hint || "未找到可用 RDP runner，请确认系统远程桌面组件可用。",
           title: "未找到可用 RDP runner",
+        });
+      }
+    } catch (nextError) {
+      setTestState("error");
+      setFeedback(describeDialogError(nextError));
+    } finally {
+      busyRef.current = false;
+      setBusy(false);
+    }
+  }
+
+  async function runVncRunnerProbe() {
+    busyRef.current = true;
+    setBusy(true);
+    setTestState("running");
+    setFeedback({
+      detail: "正在检查本机 VNC runner 能力，不会发起远程登录。",
+      title: "正在检查 VNC runner",
+    });
+
+    try {
+      if (!hasTauriRuntime()) {
+        setTestState("success");
+        setFeedback({
+          detail: "浏览器预览模式使用静态 runner 状态，桌面运行时会执行真实探测。",
+          title: "VNC runner 预览可用",
+        });
+        return;
+      }
+      const result = await vncTestRunner((form.vnc || defaultVncConfig).runner);
+      if (result.default_runner) {
+        setTestState("success");
+        setFeedback({
+          detail: `${formatVncRunnerKind(result.default_runner)} 可用。${
+            result.supports_embedded ? "当前平台支持内嵌 noVNC 会话。" : "可使用外部 viewer。"
+          }`,
+          title: "VNC runner 检查通过",
+        });
+      } else {
+        setTestState("error");
+        setFeedback({
+          detail: result.setup_hint || "未找到可用 VNC runner，请确认 noVNC 或外部 viewer 配置可用。",
+          title: "未找到可用 VNC runner",
         });
       }
     } catch (nextError) {
@@ -481,6 +567,8 @@ export function ConnectionDialog({
                       ? formatAddress(form)
                       : isRdp
                         ? "保存一条可跨平台启动的 RDP 连接配置。"
+                        : isVnc
+                          ? "保存一条内嵌 noVNC 优先的 VNC 连接配置。"
                         : "保存一条可维护的 SSH 连接配置。"}
                   </Dialog.Description>
                 </div>
@@ -509,7 +597,6 @@ export function ConnectionDialog({
                   );
                 })}
                 <button className="protocol-chip" type="button" disabled title="即将支持"><TerminalSquare className="ui-icon" aria-hidden="true" />Telnet <span className="chip-tag">即将</span></button>
-                <button className="protocol-chip" type="button" disabled title="即将支持"><MonitorPlay className="ui-icon" aria-hidden="true" />VNC <span className="chip-tag">即将</span></button>
                 <button className="protocol-chip" type="button" disabled title="即将支持"><Network className="ui-icon" aria-hidden="true" />隧道 <span className="chip-tag">即将</span></button>
               </div>
 
@@ -529,8 +616,9 @@ export function ConnectionDialog({
 
               <div className="dialog-body connection-dialog-body">
                 {activeTab === "basic" ? renderBasicTab() : null}
-                {activeTab === "proxy" && !isRdp ? renderProxyTab() : null}
+                {activeTab === "proxy" && !isRdp && !isVnc ? renderProxyTab() : null}
                 {activeTab === "rdp" && isRdp ? renderRdpTab() : null}
+                {activeTab === "vnc" && isVnc ? renderVncTab() : null}
                 {activeTab === "advanced" ? renderAdvancedTab() : null}
               </div>
 
@@ -635,7 +723,7 @@ export function ConnectionDialog({
                     type="button"
                     onClick={testConnection}
                   >
-                    {isRdp ? "检查 Runner" : "测试连接"}
+                    {isRdp || isVnc ? "检查 Runner" : "测试连接"}
                   </button>
                 </div>
                 <div className="dialog-action-right">
@@ -673,18 +761,20 @@ export function ConnectionDialog({
     const showGroupField = groupOptions.length > 0 || Boolean(form.group?.trim());
     const rdp = form.rdp || defaultRdpConfig;
     const passwordCredentials = credentials.filter((credential) => credential.kind === "password");
+    const desktopProtocolName = isRdp ? "RDP" : "VNC";
+    const desktopDefaultPort = isRdp ? 3389 : 5900;
 
-    if (isRdp) {
+    if (isRdp || isVnc) {
       return (
         <div className="connection-dialog-fields">
           <div className={`form-grid ${showGroupField ? "form-grid-wide" : "form-grid-single"}`}>
             <label>
               <span>名称</span>
               <input
-                value={form.name || ""}
-                onChange={(event) => setForm({ ...form, name: event.target.value })}
-                placeholder="例如：办公 Windows"
-              />
+              value={form.name || ""}
+              onChange={(event) => setForm({ ...form, name: event.target.value })}
+              placeholder={isRdp ? "例如：办公 Windows" : "例如：Linux 图形桌面"}
+            />
             </label>
             {showGroupField ? (
               <label>
@@ -722,7 +812,7 @@ export function ConnectionDialog({
                 required
                 value={form.port.toString()}
                 onChange={(event) =>
-                  setForm({ ...form, port: Number(event.target.value) || 3389 })
+                  setForm({ ...form, port: Number(event.target.value) || desktopDefaultPort })
                 }
               />
             </label>
@@ -754,12 +844,21 @@ export function ConnectionDialog({
               />
             </label>
             <label>
-              <span>域</span>
-              <input
-                value={rdp.domain || ""}
-                onChange={(event) => updateRdp({ domain: event.target.value })}
-                placeholder="可选"
-              />
+              <span>{isRdp ? "域" : "用户名"}</span>
+              {isRdp ? (
+                <input
+                  value={rdp.domain || ""}
+                  onChange={(event) => updateRdp({ domain: event.target.value })}
+                  placeholder="可选"
+                />
+              ) : (
+                <input
+                  required
+                  value={form.username}
+                  onChange={(event) => setForm({ ...form, username: event.target.value })}
+                  placeholder="vncuser"
+                />
+              )}
             </label>
           </div>
 
@@ -798,17 +897,19 @@ export function ConnectionDialog({
             </div>
           ) : null}
 
-          {credentialMode !== "saved" ? (
+          {credentialMode !== "saved" && (isRdp || credentialMode === "inline") ? (
             <div className="form-grid form-grid-wide">
-              <label>
-                <span>用户名</span>
-                <input
-                  required
-                  value={form.username}
-                  onChange={(event) => setForm({ ...form, username: event.target.value })}
-                  placeholder="administrator"
-                />
-              </label>
+              {isRdp ? (
+                <label>
+                  <span>用户名</span>
+                  <input
+                    required
+                    value={form.username}
+                    onChange={(event) => setForm({ ...form, username: event.target.value })}
+                    placeholder="administrator"
+                  />
+                </label>
+              ) : null}
               {credentialMode === "inline" ? (
                 <label>
                   <span>密码</span>
@@ -827,7 +928,7 @@ export function ConnectionDialog({
                       placeholder={
                         connection?.id && !form.inline_password
                           ? "已保存，留空保留"
-                          : "输入 RDP 密码"
+                          : `输入 ${desktopProtocolName} 密码`
                       }
                     />
                     {allowPasswordReveal ? (
@@ -853,11 +954,15 @@ export function ConnectionDialog({
 
           {credentialMode === "prompt" ? (
             <p className="connection-dialog-note">
-              连接时由系统 RDP 客户端提示凭据；内嵌模式也会保留这个安全兜底。
+              {isRdp
+                ? "连接时由系统 RDP 客户端提示凭据；内嵌模式也会保留这个安全兜底。"
+                : "连接时由 noVNC 安全提示凭据；保存连接本身不会写入密码。"}
             </p>
           ) : (
             <p className="connection-dialog-note">
-              保存的 RDP 密码只进入 mXterm vault，并且仅在 Windows 内嵌 ActiveX 模式中内存注入；外部 runner 仍会提示凭据。
+              {isRdp
+                ? "保存的 RDP 密码只进入 mXterm vault，并且仅在 Windows 内嵌 ActiveX 模式中内存注入；外部 runner 仍会提示凭据。"
+                : "保存的 VNC 密码只进入 mXterm vault，并且仅在内嵌 noVNC 启动时以内存字段传入；外部 viewer 仍会提示凭据。"}
             </p>
           )}
 
@@ -1593,7 +1698,259 @@ export function ConnectionDialog({
     );
   }
 
+  function renderVncTab() {
+    const vnc = withDefaultVncConfig(form.vnc);
+    const renderMode = vnc.runner.render_mode;
+
+    return (
+      <div className="connection-dialog-fields">
+        <section className="dialog-section">
+          <div className="dialog-section-title">显示</div>
+          <div className="form-grid form-grid-wide">
+            <label>
+              <span>打开方式</span>
+              <AppSelect
+                ariaLabel="VNC 打开方式"
+                value={renderMode}
+                options={vncRunnerModeOptions}
+                onChange={(nextRenderMode) =>
+                  updateVnc({
+                    runner: {
+                      ...vnc.runner,
+                      render_mode: nextRenderMode,
+                      preferred_runner: nextRenderMode === "embedded" ? "novnc" : "vncviewer",
+                      custom_executable:
+                        nextRenderMode === "custom" ? vnc.runner.custom_executable || "" : "",
+                      custom_args_template:
+                        nextRenderMode === "custom" ? vnc.runner.custom_args_template || "" : "",
+                    },
+                  })
+                }
+              />
+            </label>
+            <label>
+              <span>缩放模式</span>
+              <AppSelect
+                ariaLabel="VNC 缩放模式"
+                value={vnc.display.scale_mode}
+                options={vncScaleModeOptions}
+                onChange={(scaleMode) =>
+                  updateVnc({
+                    display: {
+                      ...vnc.display,
+                      scale_mode: scaleMode,
+                    },
+                  })
+                }
+              />
+            </label>
+          </div>
+          <div className="connection-dialog-checks">
+            <label>
+              <input
+                type="checkbox"
+                checked={vnc.display.resize_session}
+                onChange={(event) =>
+                  updateVnc({
+                    display: {
+                      ...vnc.display,
+                      resize_session: event.target.checked,
+                    },
+                  })
+                }
+              />
+              <span>请求远端分辨率跟随窗口</span>
+            </label>
+            <label>
+              <input
+                type="checkbox"
+                checked={vnc.display.clip_viewport}
+                onChange={(event) =>
+                  updateVnc({
+                    display: {
+                      ...vnc.display,
+                      clip_viewport: event.target.checked,
+                    },
+                  })
+                }
+              />
+              <span>裁剪视口</span>
+            </label>
+          </div>
+        </section>
+
+        <section className="dialog-section">
+          <div className="dialog-section-title">输入</div>
+          <div className="connection-dialog-checks">
+            <label>
+              <input
+                type="checkbox"
+                checked={vnc.input.shared}
+                onChange={(event) =>
+                  updateVnc({
+                    input: {
+                      ...vnc.input,
+                      shared: event.target.checked,
+                    },
+                  })
+                }
+              />
+              <span>共享会话</span>
+            </label>
+            <label>
+              <input
+                type="checkbox"
+                checked={vnc.input.clipboard}
+                onChange={(event) =>
+                  updateVnc({
+                    input: {
+                      ...vnc.input,
+                      clipboard: event.target.checked,
+                    },
+                  })
+                }
+              />
+              <span>剪贴板</span>
+            </label>
+            <label>
+              <input
+                type="checkbox"
+                checked={vnc.input.view_only}
+                onChange={(event) =>
+                  updateVnc({
+                    input: {
+                      ...vnc.input,
+                      view_only: event.target.checked,
+                    },
+                  })
+                }
+              />
+              <span>只看不控</span>
+            </label>
+          </div>
+        </section>
+
+        <section className="dialog-section">
+          <div className="dialog-section-title">性能</div>
+          <div className="form-grid form-grid-wide">
+            <label>
+              <span>预设</span>
+              <AppSelect
+                ariaLabel="VNC 性能预设"
+                value={vnc.performance.preset}
+                options={vncPerformanceOptions}
+                onChange={(preset) =>
+                  updateVnc({
+                    performance: {
+                      ...vnc.performance,
+                      preset,
+                    },
+                  })
+                }
+              />
+            </label>
+            <label>
+              <span>质量等级</span>
+              <input
+                inputMode="numeric"
+                min={0}
+                max={9}
+                value={(vnc.performance.quality_level ?? 6).toString()}
+                onChange={(event) =>
+                  updateVnc({
+                    performance: {
+                      ...vnc.performance,
+                      quality_level: Number(event.target.value) || 0,
+                    },
+                  })
+                }
+              />
+            </label>
+            <label>
+              <span>压缩等级</span>
+              <input
+                inputMode="numeric"
+                min={0}
+                max={9}
+                value={(vnc.performance.compression_level ?? 2).toString()}
+                onChange={(event) =>
+                  updateVnc({
+                    performance: {
+                      ...vnc.performance,
+                      compression_level: Number(event.target.value) || 0,
+                    },
+                  })
+                }
+              />
+            </label>
+          </div>
+        </section>
+
+        <section className="dialog-section dialog-section-last">
+          <div className="dialog-section-title">Runner</div>
+          {renderMode === "custom" ? (
+            <div className="form-grid form-grid-wide">
+              <label>
+                <span>客户端路径</span>
+                <input
+                  value={vnc.runner.custom_executable || ""}
+                  onChange={(event) =>
+                    updateVnc({
+                      runner: {
+                        ...vnc.runner,
+                        custom_executable: event.target.value,
+                      },
+                    })
+                  }
+                  placeholder="vncviewer.exe"
+                />
+              </label>
+              <label>
+                <span>参数模板</span>
+                <input
+                  value={vnc.runner.custom_args_template || ""}
+                  onChange={(event) =>
+                    updateVnc({
+                      runner: {
+                        ...vnc.runner,
+                        custom_args_template: event.target.value,
+                      },
+                    })
+                  }
+                  placeholder="{target}"
+                />
+              </label>
+            </div>
+          ) : null}
+          <label>
+            <span>附加 runner 参数</span>
+            <textarea
+              rows={3}
+              value={vnc.raw_runner_args || ""}
+              onChange={(event) => updateVnc({ raw_runner_args: event.target.value })}
+              placeholder="仅用于外部 viewer，不要写入 password/passwd 参数"
+            />
+          </label>
+          <p className="connection-dialog-note">
+            内嵌模式使用 noVNC 和 mXterm 本地桥接；外部 viewer 不会接收保存的密码。
+          </p>
+        </section>
+      </div>
+    );
+  }
+
   function renderAdvancedTab() {
+    if (isVnc) {
+      return (
+        <section className="dialog-section dialog-section-last">
+          <div className="dialog-section-title">高级</div>
+          <p className="connection-dialog-note">
+            VNC v1 不使用 SSH 代理、跳板机或终端编码；显示、输入、性能和 runner 设置请在 VNC 页调整。
+          </p>
+        </section>
+      );
+    }
+
     if (isRdp) {
       const rdp = withDefaultRdpConfig(form.rdp);
       return (
@@ -1794,13 +2151,37 @@ export function ConnectionDialog({
           jump: defaultJumpConfig,
           advanced: defaultAdvancedConfig,
           rdp: withDefaultRdpConfig(current.rdp),
+          vnc: withDefaultVncConfig(current.vnc),
+        };
+      }
+
+      if (nextProtocol === "vnc") {
+        return {
+          ...current,
+          protocol: "vnc",
+          port: current.port === 22 || current.port === 3389 ? 5900 : current.port,
+          credential_mode: current.credential_mode || "inline",
+          credential_id: current.credential_mode === "saved" ? current.credential_id || "" : "",
+          inline_auth_kind: "password",
+          inline_password: current.credential_mode === "inline" ? current.inline_password || "" : "",
+          inline_password_touched:
+            current.credential_mode === "inline" ? current.inline_password_touched || false : false,
+          inline_private_key_path: "",
+          inline_private_key_passphrase: "",
+          inline_private_key_passphrase_touched: false,
+          prompt_auth_kind: undefined,
+          proxy: defaultProxyConfig,
+          jump: defaultJumpConfig,
+          advanced: defaultAdvancedConfig,
+          rdp: withDefaultRdpConfig(current.rdp),
+          vnc: withDefaultVncConfig(current.vnc),
         };
       }
 
       return {
         ...current,
         protocol: "ssh",
-        port: current.port === 3389 ? 22 : current.port,
+        port: current.port === 3389 || current.port === 5900 ? 22 : current.port,
         credential_mode:
           current.credential_mode === "prompt" ? "inline" : current.credential_mode,
         inline_auth_kind: current.inline_auth_kind || "password",
@@ -1816,6 +2197,16 @@ export function ConnectionDialog({
       ...current,
       rdp: withDefaultRdpConfig({
         ...withDefaultRdpConfig(current.rdp),
+        ...patch,
+      }),
+    }));
+  }
+
+  function updateVnc(patch: Partial<VncConnectionConfig>) {
+    setForm((current) => ({
+      ...current,
+      vnc: withDefaultVncConfig({
+        ...withDefaultVncConfig(current.vnc),
         ...patch,
       }),
     }));
@@ -1939,6 +2330,7 @@ function formFromConnection(
       ...connection.advanced,
     },
     rdp: withDefaultRdpConfig(connection.rdp),
+    vnc: withDefaultVncConfig(connection.vnc),
     notes: connection.notes || "",
     is_favorite: connection.is_favorite,
     last_connected_at: connection.last_connected_at || "",
@@ -1979,6 +2371,38 @@ function normalizeForSubmit(
       jump: { kind: "none" },
       advanced: defaultAdvancedConfig,
       rdp: withDefaultRdpConfig(form.rdp),
+      vnc: undefined,
+    };
+  }
+
+  if ((form.protocol || "ssh") === "vnc") {
+    const savedCredential =
+      form.credential_mode === "saved" && form.credential_id
+        ? credentials.find((credential) => credential.id === form.credential_id)
+        : null;
+    const credentialMode = form.credential_mode || "prompt";
+
+    return {
+      ...form,
+      protocol: "vnc",
+      username:
+        credentialMode === "saved" ? savedCredential?.username || form.username : form.username,
+      port: Number(form.port) || 5900,
+      credential_mode: credentialMode,
+      credential_id: credentialMode === "saved" ? form.credential_id?.trim() || "" : undefined,
+      inline_auth_kind: credentialMode === "inline" ? "password" : undefined,
+      inline_password: credentialMode === "inline" ? form.inline_password : undefined,
+      inline_password_touched:
+        credentialMode === "inline" ? form.inline_password_touched || false : false,
+      inline_private_key_path: undefined,
+      inline_private_key_passphrase: undefined,
+      inline_private_key_passphrase_touched: false,
+      prompt_auth_kind: undefined,
+      proxy: { kind: "none" },
+      jump: { kind: "none" },
+      advanced: defaultAdvancedConfig,
+      rdp: undefined,
+      vnc: withDefaultVncConfig(form.vnc),
     };
   }
 
@@ -2021,6 +2445,7 @@ function normalizeForSubmit(
       terminal_encoding: normalizeTerminalEncoding(form.advanced.terminal_encoding),
     },
     rdp: undefined,
+    vnc: undefined,
   };
 }
 
@@ -2122,6 +2547,33 @@ function withDefaultRdpConfig(value?: RdpConnectionConfig | null): RdpConnection
   };
 }
 
+function withDefaultVncConfig(value?: VncConnectionConfig | null): VncConnectionConfig {
+  return {
+    ...defaultVncConfig,
+    ...value,
+    display: {
+      ...defaultVncConfig.display,
+      ...value?.display,
+    },
+    input: {
+      ...defaultVncConfig.input,
+      ...value?.input,
+    },
+    performance: {
+      ...defaultVncConfig.performance,
+      ...value?.performance,
+    },
+    security: {
+      ...defaultVncConfig.security,
+      ...value?.security,
+    },
+    runner: {
+      ...defaultVncConfig.runner,
+      ...value?.runner,
+    },
+  };
+}
+
 function groupPathLabel(
   group: ConnectionDialogGroup,
   groupById: Map<string, ConnectionDialogGroup>,
@@ -2156,6 +2608,9 @@ function tabForError(error: unknown): ConnectionDialogTab {
   }
   if (code.startsWith("rdp_")) {
     return "rdp";
+  }
+  if (code.startsWith("vnc_")) {
+    return "vnc";
   }
   if (
     code === "connection_connect_timeout_invalid" ||

@@ -16,6 +16,11 @@ import type {
   RdpRunnerProbeResult,
   RdpSessionCloseResult,
   RdpSessionResizeResult,
+  VncLaunchPreview,
+  VncLaunchResult,
+  VncRunnerConfig,
+  VncRunnerProbeResult,
+  VncSessionCloseResult,
 } from "../../features/connections/connectionTypes";
 import type {
   CommandHistoryEntry,
@@ -286,6 +291,38 @@ export function rdpResizeEmbeddedSession(
     request: {
       session_id: sessionId,
       bounds,
+    },
+  });
+}
+
+export function vncLaunchConnection(connectionId: string) {
+  return invoke<VncLaunchResult>("vnc_launch_connection", {
+    request: {
+      connection_id: connectionId,
+    },
+  });
+}
+
+export function vncPreviewLaunch(connectionId: string) {
+  return invoke<VncLaunchPreview>("vnc_preview_launch", {
+    request: {
+      connection_id: connectionId,
+    },
+  });
+}
+
+export function vncTestRunner(config?: VncRunnerConfig | null) {
+  return invoke<VncRunnerProbeResult>("vnc_test_runner", {
+    request: {
+      config,
+    },
+  });
+}
+
+export function vncCloseSession(sessionId: string) {
+  return invoke<VncSessionCloseResult>("vnc_close_session", {
+    request: {
+      session_id: sessionId,
     },
   });
 }

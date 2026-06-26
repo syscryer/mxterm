@@ -1337,6 +1337,69 @@ const result = await rdpLaunchConnection(connection.id)
 const status = result.embedded ? "embedded" : result.runner === "mstsc_activex" ? "native" : "external"
 ```
 
+## Scenario: VNC Connection Runner UI
+
+### 1. Scope / Trigger
+
+- Trigger: frontend code adds or changes VNC connection fields, VNC workspace tabs, noVNC embedded surfaces, VNC runner preview/launch controls, or typed wrappers for `vnc_*` commands.
+- Source files: `src/features/connections/connectionTypes.ts`, `src/features/connections/ConnectionDialog.tsx`, `src/features/layout/WorkspaceShell.tsx`, `src/shared/tauri/commands.ts`, and `src/styles/app.css`.
+- This is a cross-layer contract because React edits protocol-specific VNC payloads while Rust owns validation, storage, local bridge lifecycle, runner probing, redaction, and launch behavior.
+
+### 2. Signatures
+
+```ts
+type ConnectionProtocol = "ssh" | "rdp" | "vnc"
+type VncRenderMode = "embedded" | "external" | "custom"
+type VncRunnerKind = "novnc" | "vncviewer" | "tigervnc" | "realvnc" | "custom"
+
+vncLaunchConnection(connectionId: string): Promise<VncLaunchResult>
+vncPreviewLaunch(connectionId: string): Promise<VncLaunchPreview>
+vncTestRunner(config?: VncRunnerConfig | null): Promise<VncRunnerProbeResult>
+vncCloseSession(sessionId: string): Promise<VncSessionCloseResult>
+```
+
+`ConnectionProfileInput` includes `protocol?: "ssh" | "rdp" | "vnc"` and `vnc?: VncConnectionConfig | null`. VNC rows persist display, input, performance, security, runner, and raw runner settings.
+
+### 3. Contracts
+
+- Components must call typed wrappers in `src/shared/tauri/commands.ts`; do not call `invoke("vnc_*")` directly.
+- `ConnectionDialog` owns protocol switching. When `protocol = "vnc"`, it must normalize VNC config, clear SSH-only proxy/jump assumptions, and allow only password-style credentials.
+- `useConnections.normalizeConnectionInput` must preserve VNC credential fields from the dialog: `credential_mode`, saved `credential_id`, and inline password plus `inline_password_touched`. Do not force VNC rows back to prompt mode during frontend normalization.
+- VNC workspace sessions are runtime UI state. Do not persist bridge session ids, WebSocket URLs, passwords, or noVNC state on `ConnectionProfile`.
+- The same saved VNC connection opens at most one workspace tab. Re-opening the connection must activate the existing VNC tab instead of launching another bridge.
+- Embedded VNC uses noVNC `RFB` against the backend local WebSocket bridge. Apply `scaleViewport`, `resizeSession`, `clipViewport`, `viewOnly`, `qualityLevel`, `compressionLevel`, and shared-session settings from `VncConnectionConfig`.
+- Prompt credentials are handled inside the VNC surface through noVNC `credentialsrequired`. Saved/inline passwords may appear only in the launch result as in-memory data for the active embedded session.
+- External/custom runner preview and launch surfaces may show executable path and arguments only. They must not show or pass plaintext passwords.
+- VNC mode must hide or disable SSH-only tools: terminal creation, remote files, monitor, tunnels, Docker, Command Sender, and SSH command history targets.
+- Browser preview may synthesize deterministic VNC preview data, but desktop launch and runner probing must stay behind Tauri wrappers.
+
+### 4. Validation & Error Matrix
+
+| Condition | Frontend behavior |
+| --- | --- |
+| No Tauri runtime | Show static VNC preview and do not create a bridge or launch a desktop client. |
+| `vncLaunchConnection` succeeds with `embedded=true` | Keep a VNC session tab active and mount noVNC against the returned local WebSocket URL. |
+| noVNC emits `credentialsrequired` without a launch password | Show an inline password prompt and call `sendCredentials(...)` without persisting the value. |
+| noVNC emits `securityfailure` or disconnects unexpectedly | Keep the VNC tab visible with retry, preview, and close actions. |
+| `vncLaunchConnection` succeeds with `embedded=false` | Render external-launch status, runner, fallback reason, and copyable redacted command material. |
+| `vncLaunchConnection` fails | Keep the VNC tab visible with retry, preview, and close actions. |
+| Active connection is VNC | SSH-only right pane tools and terminal shortcut actions must not run against it. |
+
+### 5. Good / Base / Bad Cases
+
+- Good: double-clicking an embedded-preferred VNC connection opens one VNC tab, calls `vncLaunchConnection(connection.id)`, and mounts noVNC only when the result says `embedded=true`.
+- Good: closing a VNC tab calls `vncCloseSession(result.session_id)` so the backend bridge can stop.
+- Good: the right pane shows only VNC runner/bridge tools while a VNC workspace is active.
+- Base: unsupported external viewers keep saved VNC profiles valid and show setup diagnostics.
+- Bad: `WorkspaceShell` sends a VNC connection to `terminalConnect`, remote-file commands, Docker tools, Command Sender targets, or SSH command history scopes.
+- Bad: the UI copies `websocket_url` or plaintext passwords into preview/diagnostic text.
+
+### 6. Tests Required
+
+- Run `npm run check` after changing VNC frontend types, wrappers, dialog, workspace routing, noVNC surface code, or CSS.
+- Cross-check TypeScript `VncConnectionConfig`, `VncLaunchPreview`, `VncLaunchResult`, and wrapper parameter names against Rust structs and command signatures.
+- Desktop smoke review should cover embedded noVNC launch, prompt password entry, saved/inline password direct connect, duplicate-tab activation, close cleanup, external fallback diagnostics, and SSH-only tool hiding.
+
 ## Scenario: WebDAV Sync Settings UI
 
 ### 1. Scope / Trigger

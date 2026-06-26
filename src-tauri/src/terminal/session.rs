@@ -1827,6 +1827,7 @@ mod tests {
             jump,
             advanced: ConnectionAdvancedConfig::default(),
             rdp: None,
+            vnc: None,
             notes: None,
             is_favorite: false,
             last_connected_at: None,

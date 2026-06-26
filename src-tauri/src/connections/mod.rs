@@ -40,6 +40,7 @@ pub enum ConnectionJumpKind {
 pub enum ConnectionProtocol {
     Ssh,
     Rdp,
+    Vnc,
 }
 
 impl Default for ConnectionProtocol {
@@ -389,6 +390,198 @@ impl Default for RdpConnectionConfig {
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VncScaleMode {
+    Fit,
+    Stretch,
+    Actual,
+}
+
+impl Default for VncScaleMode {
+    fn default() -> Self {
+        Self::Fit
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VncPerformancePreset {
+    Auto,
+    Quality,
+    Balanced,
+    LowBandwidth,
+}
+
+impl Default for VncPerformancePreset {
+    fn default() -> Self {
+        Self::Auto
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VncSecurityCredentialMode {
+    Prompt,
+    Saved,
+}
+
+impl Default for VncSecurityCredentialMode {
+    fn default() -> Self {
+        Self::Prompt
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VncRenderMode {
+    Embedded,
+    External,
+    Custom,
+}
+
+impl Default for VncRenderMode {
+    fn default() -> Self {
+        Self::Embedded
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VncRunnerKind {
+    Novnc,
+    Vncviewer,
+    Tigervnc,
+    Realvnc,
+    Custom,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+pub struct VncDisplayConfig {
+    #[serde(default)]
+    pub scale_mode: VncScaleMode,
+    #[serde(default = "default_true")]
+    pub resize_session: bool,
+    #[serde(default = "default_true")]
+    pub clip_viewport: bool,
+}
+
+impl Default for VncDisplayConfig {
+    fn default() -> Self {
+        Self {
+            scale_mode: VncScaleMode::Fit,
+            resize_session: true,
+            clip_viewport: true,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+pub struct VncInputConfig {
+    #[serde(default)]
+    pub view_only: bool,
+    #[serde(default = "default_true")]
+    pub clipboard: bool,
+    #[serde(default = "default_true")]
+    pub shared: bool,
+}
+
+impl Default for VncInputConfig {
+    fn default() -> Self {
+        Self {
+            view_only: false,
+            clipboard: true,
+            shared: true,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+pub struct VncPerformanceConfig {
+    #[serde(default)]
+    pub preset: VncPerformancePreset,
+    #[serde(default)]
+    pub quality_level: Option<u8>,
+    #[serde(default)]
+    pub compression_level: Option<u8>,
+}
+
+impl Default for VncPerformanceConfig {
+    fn default() -> Self {
+        Self {
+            preset: VncPerformancePreset::Auto,
+            quality_level: Some(6),
+            compression_level: Some(2),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+pub struct VncSecurityConfig {
+    #[serde(default)]
+    pub credential_mode: VncSecurityCredentialMode,
+}
+
+impl Default for VncSecurityConfig {
+    fn default() -> Self {
+        Self {
+            credential_mode: VncSecurityCredentialMode::Prompt,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+pub struct VncRunnerConfig {
+    #[serde(default)]
+    pub render_mode: VncRenderMode,
+    #[serde(default)]
+    pub preferred_runner: Option<VncRunnerKind>,
+    #[serde(default)]
+    pub custom_executable: Option<String>,
+    #[serde(default)]
+    pub custom_args_template: Option<String>,
+}
+
+impl Default for VncRunnerConfig {
+    fn default() -> Self {
+        Self {
+            render_mode: VncRenderMode::Embedded,
+            preferred_runner: Some(VncRunnerKind::Novnc),
+            custom_executable: None,
+            custom_args_template: None,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+pub struct VncConnectionConfig {
+    #[serde(default)]
+    pub display: VncDisplayConfig,
+    #[serde(default)]
+    pub input: VncInputConfig,
+    #[serde(default)]
+    pub performance: VncPerformanceConfig,
+    #[serde(default)]
+    pub security: VncSecurityConfig,
+    #[serde(default)]
+    pub runner: VncRunnerConfig,
+    #[serde(default)]
+    pub raw_runner_args: Option<String>,
+}
+
+impl Default for VncConnectionConfig {
+    fn default() -> Self {
+        Self {
+            display: VncDisplayConfig::default(),
+            input: VncInputConfig::default(),
+            performance: VncPerformanceConfig::default(),
+            security: VncSecurityConfig::default(),
+            runner: VncRunnerConfig::default(),
+            raw_runner_args: None,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
 pub struct ConnectionProxyConfig {
     pub kind: ConnectionProxyKind,
     #[serde(default)]
@@ -489,6 +682,8 @@ pub struct ConnectionProfileInput {
     #[serde(default)]
     pub rdp: Option<RdpConnectionConfig>,
     #[serde(default)]
+    pub vnc: Option<VncConnectionConfig>,
+    #[serde(default)]
     pub notes: Option<String>,
     #[serde(default)]
     pub is_favorite: Option<bool>,
@@ -532,6 +727,7 @@ pub struct ValidatedConnectionProfileInput {
     pub jump: ConnectionJumpConfig,
     pub advanced: ConnectionAdvancedConfig,
     pub rdp: Option<RdpConnectionConfig>,
+    pub vnc: Option<VncConnectionConfig>,
     pub notes: Option<String>,
 }
 
@@ -568,6 +764,8 @@ pub struct ConnectionProfile {
     pub advanced: ConnectionAdvancedConfig,
     #[serde(default)]
     pub rdp: Option<RdpConnectionConfig>,
+    #[serde(default)]
+    pub vnc: Option<VncConnectionConfig>,
     #[serde(default)]
     pub notes: Option<String>,
     #[serde(default)]
@@ -733,6 +931,7 @@ impl ConnectionStore {
             jump: validated.jump,
             advanced: validated.advanced,
             rdp: validated.rdp,
+            vnc: validated.vnc,
             notes: validated.notes,
             is_favorite,
             last_connected_at,
@@ -877,6 +1076,7 @@ pub fn validate_profile_input(
             match input.protocol {
                 ConnectionProtocol::Ssh => "请填写 SSH 主机。",
                 ConnectionProtocol::Rdp => "请填写 RDP 主机。",
+                ConnectionProtocol::Vnc => "请填写 VNC 主机。",
             },
             "host is empty",
             true,
@@ -890,6 +1090,7 @@ pub fn validate_profile_input(
             match input.protocol {
                 ConnectionProtocol::Ssh => "请填写 SSH 用户名。",
                 ConnectionProtocol::Rdp => "请填写 RDP 用户名。",
+                ConnectionProtocol::Vnc => "请填写 VNC 用户名。",
             },
             "username is empty",
             true,
@@ -902,6 +1103,7 @@ pub fn validate_profile_input(
             match input.protocol {
                 ConnectionProtocol::Ssh => "SSH 端口无效。",
                 ConnectionProtocol::Rdp => "RDP 端口无效。",
+                ConnectionProtocol::Vnc => "VNC 端口无效。",
             },
             "port is 0",
             true,
@@ -911,6 +1113,7 @@ pub fn validate_profile_input(
     match input.protocol {
         ConnectionProtocol::Ssh => validate_ssh_profile_input(input, host, username),
         ConnectionProtocol::Rdp => validate_rdp_profile_input(input, host, username),
+        ConnectionProtocol::Vnc => validate_vnc_profile_input(input, host, username),
     }
 }
 
@@ -1049,6 +1252,7 @@ fn validate_ssh_profile_input(
         jump,
         advanced,
         rdp: None,
+        vnc: None,
         notes: trim_optional(input.notes.as_ref()),
     })
 }
@@ -1139,6 +1343,98 @@ fn validate_rdp_profile_input(
         jump: ConnectionJumpConfig::default(),
         advanced: ConnectionAdvancedConfig::default(),
         rdp: Some(rdp),
+        vnc: None,
+        notes: trim_optional(input.notes.as_ref()),
+    })
+}
+
+fn validate_vnc_profile_input(
+    input: &ConnectionProfileInput,
+    host: String,
+    username: String,
+) -> Result<ValidatedConnectionProfileInput, AppError> {
+    let host = validate_vnc_line_value(host, "host")?;
+    let username = validate_vnc_line_value(username, "username")?;
+    let credential_mode = normalize_credential_mode(input);
+    let inline_auth_kind = normalize_inline_auth_kind(input);
+    let inline_password = trim_optional(input.inline_password.as_ref())
+        .or_else(|| trim_optional(input.password.as_ref()));
+    let inline_password_touched = input.inline_password_touched || inline_password.is_some();
+    let credential_id = trim_optional(input.credential_id.as_ref());
+    let existing_profile_id = trim_optional(input.id.as_ref());
+    let (credential_id, inline_auth_kind, inline_password, inline_password_touched) =
+        match credential_mode {
+            ConnectionCredentialMode::Saved => {
+                let Some(credential_id) = credential_id else {
+                    return Err(AppError::new(
+                        "connection_credential_missing",
+                        "请选择保存的 VNC 密码凭据。",
+                        "credential_id is empty",
+                        true,
+                    ));
+                };
+                (Some(credential_id), None, None, false)
+            }
+            ConnectionCredentialMode::Inline => {
+                let auth_kind = inline_auth_kind.unwrap_or(ConnectionAuthKind::Password);
+                if auth_kind != ConnectionAuthKind::Password {
+                    return Err(AppError::new(
+                        "vnc_credential_kind_unsupported",
+                        "VNC 内置凭据仅支持密码。",
+                        format!("inline_auth_kind={auth_kind:?}"),
+                        true,
+                    ));
+                }
+                if inline_password.is_none()
+                    && (inline_password_touched || existing_profile_id.is_none())
+                {
+                    return Err(AppError::new(
+                        "connection_password_missing",
+                        "请填写 VNC 密码。",
+                        "inline password is empty",
+                        true,
+                    ));
+                }
+                (
+                    None,
+                    Some(ConnectionAuthKind::Password),
+                    inline_password,
+                    inline_password_touched,
+                )
+            }
+            ConnectionCredentialMode::Prompt => (None, None, None, false),
+        };
+    let vnc = validate_vnc_config(input.vnc.clone().unwrap_or_default())?;
+    let name = input
+        .name
+        .as_ref()
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+        .unwrap_or_else(|| format!("{username}@{host}"));
+
+    Ok(ValidatedConnectionProfileInput {
+        id: trim_optional(input.id.as_ref()),
+        protocol: ConnectionProtocol::Vnc,
+        name,
+        group: trim_optional(input.group.as_ref()),
+        host,
+        port: input.port,
+        username,
+        credential_mode,
+        credential_id,
+        inline_auth_kind,
+        inline_password,
+        inline_password_touched,
+        inline_private_key_path: None,
+        inline_private_key_passphrase: None,
+        inline_private_key_passphrase_touched: false,
+        prompt_auth_kind: None,
+        proxy: ConnectionProxyConfig::default(),
+        jump: ConnectionJumpConfig::default(),
+        advanced: ConnectionAdvancedConfig::default(),
+        rdp: None,
+        vnc: Some(vnc),
         notes: trim_optional(input.notes.as_ref()),
     })
 }
@@ -1385,6 +1681,125 @@ pub fn validate_raw_runner_args(value: Option<String>) -> Result<Option<String>,
             return Err(AppError::new(
                 "rdp_runner_args_secret_forbidden",
                 "RDP runner 参数不能包含密码字段。",
+                format!("raw runner args contain {forbidden}"),
+                true,
+            ));
+        }
+    }
+    Ok(Some(raw))
+}
+
+pub fn validate_vnc_config(input: VncConnectionConfig) -> Result<VncConnectionConfig, AppError> {
+    let runner = validate_vnc_runner(input.runner)?;
+    let raw_runner_args = validate_raw_vnc_runner_args(input.raw_runner_args)?;
+    let performance = validate_vnc_performance(input.performance)?;
+
+    Ok(VncConnectionConfig {
+        display: input.display,
+        input: input.input,
+        performance,
+        security: input.security,
+        runner,
+        raw_runner_args,
+    })
+}
+
+fn validate_vnc_performance(input: VncPerformanceConfig) -> Result<VncPerformanceConfig, AppError> {
+    if let Some(value) = input.quality_level {
+        if value > 9 {
+            return Err(AppError::new(
+                "vnc_performance_invalid",
+                "VNC 图像质量等级无效。",
+                format!("quality_level={value}"),
+                true,
+            ));
+        }
+    }
+    if let Some(value) = input.compression_level {
+        if value > 9 {
+            return Err(AppError::new(
+                "vnc_performance_invalid",
+                "VNC 压缩等级无效。",
+                format!("compression_level={value}"),
+                true,
+            ));
+        }
+    }
+    Ok(input)
+}
+
+fn validate_vnc_runner(input: VncRunnerConfig) -> Result<VncRunnerConfig, AppError> {
+    let custom_executable = validate_optional_vnc_line_value(
+        trim_optional(input.custom_executable.as_ref()),
+        "runner.custom_executable",
+    )?;
+    if input.render_mode == VncRenderMode::Custom && custom_executable.is_none() {
+        return Err(AppError::new(
+            "vnc_custom_runner_missing",
+            "请填写自定义 VNC 客户端路径。",
+            "custom runner executable is empty",
+            true,
+        ));
+    }
+
+    Ok(VncRunnerConfig {
+        render_mode: input.render_mode,
+        preferred_runner: input.preferred_runner,
+        custom_executable,
+        custom_args_template: validate_raw_vnc_runner_args(trim_optional(
+            input.custom_args_template.as_ref(),
+        ))?,
+    })
+}
+
+fn validate_vnc_line_value(value: String, field: &str) -> Result<String, AppError> {
+    if value.chars().any(|ch| ch.is_control()) {
+        return Err(AppError::new(
+            "vnc_field_invalid",
+            "VNC 字段包含非法控制字符。",
+            format!("{field} contains control character"),
+            true,
+        ));
+    }
+    Ok(value)
+}
+
+fn validate_optional_vnc_line_value(
+    value: Option<String>,
+    field: &str,
+) -> Result<Option<String>, AppError> {
+    value
+        .map(|item| validate_vnc_line_value(item, field))
+        .transpose()
+}
+
+pub fn validate_raw_vnc_runner_args(value: Option<String>) -> Result<Option<String>, AppError> {
+    let Some(raw) = trim_optional(value.as_ref()) else {
+        return Ok(None);
+    };
+    if raw.chars().any(|ch| ch.is_control()) {
+        return Err(AppError::new(
+            "vnc_runner_args_invalid",
+            "VNC runner 参数包含非法控制字符。",
+            "raw runner args contain control character",
+            true,
+        ));
+    }
+    let lowered = raw.to_ascii_lowercase();
+    for forbidden in [
+        "password",
+        "passwd",
+        "passphrase",
+        "--passwd",
+        "--password",
+        "-password",
+        "-passwd",
+        "vnc_password",
+    ] {
+        if lowered.contains(forbidden) {
+            return Err(AppError::new(
+                "vnc_runner_args_secret_forbidden",
+                "VNC runner 参数不能包含密码字段。",
                 format!("raw runner args contain {forbidden}"),
                 true,
             ));
@@ -1666,7 +2081,7 @@ mod tests {
         ConnectionAuthKind, ConnectionCredentialMode, ConnectionJumpConfig, ConnectionJumpKind,
         ConnectionProfileInput, ConnectionProtocol, ConnectionProxyConfig, ConnectionProxyKind,
         ConnectionRemoteSystemInfo, ConnectionStore, RdpConnectionConfig, RdpGatewayConfig,
-        RdpGatewayMode,
+        RdpGatewayMode, VncConnectionConfig,
     };
 
     fn password_input() -> ConnectionProfileInput {
@@ -1691,6 +2106,7 @@ mod tests {
             jump: ConnectionJumpConfig::default(),
             advanced: ConnectionAdvancedConfig::default(),
             rdp: None,
+            vnc: None,
             notes: None,
             is_favorite: None,
             last_connected_at: None,
@@ -1720,6 +2136,16 @@ mod tests {
                 }),
                 ..RdpConnectionConfig::default()
             }),
+            ..password_input()
+        }
+    }
+
+    fn vnc_input() -> ConnectionProfileInput {
+        ConnectionProfileInput {
+            protocol: ConnectionProtocol::Vnc,
+            port: 5900,
+            username: " user ".to_string(),
+            vnc: Some(VncConnectionConfig::default()),
             ..password_input()
         }
     }
@@ -1915,6 +2341,53 @@ mod tests {
                 .and_then(|gateway| gateway.host.as_deref()),
             Some("gw.example.com")
         );
+    }
+
+    #[test]
+    fn validation_accepts_vnc_and_clears_ssh_only_fields() {
+        let validated = validate_profile_input(&vnc_input()).unwrap();
+
+        assert_eq!(validated.protocol, ConnectionProtocol::Vnc);
+        assert_eq!(validated.port, 5900);
+        assert_eq!(validated.username, "user");
+        assert_eq!(validated.credential_mode, ConnectionCredentialMode::Inline);
+        assert_eq!(
+            validated.inline_auth_kind,
+            Some(ConnectionAuthKind::Password)
+        );
+        assert_eq!(validated.proxy, ConnectionProxyConfig::default());
+        assert_eq!(validated.jump, ConnectionJumpConfig::default());
+        assert!(validated.rdp.is_none());
+        assert!(validated.vnc.is_some());
+    }
+
+    #[test]
+    fn validation_rejects_vnc_private_key_credentials() {
+        let input = ConnectionProfileInput {
+            inline_auth_kind: Some(ConnectionAuthKind::PrivateKey),
+            inline_password: None,
+            inline_private_key_path: Some("~/.ssh/id_ed25519".to_string()),
+            ..vnc_input()
+        };
+
+        let error = validate_profile_input(&input).unwrap_err();
+
+        assert_eq!(error.code, "vnc_credential_kind_unsupported");
+    }
+
+    #[test]
+    fn validation_rejects_vnc_runner_secret_args() {
+        let input = ConnectionProfileInput {
+            vnc: Some(VncConnectionConfig {
+                raw_runner_args: Some("--password abc".to_string()),
+                ..VncConnectionConfig::default()
+            }),
+            ..vnc_input()
+        };
+
+        let error = validate_profile_input(&input).unwrap_err();
+
+        assert_eq!(error.code, "vnc_runner_args_secret_forbidden");
     }
 
     #[test]
