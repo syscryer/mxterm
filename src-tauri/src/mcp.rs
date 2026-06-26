@@ -427,7 +427,7 @@ pub fn default_app_data_dir() -> Result<PathBuf, AppError> {
         let appdata = env::var_os("APPDATA").ok_or_else(|| {
             AppError::new(
                 "mcp_data_dir_missing",
-                "无法定位 mXterm 数据目录。",
+                "无法定位 MXterm 数据目录。",
                 "APPDATA missing",
                 true,
             )
@@ -439,7 +439,7 @@ pub fn default_app_data_dir() -> Result<PathBuf, AppError> {
         let home = env::var_os("HOME").ok_or_else(|| {
             AppError::new(
                 "mcp_data_dir_missing",
-                "无法定位 mXterm 数据目录。",
+                "无法定位 MXterm 数据目录。",
                 "HOME missing",
                 true,
             )
@@ -457,7 +457,7 @@ pub fn default_app_data_dir() -> Result<PathBuf, AppError> {
             .ok_or_else(|| {
                 AppError::new(
                     "mcp_data_dir_missing",
-                    "无法定位 mXterm 数据目录。",
+                    "无法定位 MXterm 数据目录。",
                     "HOME missing",
                     true,
                 )
@@ -489,7 +489,7 @@ pub fn ensure_enabled(settings: &McpSettings) -> Result<(), AppError> {
     } else {
         Err(AppError::new(
             "mcp_disabled",
-            "mXterm MCP 尚未启用。",
+            "MXterm MCP 尚未启用。",
             "mcp.enabled=false",
             true,
         ))
@@ -556,7 +556,7 @@ pub fn reject_plaintext_credential_args(args: &Value) -> Result<(), AppError> {
         if object.contains_key(forbidden) {
             return Err(AppError::new(
                 "mcp_plaintext_credentials_rejected",
-                "MCP 工具只允许使用 mXterm 已保存的 connection_id。",
+                "MCP 工具只允许使用 MXterm 已保存的 connection_id。",
                 format!("forbidden argument: {forbidden}"),
                 true,
             ));
@@ -1276,7 +1276,7 @@ pub fn sidecar_executable_path() -> Result<PathBuf, AppError> {
     let current_exe = env::current_exe().map_err(|error| {
         AppError::new(
             "mcp_executable_path_failed",
-            "无法定位 mXterm MCP 可执行文件路径。",
+            "无法定位 MXterm MCP 可执行文件路径。",
             error,
             true,
         )
@@ -1284,7 +1284,7 @@ pub fn sidecar_executable_path() -> Result<PathBuf, AppError> {
     let parent = current_exe.parent().ok_or_else(|| {
         AppError::new(
             "mcp_executable_path_failed",
-            "无法定位 mXterm MCP 可执行文件路径。",
+            "无法定位 MXterm MCP 可执行文件路径。",
             current_exe.display(),
             true,
         )
@@ -1371,17 +1371,17 @@ pub fn tool_schemas() -> Vec<Value> {
     vec![
         tool(
             "get_mxterm_mcp_status",
-            "Get mXterm MCP status.",
+            "Get MXterm MCP status.",
             json!({ "type": "object", "properties": {} }),
         ),
         tool(
             "list_connections",
-            "List redacted saved mXterm connections.",
+            "List redacted saved MXterm connections.",
             json!({ "type": "object", "properties": {} }),
         ),
         tool(
             "search_connections",
-            "Search redacted saved mXterm connections.",
+            "Search redacted saved MXterm connections.",
             json!({ "type": "object", "properties": { "query": { "type": "string" } }, "required": ["query"] }),
         ),
         tool(

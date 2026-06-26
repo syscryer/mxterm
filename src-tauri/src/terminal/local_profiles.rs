@@ -2,7 +2,15 @@ use portable_pty::{CommandBuilder, PtySize};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::env;
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
 use std::path::Path;
+#[cfg(windows)]
+use std::process::{Command, Stdio};
+#[cfg(windows)]
+use std::thread;
+#[cfg(windows)]
+use std::time::{Duration, Instant};
 
 use crate::app_error::AppError;
 
@@ -280,28 +288,72 @@ fn windows_fallback_command(command: &str) -> Option<String> {
 }
 
 #[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x08000000;
+#[cfg(windows)]
+const WSL_DISTRIBUTION_PROBE_TIMEOUT: Duration = Duration::from_millis(1500);
+#[cfg(windows)]
+const WSL_DISTRIBUTION_PROBE_POLL_INTERVAL: Duration = Duration::from_millis(25);
+
+#[cfg(windows)]
 fn detect_wsl_distributions() -> Result<Vec<String>, AppError> {
     let Some(wsl_command) = find_windows_command(&["wsl.exe"]) else {
         return Ok(Vec::new());
     };
 
-    let output = std::process::Command::new(wsl_command)
+    let Some(stdout) = run_wsl_distribution_probe(&wsl_command)? else {
+        return Ok(Vec::new());
+    };
+
+    Ok(parse_wsl_distributions_stdout(&stdout))
+}
+
+#[cfg(windows)]
+fn run_wsl_distribution_probe(wsl_command: &str) -> Result<Option<Vec<u8>>, AppError> {
+    let mut command = Command::new(wsl_command);
+    command
         .args(["-l", "-q"])
-        .output()
-        .map_err(|error| {
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .creation_flags(CREATE_NO_WINDOW);
+
+    let mut child = command.spawn().map_err(|error| {
+        AppError::new(
+            "local_terminal_profile_detect_failed",
+            "WSL 发行版探测失败。",
+            error,
+            true,
+        )
+    })?;
+
+    let started_at = Instant::now();
+    loop {
+        if let Some(status) = child.try_wait().map_err(|error| {
             AppError::new(
                 "local_terminal_profile_detect_failed",
                 "WSL 发行版探测失败。",
                 error,
                 true,
             )
-        })?;
+        })? {
+            let output = child.wait_with_output().map_err(|error| {
+                AppError::new(
+                    "local_terminal_profile_detect_failed",
+                    "WSL 发行版探测失败。",
+                    error,
+                    true,
+                )
+            })?;
+            return Ok(status.success().then_some(output.stdout));
+        }
 
-    if !output.status.success() {
-        return Ok(Vec::new());
+        if started_at.elapsed() >= WSL_DISTRIBUTION_PROBE_TIMEOUT {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Ok(None);
+        }
+
+        thread::sleep(WSL_DISTRIBUTION_PROBE_POLL_INTERVAL);
     }
-
-    Ok(parse_wsl_distributions_stdout(&output.stdout))
 }
 
 #[cfg(windows)]

@@ -656,7 +656,7 @@ fn default_device_name() -> String {
         .or_else(|_| std::env::var("HOSTNAME"))
         .ok()
         .and_then(|value| trim_optional_owned(Some(value)))
-        .unwrap_or_else(|| "mXterm".to_string())
+        .unwrap_or_else(|| "MXterm".to_string())
 }
 
 fn webdav_password_missing() -> AppError {

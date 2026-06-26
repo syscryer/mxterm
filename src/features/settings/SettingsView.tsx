@@ -420,7 +420,7 @@ function McpSettingsSection({ connections }: { connections: ConnectionProfile[] 
 
   async function saveUpdate(update: Partial<McpSettings>) {
     if (!desktopRuntime) {
-      setError("需要在 mXterm 桌面端保存 MCP 设置。");
+      setError("需要在 MXterm 桌面端保存 MCP 设置。");
       return;
     }
     const previous = settings;
@@ -495,19 +495,19 @@ function McpSettingsSection({ connections }: { connections: ConnectionProfile[] 
     <section className="settings-page-section">
       <header className="settings-section-head">
         <h1>MCP</h1>
-        <p>把 mXterm 保存的连接提供给本机 AI Agent；SSH 操作必须单独开启。</p>
+        <p>把 MXterm 保存的连接提供给本机 AI Agent；SSH 操作必须单独开启。</p>
       </header>
 
       <div className="settings-panel mcp-settings-panel">
         <SettingsRow
           icon={Waypoints}
-          title="启用 mXterm MCP"
+          title="启用 MXterm MCP"
           description="默认关闭。关闭时 sidecar 只返回禁用状态，不暴露连接信息。"
         >
           <SettingsToggle
             checked={settings.enabled}
             disabled={loading || saving || !desktopRuntime}
-            label="启用 mXterm MCP"
+            label="启用 MXterm MCP"
             onChange={(enabled) => void saveUpdate({ enabled })}
           />
         </SettingsRow>
@@ -562,7 +562,7 @@ function McpSettingsSection({ connections }: { connections: ConnectionProfile[] 
         <div className="mcp-config-block">
           <div>
             <strong>stdio client 配置</strong>
-            <small>发布包中 sidecar 会随 mXterm 一起提供；开发期可替换为本地绝对路径。</small>
+            <small>发布包中 sidecar 会随 MXterm 一起提供；开发期可替换为本地绝对路径。</small>
           </div>
           <button
             className="settings-action-button"
@@ -1548,7 +1548,7 @@ function BasicSettingsSection({
     <section className="settings-page-section">
       <header className="settings-section-head">
         <h1>基础设置</h1>
-        <p>控制 mXterm 启动、连接失败和文件面板跟随行为。</p>
+        <p>控制 MXterm 启动、连接失败和文件面板跟随行为。</p>
       </header>
 
       <div className="settings-panel settings-update-panel" id="settings-app-update">
@@ -1873,7 +1873,7 @@ function AppearanceSettingsSection({
     <section className="settings-page-section">
       <header className="settings-section-head">
         <h1>外观</h1>
-        <p>调整 mXterm 的工具密度、强调色、字号和面板细节。</p>
+        <p>调整 MXterm 的工具密度、强调色、字号和面板细节。</p>
       </header>
 
       <div className="appearance-preview" aria-hidden="true">
@@ -1885,7 +1885,7 @@ function AppearanceSettingsSection({
         </div>
         <div className="appearance-preview-main">
           <div className="appearance-preview-toolbar">
-            <span>mXterm 预览</span>
+            <span>MXterm 预览</span>
             <i />
           </div>
           <div className="appearance-preview-workbench">

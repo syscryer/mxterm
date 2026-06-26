@@ -20,6 +20,7 @@ const windowStateStorageKey = "mxterm.windowState.v1";
 const minWindowWidth = 1100;
 const minWindowHeight = 720;
 const saveWindowStateDelayMs = 250;
+let currentWindowRestorePromise: Promise<void> | null = null;
 
 export function initializeWindowStatePersistence() {
   if (!hasTauriRuntime()) {
@@ -45,7 +46,7 @@ export function initializeWindowStatePersistence() {
   }
 
   void (async () => {
-    await restoreStoredWindowState(appWindow);
+    await restoreCurrentWindowState();
     if (disposed) {
       return;
     }
@@ -74,6 +75,29 @@ export function initializeWindowStatePersistence() {
     }
     unlisteners.forEach((unlisten) => unlisten());
   };
+}
+
+export async function restoreCurrentWindowState() {
+  if (!hasTauriRuntime()) {
+    return false;
+  }
+
+  currentWindowRestorePromise ??= restoreStoredWindowState(getCurrentWindow());
+  await currentWindowRestorePromise;
+  return true;
+}
+
+export async function showCurrentWindow() {
+  if (!hasTauriRuntime()) {
+    return false;
+  }
+
+  try {
+    await getCurrentWindow().show();
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 async function restoreStoredWindowState(appWindow: Window) {

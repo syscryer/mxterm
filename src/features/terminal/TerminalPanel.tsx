@@ -14,6 +14,7 @@ import {
   terminalResize,
   terminalWrite,
 } from "../../shared/tauri/commands";
+import { copyTextToClipboard } from "../../shared/clipboard";
 import {
   listenTerminalConnectProgress,
   listenTerminalOutput,
@@ -190,6 +191,19 @@ export function TerminalPanel({
     terminal.loadAddon(unicode11Addon);
     terminal.unicode.activeVersion = "11";
     terminal.open(hostRef.current);
+    terminal.attachCustomKeyEventHandler((event) => {
+      if (!isTerminalCopyShortcut(event) || !terminal.hasSelection()) {
+        return true;
+      }
+
+      const selectedText = terminal.getSelection();
+      if (!selectedText) {
+        return true;
+      }
+
+      void copyTextToClipboard(selectedText).catch(() => {});
+      return false;
+    });
     const semanticHighlighter = createTerminalSemanticHighlighter(terminal, {
       palette: getTerminalSemanticHighlightPalette(theme),
     });
@@ -1021,6 +1035,15 @@ function formatError(error: unknown) {
     return String((error as { message: unknown }).message);
   }
   return String(error);
+}
+
+function isTerminalCopyShortcut(event: KeyboardEvent) {
+  return (
+    event.key.toLowerCase() === "c" &&
+    !event.altKey &&
+    !event.shiftKey &&
+    (event.ctrlKey || event.metaKey)
+  );
 }
 
 function matchesTerminalEvent(

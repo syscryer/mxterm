@@ -1,4 +1,5 @@
 export interface TerminalInputDirectoryState {
+  dirty: boolean;
   directory: string | null;
   homeDirectory: string | null;
   line: string;
@@ -21,6 +22,7 @@ export function createTerminalInputDirectoryState({
   homeDirectory = null,
 }: CreateTerminalInputDirectoryStateOptions = {}): TerminalInputDirectoryState {
   return {
+    dirty: false,
     directory: currentDirectory,
     homeDirectory,
     line: "",
@@ -38,17 +40,23 @@ export function applyTerminalInputDirectoryData(
     const char = data[index];
 
     if (char === "\u001b") {
-      index = skipEscapeSequence(data, index);
+      const sequenceEnd = skipEscapeSequence(data, index);
+      if (!isBracketedPasteBoundary(data.slice(index, sequenceEnd + 1))) {
+        state = { ...state, dirty: true };
+      }
+      index = sequenceEnd;
       continue;
     }
 
     if (char === "\r" || char === "\n") {
-      const nextDirectory = resolveCdCommand(
-        state.line,
-        state.directory,
-        state.homeDirectory,
-      );
-      state = { ...state, line: "" };
+      const nextDirectory = state.dirty
+        ? null
+        : resolveCdCommand(
+            state.line,
+            state.directory,
+            state.homeDirectory,
+          );
+      state = { ...state, dirty: false, line: "" };
       if (nextDirectory) {
         directory = nextDirectory;
         state = { ...state, directory };
@@ -61,7 +69,13 @@ export function applyTerminalInputDirectoryData(
       continue;
     }
 
+    if (char === "\t") {
+      state = { ...state, dirty: true };
+      continue;
+    }
+
     if (isControlCharacter(char)) {
+      state = { ...state, dirty: true };
       continue;
     }
 
@@ -247,6 +261,10 @@ function skipOperatingSystemCommand(data: string, start: number) {
     }
   }
   return data.length - 1;
+}
+
+function isBracketedPasteBoundary(sequence: string) {
+  return sequence === "\u001b[200~" || sequence === "\u001b[201~";
 }
 
 function isControlCharacter(char: string) {

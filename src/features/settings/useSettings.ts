@@ -12,12 +12,11 @@ import {
   type ShortcutSettings,
   type TerminalThemeSettings,
 } from "./settingsTypes";
+import { readStartupSettings, writeStoredSettings } from "./startupSettings";
 import type { LocalTerminalSettings } from "../terminal/localTerminalTypes";
 
-const settingsStorageKey = "mxterm.settings.v1";
-
 export function useSettings() {
-  const [settings, setSettings] = useState<MxtermSettings>(() => readStoredSettings());
+  const [settings, setSettings] = useState<MxtermSettings>(() => readStartupSettings());
 
   useEffect(() => {
     writeStoredSettings(settings);
@@ -133,24 +132,4 @@ export function useSettings() {
     updateTerminalTheme,
     reset,
   };
-}
-
-function readStoredSettings() {
-  if (typeof window === "undefined") {
-    return defaultSettings;
-  }
-
-  try {
-    return normalizeSettings(JSON.parse(window.localStorage.getItem(settingsStorageKey) || "null"));
-  } catch {
-    return defaultSettings;
-  }
-}
-
-function writeStoredSettings(settings: MxtermSettings) {
-  try {
-    window.localStorage.setItem(settingsStorageKey, JSON.stringify(settings));
-  } catch {
-    // localStorage can be unavailable in restricted preview contexts.
-  }
 }

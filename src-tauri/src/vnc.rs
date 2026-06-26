@@ -507,7 +507,7 @@ fn select_runner(vnc: &VncConnectionConfig) -> Result<SelectedVncRunner, AppErro
             runner: VncRunnerKind::Custom,
             executable: Some(executable),
             fallback_reason: Some(
-                "外部 VNC 客户端不会接收 mXterm 保存的密码，将由客户端自行提示。".to_string(),
+                "外部 VNC 客户端不会接收 MXterm 保存的密码，将由客户端自行提示。".to_string(),
             ),
         });
     }
@@ -530,7 +530,7 @@ fn select_runner(vnc: &VncConnectionConfig) -> Result<SelectedVncRunner, AppErro
             .unwrap_or(VncRunnerKind::Vncviewer),
         executable: Some(executable),
         fallback_reason: Some(
-            "外部 VNC 客户端不会接收 mXterm 保存的密码，将由客户端自行提示。".to_string(),
+            "外部 VNC 客户端不会接收 MXterm 保存的密码，将由客户端自行提示。".to_string(),
         ),
     })
 }
@@ -576,7 +576,7 @@ fn build_external_launch_plan(
 fn preview_warnings(vnc: &VncConnectionConfig, runner: VncRunnerKind) -> Vec<String> {
     let mut warnings = Vec::new();
     if !matches!(runner, VncRunnerKind::Novnc) {
-        warnings.push("外部 VNC 客户端不会接收 mXterm 保存的密码。".to_string());
+        warnings.push("外部 VNC 客户端不会接收 MXterm 保存的密码。".to_string());
     }
     if matches!(vnc.runner.render_mode, VncRenderMode::Embedded)
         && !matches!(runner, VncRunnerKind::Novnc)
