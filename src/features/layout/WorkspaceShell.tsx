@@ -1,4 +1,6 @@
 import {
+  lazy,
+  Suspense,
   useCallback,
   useEffect,
   useLayoutEffect,
@@ -16,7 +18,7 @@ import { openPath, revealItemInDir } from "@tauri-apps/plugin-opener";
 import { getCurrentWebview, type DragDropEvent } from "@tauri-apps/api/webview";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import type { IWindowsPty } from "@xterm/xterm";
-import RFB from "@novnc/novnc";
+import type RFB from "@novnc/novnc";
 import { createPortal } from "react-dom";
 import {
   AlertTriangle,
@@ -81,7 +83,13 @@ import {
   formatVncRunnerKind,
 } from "../connections/connectionTypes";
 import { connectionTimestampOf, sortConnectionsByRecent } from "../connections/connectionSearch";
-import { RemoteFileEditor } from "../editor/RemoteFileEditor";
+// RemoteFileEditor 内部静态 import 了 monaco-editor（主体约 4MB）及其 5 个 worker
+// （合计约 10MB）。用 React.lazy 延迟到真正打开远程文件编辑标签时才加载，
+// 避免在应用启动时解析 monaco 导致 release 构建下首屏卡顿和全局卡顿。
+const RemoteFileEditor = lazy(async () => {
+  const module = await import("../editor/RemoteFileEditor");
+  return { default: module.RemoteFileEditor };
+});
 import type { RemoteFileEditorTab } from "../editor/remoteFileEditorTypes";
 import {
   RemoteFilePanel,
@@ -113,6 +121,8 @@ import type { DockerContainerSummary } from "../tools/dockerTypes";
 import {
   getTerminalColorScheme,
   getTerminalColorSchemeTone,
+  loadTerminalColorSchemes,
+  onTerminalColorSchemesReady,
 } from "../settings/terminalColorSchemes";
 import {
   resolveSettingsStyle,
@@ -193,6 +203,8 @@ import {
   terminalClose,
   terminalConnect,
   terminalWrite,
+  serialTerminalOpen,
+  telnetTerminalOpen,
   tunnelAutostart,
 } from "../../shared/tauri/commands";
 import { selectLocalUploadDirectories, selectLocalUploadFiles } from "../../shared/tauri/dialog";
@@ -225,6 +237,8 @@ import type {
 
 type RdpConnectionProfile = ConnectionProfile & { protocol: "rdp" };
 type VncConnectionProfile = ConnectionProfile & { protocol: "vnc" };
+type TelnetConnectionProfile = ConnectionProfile & { protocol: "telnet" };
+type SerialConnectionProfile = ConnectionProfile & { protocol: "serial" };
 type SshConnectionProfile = ConnectionProfile & {
   protocol?: "ssh" | null | undefined;
 };
@@ -760,6 +774,26 @@ export function WorkspaceShell() {
 
   useEffect(() => initializeWindowStatePersistence(), []);
 
+  // 配色方案数据（约 280KB / 531 项）被拆成独立 chunk。启动阶段只注册就绪
+  // 监听，并把预热放到浏览器空闲时段，避免 release 首屏后马上解析大数组。
+  const [terminalColorSchemesReady, setTerminalColorSchemesReady] = useState(false);
+  useEffect(() => {
+    let active = true;
+    const unsubscribe = onTerminalColorSchemesReady(() => {
+      if (active) {
+        setTerminalColorSchemesReady(true);
+      }
+    });
+    const cancelIdleLoad = scheduleIdleTask(() => {
+      void loadTerminalColorSchemes().catch(() => undefined);
+    }, 3500);
+    return () => {
+      active = false;
+      cancelIdleLoad();
+      unsubscribe();
+    };
+  }, []);
+
   useEffect(() => {
     if (!hasTauriRuntime() || !storageReady) {
       return;
@@ -1214,7 +1248,14 @@ export function WorkspaceShell() {
     : showingVnc
       ? activeVncSession?.id || "no-vnc-session"
       : remoteFileConnection?.id || "no-active-connection";
-  const terminalColorScheme = getTerminalColorScheme(settings.terminalTheme.scheme);
+  // 依赖 terminalColorSchemesReady：数据预热完成后重新取值，确保终端在
+  // 首屏 fallback 主题渲染后切换到用户选择的真实主题（缓存就绪前
+  // getTerminalColorScheme 返回 fallback）。
+  const terminalColorScheme = useMemo(
+    () => getTerminalColorScheme(settings.terminalTheme.scheme),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [settings.terminalTheme.scheme, terminalColorSchemesReady],
+  );
   const terminalTone = getTerminalColorSchemeTone(terminalColorScheme);
   const terminalFontFamily = resolveTerminalFontFamily(settings.appearance);
   const defaultLocalTerminalProfile = useMemo(
@@ -4073,6 +4114,7 @@ export function WorkspaceShell() {
       profileId: profile.id,
       profileKind: profile.kind,
       requestId: `local-terminal-${now.toString()}`,
+      source: "local",
       sessionId: undefined,
       status: "正在打开",
       title: localTerminalTitle(profile, nextIndex),
@@ -4154,6 +4196,22 @@ export function WorkspaceShell() {
     });
     activateLocalTerminalTab(tab);
 
+    await openRuntimeLocalTerminalSession(tab, "local-preview", () =>
+      localTerminalOpen({
+        cols: 80,
+        cwd: profile.cwd || undefined,
+        profile: toLocalTerminalProfileInput(profile),
+        request_id: tab.requestId,
+        rows: 24,
+      }),
+    );
+  }
+
+  async function openRuntimeLocalTerminalSession(
+    tab: LocalTerminalTab,
+    previewPrefix: string,
+    openSession: () => Promise<string>,
+  ) {
     if (!hasTauriRuntime()) {
       await wait(120);
       setLocalTerminalTabs((tabs) => {
@@ -4162,7 +4220,7 @@ export function WorkspaceShell() {
             ? {
                 ...item,
                 error: null,
-                sessionId: `local-preview-${Date.now().toString()}`,
+                sessionId: `${previewPrefix}-${Date.now().toString()}`,
                 status: "预览",
               }
             : item,
@@ -4193,13 +4251,7 @@ export function WorkspaceShell() {
         stopWarmupCapture = null;
       });
 
-      const sessionId = await localTerminalOpen({
-        cols: 80,
-        cwd: profile.cwd || undefined,
-        profile: toLocalTerminalProfileInput(profile),
-        request_id: tab.requestId,
-        rows: 24,
-      });
+      const sessionId = await openSession();
       if (!localTerminalTabExists(tab.id)) {
         stopTerminalWarmupCapture(tab.id);
         await terminalClose(sessionId).catch(() => undefined);
@@ -4240,6 +4292,90 @@ export function WorkspaceShell() {
         localTerminalTabsRef.current = nextTabs;
         return nextTabs;
       });
+      throw error;
+    }
+  }
+
+  function buildCharacterTerminalTab(
+    source: "telnet" | "serial",
+    title: string,
+    profileId: string,
+  ): LocalTerminalTab {
+    const now = Date.now();
+    return {
+      id: `${source}-terminal-${now.toString()}-${Math.random().toString(36).slice(2, 8)}`,
+      profileId,
+      profileKind: source,
+      requestId: `${source}-terminal-${now.toString()}`,
+      sessionId: undefined,
+      source,
+      status: "正在连接",
+      title,
+      warmupOutput: [],
+    };
+  }
+
+  function addAndActivateCharacterTerminalTab(tab: LocalTerminalTab) {
+    setLocalTerminalTabs((tabs) => {
+      const nextTabs = [...tabs, tab];
+      localTerminalTabsRef.current = nextTabs;
+      return nextTabs;
+    });
+    activateLocalTerminalTab(tab);
+  }
+
+  function openCharacterConnectionSession(
+    connection: TelnetConnectionProfile | SerialConnectionProfile,
+  ) {
+    const existingTab = localTerminalTabsRef.current.find(
+      (tab) => tab.profileId === connection.id,
+    );
+    if (existingTab) {
+      activateLocalTerminalTab(existingTab);
+      return;
+    }
+
+    const source = connection.protocol;
+    const title = connection.name || formatConnectionAddress(connection);
+    const tab = buildCharacterTerminalTab(source, title, connection.id);
+    addAndActivateCharacterTerminalTab(tab);
+    void runCharacterConnectionSession(tab, connection);
+  }
+
+  async function runCharacterConnectionSession(
+    tab: LocalTerminalTab,
+    connection: TelnetConnectionProfile | SerialConnectionProfile,
+  ) {
+    try {
+      if (connection.protocol === "telnet") {
+        await openRuntimeLocalTerminalSession(tab, "telnet-preview", () =>
+          telnetTerminalOpen({
+            backspace_mode: connection.telnet?.backspace_mode || "del",
+            enter_mode: connection.telnet?.enter_mode || "crlf",
+            host: connection.host,
+            port: connection.port || 23,
+            request_id: tab.requestId,
+          }),
+        );
+      } else {
+        const serial = connection.serial;
+        const portName = serial?.port_name || connection.host;
+        await openRuntimeLocalTerminalSession(tab, "serial-preview", () =>
+          serialTerminalOpen({
+            backspace_mode: serial?.backspace_mode || "del",
+            baud_rate: serial?.baud_rate || 9600,
+            data_bits: serial?.data_bits || "eight",
+            flow_control: serial?.flow_control || "none",
+            parity: serial?.parity || "none",
+            port_name: portName,
+            request_id: tab.requestId,
+            stop_bits: serial?.stop_bits || "one",
+          }),
+        );
+      }
+      void markConnected(connection.id);
+    } catch {
+      // openRuntimeLocalTerminalSession 已经把错误写入标签状态。
     }
   }
 
@@ -4281,6 +4417,10 @@ export function WorkspaceShell() {
       openVncConnectionSession(connection);
       return;
     }
+    if (isTelnetConnection(connection) || isSerialConnection(connection)) {
+      openCharacterConnectionSession(connection);
+      return;
+    }
 
     const pendingTab = pendingTabForConnection(connection.id);
     if (pendingTab) {
@@ -4298,6 +4438,10 @@ export function WorkspaceShell() {
     }
     if (isVncConnection(connection)) {
       openVncConnectionSession(connection);
+      return;
+    }
+    if (isTelnetConnection(connection) || isSerialConnection(connection)) {
+      openCharacterConnectionSession(connection);
       return;
     }
 
@@ -6074,20 +6218,22 @@ export function WorkspaceShell() {
                   </nav>
 
                   <section className="remote-editor-stack" aria-label="文件编辑器">
-                    {remoteFileTabs.map((tab) => (
-                      <RemoteFileEditor
-                        active={!showingHome && tab.id === activeRemoteFileTab?.id}
-                        fontFamily={terminalFontFamily}
-                        fontSize={settings.appearance.terminalFontSize}
-                        key={tab.id}
-                        tab={tab}
-                        onChange={handleRemoteFileChange}
-                        onClose={closeRemoteFileTab}
-                        onDiscard={discardRemoteFileChanges}
-                        onReload={reloadRemoteFile}
-                        onSave={saveRemoteFile}
-                      />
-                    ))}
+                    <Suspense fallback={<div className="remote-editor-loading">正在加载编辑器…</div>}>
+                      {remoteFileTabs.map((tab) => (
+                        <RemoteFileEditor
+                          active={!showingHome && tab.id === activeRemoteFileTab?.id}
+                          fontFamily={terminalFontFamily}
+                          fontSize={settings.appearance.terminalFontSize}
+                          key={tab.id}
+                          tab={tab}
+                          onChange={handleRemoteFileChange}
+                          onClose={closeRemoteFileTab}
+                          onDiscard={discardRemoteFileChanges}
+                          onReload={reloadRemoteFile}
+                          onSave={saveRemoteFile}
+                        />
+                      ))}
+                    </Suspense>
                   </section>
                 </section>
               ) : null}
@@ -6891,15 +7037,23 @@ export function WorkspaceShell() {
                         <LocalTerminalStatusPanel
                           active={showingLocalTerminal && tab.id === activeLocalTerminalTabId}
                           error={tab.error || null}
-                          profile={localTerminalProfiles.find((profile) => profile.id === tab.profileId) || null}
+                          profile={
+                            tab.source === "local"
+                              ? localTerminalProfiles.find((profile) => profile.id === tab.profileId) || null
+                              : null
+                          }
+                          source={tab.source || "local"}
                           status={tab.status}
                           title={tab.title}
                           key={tab.id}
                           onOpenSettings={openLocalTerminalSettings}
-                          onRetry={() =>
-                            void openLocalTerminalByProfile(
-                              localTerminalProfiles.find((profile) => profile.id === tab.profileId) || null,
-                            )
+                          onRetry={
+                            tab.source === "local" || !tab.source
+                              ? () =>
+                                  void openLocalTerminalByProfile(
+                                    localTerminalProfiles.find((profile) => profile.id === tab.profileId) || null,
+                                  )
+                              : undefined
                           }
                         />
                       ),
@@ -8297,8 +8451,10 @@ function VncEmbeddedViewer({
     if (!mount || !websocketUrl) {
       return undefined;
     }
+    const mountElement = mount;
+    const viewerWebsocketUrl = websocketUrl;
 
-    mount.replaceChildren();
+    mountElement.replaceChildren();
     setConnected(false);
     setDesktopName("");
     setPasswordRequired(false);
@@ -8311,12 +8467,8 @@ function VncEmbeddedViewer({
             username: connection?.username || undefined,
           }
         : undefined;
-    const rfb = new RFB(mount, websocketUrl, {
-      credentials,
-      shared: config.input.shared,
-    });
-    rfbRef.current = rfb;
-    applyVncRfbSettings(rfb, config);
+    let disposed = false;
+    let rfb: RFB | null = null;
 
     const handleConnect = () => {
       setConnected(true);
@@ -8330,7 +8482,7 @@ function VncEmbeddedViewer({
     };
     const handleCredentialsRequired = () => {
       if (result.password) {
-        rfb.sendCredentials({
+        rfb?.sendCredentials({
           password: result.password,
           username: connection?.username || undefined,
         });
@@ -8346,22 +8498,48 @@ function VncEmbeddedViewer({
       setDesktopName(event.detail.name || "");
     };
 
-    rfb.addEventListener("connect", handleConnect);
-    rfb.addEventListener("disconnect", handleDisconnect);
-    rfb.addEventListener("credentialsrequired", handleCredentialsRequired);
-    rfb.addEventListener("securityfailure", handleSecurityFailure);
-    rfb.addEventListener("desktopname", handleDesktopName);
-    rfb.focus();
+    async function connectVncViewer() {
+      try {
+        const module = await import("@novnc/novnc");
+        if (disposed) {
+          return;
+        }
+        const nextRfb = new module.default(mountElement, viewerWebsocketUrl, {
+          credentials,
+          shared: config.input.shared,
+        });
+        rfb = nextRfb;
+        rfbRef.current = nextRfb;
+        applyVncRfbSettings(nextRfb, config);
+        nextRfb.addEventListener("connect", handleConnect);
+        nextRfb.addEventListener("disconnect", handleDisconnect);
+        nextRfb.addEventListener("credentialsrequired", handleCredentialsRequired);
+        nextRfb.addEventListener("securityfailure", handleSecurityFailure);
+        nextRfb.addEventListener("desktopname", handleDesktopName);
+        nextRfb.focus();
+      } catch (error) {
+        if (!disposed) {
+          onErrorRef.current(`VNC 画面加载失败：${formatError(error)}`);
+        }
+      }
+    }
+
+    void connectVncViewer();
 
     return () => {
-      rfb.removeEventListener("connect", handleConnect);
-      rfb.removeEventListener("disconnect", handleDisconnect as EventListener);
-      rfb.removeEventListener("credentialsrequired", handleCredentialsRequired);
-      rfb.removeEventListener("securityfailure", handleSecurityFailure as EventListener);
-      rfb.removeEventListener("desktopname", handleDesktopName as EventListener);
-      rfb.disconnect();
-      rfbRef.current = null;
-      mount.replaceChildren();
+      disposed = true;
+      if (rfb) {
+        rfb.removeEventListener("connect", handleConnect);
+        rfb.removeEventListener("disconnect", handleDisconnect as EventListener);
+        rfb.removeEventListener("credentialsrequired", handleCredentialsRequired);
+        rfb.removeEventListener("securityfailure", handleSecurityFailure as EventListener);
+        rfb.removeEventListener("desktopname", handleDesktopName as EventListener);
+        rfb.disconnect();
+      }
+      if (!rfb || rfbRef.current === rfb) {
+        rfbRef.current = null;
+      }
+      mountElement.replaceChildren();
     };
   }, [
     config,
@@ -8610,6 +8788,7 @@ function LocalTerminalStatusPanel({
   active,
   error,
   profile,
+  source,
   status,
   title,
   onOpenSettings,
@@ -8618,12 +8797,15 @@ function LocalTerminalStatusPanel({
   active: boolean;
   error: string | null;
   profile: LocalTerminalProfile | null;
+  source: "local" | "telnet" | "serial";
   status: string;
   title: string;
   onOpenSettings: () => void;
-  onRetry: () => void;
+  onRetry?: () => void;
 }) {
   const failed = status === "连接失败";
+  const subject = source === "telnet" ? "Telnet 会话" : source === "serial" ? "串口会话" : "本地终端";
+  const description = profile ? `${profile.name} · ${profile.command}` : title;
 
   return (
     <section
@@ -8639,10 +8821,10 @@ function LocalTerminalStatusPanel({
         ) : (
           <Loader2 className="ui-icon spin" aria-hidden="true" />
         )}
-        <strong>{failed ? "本地终端启动失败" : status}</strong>
-        <span>{profile ? `${profile.name} · ${profile.command}` : title}</span>
+        <strong>{failed ? `${subject}打开失败` : status}</strong>
+        <span>{description}</span>
         {error ? <small>{error}</small> : null}
-        {failed ? (
+        {failed && source === "local" && onRetry ? (
           <div className="local-terminal-status-actions">
             <button className="primary-button" type="button" onClick={onRetry}>
               <RefreshCw className="ui-icon" aria-hidden="true" />
@@ -10521,6 +10703,12 @@ function isTauriCommandMissingError(error: unknown, commandName: string) {
 }
 
 function formatConnectionAddress(connection: ConnectionProfile) {
+  if ((connection.protocol || "ssh") === "telnet") {
+    return `${connection.host}:${connection.port.toString()}`;
+  }
+  if ((connection.protocol || "ssh") === "serial") {
+    return connection.serial?.port_name || connection.host;
+  }
   return `${connection.username}@${connection.host}:${connection.port.toString()}`;
 }
 
@@ -10534,6 +10722,18 @@ function isVncConnection(
   connection?: ConnectionProfile | null,
 ): connection is VncConnectionProfile {
   return (connection?.protocol || "ssh") === "vnc";
+}
+
+function isTelnetConnection(
+  connection?: ConnectionProfile | null,
+): connection is TelnetConnectionProfile {
+  return (connection?.protocol || "ssh") === "telnet";
+}
+
+function isSerialConnection(
+  connection?: ConnectionProfile | null,
+): connection is SerialConnectionProfile {
+  return (connection?.protocol || "ssh") === "serial";
 }
 
 function measureRdpEmbeddedViewport(element: HTMLElement | null): RdpEmbeddedBounds | null {
@@ -11178,6 +11378,9 @@ function buildCommandSenderTargets({
   const selectedLocalTab =
     connectedLocalTabs.find((tab) => tab.id === selectedLocalTabId) || connectedLocalTabs[0];
   const profile = localTerminalProfiles.find((item) => item.id === selectedLocalTab.profileId) || null;
+  const localTargetLabel = connectedLocalTabs.some((tab) => tab.source && tab.source !== "local")
+    ? "字符终端"
+    : "本地终端";
   const key = commandSenderTargetKey(localCommandSenderTargetId, selectedLocalTab.id);
   const delivery = deliveryByKey[key];
   const tabCountText =
@@ -11194,7 +11397,7 @@ function buildCommandSenderTargets({
       description: `${profile?.name || selectedLocalTab.title} · ${tabCountText}`,
       key,
       kind: "local" as const,
-      label: "本地终端",
+      label: localTargetLabel,
       historyScope: {
         scope_kind: "local_profile" as const,
         scope_id: selectedLocalTab.profileId,
@@ -11720,6 +11923,24 @@ function concatenateUint8Arrays(chunks: Uint8Array[], totalBytes: number) {
 
 function yieldToBrowser() {
   return new Promise<void>((resolve) => window.setTimeout(resolve, 0));
+}
+
+function scheduleIdleTask(callback: () => void, timeoutMs: number): () => void {
+  const idleWindow = window as Window & {
+    requestIdleCallback?: (
+      callback: IdleRequestCallback,
+      options?: IdleRequestOptions,
+    ) => number;
+    cancelIdleCallback?: (handle: number) => void;
+  };
+
+  if (typeof idleWindow.requestIdleCallback === "function") {
+    const handle = idleWindow.requestIdleCallback(() => callback(), { timeout: timeoutMs });
+    return () => idleWindow.cancelIdleCallback?.(handle);
+  }
+
+  const timer = window.setTimeout(callback, timeoutMs);
+  return () => window.clearTimeout(timer);
 }
 
 function clampTransferProgress(progress: number) {

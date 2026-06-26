@@ -6,7 +6,7 @@ use tauri::{AppHandle, Manager};
 
 use crate::app_error::AppError;
 
-pub const SQLITE_SCHEMA_VERSION: i64 = 1;
+pub const SQLITE_SCHEMA_VERSION: i64 = 2;
 
 const SCHEMA_SQL: &str = r#"
 PRAGMA foreign_keys = ON;
@@ -69,6 +69,8 @@ CREATE TABLE IF NOT EXISTS connections (
     advanced_json TEXT NOT NULL,
     rdp_json TEXT,
     vnc_json TEXT,
+    telnet_json TEXT,
+    serial_json TEXT,
     notes TEXT,
     is_favorite INTEGER NOT NULL DEFAULT 0,
     last_connected_at TEXT,
@@ -247,6 +249,18 @@ impl SqliteStore {
             "vnc_json",
             "ALTER TABLE connections
              ADD COLUMN vnc_json TEXT",
+        )?;
+        self.add_column_if_missing(
+            "connections",
+            "telnet_json",
+            "ALTER TABLE connections
+             ADD COLUMN telnet_json TEXT",
+        )?;
+        self.add_column_if_missing(
+            "connections",
+            "serial_json",
+            "ALTER TABLE connections
+             ADD COLUMN serial_json TEXT",
         )?;
         self.connection
             .execute(

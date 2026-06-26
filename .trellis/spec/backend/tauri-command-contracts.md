@@ -29,6 +29,9 @@
 - `terminal_write(manager: State<TerminalManager>, request: TerminalWriteRequest) -> Result<(), AppError>`
 - `terminal_resize(manager: State<TerminalManager>, request: TerminalResizeRequest) -> Result<(), AppError>`
 - `terminal_close(manager: State<TerminalManager>, session_id: String) -> Result<(), AppError>`
+- `telnet_terminal_open(app: AppHandle, manager: State<TerminalManager>, request: TelnetTerminalOpenRequest) -> Result<String, AppError>`
+- `serial_list_ports() -> Result<Vec<SerialPortEntry>, AppError>`
+- `serial_terminal_open(app: AppHandle, manager: State<TerminalManager>, request: SerialTerminalOpenRequest) -> Result<String, AppError>`
 - `get_windows_pty_info() -> Option<WindowsPtyInfo>`
 
 `ConnectionProfileInput` fields:
@@ -52,6 +55,10 @@ prompt_auth_kind: Option<ConnectionAuthKind>
 proxy: ConnectionProxyConfig
 jump: ConnectionJumpConfig
 advanced: ConnectionAdvancedConfig
+rdp: Option<RdpConnectionConfig>
+vnc: Option<VncConnectionConfig>
+telnet: Option<TelnetConnectionConfig>
+serial: Option<SerialConnectionConfig>
 notes: Option<String>
 is_favorite: Option<bool>
 last_connected_at: Option<String>
@@ -66,6 +73,25 @@ private_key_passphrase: Option<String>
 ```
 
 `ConnectionProfile` adds `id`, normalized `name`, `is_favorite`, `last_connected_at`, `remote_os_id`, `remote_os_name`, `remote_os_version`, `created_at`, and `updated_at`.
+
+`TelnetConnectionConfig` fields:
+
+```rust
+enter_mode: TelnetEnterMode // cr | lf | crlf
+backspace_mode: TelnetBackspaceMode // del | ctrl_h
+```
+
+`SerialConnectionConfig` fields:
+
+```rust
+port_name: String
+baud_rate: u32
+data_bits: SerialDataBits // five | six | seven | eight
+parity: SerialParity // none | odd | even
+stop_bits: SerialStopBits // one | two
+flow_control: SerialFlowControl // none | software | hardware
+backspace_mode: SerialBackspaceMode // del | ctrl_h
+```
 
 `ConnectionJumpConfig` fields:
 
@@ -214,6 +240,11 @@ reachable: bool
 - `connection_probe_system` resolves the saved connection with the same runtime prompt credential shape as `connection_test`, opens a short-lived exec session, runs only the read-only `cat /etc/os-release 2>/dev/null || uname -s 2>/dev/null || true` probe, parses `ID`, `NAME`, and `VERSION_ID`, and writes only the `remote_os_*` fields through `StorageRepository`. It must not log passwords, passphrases, or full command payloads, and probe failure must be handled by the frontend as non-fatal after a successful connection.
 - `connection_probe_latency` must load the saved profile by `connection_id` and probe only the saved `host`/`port` with a short TCP timeout. It must not require or log passwords, private keys, or passphrases.
 - Terminal output and state events include both `session_id` and the optional frontend `request_id`. Keep `request_id` on early connection events so React can display shell output that arrives before the `terminal_connect` promise resolves.
+- Telnet and serial sessions are runtime terminal sessions managed by `TerminalManager`; they emit the same terminal output/state events and share `terminal_write`, `terminal_resize`, and `terminal_close`.
+- Telnet and serial connection settings are persisted as independent `ConnectionProtocol::Telnet` and `ConnectionProtocol::Serial` profiles. They must not require SSH username, SSH credentials, proxy, jump, or advanced SSH encoding fields.
+- Serial profiles mirror `serial.port_name` into `host` and store `port = 1` for repository compatibility; runtime open must use the `serial` JSON config.
+- Telnet input owns Enter and Backspace mode conversion in Rust, filters Telnet IAC control bytes, and sends NAWS when negotiated or resized.
+- Serial sessions use `serialport` for port enumeration and blocking COM/TTY IO. Reads must run outside the async runtime, and close must release the port instead of leaving Windows COM handles occupied.
 - The interactive terminal reader must not stop on `ChannelMsg::Eof`; continue reading until `ChannelMsg::Close` or channel end so a shell prompt or late startup output cannot be lost during frontend handoff.
 - Tauri event names must use allowed characters only. Use colon-separated names such as `terminal:output`, `terminal:state_changed`, and `terminal:connect_progress`; do not use dot-separated names.
 - On Windows, local terminal profile discovery must treat external command output as a platform boundary. `wsl.exe -l -q` may return UTF-16LE without a BOM, so WSL distribution parsing must decode UTF-16 when the byte shape indicates it and must strip NUL separators before building `wsl.exe -d <distro>` args.

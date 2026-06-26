@@ -38,6 +38,9 @@ terminalConnect(request: TerminalConnectRequest): Promise<string>
 terminalWrite(sessionId: string, data: string): Promise<void>
 terminalResize(sessionId: string, cols: number, rows: number): Promise<void>
 terminalClose(sessionId: string): Promise<void>
+telnetTerminalOpen(request: TelnetTerminalOpenRequest): Promise<string>
+serialListPorts(): Promise<SerialPortEntry[]>
+serialTerminalOpen(request: SerialTerminalOpenRequest): Promise<string>
 getWindowsPtyInfo(): Promise<WindowsPtyInfo | null>
 ```
 
@@ -80,6 +83,19 @@ last_connected_at?: string
 remote_os_id?: string
 remote_os_name?: string
 remote_os_version?: string
+telnet?: {
+  enter_mode: "cr" | "lf" | "crlf"
+  backspace_mode: "del" | "ctrl_h"
+}
+serial?: {
+  port_name: string
+  baud_rate: number
+  data_bits: "five" | "six" | "seven" | "eight"
+  parity: "none" | "odd" | "even"
+  stop_bits: "one" | "two"
+  flow_control: "none" | "software" | "hardware"
+  backspace_mode: "del" | "ctrl_h"
+}
 // Legacy migration only:
 auth_kind?: "password" | "private_key"
 password?: string
@@ -136,6 +152,25 @@ type HostKeyInfo = {
   fingerprint_sha256: string
   public_key: string
 }
+
+type TelnetTerminalOpenRequest = {
+  request_id?: string
+  host: string
+  port: number
+  enter_mode?: "cr" | "lf" | "crlf"
+  backspace_mode?: "del" | "ctrl_h"
+}
+
+type SerialTerminalOpenRequest = {
+  request_id?: string
+  port_name: string
+  baud_rate?: number
+  data_bits?: "five" | "six" | "seven" | "eight"
+  parity?: "none" | "odd" | "even"
+  stop_bits?: "one" | "two"
+  flow_control?: "none" | "software" | "hardware"
+  backspace_mode?: "del" | "ctrl_h"
+}
 ```
 
 ### 3. Contracts
@@ -167,6 +202,9 @@ type HostKeyInfo = {
 - Connection latency probing must go through `connectionProbeLatency(connection.id)`. The UI sends only a saved connection id; Rust reloads the saved host/port and never needs credential fields for this probe.
 - Remote system probing must go through `connectionProbeSystem(request)`. The UI sends a saved connection id and only the same prompt credentials already supplied by the user for the current connection attempt; Rust reloads all saved target and credential fields, probes `/etc/os-release`, and returns the updated `ConnectionProfile`.
 - The connection preparation page owns startup, host-key confirmation, prompt credentials, retry, edit, and failure UI. A terminal tab is created only after `terminalConnect` returns a session id.
+- Telnet and serial are saved connection protocols with their own profile config fields. UI must persist them through `connectionUpsert`, then open them through `telnetTerminalOpen` / `serialTerminalOpen` and reuse `TerminalPanel` with `initialSessionId`.
+- Telnet and serial profiles must not use SSH credentials, proxy, jump, remote-file, monitor, Docker, or tunnel fields. Serial profiles use `serial.port_name` as the runtime target; `host` may mirror the port name only for repository compatibility.
+- Serial port selection must call `serialListPorts()` through the typed wrapper. Business UI must use `AppSelect` and global token styles, not native `<select>`.
 - The same-connection "new terminal" action must only be visible after the active terminal has a connected `sessionId`. When used inside an already active session, it must create a terminal tab directly and call `terminalConnect` with the saved `connection_id`; it must not call `startConnectionStep(...)` or show the connection-preparation page. If this direct connect fails, keep the lightweight terminal tab in a failed state instead of routing the user back into the preparation flow.
 - `TerminalPanel` receives an already-created `initialSessionId`; it must not start a second SSH connection for that tab.
 - During terminal handoff, match terminal output/state events by `request_id` as well as by `session_id`; shell prompts can arrive before the frontend receives the returned session id.
@@ -1368,6 +1406,11 @@ vncCloseSession(sessionId: string): Promise<VncSessionCloseResult>
 - VNC workspace sessions are runtime UI state. Do not persist bridge session ids, WebSocket URLs, passwords, or noVNC state on `ConnectionProfile`.
 - The same saved VNC connection opens at most one workspace tab. Re-opening the connection must activate the existing VNC tab instead of launching another bridge.
 - Embedded VNC uses noVNC `RFB` against the backend local WebSocket bridge. Apply `scaleViewport`, `resizeSession`, `clipViewport`, `viewOnly`, `qualityLevel`, `compressionLevel`, and shared-session settings from `VncConnectionConfig`.
+- noVNC is a heavy, VNC-only runtime dependency. `WorkspaceShell` may import its
+  type declarations, but the runtime `@novnc/novnc` value must be loaded with a
+  dynamic import inside the embedded VNC viewer when `embedded=true`. Do not
+  statically import noVNC at module scope, because ordinary startup, SSH, and
+  settings views must not parse the VNC client.
 - Prompt credentials are handled inside the VNC surface through noVNC `credentialsrequired`. Saved/inline passwords may appear only in the launch result as in-memory data for the active embedded session.
 - External/custom runner preview and launch surfaces may show executable path and arguments only. They must not show or pass plaintext passwords.
 - VNC mode must hide or disable SSH-only tools: terminal creation, remote files, monitor, tunnels, Docker, Command Sender, and SSH command history targets.

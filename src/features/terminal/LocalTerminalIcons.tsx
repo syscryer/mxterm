@@ -1,8 +1,10 @@
 import {
   AppWindow,
+  Cable,
   Command,
   MonitorCog,
   Terminal,
+  TerminalSquare,
 } from "lucide-react";
 import {
   siGitforwindows,
@@ -53,6 +55,14 @@ export function LocalTerminalIcon({
 
   if (kind === "powershell" || kind === "powershell_core" || kind === "pwsh") {
     return <MonitorCog className={className} aria-hidden="true" />;
+  }
+
+  if (kind === "telnet") {
+    return <TerminalSquare className={className} aria-hidden="true" />;
+  }
+
+  if (kind === "serial") {
+    return <Cable className={className} aria-hidden="true" />;
   }
 
   return <Terminal className={className} aria-hidden="true" />;

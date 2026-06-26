@@ -2173,7 +2173,7 @@ button {
 
 .terminal-scheme-card:hover {
   border-color: color-mix(in srgb, var(--mx-primary) 28%, var(--mx-line));
-  background: #fbfcfe;
+  background: color-mix(in srgb, var(--mx-primary) 4%, var(--mx-panel));
 }
 
 .terminal-scheme-card.active {
@@ -2286,7 +2286,7 @@ button {
   gap: 12px;
   padding: 10px 12px;
   color: var(--mx-muted);
-  background: rgb(255 255 255 / 92%);
+  background: color-mix(in srgb, var(--mx-material-panel, var(--mx-panel)) 92%, transparent);
   backdrop-filter: blur(12px);
   box-shadow: 0 -8px 24px rgb(15 23 42 / 5%);
 }
@@ -10287,6 +10287,12 @@ button {
   font-size: 15px;
   font-weight: 600;
   line-height: 1.25;
+}
+
+.dialog-head-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
 }
 
 .dialog-subtitle {

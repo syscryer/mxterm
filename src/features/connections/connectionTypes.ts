@@ -1,7 +1,16 @@
 export type ConnectionAuthKind = "password" | "private_key";
 export type ConnectionCredentialMode = "saved" | "inline" | "prompt";
 export type ConnectionJumpKind = "none" | "ssh_jump";
-export type ConnectionProtocol = "ssh" | "rdp" | "vnc";
+import type {
+  CharacterBackspaceMode,
+  SerialDataBits,
+  SerialFlowControl,
+  SerialParity,
+  SerialStopBits,
+  TelnetEnterMode,
+} from "../terminal/characterSessionTypes";
+
+export type ConnectionProtocol = "ssh" | "rdp" | "vnc" | "telnet" | "serial";
 export type ConnectionProxyKind = "none" | "http_connect" | "socks5";
 export type RdpDisplayMode = "embedded" | "windowed" | "fullscreen" | "all_monitors";
 export type RdpAudioMode = "local" | "remote" | "disabled";
@@ -155,6 +164,21 @@ export interface VncConnectionConfig {
   raw_runner_args?: string | null;
 }
 
+export interface TelnetConnectionConfig {
+  enter_mode: TelnetEnterMode;
+  backspace_mode: CharacterBackspaceMode;
+}
+
+export interface SerialConnectionConfig {
+  port_name: string;
+  baud_rate: number;
+  data_bits: SerialDataBits;
+  parity: SerialParity;
+  stop_bits: SerialStopBits;
+  flow_control: SerialFlowControl;
+  backspace_mode: CharacterBackspaceMode;
+}
+
 export interface ConnectionProfile {
   id: string;
   name: string;
@@ -175,6 +199,8 @@ export interface ConnectionProfile {
   advanced: ConnectionAdvancedConfig;
   rdp?: RdpConnectionConfig | null;
   vnc?: VncConnectionConfig | null;
+  telnet?: TelnetConnectionConfig | null;
+  serial?: SerialConnectionConfig | null;
   notes?: string | null;
   is_favorite: boolean;
   last_connected_at?: string | null;
@@ -211,6 +237,8 @@ export interface ConnectionProfileInput {
   advanced: ConnectionAdvancedConfig;
   rdp?: RdpConnectionConfig | null;
   vnc?: VncConnectionConfig | null;
+  telnet?: TelnetConnectionConfig | null;
+  serial?: SerialConnectionConfig | null;
   notes?: string;
   is_favorite?: boolean;
   last_connected_at?: string;
@@ -480,6 +508,21 @@ export const defaultVncConfig: VncConnectionConfig = {
     custom_args_template: "",
   },
   raw_runner_args: "",
+};
+
+export const defaultTelnetConfig: TelnetConnectionConfig = {
+  backspace_mode: "del",
+  enter_mode: "crlf",
+};
+
+export const defaultSerialConfig: SerialConnectionConfig = {
+  backspace_mode: "del",
+  baud_rate: 9600,
+  data_bits: "eight",
+  flow_control: "none",
+  parity: "none",
+  port_name: "",
+  stop_bits: "one",
 };
 
 export const terminalEncodingOptions: Array<{

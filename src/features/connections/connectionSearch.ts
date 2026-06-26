@@ -87,6 +87,10 @@ export function formatConnectionAddress(connection: ConnectionProfile) {
       return `RDP · ${address}`;
     case "vnc":
       return `VNC · ${address}`;
+    case "telnet":
+      return `Telnet · ${connection.host}:${connection.port.toString()}`;
+    case "serial":
+      return `串口 · ${connection.serial?.port_name || connection.host}`;
     default:
       return address;
   }

@@ -440,9 +440,13 @@ export function normalizeSettings(value: unknown): MxtermSettings {
       ),
     },
     terminalTheme: {
-      scheme: getTerminalColorScheme(
-        typeof terminalTheme.scheme === "string" ? terminalTheme.scheme : null,
-      ).id,
+      // 仅校验为非空字符串，不依赖完整配色列表（列表已拆为按需加载的独立
+      // chunk，规范化阶段尚未就绪）。无效/不存在的 id 在运行时由
+      // getTerminalColorScheme 兜底回退到默认方案，不会导致渲染异常。
+      scheme:
+        typeof terminalTheme.scheme === "string" && terminalTheme.scheme.trim().length > 0
+          ? terminalTheme.scheme
+          : defaultSettings.terminalTheme.scheme,
     },
   };
 }

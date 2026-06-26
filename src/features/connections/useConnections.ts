@@ -14,12 +14,16 @@ import {
   defaultJumpConfig,
   defaultProxyConfig,
   defaultRdpConfig,
+  defaultSerialConfig,
+  defaultTelnetConfig,
   defaultVncConfig,
   normalizeTerminalEncoding,
   type ConnectionProfile,
   type ConnectionProfileInput,
   type ConnectionRuntimeCredentialRequest,
   type RdpConnectionConfig,
+  type SerialConnectionConfig,
+  type TelnetConnectionConfig,
   type VncConnectionConfig,
 } from "./connectionTypes";
 
@@ -244,7 +248,7 @@ export function useConnections(options: { enabled?: boolean } = {}) {
           last_connected_at: normalized.last_connected_at || null,
           name:
             normalized.name ||
-            `${normalized.username.trim()}@${normalized.host.trim()}`,
+            defaultConnectionName(normalized),
           created_at: now,
           updated_at: now,
         };
@@ -420,6 +424,8 @@ export function normalizeConnectionInput(input: ConnectionProfileInput): Connect
       advanced: defaultAdvancedConfig,
       rdp: normalizeRdpConfig(input.rdp),
       vnc: undefined,
+      telnet: undefined,
+      serial: undefined,
       notes: trim(input.notes),
       is_favorite: input.is_favorite,
       last_connected_at: trim(input.last_connected_at),
@@ -461,12 +467,89 @@ export function normalizeConnectionInput(input: ConnectionProfileInput): Connect
       advanced: defaultAdvancedConfig,
       rdp: undefined,
       vnc: normalizeVncConfig(input.vnc),
+      telnet: undefined,
+      serial: undefined,
       notes: trim(input.notes),
       is_favorite: input.is_favorite,
       last_connected_at: trim(input.last_connected_at),
       remote_os_id: trim(input.remote_os_id),
       remote_os_name: trim(input.remote_os_name),
       remote_os_version: trim(input.remote_os_version),
+    };
+  }
+
+  if (protocol === "telnet") {
+    const trim = (value: string | undefined | null) => value?.trim() || undefined;
+    return {
+      id: trim(input.id),
+      protocol: "telnet",
+      name: trim(input.name),
+      group: trim(input.group),
+      host: input.host.trim(),
+      port: Number(input.port) || 23,
+      username: "",
+      credential_mode: "prompt",
+      credential_id: undefined,
+      inline_auth_kind: undefined,
+      inline_password: undefined,
+      inline_password_touched: false,
+      inline_private_key_path: undefined,
+      inline_private_key_passphrase: undefined,
+      inline_private_key_passphrase_touched: false,
+      prompt_auth_kind: undefined,
+      proxy: { kind: "none" },
+      jump: { kind: "none" },
+      advanced: defaultAdvancedConfig,
+      rdp: undefined,
+      vnc: undefined,
+      telnet: normalizeTelnetConfig(input.telnet),
+      serial: undefined,
+      notes: trim(input.notes),
+      is_favorite: input.is_favorite,
+      last_connected_at: trim(input.last_connected_at),
+      remote_os_id: undefined,
+      remote_os_name: undefined,
+      remote_os_version: undefined,
+    };
+  }
+
+  if (protocol === "serial") {
+    const trim = (value: string | undefined | null) => value?.trim() || undefined;
+    const serial = normalizeSerialConfig(input.serial);
+    const portName = serial.port_name || input.host.trim();
+    return {
+      id: trim(input.id),
+      protocol: "serial",
+      name: trim(input.name),
+      group: trim(input.group),
+      host: portName,
+      port: 1,
+      username: "",
+      credential_mode: "prompt",
+      credential_id: undefined,
+      inline_auth_kind: undefined,
+      inline_password: undefined,
+      inline_password_touched: false,
+      inline_private_key_path: undefined,
+      inline_private_key_passphrase: undefined,
+      inline_private_key_passphrase_touched: false,
+      prompt_auth_kind: undefined,
+      proxy: { kind: "none" },
+      jump: { kind: "none" },
+      advanced: defaultAdvancedConfig,
+      rdp: undefined,
+      vnc: undefined,
+      telnet: undefined,
+      serial: {
+        ...serial,
+        port_name: portName,
+      },
+      notes: trim(input.notes),
+      is_favorite: input.is_favorite,
+      last_connected_at: trim(input.last_connected_at),
+      remote_os_id: undefined,
+      remote_os_name: undefined,
+      remote_os_version: undefined,
     };
   }
 
@@ -546,12 +629,35 @@ export function normalizeConnectionInput(input: ConnectionProfileInput): Connect
     },
     rdp: undefined,
     vnc: undefined,
+    telnet: undefined,
+    serial: undefined,
     notes: trim(input.notes),
     is_favorite: input.is_favorite,
     last_connected_at: trim(input.last_connected_at),
     remote_os_id: trim(input.remote_os_id),
     remote_os_name: trim(input.remote_os_name),
     remote_os_version: trim(input.remote_os_version),
+  };
+}
+
+function normalizeTelnetConfig(input?: TelnetConnectionConfig | null): TelnetConnectionConfig {
+  const telnet = input || defaultTelnetConfig;
+  return {
+    backspace_mode: telnet.backspace_mode || defaultTelnetConfig.backspace_mode,
+    enter_mode: telnet.enter_mode || defaultTelnetConfig.enter_mode,
+  };
+}
+
+function normalizeSerialConfig(input?: SerialConnectionConfig | null): SerialConnectionConfig {
+  const serial = input || defaultSerialConfig;
+  return {
+    backspace_mode: serial.backspace_mode || defaultSerialConfig.backspace_mode,
+    baud_rate: Number(serial.baud_rate) || defaultSerialConfig.baud_rate,
+    data_bits: serial.data_bits || defaultSerialConfig.data_bits,
+    flow_control: serial.flow_control || defaultSerialConfig.flow_control,
+    parity: serial.parity || defaultSerialConfig.parity,
+    port_name: serial.port_name?.trim() || "",
+    stop_bits: serial.stop_bits || defaultSerialConfig.stop_bits,
   };
 }
 
@@ -680,6 +786,16 @@ function normalizeJumpConfig(input: ConnectionProfileInput["jump"]) {
     kind: "ssh_jump" as const,
     jump_connection_id: input.jump_connection_id?.trim() || "",
   };
+}
+
+function defaultConnectionName(input: ConnectionProfileInput) {
+  if (input.protocol === "telnet") {
+    return `Telnet ${input.host.trim()}:${input.port.toString()}`;
+  }
+  if (input.protocol === "serial") {
+    return `串口 ${(input.serial?.port_name || input.host).trim()}`;
+  }
+  return `${input.username.trim()}@${input.host.trim()}`;
 }
 
 function formatError(error: unknown) {

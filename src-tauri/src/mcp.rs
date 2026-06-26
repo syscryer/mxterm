@@ -21,7 +21,11 @@ use crate::remote_exec_pool::{RemoteExecRetry, RemoteExecSessionPool};
 use crate::ssh_config::{ResolvedSshConfig, RuntimeCredentialInput};
 use crate::storage_repository::StorageRepository;
 use crate::storage_vault::{SecretStore, VaultState};
+use crate::terminal::serial::{
+    SerialBackspaceMode, SerialDataBits, SerialFlowControl, SerialParity, SerialStopBits,
+};
 use crate::terminal::session::{ReusableSftpSession, SshConnectionContext};
+use crate::terminal::telnet::{TelnetBackspaceMode, TelnetEnterMode};
 use crate::webdav_sync::WebDavSyncService;
 
 pub const MCP_SETTINGS_KEY: &str = "mcp.default";
@@ -105,6 +109,8 @@ pub struct McpConnectionDto {
     pub jump: McpJumpDto,
     pub rdp: Option<McpRdpDto>,
     pub vnc: Option<McpVncDto>,
+    pub telnet: Option<McpTelnetDto>,
+    pub serial: Option<McpSerialDto>,
     pub notes: Option<String>,
     pub is_favorite: bool,
     pub last_connected_at: Option<String>,
@@ -162,6 +168,23 @@ pub struct McpVncDto {
     pub preferred_runner: Option<VncRunnerKind>,
     pub credential_mode: VncSecurityCredentialMode,
     pub raw_runner_args_saved: bool,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct McpTelnetDto {
+    pub enter_mode: TelnetEnterMode,
+    pub backspace_mode: TelnetBackspaceMode,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct McpSerialDto {
+    pub port_name: String,
+    pub baud_rate: u32,
+    pub data_bits: SerialDataBits,
+    pub parity: SerialParity,
+    pub stop_bits: SerialStopBits,
+    pub flow_control: SerialFlowControl,
+    pub backspace_mode: SerialBackspaceMode,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -290,6 +313,19 @@ pub fn redacted_connection(profile: ConnectionProfile) -> McpConnectionDto {
         credential_mode: vnc.security.credential_mode.clone(),
         raw_runner_args_saved: vnc.raw_runner_args.is_some(),
     });
+    let telnet = profile.telnet.as_ref().map(|telnet| McpTelnetDto {
+        enter_mode: telnet.enter_mode,
+        backspace_mode: telnet.backspace_mode,
+    });
+    let serial = profile.serial.as_ref().map(|serial| McpSerialDto {
+        port_name: serial.port_name.clone(),
+        baud_rate: serial.baud_rate,
+        data_bits: serial.data_bits,
+        parity: serial.parity,
+        stop_bits: serial.stop_bits,
+        flow_control: serial.flow_control,
+        backspace_mode: serial.backspace_mode,
+    });
     McpConnectionDto {
         id: profile.id,
         name: profile.name,
@@ -319,6 +355,8 @@ pub fn redacted_connection(profile: ConnectionProfile) -> McpConnectionDto {
         },
         rdp,
         vnc,
+        telnet,
+        serial,
         notes: profile.notes,
         is_favorite: profile.is_favorite,
         last_connected_at: profile.last_connected_at,
@@ -343,6 +381,8 @@ pub fn search_matches(connection: &McpConnectionDto, query: &str) -> bool {
             ConnectionProtocol::Ssh => "ssh",
             ConnectionProtocol::Rdp => "rdp",
             ConnectionProtocol::Vnc => "vnc",
+            ConnectionProtocol::Telnet => "telnet",
+            ConnectionProtocol::Serial => "serial",
         },
         connection.host.as_str(),
         connection.username.as_str(),
@@ -1576,6 +1616,8 @@ mod tests {
             advanced: ConnectionAdvancedConfig::default(),
             rdp: None,
             vnc: None,
+            telnet: None,
+            serial: None,
             notes: Some("linux".to_string()),
             is_favorite: true,
             last_connected_at: Some("123".to_string()),
