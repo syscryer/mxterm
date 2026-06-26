@@ -194,6 +194,7 @@ import {
   remoteFileUploadLocalArchive,
   remoteFileUploadLocalFile,
   remoteFileWrite,
+  dockerExecInvalidateConnection,
   rdpCloseSession,
   rdpLaunchConnection,
   rdpPreviewLaunch,
@@ -5028,6 +5029,13 @@ export function WorkspaceShell() {
     closeTerminalTabs([tabId]);
   }
 
+  function invalidateDockerExecConnection(connectionId: string) {
+    if (!hasTauriRuntime()) {
+      return;
+    }
+    void dockerExecInvalidateConnection(connectionId).catch(() => undefined);
+  }
+
   function closeTerminalTabs(tabIds: string[]) {
     const closingIds = new Set(tabIds);
     const closingTabIds = terminalTabs.filter((tab) => closingIds.has(tab.id)).map((tab) => tab.id);
@@ -5043,6 +5051,15 @@ export function WorkspaceShell() {
           ? tabs.find((tab) => tab.connectionId === activeConnectionId && closingIds.has(tab.id)) || null
           : null);
       const nextTabs = tabs.filter((tab) => !closingIds.has(tab.id));
+      const finalClosedConnectionIds = new Set(
+        tabs
+          .filter((tab) => closingIds.has(tab.id))
+          .map((tab) => tab.connectionId)
+          .filter((connectionId) => !nextTabs.some((tab) => tab.connectionId === connectionId)),
+      );
+      finalClosedConnectionIds.forEach((connectionId) => {
+        invalidateDockerExecConnection(connectionId);
+      });
       terminalTabsRef.current = nextTabs;
       if (
         nextTabs.length === 0 &&
@@ -5134,6 +5151,9 @@ export function WorkspaceShell() {
 
   function closeConnectionSessions(connectionIds: string[]) {
     const closingConnectionIds = new Set(connectionIds);
+    connectionIds.forEach((connectionId) => {
+      invalidateDockerExecConnection(connectionId);
+    });
     closeRdpSessions(
       rdpSessionsRef.current
         .filter((session) => closingConnectionIds.has(session.connectionId))

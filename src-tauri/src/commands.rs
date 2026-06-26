@@ -22,10 +22,11 @@ use crate::connections::{
 use crate::credentials::{CredentialProfile, CredentialProfileInput};
 use crate::docker_tools::{
     DockerActionResult, DockerConnectionRequest, DockerContainerActionRequest,
-    DockerContainerLogsRequest, DockerContainerSummary, DockerEngineActionRequest,
+    DockerContainerLogsRequest, DockerContainerLogsSaveRequest, DockerContainerLogsStartRequest,
+    DockerContainerLogsStopRequest, DockerContainerSummary, DockerEngineActionRequest,
     DockerEngineConfigRequest, DockerEngineConfigResult, DockerEngineSaveConfigRequest,
     DockerEngineStatus, DockerExecSessionManager, DockerImagePullRequest, DockerImageRemoveRequest,
-    DockerImageSummary, DockerLogsResult,
+    DockerImageSummary, DockerLogStreamManager, DockerLogsResult,
 };
 use crate::events::RemoteFileTransferProgressEvent;
 use crate::known_hosts::HostKeyInfo;
@@ -709,6 +710,28 @@ pub async fn docker_container_logs(
 }
 
 #[tauri::command]
+pub async fn docker_container_logs_start(
+    app: AppHandle,
+    manager: State<'_, DockerLogStreamManager>,
+    request: DockerContainerLogsStartRequest,
+) -> Result<(), AppError> {
+    crate::docker_tools::start_log_stream(&app, &manager, request).await
+}
+
+#[tauri::command]
+pub async fn docker_container_logs_stop(
+    manager: State<'_, DockerLogStreamManager>,
+    request: DockerContainerLogsStopRequest,
+) -> Result<(), AppError> {
+    crate::docker_tools::stop_log_stream(&manager, request).await
+}
+
+#[tauri::command]
+pub fn docker_container_logs_save(request: DockerContainerLogsSaveRequest) -> Result<(), AppError> {
+    crate::docker_tools::save_logs_to_local(request)
+}
+
+#[tauri::command]
 pub async fn docker_image_pull(
     app: AppHandle,
     manager: State<'_, DockerExecSessionManager>,
@@ -760,6 +783,17 @@ pub async fn docker_engine_save_config(
     request: DockerEngineSaveConfigRequest,
 ) -> Result<DockerActionResult, AppError> {
     crate::docker_tools::engine_save_config(&app, &manager, request).await
+}
+
+#[tauri::command]
+pub async fn docker_exec_invalidate_connection(
+    manager: State<'_, DockerExecSessionManager>,
+    request: DockerConnectionRequest,
+) -> Result<(), AppError> {
+    manager
+        .invalidate_connection(request.connection_id.trim())
+        .await;
+    Ok(())
 }
 
 #[tauri::command]

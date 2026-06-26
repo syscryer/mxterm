@@ -7305,7 +7305,6 @@ button {
   top: 50%;
   left: 50%;
   z-index: 200;
-  width: min(520px, calc(100vw - 40px));
   border: 1px solid var(--mx-line);
   border-radius: 8px;
   overflow: hidden;
@@ -7319,6 +7318,7 @@ button {
 }
 
 .docker-pull-dialog {
+  width: min(520px, calc(100vw - 40px));
   display: grid;
   gap: 0;
 }
@@ -7383,8 +7383,9 @@ button {
 
 .docker-logs-dialog {
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr);
-  height: min(580px, calc(100vh - 56px));
+  grid-template-rows: auto auto minmax(0, 1fr);
+  width: min(980px, calc(100vw - 80px));
+  height: min(760px, calc(100vh - 72px));
   overflow: hidden;
 }
 
@@ -7411,10 +7412,123 @@ button {
   white-space: nowrap;
 }
 
+.docker-logs-title {
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.docker-log-state {
+  flex: 0 0 auto;
+  border: 1px solid var(--mx-line);
+  border-radius: 999px;
+  padding: 2px 7px;
+  color: var(--mx-muted);
+  background: var(--mx-panel);
+  font-size: 11px;
+  font-weight: 560;
+}
+
+.docker-log-state.streaming {
+  border-color: color-mix(in srgb, var(--mx-success) 34%, var(--mx-line));
+  color: var(--mx-success);
+  background: color-mix(in srgb, var(--mx-success) 8%, var(--mx-panel));
+}
+
+.docker-log-state.paused {
+  border-color: var(--mx-line-soft);
+  color: var(--mx-subtle);
+  background: var(--mx-panel-soft);
+}
+
 .docker-logs-actions {
   display: inline-flex;
   align-items: center;
   gap: 4px;
+}
+
+.docker-logs-toolbar {
+  min-width: 0;
+  min-height: 38px;
+  border-bottom: 1px solid var(--mx-line);
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  background: var(--mx-panel);
+}
+
+.docker-logs-toolbar .docker-form-error {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.docker-log-toolbar-actions {
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.docker-log-follow,
+.docker-log-live {
+  height: 26px;
+  border: 1px solid var(--mx-line);
+  border-radius: 7px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  padding: 0 8px;
+  color: var(--mx-muted);
+  background: var(--mx-panel-soft);
+  font-size: 12px;
+  font-weight: 560;
+  white-space: nowrap;
+}
+
+.docker-log-live.active {
+  border-color: color-mix(in srgb, var(--mx-success) 34%, var(--mx-line));
+  color: var(--mx-success);
+  background: color-mix(in srgb, var(--mx-success) 7%, var(--mx-panel));
+}
+
+.docker-log-live.paused,
+.docker-log-follow.active {
+  border-color: color-mix(in srgb, var(--mx-primary) 34%, var(--mx-line));
+  color: var(--mx-primary);
+  background: color-mix(in srgb, var(--mx-primary) 7%, var(--mx-panel));
+}
+
+.docker-log-follow.paused {
+  border-color: var(--mx-line-soft);
+  color: var(--mx-subtle);
+  background: color-mix(in srgb, var(--mx-panel-soft) 74%, transparent);
+  opacity: 0.72;
+}
+
+.docker-log-live:disabled {
+  opacity: 0.52;
+  cursor: default;
+}
+
+.docker-log-follow:hover,
+.docker-log-live:not(:disabled):hover {
+  border-color: var(--mx-line-strong);
+  color: var(--mx-text);
+  background: var(--mx-panel-soft);
+  opacity: 1;
+}
+
+.docker-log-follow .ui-icon,
+.docker-log-live .ui-icon {
+  width: 13px;
+  height: 13px;
 }
 
 .docker-log-output {
@@ -7423,12 +7537,16 @@ button {
   margin: 0;
   overflow: auto;
   padding: 12px;
-  color: var(--mx-text);
+  color: var(--mx-terminal-text);
   background: var(--mx-terminal);
   font-family: var(--mx-terminal-font, ui-monospace, SFMono-Regular, Consolas, monospace);
   font-size: 12px;
   line-height: 1.45;
   white-space: pre-wrap;
+}
+
+.docker-log-output.is-following {
+  scroll-behavior: smooth;
 }
 
 .command-library-history-main {
@@ -9140,6 +9258,19 @@ button {
   flex-direction: column;
   overflow: hidden;
   border-left: 1px solid var(--mx-line);
+}
+
+.tool-panel-slot {
+  flex: 1 1 0;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.tool-panel-slot[hidden] {
+  display: none;
 }
 
 .tool-tabs {

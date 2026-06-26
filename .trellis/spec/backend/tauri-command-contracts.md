@@ -2164,6 +2164,9 @@ docker_list_containers(app: AppHandle, manager: State<DockerExecSessionManager>,
 docker_list_images(app: AppHandle, manager: State<DockerExecSessionManager>, request: DockerConnectionRequest) -> Result<Vec<DockerImageSummary>, AppError>
 docker_container_action(app: AppHandle, manager: State<DockerExecSessionManager>, request: DockerContainerActionRequest) -> Result<DockerActionResult, AppError>
 docker_container_logs(app: AppHandle, manager: State<DockerExecSessionManager>, request: DockerContainerLogsRequest) -> Result<DockerLogsResult, AppError>
+docker_container_logs_start(app: AppHandle, manager: State<DockerLogStreamManager>, request: DockerContainerLogsStartRequest) -> Result<(), AppError>
+docker_container_logs_stop(manager: State<DockerLogStreamManager>, request: DockerContainerLogsStopRequest) -> Result<(), AppError>
+docker_container_logs_save(request: DockerContainerLogsSaveRequest) -> Result<(), AppError>
 docker_image_pull(app: AppHandle, manager: State<DockerExecSessionManager>, request: DockerImagePullRequest) -> Result<DockerActionResult, AppError>
 docker_image_remove(app: AppHandle, manager: State<DockerExecSessionManager>, request: DockerImageRemoveRequest) -> Result<DockerActionResult, AppError>
 docker_engine_status(app: AppHandle, manager: State<DockerExecSessionManager>, request: DockerConnectionRequest) -> Result<DockerEngineStatus, AppError>
@@ -2186,12 +2189,39 @@ DockerImagePullProgressEvent {
 }
 ```
 
+`DockerContainerLogsStartRequest` starts a live log stream correlated by a frontend-generated `stream_id`. During streaming, Rust emits `docker:log_stream` with:
+
+```rust
+DockerLogStreamEvent {
+    stream_id: String,
+    connection_id: String,
+    container_id: String,
+    kind: String, // chunk | error | finished
+    content: Option<String>,
+    message: Option<String>,
+}
+```
+
+`DockerContainerLogsSaveRequest` writes the already-buffered frontend log text to a user-selected local path:
+
+```rust
+DockerContainerLogsSaveRequest {
+    local_path: String,
+    content: String,
+}
+```
+
 ### 3. Contracts
 
 - Docker commands accept a saved `connection_id` only. They must not accept SSH passwords, private-key passphrases, proxy passwords, or raw SSH target fields.
 - Commands must call `resolve_saved_connection(app, connection_id, None)` and execute through `DockerExecSessionManager`, backed by `RemoteExecSessionPool`, so proxy, SSH jump, known-host verification, vault secrets, and timeouts match terminal/remote-file behavior without creating a fresh SSH exec connection for every Docker command.
 - `RemoteExecSessionPool` caches sessions by saved `connection_id`, validates `ResolvedSshConfig::signature()` before reuse, expires idle sessions, tracks in-flight commands, and invalidates cached sessions after SSH exec failures. Idle cleanup must not close a session while a command such as `docker pull` is still running.
 - Read-only Docker commands may reconnect and retry once when a cached SSH exec session is stale: container list, image list, container logs, engine status, and engine config read. Side-effecting commands must not auto-retry after an exec failure: container start/stop/restart/remove, image pull/remove, engine start/stop/restart, and engine config save.
+- Live container log streams use `DockerLogStreamManager`, not the shared short-command `DockerExecSessionManager`. A `docker logs -f` command must have its own `ReusableExecSession` so an open log dialog cannot block container/image refreshes on the pooled exec-session mutex.
+- `docker_container_logs_start` must quote the container id, run `docker logs -f --tail <tail> -- <container> 2>&1`, stream stdout chunks through `docker:log_stream`, and avoid accumulating unbounded stdout in memory. `tail = 0` is valid for resuming realtime output without replaying historical log lines.
+- `docker_container_logs_stop` must be idempotent for unknown or already-closed `stream_id` values, but blank `stream_id` remains a validation error. Stopping a stream must close the SSH exec session so the remote `docker logs -f` process exits.
+- `docker_container_logs_save` writes UTF-8 text to the selected local file path only. It must validate a nonblank path and nonempty content, must not execute remote Docker commands, and must not accept SSH credential fields.
+- When a live log stream finishes naturally, Rust should remove it from `DockerLogStreamManager` and emit `kind = "finished"` unless the stream was explicitly stopped. On stream errors, emit `kind = "error"` with a user-facing message.
 - Do not hold storage locks across SSH connection or remote command execution.
 - User-controlled Docker arguments such as container id, image id, and image name must be quoted with the shared POSIX shell quoting helper before being appended to the command string.
 - Container/image listing must parse newline-delimited JSON produced by Docker's `--format '{{json .}}'`; do not parse table output.
@@ -2208,6 +2238,10 @@ DockerImagePullProgressEvent {
 | --- | --- | --- |
 | Blank connection id | `docker_connection_missing` | true |
 | Blank container id | `docker_container_missing` | true |
+| Blank log stream id | `docker_log_stream_missing` | true |
+| Blank log save path | `docker_log_save_path_missing` | true |
+| Empty log save content | `docker_log_save_content_missing` | true |
+| Log save write fails | `docker_log_save_failed` | true |
 | Blank image name/id | `docker_image_missing` | true |
 | Remote `docker` command missing | `docker_command_missing` | true |
 | Docker daemon permission denied | `docker_permission_denied` | true |
@@ -2215,6 +2249,7 @@ DockerImagePullProgressEvent {
 | Docker reports missing image | `docker_image_missing` | true |
 | Docker JSON line cannot parse | `docker_container_parse_failed` / `docker_image_parse_failed` | true |
 | Other non-zero Docker command status | operation-specific `docker_*_failed` | true |
+| Live log stream command exits non-zero | `docker:log_stream` event with `kind = "error"` | true |
 | Invalid daemon config JSON | `docker_engine_config_json_invalid` | true |
 | Daemon config read/write fails | `docker_engine_config_read_failed` / `docker_engine_config_save_failed` | true |
 | Engine service action fails | `docker_engine_action_failed` | true |
@@ -2222,17 +2257,22 @@ DockerImagePullProgressEvent {
 ### 5. Good / Base / Bad Cases
 
 - Good: `docker_container_action` receives only `connection_id`, `container_id`, and `action`, resolves the saved connection, quotes the container id, executes the Docker CLI, and returns a structured `DockerActionResult`.
+- Good: `docker_container_logs_start` opens a dedicated exec session for `docker logs -f`, emits chunks without buffering the full stream, and `docker_container_logs_stop` closes that session when the UI closes the dialog.
+- Good: `docker_container_logs_save` writes the current UI log buffer to the chosen local path without touching the remote SSH session.
 - Good: list commands parse Docker JSON lines and fail on malformed nonblank output with a recoverable parse error that includes a truncated raw line.
 - Good: `docker_engine_status` tolerates partial probe failures and surfaces them through `raw_error`, while mutating commands still fail explicitly.
 - Good: `docker_engine_save_config` validates JSON and backs up the existing daemon config before replacing it.
 - Base: a host without Docker returns `docker_command_missing`; the UI can show a clear unavailable state without falling back to another command.
 - Bad: a command accepts SSH password fields, manually reimplements connection resolution, parses table output, appends unquoted image/container values, or silently falls back to local Docker.
+- Bad: a live log stream reuses the short-command exec pool, accumulates all stdout into `ExecOutput.stdout`, ignores stop requests so remote `docker logs -f` keeps running, or downloads logs by starting a second remote log command.
 
 ### 6. Tests Required
 
 - Unit-test container and image JSON-line parsing, including empty output and malformed nonblank lines.
 - Cross-check backend request/response field names with `src/features/tools/dockerTypes.ts` and `src/shared/tauri/commands.ts`.
+- Source-check Docker log stream command/event registration through `node scripts/check-docker-tool-refresh-source.mjs`.
 - Run `cargo fmt --manifest-path src-tauri/Cargo.toml --check` after changing Docker backend code.
+- Run `cargo check --manifest-path src-tauri/Cargo.toml` after adding or changing Docker command registrations, event structs, or stream manager state.
 - Run targeted Rust tests for `docker_tools` when Rust test runs are approved for the session.
 - Run targeted Rust tests for `remote_exec_pool` when changing generic exec session reuse rules and Rust test runs are approved for the session.
 
@@ -2243,6 +2283,23 @@ DockerImagePullProgressEvent {
 ```rust
 let command = format!("docker rm {}", request.container_id);
 let config = ResolvedSshConfig::from_profile(profile)?;
+```
+
+#### Wrong
+
+```rust
+manager
+    .exec_with_stdout_chunks(app, &config, "docker logs -f ...", callback)
+    .await?;
+```
+
+#### Correct
+
+```rust
+let session = Arc::new(ReusableExecSession::connect_resolved(app, &config).await?);
+tokio::spawn(async move {
+    let _ = session.exec_streaming_stdout_chunks(command, callback).await;
+});
 ```
 
 #### Correct

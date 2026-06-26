@@ -586,6 +586,14 @@ impl ReusableExecSession {
             .await
     }
 
+    pub async fn exec_streaming_stdout_chunks(
+        &self,
+        command: &str,
+        chunks: ExecOutputChunkCallback,
+    ) -> Result<ExecOutput, AppError> {
+        self.exec_inner_streaming(command, chunks).await
+    }
+
     async fn exec_inner(
         &self,
         command: &str,
@@ -706,6 +714,67 @@ impl ReusableExecSession {
 
         Ok(ExecOutput {
             stdout,
+            stderr,
+            exit_status,
+        })
+    }
+
+    async fn exec_inner_streaming(
+        &self,
+        command: &str,
+        stdout_chunks: ExecOutputChunkCallback,
+    ) -> Result<ExecOutput, AppError> {
+        let mut channel = run_with_timeout(
+            "remote_exec_channel_timeout",
+            "SSH 命令通道打开超时。",
+            Duration::from_secs(20),
+            self.client.channel_open_session(),
+        )
+        .await?
+        .map_err(|error| {
+            AppError::new(
+                "remote_exec_channel_failed",
+                "SSH 命令通道打开失败。",
+                error,
+                true,
+            )
+        })?;
+
+        run_with_timeout(
+            "remote_exec_start_timeout",
+            "远程命令启动超时。",
+            Duration::from_secs(20),
+            channel.exec(true, command),
+        )
+        .await?
+        .map_err(|error| {
+            AppError::new(
+                "remote_exec_start_failed",
+                "远程命令启动失败。",
+                error,
+                true,
+            )
+        })?;
+
+        let mut stderr = Vec::new();
+        let mut exit_status = None;
+
+        while let Some(message) = channel.wait().await {
+            match message {
+                ChannelMsg::Data { data } => {
+                    stdout_chunks(&data);
+                }
+                ChannelMsg::ExtendedData { data, .. } => stderr.extend_from_slice(&data),
+                ChannelMsg::ExitStatus { exit_status: code } => exit_status = Some(code),
+                ChannelMsg::Close => break,
+                _ => {}
+            }
+        }
+
+        let _ = channel.close().await;
+
+        Ok(ExecOutput {
+            stdout: Vec::new(),
             stderr,
             exit_status,
         })

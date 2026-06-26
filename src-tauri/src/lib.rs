@@ -34,6 +34,7 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(remote_monitor::RemoteMonitorManager::default())
         .manage(docker_tools::DockerExecSessionManager::default())
+        .manage(docker_tools::DockerLogStreamManager::default())
         .manage(remote_files::RemoteFileManager::default())
         .manage(terminal::manager::TerminalManager::default())
         .manage(rdp::RdpSessionManager::default())
@@ -124,12 +125,16 @@ pub fn run() {
             commands::docker_list_images,
             commands::docker_container_action,
             commands::docker_container_logs,
+            commands::docker_container_logs_start,
+            commands::docker_container_logs_stop,
+            commands::docker_container_logs_save,
             commands::docker_image_pull,
             commands::docker_image_remove,
             commands::docker_engine_status,
             commands::docker_engine_action,
             commands::docker_engine_read_config,
             commands::docker_engine_save_config,
+            commands::docker_exec_invalidate_connection,
             commands::tunnel_list,
             commands::tunnel_upsert,
             commands::tunnel_delete,
