@@ -1,5 +1,6 @@
 export type DockerContainerAction = "start" | "stop" | "restart" | "remove";
 export type DockerEngineAction = "start" | "stop" | "restart";
+export type DockerRestartPolicyKind = "no" | "always" | "unless-stopped" | "on-failure";
 
 export interface DockerContainerSummary {
   id: string;
@@ -41,10 +42,101 @@ export interface DockerActionResult {
   output?: string | null;
 }
 
+export interface DockerImageRunPort {
+  host_port: string;
+  container_port: string;
+}
+
+export interface DockerImageRunKeyValue {
+  key: string;
+  value: string;
+}
+
+export interface DockerImageRunVolume {
+  host_path: string;
+  container_path: string;
+}
+
+export interface DockerImageRunRequest {
+  image: string;
+  name?: string | null;
+  command?: string | null;
+  entrypoint?: string | null;
+  network?: string | null;
+  restart_policy?: DockerRestartPolicyKind | null;
+  privileged: boolean;
+  ports: DockerImageRunPort[];
+  env: DockerImageRunKeyValue[];
+  volumes: DockerImageRunVolume[];
+}
+
 export interface DockerLogsResult {
   container_id: string;
   tail: number;
   content: string;
+}
+
+export interface DockerKeyValue {
+  key: string;
+  value: string;
+  sensitive: boolean;
+}
+
+export interface DockerRestartPolicy {
+  name: DockerRestartPolicyKind | string;
+  maximum_retry_count?: number | null;
+}
+
+export interface DockerContainerPort {
+  private_port: string;
+  host_ip?: string | null;
+  host_port?: string | null;
+}
+
+export interface DockerContainerMount {
+  kind?: string | null;
+  source?: string | null;
+  destination: string;
+  name?: string | null;
+  driver?: string | null;
+  rw: boolean;
+}
+
+export interface DockerContainerNetworkAttachment {
+  name: string;
+  ip_address?: string | null;
+  gateway?: string | null;
+  mac_address?: string | null;
+}
+
+export interface DockerContainerDetail {
+  id: string;
+  name: string;
+  image: string;
+  image_id?: string | null;
+  created?: string | null;
+  started_at?: string | null;
+  finished_at?: string | null;
+  status: string;
+  running: boolean;
+  ip_address?: string | null;
+  command: string[];
+  entrypoint: string[];
+  working_dir?: string | null;
+  restart_policy: DockerRestartPolicy;
+  ports: DockerContainerPort[];
+  env: DockerKeyValue[];
+  mounts: DockerContainerMount[];
+  networks: DockerContainerNetworkAttachment[];
+  labels: DockerKeyValue[];
+  raw_json: string;
+}
+
+export interface DockerNetworkSummary {
+  id: string;
+  name: string;
+  driver?: string | null;
+  scope?: string | null;
 }
 
 export type DockerLogStreamEventKind = "chunk" | "error" | "finished";

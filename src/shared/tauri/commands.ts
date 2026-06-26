@@ -32,12 +32,16 @@ import type {
 import type {
   DockerActionResult,
   DockerContainerAction,
+  DockerContainerDetail,
   DockerContainerSummary,
   DockerEngineAction,
   DockerEngineConfigResult,
   DockerEngineStatus,
+  DockerImageRunRequest,
   DockerImageSummary,
   DockerLogsResult,
+  DockerNetworkSummary,
+  DockerRestartPolicyKind,
 } from "../../features/tools/dockerTypes";
 import type {
   LocalPathMetadataResult,
@@ -501,6 +505,51 @@ export function dockerContainerLogs(connectionId: string, containerId: string, t
   });
 }
 
+export function dockerContainerInspect(connectionId: string, containerId: string) {
+  return invoke<DockerContainerDetail>("docker_container_inspect", {
+    request: {
+      connection_id: connectionId,
+      container_id: containerId,
+    },
+  });
+}
+
+export function dockerContainerUpdateRestartPolicy(
+  connectionId: string,
+  containerId: string,
+  policy: DockerRestartPolicyKind,
+) {
+  return invoke<DockerActionResult>("docker_container_update_restart_policy", {
+    request: {
+      connection_id: connectionId,
+      container_id: containerId,
+      policy,
+    },
+  });
+}
+
+export function dockerListNetworks(connectionId: string) {
+  return invoke<DockerNetworkSummary[]>("docker_list_networks", {
+    request: {
+      connection_id: connectionId,
+    },
+  });
+}
+
+export function dockerContainerConnectNetwork(
+  connectionId: string,
+  containerId: string,
+  networkId: string,
+) {
+  return invoke<DockerActionResult>("docker_container_connect_network", {
+    request: {
+      connection_id: connectionId,
+      container_id: containerId,
+      network_id: networkId,
+    },
+  });
+}
+
 export function dockerContainerLogsStart(
   connectionId: string,
   containerId: string,
@@ -549,6 +598,15 @@ export function dockerImageRemove(connectionId: string, imageId: string) {
     request: {
       connection_id: connectionId,
       image_id: imageId,
+    },
+  });
+}
+
+export function dockerImageRun(connectionId: string, request: DockerImageRunRequest) {
+  return invoke<DockerActionResult>("docker_image_run", {
+    request: {
+      ...request,
+      connection_id: connectionId,
     },
   });
 }
