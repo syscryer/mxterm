@@ -80,10 +80,15 @@ export function updaterArtifactsArgs(runtime = process) {
 }
 
 export function resolveSpawnInvocation(command, args, runtime = process) {
-  if (runtime.platform === "win32" && command === "pnpm" && runtime.env?.npm_execpath) {
+  const npmExecPath = runtime.env?.npm_execpath;
+  const usesPnpmExecPath =
+    typeof npmExecPath === "string" &&
+    /(^|[\\/])pnpm(?:\.c?js|\.cmd)?$/i.test(npmExecPath);
+
+  if (runtime.platform === "win32" && command === "pnpm" && usesPnpmExecPath) {
     return {
       command: runtime.execPath,
-      args: [runtime.env.npm_execpath, ...args],
+      args: [npmExecPath, ...args],
     };
   }
 

@@ -11,12 +11,20 @@ use crate::commands::{
 };
 use crate::events::{TerminalConnectProgressEvent, TerminalOutputEvent, TerminalStateChangedEvent};
 use crate::terminal::local::{LocalTerminalSession, OpenLocalSession};
+use crate::terminal::serial::{
+    OpenSerialSession, SerialTerminalOpenRequest, SerialTerminalSession,
+};
 use crate::terminal::session::{OpenProgress, TerminalOutputDecoder, TerminalSession};
+use crate::terminal::telnet::{
+    OpenTelnetSession, TelnetTerminalOpenRequest, TelnetTerminalSession,
+};
 
 #[derive(Clone)]
 enum ManagedTerminalSession {
     Ssh(Arc<TerminalSession>),
     Local(Arc<LocalTerminalSession>),
+    Telnet(Arc<TelnetTerminalSession>),
+    Serial(Arc<SerialTerminalSession>),
 }
 
 type SessionStore = Arc<Mutex<HashMap<String, ManagedTerminalSession>>>;
@@ -97,10 +105,63 @@ impl TerminalManager {
         Ok(session_id)
     }
 
+    pub async fn connect_telnet(
+        &self,
+        app: AppHandle,
+        request: TelnetTerminalOpenRequest,
+    ) -> Result<String, AppError> {
+        let OpenTelnetSession {
+            session,
+            reader,
+            request_id,
+        } = TelnetTerminalSession::open(request).await?;
+        let session_id = session.id.clone();
+        self.sessions
+            .lock()
+            .await
+            .insert(session_id.clone(), ManagedTerminalSession::Telnet(session));
+        spawn_telnet_reader(
+            app,
+            session_id.clone(),
+            request_id,
+            reader,
+            self.sessions.clone(),
+        );
+        Ok(session_id)
+    }
+
+    pub async fn connect_serial(
+        &self,
+        app: AppHandle,
+        request: SerialTerminalOpenRequest,
+    ) -> Result<String, AppError> {
+        let OpenSerialSession {
+            session,
+            reader,
+            request_id,
+        } = SerialTerminalSession::open(request)?;
+        let session_id = session.id.clone();
+        self.sessions.lock().await.insert(
+            session_id.clone(),
+            ManagedTerminalSession::Serial(session.clone()),
+        );
+        spawn_serial_reader(
+            app,
+            session_id.clone(),
+            request_id,
+            reader,
+            session,
+            self.sessions.clone(),
+        );
+        Ok(session_id)
+    }
+
     pub async fn write(&self, request: TerminalWriteRequest) -> Result<(), AppError> {
         match self.session(&request.session_id).await? {
             ManagedTerminalSession::Ssh(session) => session.write(request.data).await,
             ManagedTerminalSession::Local(session) => session.write(request.data).await,
+            ManagedTerminalSession::Telnet(session) => session.write(request.data).await,
+            ManagedTerminalSession::Serial(session) => session.write(request.data).await,
         }
     }
 
@@ -113,6 +174,12 @@ impl TerminalManager {
                 session.resize(request.cols, request.rows).await
             }
             ManagedTerminalSession::Local(session) => {
+                session.resize(request.cols, request.rows).await
+            }
+            ManagedTerminalSession::Telnet(session) => {
+                session.resize(request.cols, request.rows).await
+            }
+            ManagedTerminalSession::Serial(session) => {
                 session.resize(request.cols, request.rows).await
             }
         }
@@ -138,6 +205,8 @@ impl TerminalManager {
         match session {
             ManagedTerminalSession::Ssh(session) => session.close().await,
             ManagedTerminalSession::Local(session) => session.close().await,
+            ManagedTerminalSession::Telnet(session) => session.close().await,
+            ManagedTerminalSession::Serial(session) => session.close().await,
         }
     }
 
@@ -344,6 +413,84 @@ fn spawn_local_reader(
                     request_id,
                     state: "closed".to_string(),
                     exit_status,
+                },
+            );
+        });
+    });
+}
+
+fn spawn_telnet_reader(
+    app: AppHandle,
+    session_id: String,
+    request_id: Option<String>,
+    mut reader: tokio::sync::mpsc::UnboundedReceiver<Vec<u8>>,
+    sessions: SessionStore,
+) {
+    tauri::async_runtime::spawn(async move {
+        while let Some(data) = reader.recv().await {
+            emit_terminal_output(&app, &session_id, &request_id, data);
+        }
+
+        sessions.lock().await.remove(&session_id);
+        let _ = app.emit(
+            crate::events::TERMINAL_STATE_CHANGED,
+            TerminalStateChangedEvent {
+                session_id,
+                request_id,
+                state: "closed".to_string(),
+                exit_status: None,
+            },
+        );
+    });
+}
+
+fn spawn_serial_reader(
+    app: AppHandle,
+    session_id: String,
+    request_id: Option<String>,
+    mut reader: Box<dyn serialport::SerialPort>,
+    session: Arc<SerialTerminalSession>,
+    sessions: SessionStore,
+) {
+    let app_for_thread = app.clone();
+    let session_id_for_thread = session_id.clone();
+    let request_id_for_thread = request_id.clone();
+
+    std::thread::spawn(move || {
+        let mut buffer = vec![0_u8; 8192];
+        while !session.is_closed() {
+            match reader.read(&mut buffer) {
+                Ok(0) => {}
+                Ok(read) => {
+                    emit_terminal_output(
+                        &app_for_thread,
+                        &session_id_for_thread,
+                        &request_id_for_thread,
+                        buffer[..read].to_vec(),
+                    );
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::TimedOut => {}
+                Err(error) => {
+                    emit_terminal_output(
+                        &app_for_thread,
+                        &session_id_for_thread,
+                        &request_id_for_thread,
+                        format!("\r\n{}\r\n", error).into_bytes(),
+                    );
+                    break;
+                }
+            }
+        }
+
+        tauri::async_runtime::spawn(async move {
+            sessions.lock().await.remove(&session_id);
+            let _ = app.emit(
+                crate::events::TERMINAL_STATE_CHANGED,
+                TerminalStateChangedEvent {
+                    session_id,
+                    request_id,
+                    state: "closed".to_string(),
+                    exit_status: None,
                 },
             );
         });

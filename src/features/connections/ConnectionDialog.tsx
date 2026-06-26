@@ -1,13 +1,13 @@
 import * as Dialog from "@radix-ui/react-dialog";
 import {
   AlertTriangle,
+  Cable,
   CheckCircle2,
   Eye,
   EyeOff,
   Loader2,
   Monitor,
   MonitorPlay,
-  Network,
   RefreshCw,
   Terminal,
   TerminalSquare,
@@ -20,6 +20,7 @@ import { ConfirmDialog } from "../../shared/ui/ConfirmDialog";
 import {
   connectionRevealInlineSecret,
   rdpTestRunner,
+  serialListPorts,
   vncTestRunner,
 } from "../../shared/tauri/commands";
 import { hasTauriRuntime } from "../../shared/tauri/runtime";
@@ -41,6 +42,7 @@ import type {
   RdpNetworkLevelAuthentication,
   RdpPerformancePreset,
   RdpRenderMode,
+  SerialConnectionConfig,
   VncConnectionConfig,
   VncPerformancePreset,
   VncRenderMode,
@@ -51,6 +53,8 @@ import {
   defaultJumpConfig,
   defaultProxyConfig,
   defaultRdpConfig,
+  defaultSerialConfig,
+  defaultTelnetConfig,
   defaultVncConfig,
   formatRdpRunnerKind,
   formatVncRunnerKind,
@@ -61,6 +65,15 @@ import {
   parseHostKeyError,
   type ParsedHostKeyError,
 } from "./hostKeyErrors";
+import type {
+  CharacterBackspaceMode,
+  SerialDataBits,
+  SerialFlowControl,
+  SerialParity,
+  SerialPortEntry,
+  SerialStopBits,
+  TelnetEnterMode,
+} from "../terminal/characterSessionTypes";
 
 interface ConnectionDialogProps {
   connection: ConnectionProfile | null;
@@ -123,6 +136,8 @@ const emptyForm: ConnectionProfileInput = {
   advanced: defaultAdvancedConfig,
   rdp: defaultRdpConfig,
   vnc: defaultVncConfig,
+  telnet: defaultTelnetConfig,
+  serial: defaultSerialConfig,
   notes: "",
 };
 
@@ -134,6 +149,8 @@ const protocolOptions: Array<{
   { icon: Terminal, label: "SSH", value: "ssh" },
   { icon: Monitor, label: "RDP", value: "rdp" },
   { icon: MonitorPlay, label: "VNC", value: "vnc" },
+  { icon: TerminalSquare, label: "Telnet", value: "telnet" },
+  { icon: Cable, label: "串口", value: "serial" },
 ];
 
 const credentialModeOptions: Array<{
@@ -224,6 +241,41 @@ const vncPerformanceOptions: Array<{ label: string; value: VncPerformancePreset 
   { label: "低带宽", value: "low_bandwidth" },
 ];
 
+const telnetEnterModeOptions: Array<{ label: string; value: TelnetEnterMode }> = [
+  { label: "CRLF", value: "crlf" },
+  { label: "CR", value: "cr" },
+  { label: "LF", value: "lf" },
+];
+
+const backspaceModeOptions: Array<{ label: string; value: CharacterBackspaceMode }> = [
+  { label: "DEL", value: "del" },
+  { label: "Ctrl+H", value: "ctrl_h" },
+];
+
+const serialDataBitsOptions: Array<{ label: string; value: SerialDataBits }> = [
+  { label: "5", value: "five" },
+  { label: "6", value: "six" },
+  { label: "7", value: "seven" },
+  { label: "8", value: "eight" },
+];
+
+const serialParityOptions: Array<{ label: string; value: SerialParity }> = [
+  { label: "None", value: "none" },
+  { label: "Odd", value: "odd" },
+  { label: "Even", value: "even" },
+];
+
+const serialStopBitsOptions: Array<{ label: string; value: SerialStopBits }> = [
+  { label: "1", value: "one" },
+  { label: "2", value: "two" },
+];
+
+const serialFlowControlOptions: Array<{ label: string; value: SerialFlowControl }> = [
+  { label: "无", value: "none" },
+  { label: "软件", value: "software" },
+  { label: "硬件", value: "hardware" },
+];
+
 const rdpNlaOptions: Array<{ label: string; value: RdpNetworkLevelAuthentication }> = [
   { label: "自动", value: "auto" },
   { label: "启用", value: "enabled" },
@@ -269,6 +321,9 @@ export function ConnectionDialog({
   const protocol = form.protocol || "ssh";
   const isRdp = protocol === "rdp";
   const isVnc = protocol === "vnc";
+  const isTelnet = protocol === "telnet";
+  const isSerial = protocol === "serial";
+  const isCharacterProtocol = isTelnet || isSerial;
   const dialogTabs: Array<[ConnectionDialogTab, string]> = isRdp
     ? [
         ["basic", "基本"],
@@ -281,11 +336,16 @@ export function ConnectionDialog({
           ["vnc", "VNC"],
           ["advanced", "高级"],
         ]
+      : isCharacterProtocol
+        ? [["basic", "基本"]]
     : [
         ["basic", "基本"],
         ["proxy", "网络路径"],
         ["advanced", "高级"],
       ];
+  const [serialPorts, setSerialPorts] = useState<SerialPortEntry[]>([]);
+  const [serialPortsLoading, setSerialPortsLoading] = useState(false);
+  const [serialPortsError, setSerialPortsError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!open) {
@@ -309,13 +369,20 @@ export function ConnectionDialog({
     );
   }, [connection, defaultGroup, groups, open]);
 
+  useEffect(() => {
+    if (!open || protocol !== "serial") {
+      return;
+    }
+    void refreshSerialPorts();
+  }, [open, protocol]);
+
   if (!open) {
     return null;
   }
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    const validation = isRdp || isVnc ? null : validateNetworkPath(form);
+    const validation = isRdp || isVnc || isCharacterProtocol ? null : validateNetworkPath(form);
     if (validation) {
       setActiveTab("proxy");
       setTestState("error");
@@ -341,6 +408,15 @@ export function ConnectionDialog({
 
     if (isVnc) {
       await runVncRunnerProbe();
+      return;
+    }
+
+    if (isCharacterProtocol) {
+      setTestState("success");
+      setFeedback({
+        detail: "Telnet 和串口会在打开标签页时建立运行时会话；当前表单会先保存为连接配置。",
+        title: "配置可保存",
+      });
       return;
     }
 
@@ -539,6 +615,54 @@ export function ConnectionDialog({
     }
   }
 
+  async function refreshSerialPorts() {
+    setSerialPortsLoading(true);
+    setSerialPortsError(null);
+    try {
+      if (!hasTauriRuntime()) {
+        const previewPorts = [
+          { description: "USB Serial", port_name: "COM3", port_type: "usb" },
+          { description: "Bluetooth", port_name: "COM4", port_type: "bluetooth" },
+        ];
+        setSerialPorts(previewPorts);
+        setForm((current) => {
+          if ((current.protocol || "ssh") !== "serial" || current.serial?.port_name) {
+            return current;
+          }
+          return {
+            ...current,
+            host: previewPorts[0]?.port_name || current.host,
+            serial: {
+              ...withDefaultSerialConfig(current.serial),
+              port_name: previewPorts[0]?.port_name || "",
+            },
+          };
+        });
+        return;
+      }
+
+      const ports = await serialListPorts();
+      setSerialPorts(ports);
+      setForm((current) => {
+        if ((current.protocol || "ssh") !== "serial" || current.serial?.port_name) {
+          return current;
+        }
+        return {
+          ...current,
+          host: ports[0]?.port_name || current.host,
+          serial: {
+            ...withDefaultSerialConfig(current.serial),
+            port_name: ports[0]?.port_name || "",
+          },
+        };
+      });
+    } catch (error) {
+      setSerialPortsError(formatError(error));
+    } finally {
+      setSerialPortsLoading(false);
+    }
+  }
+
   return (
     <>
       <Dialog.Root
@@ -569,7 +693,11 @@ export function ConnectionDialog({
                         ? "保存一条可跨平台启动的 RDP 连接配置。"
                         : isVnc
                           ? "保存一条内嵌 noVNC 优先的 VNC 连接配置。"
-                        : "保存一条可维护的 SSH 连接配置。"}
+                          : isTelnet
+                            ? "保存一条 Telnet 字符终端连接配置。"
+                            : isSerial
+                              ? "保存一条串口字符终端连接配置。"
+                              : "保存一条可维护的 SSH 连接配置。"}
                   </Dialog.Description>
                 </div>
                 <Dialog.Close asChild>
@@ -596,8 +724,6 @@ export function ConnectionDialog({
                     </button>
                   );
                 })}
-                <button className="protocol-chip" type="button" disabled title="即将支持"><TerminalSquare className="ui-icon" aria-hidden="true" />Telnet <span className="chip-tag">即将</span></button>
-                <button className="protocol-chip" type="button" disabled title="即将支持"><Network className="ui-icon" aria-hidden="true" />隧道 <span className="chip-tag">即将</span></button>
               </div>
 
               <nav className="connection-dialog-tabs" aria-label="连接配置页签">
@@ -723,7 +849,7 @@ export function ConnectionDialog({
                     type="button"
                     onClick={testConnection}
                   >
-                    {isRdp || isVnc ? "检查 Runner" : "测试连接"}
+                    {isRdp || isVnc ? "检查 Runner" : isCharacterProtocol ? "检查配置" : "测试连接"}
                   </button>
                 </div>
                 <div className="dialog-action-right">
@@ -763,6 +889,271 @@ export function ConnectionDialog({
     const passwordCredentials = credentials.filter((credential) => credential.kind === "password");
     const desktopProtocolName = isRdp ? "RDP" : "VNC";
     const desktopDefaultPort = isRdp ? 3389 : 5900;
+
+    if (isTelnet) {
+      const telnet = withDefaultTelnetConfig(form.telnet);
+      return (
+        <div className="connection-dialog-fields">
+          <div className={`form-grid ${showGroupField ? "form-grid-wide" : "form-grid-single"}`}>
+            <label>
+              <span>名称</span>
+              <input
+                value={form.name || ""}
+                onChange={(event) => setForm({ ...form, name: event.target.value })}
+                placeholder="例如：交换机 Telnet"
+              />
+            </label>
+            {showGroupField ? (
+              <label>
+                <span>分组</span>
+                <AppSelect
+                  ariaLabel="分组"
+                  value={form.group || ""}
+                  options={[
+                    { label: "不分组", value: "" },
+                    ...groupOptions.map((group) => ({
+                      label: group.label,
+                      value: group.value,
+                    })),
+                  ]}
+                  onChange={(group) => setForm({ ...form, group })}
+                />
+              </label>
+            ) : null}
+          </div>
+          <div className="form-grid">
+            <label>
+              <span>主机</span>
+              <input
+                required
+                value={form.host}
+                onChange={(event) => setForm({ ...form, host: event.target.value })}
+                placeholder="192.168.1.20"
+              />
+            </label>
+            <label>
+              <span>端口</span>
+              <input
+                inputMode="numeric"
+                required
+                value={form.port.toString()}
+                onChange={(event) =>
+                  setForm({ ...form, port: Number(event.target.value) || 23 })
+                }
+              />
+            </label>
+          </div>
+          <div className="form-grid form-grid-wide">
+            <label>
+              <span>回车模式</span>
+              <AppSelect
+                ariaLabel="回车模式"
+                value={telnet.enter_mode}
+                options={telnetEnterModeOptions}
+                onChange={(enterMode) =>
+                  setForm({
+                    ...form,
+                    telnet: { ...telnet, enter_mode: enterMode },
+                  })
+                }
+              />
+            </label>
+            <label>
+              <span>退格模式</span>
+              <AppSelect
+                ariaLabel="退格模式"
+                value={telnet.backspace_mode}
+                options={backspaceModeOptions}
+                onChange={(backspaceMode) =>
+                  setForm({
+                    ...form,
+                    telnet: { ...telnet, backspace_mode: backspaceMode },
+                  })
+                }
+              />
+            </label>
+          </div>
+          <label>
+            <span>说明</span>
+            <textarea
+              rows={3}
+              value={form.notes || ""}
+              onChange={(event) => setForm({ ...form, notes: event.target.value })}
+              placeholder="可记录设备型号、网络区域、登录提示等。"
+            />
+          </label>
+        </div>
+      );
+    }
+
+    if (isSerial) {
+      const serial = withDefaultSerialConfig(form.serial);
+      const serialPortOptions =
+        serialPorts.length > 0
+          ? serialPorts.map((port) => ({
+              label: port.description ? `${port.port_name} · ${port.description}` : port.port_name,
+              value: port.port_name,
+            }))
+          : [
+              {
+                disabled: true,
+                label: serialPortsLoading ? "正在读取串口" : "暂无可用串口",
+                value: "",
+              },
+            ];
+      return (
+        <div className="connection-dialog-fields">
+          <div className={`form-grid ${showGroupField ? "form-grid-wide" : "form-grid-single"}`}>
+            <label>
+              <span>名称</span>
+              <input
+                value={form.name || ""}
+                onChange={(event) => setForm({ ...form, name: event.target.value })}
+                placeholder="例如：开发板 Console"
+              />
+            </label>
+            {showGroupField ? (
+              <label>
+                <span>分组</span>
+                <AppSelect
+                  ariaLabel="分组"
+                  value={form.group || ""}
+                  options={[
+                    { label: "不分组", value: "" },
+                    ...groupOptions.map((group) => ({
+                      label: group.label,
+                      value: group.value,
+                    })),
+                  ]}
+                  onChange={(group) => setForm({ ...form, group })}
+                />
+              </label>
+            ) : null}
+          </div>
+          <div className="credential-select-row">
+            <label>
+              <span>串口</span>
+              <AppSelect
+                ariaLabel="串口"
+                disabled={serialPortsLoading || serialPorts.length === 0}
+                value={serial.port_name}
+                options={serialPortOptions}
+                menuMinWidth={220}
+                onChange={(portName) =>
+                  setForm({
+                    ...form,
+                    host: portName,
+                    serial: { ...serial, port_name: portName },
+                  })
+                }
+              />
+            </label>
+            <button
+              className="settings-action-button credential-manage-button"
+              type="button"
+              disabled={serialPortsLoading}
+              onClick={() => void refreshSerialPorts()}
+            >
+              <RefreshCw className={`ui-icon ${serialPortsLoading ? "spin" : ""}`} aria-hidden="true" />
+              刷新
+            </button>
+          </div>
+          <div className="form-grid form-grid-wide">
+            <label>
+              <span>波特率</span>
+              <input
+                inputMode="numeric"
+                required
+                value={serial.baud_rate.toString()}
+                onChange={(event) =>
+                  setForm({
+                    ...form,
+                    serial: {
+                      ...serial,
+                      baud_rate: Number(event.target.value) || defaultSerialConfig.baud_rate,
+                    },
+                  })
+                }
+              />
+            </label>
+            <label>
+              <span>退格模式</span>
+              <AppSelect
+                ariaLabel="退格模式"
+                value={serial.backspace_mode}
+                options={backspaceModeOptions}
+                onChange={(backspaceMode) =>
+                  setForm({
+                    ...form,
+                    serial: { ...serial, backspace_mode: backspaceMode },
+                  })
+                }
+              />
+            </label>
+          </div>
+          <div className="form-grid form-grid-wide">
+            <label>
+              <span>数据位</span>
+              <AppSelect
+                ariaLabel="数据位"
+                value={serial.data_bits}
+                options={serialDataBitsOptions}
+                onChange={(dataBits) =>
+                  setForm({ ...form, serial: { ...serial, data_bits: dataBits } })
+                }
+              />
+            </label>
+            <label>
+              <span>校验位</span>
+              <AppSelect
+                ariaLabel="校验位"
+                value={serial.parity}
+                options={serialParityOptions}
+                onChange={(parity) =>
+                  setForm({ ...form, serial: { ...serial, parity } })
+                }
+              />
+            </label>
+          </div>
+          <div className="form-grid form-grid-wide">
+            <label>
+              <span>停止位</span>
+              <AppSelect
+                ariaLabel="停止位"
+                value={serial.stop_bits}
+                options={serialStopBitsOptions}
+                onChange={(stopBits) =>
+                  setForm({ ...form, serial: { ...serial, stop_bits: stopBits } })
+                }
+              />
+            </label>
+            <label>
+              <span>流控</span>
+              <AppSelect
+                ariaLabel="流控"
+                value={serial.flow_control}
+                options={serialFlowControlOptions}
+                onChange={(flowControl) =>
+                  setForm({ ...form, serial: { ...serial, flow_control: flowControl } })
+                }
+              />
+            </label>
+          </div>
+          {serialPortsError ? (
+            <p className="connection-dialog-note">{serialPortsError}</p>
+          ) : null}
+          <label>
+            <span>说明</span>
+            <textarea
+              rows={3}
+              value={form.notes || ""}
+              onChange={(event) => setForm({ ...form, notes: event.target.value })}
+              placeholder="可记录设备型号、线缆、调试用途等。"
+            />
+          </label>
+        </div>
+      );
+    }
 
     if (isRdp || isVnc) {
       return (
@@ -2178,10 +2569,62 @@ export function ConnectionDialog({
         };
       }
 
+      if (nextProtocol === "telnet") {
+        return {
+          ...current,
+          protocol: "telnet",
+          port: current.port === 22 || current.port === 3389 || current.port === 5900 ? 23 : current.port,
+          username: "",
+          credential_mode: "prompt",
+          credential_id: "",
+          inline_auth_kind: undefined,
+          inline_password: "",
+          inline_password_touched: false,
+          inline_private_key_path: "",
+          inline_private_key_passphrase: "",
+          inline_private_key_passphrase_touched: false,
+          prompt_auth_kind: undefined,
+          proxy: defaultProxyConfig,
+          jump: defaultJumpConfig,
+          advanced: defaultAdvancedConfig,
+          rdp: withDefaultRdpConfig(current.rdp),
+          vnc: withDefaultVncConfig(current.vnc),
+          telnet: withDefaultTelnetConfig(current.telnet),
+          serial: withDefaultSerialConfig(current.serial),
+        };
+      }
+
+      if (nextProtocol === "serial") {
+        const serial = withDefaultSerialConfig(current.serial);
+        return {
+          ...current,
+          protocol: "serial",
+          host: serial.port_name || current.host,
+          port: 1,
+          username: "",
+          credential_mode: "prompt",
+          credential_id: "",
+          inline_auth_kind: undefined,
+          inline_password: "",
+          inline_password_touched: false,
+          inline_private_key_path: "",
+          inline_private_key_passphrase: "",
+          inline_private_key_passphrase_touched: false,
+          prompt_auth_kind: undefined,
+          proxy: defaultProxyConfig,
+          jump: defaultJumpConfig,
+          advanced: defaultAdvancedConfig,
+          rdp: withDefaultRdpConfig(current.rdp),
+          vnc: withDefaultVncConfig(current.vnc),
+          telnet: withDefaultTelnetConfig(current.telnet),
+          serial,
+        };
+      }
+
       return {
         ...current,
         protocol: "ssh",
-        port: current.port === 3389 || current.port === 5900 ? 22 : current.port,
+        port: current.port === 3389 || current.port === 5900 || current.port === 23 || current.port === 1 ? 22 : current.port,
         credential_mode:
           current.credential_mode === "prompt" ? "inline" : current.credential_mode,
         inline_auth_kind: current.inline_auth_kind || "password",
@@ -2331,6 +2774,8 @@ function formFromConnection(
     },
     rdp: withDefaultRdpConfig(connection.rdp),
     vnc: withDefaultVncConfig(connection.vnc),
+    telnet: withDefaultTelnetConfig(connection.telnet),
+    serial: withDefaultSerialConfig(connection.serial),
     notes: connection.notes || "",
     is_favorite: connection.is_favorite,
     last_connected_at: connection.last_connected_at || "",
@@ -2372,6 +2817,8 @@ function normalizeForSubmit(
       advanced: defaultAdvancedConfig,
       rdp: withDefaultRdpConfig(form.rdp),
       vnc: undefined,
+      telnet: undefined,
+      serial: undefined,
     };
   }
 
@@ -2403,6 +2850,64 @@ function normalizeForSubmit(
       advanced: defaultAdvancedConfig,
       rdp: undefined,
       vnc: withDefaultVncConfig(form.vnc),
+      telnet: undefined,
+      serial: undefined,
+    };
+  }
+
+  if ((form.protocol || "ssh") === "telnet") {
+    return {
+      ...form,
+      protocol: "telnet",
+      username: "",
+      port: Number(form.port) || 23,
+      credential_mode: "prompt",
+      credential_id: undefined,
+      inline_auth_kind: undefined,
+      inline_password: undefined,
+      inline_password_touched: false,
+      inline_private_key_path: undefined,
+      inline_private_key_passphrase: undefined,
+      inline_private_key_passphrase_touched: false,
+      prompt_auth_kind: undefined,
+      proxy: { kind: "none" },
+      jump: { kind: "none" },
+      advanced: defaultAdvancedConfig,
+      rdp: undefined,
+      vnc: undefined,
+      telnet: withDefaultTelnetConfig(form.telnet),
+      serial: undefined,
+    };
+  }
+
+  if ((form.protocol || "ssh") === "serial") {
+    const serial = withDefaultSerialConfig(form.serial);
+    const portName = serial.port_name || form.host;
+    return {
+      ...form,
+      protocol: "serial",
+      host: portName,
+      port: 1,
+      username: "",
+      credential_mode: "prompt",
+      credential_id: undefined,
+      inline_auth_kind: undefined,
+      inline_password: undefined,
+      inline_password_touched: false,
+      inline_private_key_path: undefined,
+      inline_private_key_passphrase: undefined,
+      inline_private_key_passphrase_touched: false,
+      prompt_auth_kind: undefined,
+      proxy: { kind: "none" },
+      jump: { kind: "none" },
+      advanced: defaultAdvancedConfig,
+      rdp: undefined,
+      vnc: undefined,
+      telnet: undefined,
+      serial: {
+        ...serial,
+        port_name: portName,
+      },
     };
   }
 
@@ -2446,6 +2951,8 @@ function normalizeForSubmit(
     },
     rdp: undefined,
     vnc: undefined,
+    telnet: undefined,
+    serial: undefined,
   };
 }
 
@@ -2574,6 +3081,22 @@ function withDefaultVncConfig(value?: VncConnectionConfig | null): VncConnection
   };
 }
 
+function withDefaultTelnetConfig(value?: ConnectionProfileInput["telnet"]): NonNullable<ConnectionProfileInput["telnet"]> {
+  return {
+    ...defaultTelnetConfig,
+    ...value,
+  };
+}
+
+function withDefaultSerialConfig(value?: SerialConnectionConfig | null): SerialConnectionConfig {
+  return {
+    ...defaultSerialConfig,
+    ...value,
+    baud_rate: Number(value?.baud_rate) || defaultSerialConfig.baud_rate,
+    port_name: value?.port_name || "",
+  };
+}
+
 function groupPathLabel(
   group: ConnectionDialogGroup,
   groupById: Map<string, ConnectionDialogGroup>,
@@ -2698,8 +3221,18 @@ function describeDialogError(error: unknown): DialogFeedback {
 function formatAddress(connection: ConnectionProfileInput) {
   const username = connection.username || "user";
   const host = connection.host || "host";
-  if ((connection.protocol || "ssh") === "rdp") {
+  const protocol = connection.protocol || "ssh";
+  if (protocol === "rdp") {
     return `RDP ${username}@${host}:${connection.port.toString()}`;
+  }
+  if (protocol === "vnc") {
+    return `VNC ${username}@${host}:${connection.port.toString()}`;
+  }
+  if (protocol === "telnet") {
+    return `Telnet ${host}:${connection.port.toString()}`;
+  }
+  if (protocol === "serial") {
+    return `串口 ${connection.serial?.port_name || host}`;
   }
   return `${username}@${host}:${connection.port.toString()}`;
 }

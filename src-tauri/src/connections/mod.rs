@@ -4,6 +4,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::app_error::AppError;
 use crate::storage::{load_json_document, write_json_document, JsonStoreErrorLabels};
+use crate::terminal::serial::{
+    SerialBackspaceMode, SerialDataBits, SerialFlowControl, SerialParity, SerialStopBits,
+};
+use crate::terminal::telnet::{TelnetBackspaceMode, TelnetEnterMode};
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -41,6 +45,8 @@ pub enum ConnectionProtocol {
     Ssh,
     Rdp,
     Vnc,
+    Telnet,
+    Serial,
 }
 
 impl Default for ConnectionProtocol {
@@ -643,6 +649,46 @@ impl Default for ConnectionAdvancedConfig {
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+pub struct TelnetConnectionConfig {
+    pub enter_mode: TelnetEnterMode,
+    pub backspace_mode: TelnetBackspaceMode,
+}
+
+impl Default for TelnetConnectionConfig {
+    fn default() -> Self {
+        Self {
+            enter_mode: TelnetEnterMode::CrLf,
+            backspace_mode: TelnetBackspaceMode::Del,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+pub struct SerialConnectionConfig {
+    pub port_name: String,
+    pub baud_rate: u32,
+    pub data_bits: SerialDataBits,
+    pub parity: SerialParity,
+    pub stop_bits: SerialStopBits,
+    pub flow_control: SerialFlowControl,
+    pub backspace_mode: SerialBackspaceMode,
+}
+
+impl Default for SerialConnectionConfig {
+    fn default() -> Self {
+        Self {
+            port_name: String::new(),
+            baud_rate: 9_600,
+            data_bits: SerialDataBits::Eight,
+            parity: SerialParity::None,
+            stop_bits: SerialStopBits::One,
+            flow_control: SerialFlowControl::None,
+            backspace_mode: SerialBackspaceMode::Del,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
 pub struct ConnectionProfileInput {
     #[serde(default)]
     pub id: Option<String>,
@@ -683,6 +729,10 @@ pub struct ConnectionProfileInput {
     pub rdp: Option<RdpConnectionConfig>,
     #[serde(default)]
     pub vnc: Option<VncConnectionConfig>,
+    #[serde(default)]
+    pub telnet: Option<TelnetConnectionConfig>,
+    #[serde(default)]
+    pub serial: Option<SerialConnectionConfig>,
     #[serde(default)]
     pub notes: Option<String>,
     #[serde(default)]
@@ -728,6 +778,8 @@ pub struct ValidatedConnectionProfileInput {
     pub advanced: ConnectionAdvancedConfig,
     pub rdp: Option<RdpConnectionConfig>,
     pub vnc: Option<VncConnectionConfig>,
+    pub telnet: Option<TelnetConnectionConfig>,
+    pub serial: Option<SerialConnectionConfig>,
     pub notes: Option<String>,
 }
 
@@ -766,6 +818,10 @@ pub struct ConnectionProfile {
     pub rdp: Option<RdpConnectionConfig>,
     #[serde(default)]
     pub vnc: Option<VncConnectionConfig>,
+    #[serde(default)]
+    pub telnet: Option<TelnetConnectionConfig>,
+    #[serde(default)]
+    pub serial: Option<SerialConnectionConfig>,
     #[serde(default)]
     pub notes: Option<String>,
     #[serde(default)]
@@ -932,6 +988,8 @@ impl ConnectionStore {
             advanced: validated.advanced,
             rdp: validated.rdp,
             vnc: validated.vnc,
+            telnet: validated.telnet,
+            serial: validated.serial,
             notes: validated.notes,
             is_favorite,
             last_connected_at,
@@ -1077,22 +1135,10 @@ pub fn validate_profile_input(
                 ConnectionProtocol::Ssh => "请填写 SSH 主机。",
                 ConnectionProtocol::Rdp => "请填写 RDP 主机。",
                 ConnectionProtocol::Vnc => "请填写 VNC 主机。",
+                ConnectionProtocol::Telnet => "请填写 Telnet 主机。",
+                ConnectionProtocol::Serial => "请选择串口。",
             },
             "host is empty",
-            true,
-        ));
-    }
-
-    let username = input.username.trim().to_string();
-    if username.is_empty() {
-        return Err(AppError::new(
-            "connection_username_missing",
-            match input.protocol {
-                ConnectionProtocol::Ssh => "请填写 SSH 用户名。",
-                ConnectionProtocol::Rdp => "请填写 RDP 用户名。",
-                ConnectionProtocol::Vnc => "请填写 VNC 用户名。",
-            },
-            "username is empty",
             true,
         ));
     }
@@ -1104,8 +1150,34 @@ pub fn validate_profile_input(
                 ConnectionProtocol::Ssh => "SSH 端口无效。",
                 ConnectionProtocol::Rdp => "RDP 端口无效。",
                 ConnectionProtocol::Vnc => "VNC 端口无效。",
+                ConnectionProtocol::Telnet => "Telnet 端口无效。",
+                ConnectionProtocol::Serial => "串口占位端口无效。",
             },
             "port is 0",
+            true,
+        ));
+    }
+
+    if input.protocol == ConnectionProtocol::Telnet {
+        return validate_telnet_profile_input(input, host);
+    }
+
+    if input.protocol == ConnectionProtocol::Serial {
+        return validate_serial_profile_input(input, host);
+    }
+
+    let username = input.username.trim().to_string();
+    if username.is_empty() {
+        return Err(AppError::new(
+            "connection_username_missing",
+            match input.protocol {
+                ConnectionProtocol::Ssh => "请填写 SSH 用户名。",
+                ConnectionProtocol::Rdp => "请填写 RDP 用户名。",
+                ConnectionProtocol::Vnc => "请填写 VNC 用户名。",
+                ConnectionProtocol::Telnet => "请填写 Telnet 用户名。",
+                ConnectionProtocol::Serial => "请选择串口。",
+            },
+            "username is empty",
             true,
         ));
     }
@@ -1114,6 +1186,12 @@ pub fn validate_profile_input(
         ConnectionProtocol::Ssh => validate_ssh_profile_input(input, host, username),
         ConnectionProtocol::Rdp => validate_rdp_profile_input(input, host, username),
         ConnectionProtocol::Vnc => validate_vnc_profile_input(input, host, username),
+        ConnectionProtocol::Telnet => {
+            unreachable!("telnet profile handled before username validation")
+        }
+        ConnectionProtocol::Serial => {
+            unreachable!("serial profile handled before username validation")
+        }
     }
 }
 
@@ -1253,6 +1331,8 @@ fn validate_ssh_profile_input(
         advanced,
         rdp: None,
         vnc: None,
+        telnet: None,
+        serial: None,
         notes: trim_optional(input.notes.as_ref()),
     })
 }
@@ -1344,6 +1424,8 @@ fn validate_rdp_profile_input(
         advanced: ConnectionAdvancedConfig::default(),
         rdp: Some(rdp),
         vnc: None,
+        telnet: None,
+        serial: None,
         notes: trim_optional(input.notes.as_ref()),
     })
 }
@@ -1435,6 +1517,108 @@ fn validate_vnc_profile_input(
         advanced: ConnectionAdvancedConfig::default(),
         rdp: None,
         vnc: Some(vnc),
+        telnet: None,
+        serial: None,
+        notes: trim_optional(input.notes.as_ref()),
+    })
+}
+
+fn validate_telnet_profile_input(
+    input: &ConnectionProfileInput,
+    host: String,
+) -> Result<ValidatedConnectionProfileInput, AppError> {
+    let telnet = input.telnet.clone().unwrap_or_default();
+    let name = input
+        .name
+        .as_ref()
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+        .unwrap_or_else(|| format!("Telnet {host}:{}", input.port));
+
+    Ok(ValidatedConnectionProfileInput {
+        id: trim_optional(input.id.as_ref()),
+        protocol: ConnectionProtocol::Telnet,
+        name,
+        group: trim_optional(input.group.as_ref()),
+        host,
+        port: input.port,
+        username: String::new(),
+        credential_mode: ConnectionCredentialMode::Prompt,
+        credential_id: None,
+        inline_auth_kind: None,
+        inline_password: None,
+        inline_password_touched: false,
+        inline_private_key_path: None,
+        inline_private_key_passphrase: None,
+        inline_private_key_passphrase_touched: false,
+        prompt_auth_kind: None,
+        proxy: ConnectionProxyConfig::default(),
+        jump: ConnectionJumpConfig::default(),
+        advanced: ConnectionAdvancedConfig::default(),
+        rdp: None,
+        vnc: None,
+        telnet: Some(telnet),
+        serial: None,
+        notes: trim_optional(input.notes.as_ref()),
+    })
+}
+
+fn validate_serial_profile_input(
+    input: &ConnectionProfileInput,
+    host: String,
+) -> Result<ValidatedConnectionProfileInput, AppError> {
+    let mut serial = input.serial.clone().unwrap_or_default();
+    serial.port_name = trim_optional(Some(&serial.port_name)).unwrap_or(host);
+    if serial.port_name.trim().is_empty() {
+        return Err(AppError::new(
+            "serial_port_missing",
+            "请选择串口。",
+            "serial port_name is empty",
+            true,
+        ));
+    }
+    if serial.baud_rate == 0 {
+        return Err(AppError::new(
+            "serial_baud_rate_invalid",
+            "串口波特率无效。",
+            "serial baud_rate is 0",
+            true,
+        ));
+    }
+
+    let name = input
+        .name
+        .as_ref()
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+        .unwrap_or_else(|| format!("串口 {}", serial.port_name));
+
+    Ok(ValidatedConnectionProfileInput {
+        id: trim_optional(input.id.as_ref()),
+        protocol: ConnectionProtocol::Serial,
+        name,
+        group: trim_optional(input.group.as_ref()),
+        host: serial.port_name.clone(),
+        port: 1,
+        username: String::new(),
+        credential_mode: ConnectionCredentialMode::Prompt,
+        credential_id: None,
+        inline_auth_kind: None,
+        inline_password: None,
+        inline_password_touched: false,
+        inline_private_key_path: None,
+        inline_private_key_passphrase: None,
+        inline_private_key_passphrase_touched: false,
+        prompt_auth_kind: None,
+        proxy: ConnectionProxyConfig::default(),
+        jump: ConnectionJumpConfig::default(),
+        advanced: ConnectionAdvancedConfig::default(),
+        rdp: None,
+        vnc: None,
+        telnet: None,
+        serial: Some(serial),
         notes: trim_optional(input.notes.as_ref()),
     })
 }
@@ -2081,8 +2265,10 @@ mod tests {
         ConnectionAuthKind, ConnectionCredentialMode, ConnectionJumpConfig, ConnectionJumpKind,
         ConnectionProfileInput, ConnectionProtocol, ConnectionProxyConfig, ConnectionProxyKind,
         ConnectionRemoteSystemInfo, ConnectionStore, RdpConnectionConfig, RdpGatewayConfig,
-        RdpGatewayMode, VncConnectionConfig,
+        RdpGatewayMode, SerialConnectionConfig, TelnetConnectionConfig, VncConnectionConfig,
     };
+    use crate::terminal::serial::{SerialBackspaceMode, SerialDataBits};
+    use crate::terminal::telnet::{TelnetBackspaceMode, TelnetEnterMode};
 
     fn password_input() -> ConnectionProfileInput {
         ConnectionProfileInput {
@@ -2107,6 +2293,8 @@ mod tests {
             advanced: ConnectionAdvancedConfig::default(),
             rdp: None,
             vnc: None,
+            telnet: None,
+            serial: None,
             notes: None,
             is_favorite: None,
             last_connected_at: None,
@@ -2359,6 +2547,69 @@ mod tests {
         assert_eq!(validated.jump, ConnectionJumpConfig::default());
         assert!(validated.rdp.is_none());
         assert!(validated.vnc.is_some());
+    }
+
+    #[test]
+    fn validation_accepts_telnet_and_clears_ssh_only_fields() {
+        let input = ConnectionProfileInput {
+            protocol: ConnectionProtocol::Telnet,
+            host: " 192.0.2.30 ".to_string(),
+            port: 23,
+            username: "ignored".to_string(),
+            telnet: Some(TelnetConnectionConfig {
+                enter_mode: TelnetEnterMode::Cr,
+                backspace_mode: TelnetBackspaceMode::CtrlH,
+            }),
+            ..password_input()
+        };
+
+        let validated = validate_profile_input(&input).unwrap();
+
+        assert_eq!(validated.protocol, ConnectionProtocol::Telnet);
+        assert_eq!(validated.name, "Telnet 192.0.2.30:23");
+        assert_eq!(validated.username, "");
+        assert_eq!(validated.credential_mode, ConnectionCredentialMode::Prompt);
+        assert!(validated.inline_auth_kind.is_none());
+        assert!(validated.inline_password.is_none());
+        assert_eq!(validated.proxy, ConnectionProxyConfig::default());
+        assert_eq!(validated.jump, ConnectionJumpConfig::default());
+        assert_eq!(
+            validated.telnet.as_ref().map(|item| item.enter_mode),
+            Some(TelnetEnterMode::Cr)
+        );
+    }
+
+    #[test]
+    fn validation_accepts_serial_and_uses_port_name_as_host() {
+        let input = ConnectionProfileInput {
+            protocol: ConnectionProtocol::Serial,
+            host: "COM3".to_string(),
+            port: 1,
+            username: "ignored".to_string(),
+            serial: Some(SerialConnectionConfig {
+                port_name: " COM4 ".to_string(),
+                baud_rate: 115_200,
+                data_bits: SerialDataBits::Seven,
+                backspace_mode: SerialBackspaceMode::CtrlH,
+                ..SerialConnectionConfig::default()
+            }),
+            ..password_input()
+        };
+
+        let validated = validate_profile_input(&input).unwrap();
+
+        assert_eq!(validated.protocol, ConnectionProtocol::Serial);
+        assert_eq!(validated.name, "串口 COM4");
+        assert_eq!(validated.host, "COM4");
+        assert_eq!(validated.port, 1);
+        assert_eq!(validated.username, "");
+        assert_eq!(validated.credential_mode, ConnectionCredentialMode::Prompt);
+        assert!(validated.inline_auth_kind.is_none());
+        assert_eq!(validated.proxy, ConnectionProxyConfig::default());
+        assert_eq!(
+            validated.serial.as_ref().map(|item| item.baud_rate),
+            Some(115_200)
+        );
     }
 
     #[test]

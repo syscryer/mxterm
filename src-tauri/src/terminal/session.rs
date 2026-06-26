@@ -1828,6 +1828,8 @@ mod tests {
             advanced: ConnectionAdvancedConfig::default(),
             rdp: None,
             vnc: None,
+            telnet: None,
+            serial: None,
             notes: None,
             is_favorite: false,
             last_connected_at: None,

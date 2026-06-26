@@ -442,6 +442,23 @@ Ant Design, Mantine, or similar libraries just to fix one modal or button.
 - Do not spread window material backgrounds across every card, table, dialog, or
   settings panel. The material mode should be visible in the app chrome, while
   dense work surfaces stay opaque enough to read.
+
+## Performance Boundaries
+
+- Heavy feature dependencies and large static datasets must stay out of the
+  startup path. Use dynamic imports at the first real feature boundary, or an
+  idle-task preload after the initial workspace has settled. Do not import
+  rarely used viewers, editors, or catalog-sized settings data at
+  `WorkspaceShell` module scope.
+- `src/features/settings/terminalColorSchemes.ts` is the lightweight contract for
+  terminal themes: it may inline the default fallback and helper functions, but
+  the full `terminalColorSchemesData.ts` catalog must only load through
+  `loadTerminalColorSchemes()`. Settings sections that need the full catalog
+  must render a loading/error state, then incrementally render the list instead
+  of mounting hundreds of preview cards in one pass.
+- Lists that render 50+ rich rows/cards should use virtualization or incremental
+  reveal with a stable observer. Avoid observers that rebuild on every page
+  increment, because they can chain-trigger until the whole list mounts.
 - Do not let broad chrome/sidebar child selectors override overlay mechanics.
   Rules such as `.app-sidebar > * { position: relative; z-index: 1; }` must
   exclude fixed drag previews, floating overlays, or portal-like layers; otherwise

@@ -10,7 +10,8 @@ use sha2::{Digest, Sha256};
 use crate::app_error::AppError;
 use crate::connections::{
     ConnectionAdvancedConfig, ConnectionAuthKind, ConnectionCredentialMode, ConnectionJumpConfig,
-    ConnectionProtocol, ConnectionProxyConfig, RdpConnectionConfig, VncConnectionConfig,
+    ConnectionProtocol, ConnectionProxyConfig, RdpConnectionConfig, SerialConnectionConfig,
+    TelnetConnectionConfig, VncConnectionConfig,
 };
 use crate::known_hosts::KnownHostEntry;
 use crate::storage_repository::StorageRepository;
@@ -99,6 +100,10 @@ pub struct SyncConnectionRecord {
     pub rdp: Option<RdpConnectionConfig>,
     #[serde(default)]
     pub vnc: Option<VncConnectionConfig>,
+    #[serde(default)]
+    pub telnet: Option<TelnetConnectionConfig>,
+    #[serde(default)]
+    pub serial: Option<SerialConnectionConfig>,
     pub notes: Option<String>,
     pub is_favorite: bool,
     pub last_connected_at: Option<String>,
@@ -941,6 +946,8 @@ mod tests {
                 advanced: ConnectionAdvancedConfig::default(),
                 rdp: None,
                 vnc: None,
+                telnet: None,
+                serial: None,
                 notes: Some("不要同步明文".to_string()),
                 is_favorite: Some(true),
                 last_connected_at: None,

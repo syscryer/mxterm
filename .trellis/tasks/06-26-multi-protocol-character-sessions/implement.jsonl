@@ -1,0 +1,5 @@
+{"file": ".trellis/spec/backend/tauri-command-contracts.md", "reason": "Telnet and serial command/storage contracts plus targeted Rust validation requirements."}
+{"file": ".trellis/spec/frontend/tauri-command-contracts.md", "reason": "Frontend typed command wrappers, saved protocol profiles, and VNC lazy runtime boundary."}
+{"file": ".trellis/spec/frontend/component-guidelines.md", "reason": "Radix/Lucide/shared UI, global token usage, settings panel density, and large list rendering boundaries."}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "Trace protocol profile data from UI form through Rust storage and back to workspace open actions."}
+{"file": ".trellis/spec/guides/code-reuse-thinking-guide.md", "reason": "Keep repeated protocol payload normalization and command invocation behind shared wrappers/utilities."}

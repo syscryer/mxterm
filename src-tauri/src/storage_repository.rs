@@ -403,17 +403,29 @@ impl StorageRepository {
                 .map(serde_json::to_string)
                 .transpose()
                 .map_err(sqlite_serialize_error)?;
+            let telnet_json = connection
+                .telnet
+                .as_ref()
+                .map(serde_json::to_string)
+                .transpose()
+                .map_err(sqlite_serialize_error)?;
+            let serial_json = connection
+                .serial
+                .as_ref()
+                .map(serde_json::to_string)
+                .transpose()
+                .map_err(sqlite_serialize_error)?;
             self.connection
                 .execute(
                     "INSERT INTO connections(
                         id, name, protocol, group_id, host, port, username, credential_mode, credential_id,
                         inline_auth_kind, inline_secret_ref, inline_secret_slot_id,
                         inline_private_key_path, prompt_auth_kind, proxy_json, jump_json,
-                        advanced_json, rdp_json, vnc_json, notes, is_favorite, last_connected_at, remote_os_id,
+                        advanced_json, rdp_json, vnc_json, telnet_json, serial_json, notes, is_favorite, last_connected_at, remote_os_id,
                         remote_os_name, remote_os_version, created_at, updated_at
                     ) VALUES (
                         ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12,
-                        ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27
+                        ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29
                     )",
                     params![
                         connection.id,
@@ -435,6 +447,8 @@ impl StorageRepository {
                         advanced_json,
                         rdp_json,
                         vnc_json,
+                        telnet_json,
+                        serial_json,
                         connection.notes,
                         if connection.is_favorite { 1 } else { 0 },
                         connection.last_connected_at,
@@ -570,7 +584,7 @@ impl StorageRepository {
                 "SELECT id, name, protocol, group_id, host, port, username, credential_mode, credential_id,
                         inline_auth_kind, inline_secret_slot_id, inline_private_key_path,
                         prompt_auth_kind, proxy_json, jump_json, advanced_json, rdp_json, vnc_json,
-                        notes,
+                        telnet_json, serial_json, notes,
                         is_favorite, last_connected_at, remote_os_id, remote_os_name,
                         remote_os_version, created_at, updated_at
                    FROM connections ORDER BY created_at ASC, name ASC",
@@ -587,6 +601,8 @@ impl StorageRepository {
                 let advanced_json: String = row.get(15)?;
                 let rdp_json: Option<String> = row.get(16)?;
                 let vnc_json: Option<String> = row.get(17)?;
+                let telnet_json: Option<String> = row.get(18)?;
+                let serial_json: Option<String> = row.get(19)?;
                 let mut proxy: crate::connections::ConnectionProxyConfig =
                     serde_json::from_str(&proxy_json).map_err(from_serde_row_error)?;
                 proxy.password = None;
@@ -613,14 +629,16 @@ impl StorageRepository {
                     advanced: serde_json::from_str(&advanced_json).map_err(from_serde_row_error)?,
                     rdp: parse_optional_json(rdp_json)?,
                     vnc: parse_optional_json(vnc_json)?,
-                    notes: row.get(18)?,
-                    is_favorite: row.get::<_, i64>(19)? != 0,
-                    last_connected_at: row.get(20)?,
-                    remote_os_id: row.get(21)?,
-                    remote_os_name: row.get(22)?,
-                    remote_os_version: row.get(23)?,
-                    created_at: row.get(24)?,
-                    updated_at: row.get(25)?,
+                    telnet: parse_optional_json(telnet_json)?,
+                    serial: parse_optional_json(serial_json)?,
+                    notes: row.get(20)?,
+                    is_favorite: row.get::<_, i64>(21)? != 0,
+                    last_connected_at: row.get(22)?,
+                    remote_os_id: row.get(23)?,
+                    remote_os_name: row.get(24)?,
+                    remote_os_version: row.get(25)?,
+                    created_at: row.get(26)?,
+                    updated_at: row.get(27)?,
                 })
             })
             .map_err(sqlite_repository_error)?;
@@ -753,6 +771,18 @@ impl StorageRepository {
             .map(serde_json::to_string)
             .transpose()
             .map_err(sqlite_serialize_error)?;
+        let telnet_json = validated
+            .telnet
+            .as_ref()
+            .map(serde_json::to_string)
+            .transpose()
+            .map_err(sqlite_serialize_error)?;
+        let serial_json = validated
+            .serial
+            .as_ref()
+            .map(serde_json::to_string)
+            .transpose()
+            .map_err(sqlite_serialize_error)?;
 
         self.connection
             .execute(
@@ -760,11 +790,11 @@ impl StorageRepository {
                     id, name, protocol, group_id, host, port, username, credential_mode, credential_id,
                     inline_auth_kind, inline_secret_ref, inline_secret_slot_id,
                     inline_private_key_path, prompt_auth_kind, proxy_json, jump_json,
-                    advanced_json, rdp_json, vnc_json, notes, is_favorite, last_connected_at, remote_os_id,
+                    advanced_json, rdp_json, vnc_json, telnet_json, serial_json, notes, is_favorite, last_connected_at, remote_os_id,
                     remote_os_name, remote_os_version, created_at, updated_at
                 ) VALUES (
                     ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12,
-                    ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27
+                    ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29
                 )
                 ON CONFLICT(id) DO UPDATE SET
                     name = excluded.name,
@@ -785,6 +815,8 @@ impl StorageRepository {
                     advanced_json = excluded.advanced_json,
                     rdp_json = excluded.rdp_json,
                     vnc_json = excluded.vnc_json,
+                    telnet_json = excluded.telnet_json,
+                    serial_json = excluded.serial_json,
                     notes = excluded.notes,
                     is_favorite = excluded.is_favorite,
                     last_connected_at = excluded.last_connected_at,
@@ -815,6 +847,8 @@ impl StorageRepository {
                     advanced_json,
                     rdp_json,
                     vnc_json,
+                    telnet_json,
+                    serial_json,
                     validated.notes,
                     if is_favorite { 1 } else { 0 },
                     last_connected_at,
@@ -844,7 +878,8 @@ impl StorageRepository {
                 "SELECT c.id, c.name, c.protocol, g.name, c.host, c.port, c.username,
                         c.credential_mode, c.credential_id, c.inline_auth_kind,
                         c.inline_private_key_path, c.prompt_auth_kind, c.proxy_json,
-                        c.jump_json, c.advanced_json, c.rdp_json, c.vnc_json, c.notes, c.is_favorite,
+                        c.jump_json, c.advanced_json, c.rdp_json, c.vnc_json, c.telnet_json,
+                        c.serial_json, c.notes, c.is_favorite,
                         c.last_connected_at, c.remote_os_id, c.remote_os_name,
                         c.remote_os_version, c.created_at, c.updated_at
                    FROM connections c
@@ -978,7 +1013,8 @@ impl StorageRepository {
                 "SELECT c.id, c.name, c.protocol, g.name, c.host, c.port, c.username,
                         c.credential_mode, c.credential_id, c.inline_auth_kind,
                         c.inline_private_key_path, c.prompt_auth_kind, c.proxy_json,
-                        c.jump_json, c.advanced_json, c.rdp_json, c.vnc_json, c.notes, c.is_favorite,
+                        c.jump_json, c.advanced_json, c.rdp_json, c.vnc_json, c.telnet_json,
+                        c.serial_json, c.notes, c.is_favorite,
                         c.last_connected_at, c.remote_os_id, c.remote_os_name,
                         c.remote_os_version, c.created_at, c.updated_at
                    FROM connections c
@@ -1439,6 +1475,8 @@ impl StorageRepository {
             advanced: validated.advanced,
             rdp: validated.rdp,
             vnc: validated.vnc,
+            telnet: validated.telnet,
+            serial: validated.serial,
             notes: validated.notes,
             is_favorite: false,
             last_connected_at: None,
@@ -1647,7 +1685,8 @@ impl StorageRepository {
                 "SELECT c.id, c.name, c.protocol, g.name, c.host, c.port, c.username,
                         c.credential_mode, c.credential_id, c.inline_auth_kind,
                         c.inline_private_key_path, c.prompt_auth_kind, c.proxy_json,
-                        c.jump_json, c.advanced_json, c.rdp_json, c.vnc_json, c.notes, c.is_favorite,
+                        c.jump_json, c.advanced_json, c.rdp_json, c.vnc_json, c.telnet_json,
+                        c.serial_json, c.notes, c.is_favorite,
                         c.last_connected_at, c.remote_os_id, c.remote_os_name,
                         c.remote_os_version, c.created_at, c.updated_at,
                         c.inline_secret_ref, c.inline_secret_slot_id
@@ -1657,8 +1696,8 @@ impl StorageRepository {
                 params![id],
                 |row| {
                     let profile = row_to_connection_profile(row)?;
-                    let account: Option<String> = row.get(25)?;
-                    let slot_id: Option<String> = row.get(26)?;
+                    let account: Option<String> = row.get(27)?;
+                    let slot_id: Option<String> = row.get(28)?;
                     let reference = account.map(|account| SecretReference {
                         service: VAULT_SERVICE,
                         slot_id: slot_id.unwrap_or_else(|| account.clone()),
@@ -2365,6 +2404,8 @@ fn row_to_connection_profile(row: &rusqlite::Row<'_>) -> rusqlite::Result<Connec
     let advanced_json: String = row.get(14)?;
     let rdp_json: Option<String> = row.get(15)?;
     let vnc_json: Option<String> = row.get(16)?;
+    let telnet_json: Option<String> = row.get(17)?;
+    let serial_json: Option<String> = row.get(18)?;
     Ok(ConnectionProfile {
         id: row.get(0)?,
         name: row.get(1)?,
@@ -2387,14 +2428,16 @@ fn row_to_connection_profile(row: &rusqlite::Row<'_>) -> rusqlite::Result<Connec
         advanced: serde_json::from_str(&advanced_json).map_err(from_serde_row_error)?,
         rdp: parse_optional_json(rdp_json)?,
         vnc: parse_optional_json(vnc_json)?,
-        notes: row.get(17)?,
-        is_favorite: row.get::<_, i64>(18)? != 0,
-        last_connected_at: row.get(19)?,
-        remote_os_id: row.get(20)?,
-        remote_os_name: row.get(21)?,
-        remote_os_version: row.get(22)?,
-        created_at: row.get(23)?,
-        updated_at: row.get(24)?,
+        telnet: parse_optional_json(telnet_json)?,
+        serial: parse_optional_json(serial_json)?,
+        notes: row.get(19)?,
+        is_favorite: row.get::<_, i64>(20)? != 0,
+        last_connected_at: row.get(21)?,
+        remote_os_id: row.get(22)?,
+        remote_os_name: row.get(23)?,
+        remote_os_version: row.get(24)?,
+        created_at: row.get(25)?,
+        updated_at: row.get(26)?,
         auth_kind: None,
         password: None,
         private_key_path: None,
@@ -2768,9 +2811,12 @@ mod tests {
     use crate::connections::{
         ConnectionAdvancedConfig, ConnectionAuthKind, ConnectionCredentialMode,
         ConnectionJumpConfig, ConnectionProfileInput, ConnectionProtocol, ConnectionProxyConfig,
-        RdpConnectionConfig, VncConnectionConfig, VncPerformanceConfig, VncPerformancePreset,
+        RdpConnectionConfig, SerialConnectionConfig, TelnetConnectionConfig, VncConnectionConfig,
+        VncPerformanceConfig, VncPerformancePreset,
     };
     use crate::storage_vault::{InMemorySecretStore, SecretStore};
+    use crate::terminal::serial::{SerialFlowControl, SerialParity};
+    use crate::terminal::telnet::{TelnetBackspaceMode, TelnetEnterMode};
 
     #[test]
     fn connection_upsert_stores_inline_password_in_secret_store_only() {
@@ -3053,6 +3099,82 @@ mod tests {
             repo.resolve_vnc_connection_secret(&saved.id).unwrap(),
             Some("secret".to_string())
         );
+    }
+
+    #[test]
+    fn telnet_connection_roundtrips_runtime_config() {
+        let (repo, _db_path, _secrets) = temp_repository("telnet-roundtrip");
+
+        let saved = repo
+            .connection_upsert(
+                ConnectionProfileInput {
+                    id: Some("telnet-001".to_string()),
+                    protocol: ConnectionProtocol::Telnet,
+                    host: "192.0.2.50".to_string(),
+                    port: 23,
+                    username: String::new(),
+                    telnet: Some(TelnetConnectionConfig {
+                        enter_mode: TelnetEnterMode::Lf,
+                        backspace_mode: TelnetBackspaceMode::CtrlH,
+                    }),
+                    ..password_connection_input()
+                },
+                "2026-06-26T00:02:00+08:00",
+            )
+            .unwrap();
+
+        assert_eq!(saved.protocol, ConnectionProtocol::Telnet);
+        assert_eq!(saved.username, "");
+        assert!(saved.inline_auth_kind.is_none());
+        assert_eq!(
+            saved.telnet.as_ref().map(|telnet| telnet.enter_mode),
+            Some(TelnetEnterMode::Lf)
+        );
+
+        let loaded = repo.connection_get("telnet-001").unwrap().unwrap();
+        assert_eq!(
+            loaded.telnet.as_ref().map(|telnet| telnet.backspace_mode),
+            Some(TelnetBackspaceMode::CtrlH)
+        );
+    }
+
+    #[test]
+    fn serial_connection_roundtrips_runtime_config() {
+        let (repo, _db_path, _secrets) = temp_repository("serial-roundtrip");
+
+        let saved = repo
+            .connection_upsert(
+                ConnectionProfileInput {
+                    id: Some("serial-001".to_string()),
+                    protocol: ConnectionProtocol::Serial,
+                    host: "COM3".to_string(),
+                    port: 1,
+                    username: String::new(),
+                    serial: Some(SerialConnectionConfig {
+                        port_name: "COM7".to_string(),
+                        baud_rate: 115_200,
+                        parity: SerialParity::Even,
+                        flow_control: SerialFlowControl::Hardware,
+                        ..SerialConnectionConfig::default()
+                    }),
+                    ..password_connection_input()
+                },
+                "2026-06-26T00:03:00+08:00",
+            )
+            .unwrap();
+
+        assert_eq!(saved.protocol, ConnectionProtocol::Serial);
+        assert_eq!(saved.host, "COM7");
+        assert_eq!(saved.port, 1);
+        assert_eq!(saved.username, "");
+        assert!(saved.inline_auth_kind.is_none());
+
+        let loaded = repo.connection_get("serial-001").unwrap().unwrap();
+        let serial = loaded.serial.as_ref().unwrap();
+        assert_eq!(serial.port_name, "COM7");
+        assert_eq!(serial.baud_rate, 115_200);
+        assert_eq!(serial.parity, SerialParity::Even);
+        assert_eq!(serial.flow_control, SerialFlowControl::Hardware);
     }
 
     #[test]
@@ -3426,6 +3548,8 @@ mod tests {
             advanced: ConnectionAdvancedConfig::default(),
             rdp: None,
             vnc: None,
+            telnet: None,
+            serial: None,
             notes: None,
             is_favorite: None,
             last_connected_at: None,

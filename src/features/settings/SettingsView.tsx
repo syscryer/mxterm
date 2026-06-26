@@ -64,9 +64,12 @@ import type {
 } from "../connections/connectionTypes";
 import {
   getTerminalAnsiSwatches,
+  getTerminalColorScheme,
+  getTerminalColorSchemes,
   getTerminalColorSchemeTone,
-  terminalColorSchemes,
-  type TerminalColorScheme,
+  isTerminalColorSchemesReady,
+  loadTerminalColorSchemes,
+  onTerminalColorSchemesReady,
   type TerminalColorSchemeTone,
 } from "./terminalColorSchemes";
 import {
@@ -202,12 +205,6 @@ export function SettingsView({
   const [accentDraft, setAccentDraft] = useState(settings.appearance.accentColorCustom);
   const effectiveAllowPasswordReveal =
     !settings.security.masterPasswordEnabled || settings.security.allowPasswordReveal;
-  const selectedScheme = useMemo(
-    () =>
-      terminalColorSchemes.find((scheme) => scheme.id === settings.terminalTheme.scheme) ||
-      terminalColorSchemes[0],
-    [settings.terminalTheme.scheme],
-  );
 
   useEffect(() => {
     setAccentDraft(settings.appearance.accentColorCustom);
@@ -311,7 +308,6 @@ export function SettingsView({
         ) : null}
         {activeSection === "terminalTheme" ? (
           <TerminalThemeSettingsSection
-            selectedScheme={selectedScheme}
             settings={settings.terminalTheme}
             onUpdate={onUpdateTerminalTheme}
           />
@@ -2519,21 +2515,49 @@ function previewSettingsLocalTerminalProfiles(): LocalTerminalProfile[] {
 }
 
 function TerminalThemeSettingsSection({
-  selectedScheme,
   settings,
   onUpdate,
 }: {
-  selectedScheme: TerminalColorScheme;
   settings: TerminalThemeSettings;
   onUpdate: (update: Partial<TerminalThemeSettings>) => void;
 }) {
   const [terminalSchemeQuery, setTerminalSchemeQuery] = useState("");
   const [terminalSchemeTone, setTerminalSchemeTone] =
     useState<"all" | TerminalColorSchemeTone>("all");
+  // 配色方案数据（约 280KB / 531 项）已拆为独立 chunk。进入本页时主动加载，
+  // 加载完成前只渲染轻量状态，避免设置页打开瞬间同步铺开大列表。
+  const [schemesReady, setSchemesReady] = useState(() => isTerminalColorSchemesReady());
+  const [schemesLoadError, setSchemesLoadError] = useState<string | null>(null);
+  useEffect(() => {
+    let active = true;
+    const unsubscribe = onTerminalColorSchemesReady(() => {
+      if (active) {
+        setSchemesReady(true);
+        setSchemesLoadError(null);
+      }
+    });
+    void loadTerminalColorSchemes().catch((error) => {
+      if (active) {
+        setSchemesLoadError(formatError(error));
+      }
+    });
+    return () => {
+      active = false;
+      unsubscribe();
+    };
+  }, []);
+  const allTerminalColorSchemes = useMemo(
+    () => (schemesReady ? getTerminalColorSchemes() : []),
+    [schemesReady],
+  );
+  const selectedScheme = useMemo(
+    () => getTerminalColorScheme(settings.scheme),
+    [settings.scheme, schemesReady],
+  );
   const filteredTerminalColorSchemes = useMemo(() => {
     const query = terminalSchemeQuery.trim().toLowerCase();
 
-    return terminalColorSchemes.filter((scheme) => {
+    return allTerminalColorSchemes.filter((scheme) => {
       const matchesQuery =
         !query ||
         [scheme.name, scheme.id, scheme.source].some((value) =>
@@ -2545,33 +2569,50 @@ function TerminalThemeSettingsSection({
 
       return matchesQuery && matchesTone;
     });
-  }, [terminalSchemeQuery, terminalSchemeTone]);
+  }, [allTerminalColorSchemes, terminalSchemeQuery, terminalSchemeTone]);
 
-  const SCHEME_PAGE_SIZE = 60;
-  const [visibleSchemeCount, setVisibleSchemeCount] = useState(SCHEME_PAGE_SIZE);
+  const schemePageSize = 36;
+  const [visibleSchemeCount, setVisibleSchemeCount] = useState(schemePageSize);
   const schemeListRef = useRef<HTMLDivElement | null>(null);
   const schemeSentinelRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
-    setVisibleSchemeCount(SCHEME_PAGE_SIZE);
-  }, [terminalSchemeQuery, terminalSchemeTone]);
+    setVisibleSchemeCount(schemePageSize);
+  }, [schemePageSize, terminalSchemeQuery, terminalSchemeTone]);
 
   useEffect(() => {
     const total = filteredTerminalColorSchemes.length;
-    if (visibleSchemeCount >= total) return;
+    const root = schemeListRef.current?.closest(".settings-content") ?? null;
     const node = schemeSentinelRef.current;
-    if (!node) return;
+    if (!node) {
+      return;
+    }
+    // observer 只在筛选结果变化时重建一次，不随 visibleSchemeCount 变化重建。
+    // 这样每次翻页用的是同一个 observer，不会因重建导致首帧回调连环触发，
+    // 进而避免打开终端配色瞬间把 531 张卡片几乎同步铺开（"打开就卡"）。
     const observer = new IntersectionObserver(
       (entries) => {
-        if (entries[0]?.isIntersecting) {
-          setVisibleSchemeCount((prev) => Math.min(prev + SCHEME_PAGE_SIZE, total));
+        const entry = entries[0];
+        if (!entry?.isIntersecting) return;
+        // 首帧防误触发：列表刚挂载时布局未稳定，sentinel 可能短暂落入
+        // rootMargin 内。仅当 sentinel 实际位于 root 下边界附近时才加载下一批，
+        // 避免打开瞬间一次性铺开全部卡片。
+        const rootRect = entry.rootBounds;
+        if (rootRect) {
+          const distance = entry.boundingClientRect.top - rootRect.bottom;
+          if (distance > 0 && distance > rootRect.height) {
+            return;
+          }
         }
+        setVisibleSchemeCount((prev) =>
+          prev >= total ? prev : Math.min(prev + schemePageSize, total),
+        );
       },
-      { root: schemeListRef.current?.closest(".settings-content") ?? null, rootMargin: "400px" },
+      { root, rootMargin: "400px" },
     );
     observer.observe(node);
     return () => observer.disconnect();
-  }, [visibleSchemeCount, filteredTerminalColorSchemes.length]);
+  }, [filteredTerminalColorSchemes.length, schemePageSize]);
 
   return (
     <section className="settings-page-section terminal-theme-section">
@@ -2611,53 +2652,63 @@ function TerminalThemeSettingsSection({
           />
         </div>
         <span className="terminal-scheme-count">
-          {filteredTerminalColorSchemes.length} / {terminalColorSchemes.length}
+          {schemesReady
+            ? `${filteredTerminalColorSchemes.length.toString()} / ${allTerminalColorSchemes.length.toString()}`
+            : "加载中"}
         </span>
       </div>
 
       <div ref={schemeListRef} className="terminal-scheme-list" aria-label="终端配色方案">
-        {filteredTerminalColorSchemes.length > 0 ? (
+        {schemesLoadError ? (
+          <div className="terminal-scheme-empty" role="status">
+            配色方案加载失败：{schemesLoadError}
+          </div>
+        ) : !schemesReady ? (
+          <div className="terminal-scheme-empty" role="status">
+            正在加载配色方案...
+          </div>
+        ) : filteredTerminalColorSchemes.length > 0 ? (
           <>
             {filteredTerminalColorSchemes.slice(0, visibleSchemeCount).map((scheme) => (
-            <button
-              className={`terminal-scheme-card ${
-                settings.scheme === scheme.id ? "active" : ""
-              }`}
-              key={scheme.id}
-              type="button"
-              aria-pressed={settings.scheme === scheme.id}
-              onClick={() => onUpdate({ scheme: scheme.id })}
-              style={{
-                "--terminal-scheme-bg": scheme.theme.background,
-                "--terminal-scheme-fg": scheme.theme.foreground,
-              } as CSSProperties}
-            >
-              <span className="terminal-scheme-preview">
-                <span className="terminal-scheme-prompt">{scheme.name}</span>
-                <span className="terminal-scheme-command">$ ls --color</span>
-              </span>
-              <span className="terminal-scheme-meta">
-                <strong>{scheme.name}</strong>
-                <small>{scheme.source}</small>
-              </span>
-              <span className="terminal-scheme-swatches" aria-hidden="true">
-                {getTerminalAnsiSwatches(scheme).map((color, index) => (
-                  <span
-                    key={`${scheme.id}-${color}-${index.toString()}`}
-                    style={{ "--terminal-swatch": color } as CSSProperties}
-                  />
-                ))}
-              </span>
-              {settings.scheme === scheme.id ? (
-                <span className="terminal-scheme-check" aria-hidden="true">
-                  <Check className="ui-icon" />
+              <button
+                className={`terminal-scheme-card ${
+                  settings.scheme === scheme.id ? "active" : ""
+                }`}
+                key={scheme.id}
+                type="button"
+                aria-pressed={settings.scheme === scheme.id}
+                onClick={() => onUpdate({ scheme: scheme.id })}
+                style={{
+                  "--terminal-scheme-bg": scheme.theme.background,
+                  "--terminal-scheme-fg": scheme.theme.foreground,
+                } as CSSProperties}
+              >
+                <span className="terminal-scheme-preview">
+                  <span className="terminal-scheme-prompt">{scheme.name}</span>
+                  <span className="terminal-scheme-command">$ ls --color</span>
                 </span>
-              ) : null}
-            </button>
-          ))}
-          {visibleSchemeCount < filteredTerminalColorSchemes.length ? (
-            <div ref={schemeSentinelRef} className="terminal-scheme-sentinel" aria-hidden="true" />
-          ) : null}
+                <span className="terminal-scheme-meta">
+                  <strong>{scheme.name}</strong>
+                  <small>{scheme.source}</small>
+                </span>
+                <span className="terminal-scheme-swatches" aria-hidden="true">
+                  {getTerminalAnsiSwatches(scheme).map((color, index) => (
+                    <span
+                      key={`${scheme.id}-${color}-${index.toString()}`}
+                      style={{ "--terminal-swatch": color } as CSSProperties}
+                    />
+                  ))}
+                </span>
+                {settings.scheme === scheme.id ? (
+                  <span className="terminal-scheme-check" aria-hidden="true">
+                    <Check className="ui-icon" />
+                  </span>
+                ) : null}
+              </button>
+            ))}
+            {visibleSchemeCount < filteredTerminalColorSchemes.length ? (
+              <div ref={schemeSentinelRef} className="terminal-scheme-sentinel" aria-hidden="true" />
+            ) : null}
           </>
         ) : (
           <div className="terminal-scheme-empty" role="status">

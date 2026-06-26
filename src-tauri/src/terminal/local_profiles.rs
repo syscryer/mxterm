@@ -594,9 +594,11 @@ mod tests {
         };
 
         let command = build_command(&profile, Some("D:\\repo"));
-        let debug_text = format!("{command:?}");
 
-        assert!(debug_text.contains("D:\\repo"));
+        assert_eq!(
+            command.get_cwd().and_then(|cwd| cwd.to_str()),
+            Some("D:\\repo")
+        );
     }
 
     #[cfg(windows)]

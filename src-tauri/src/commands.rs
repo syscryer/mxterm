@@ -54,7 +54,9 @@ use crate::storage_vault::{VaultState, VaultStatus};
 use crate::terminal::local::list_profiles as list_local_profiles;
 pub use crate::terminal::local_profiles::{LocalTerminalProfile, LocalTerminalProfileInput};
 use crate::terminal::manager::TerminalManager;
+pub use crate::terminal::serial::{SerialPortEntry, SerialTerminalOpenRequest};
 use crate::terminal::session::ExecProgressCallback;
+pub use crate::terminal::telnet::TelnetTerminalOpenRequest;
 use crate::tunnels::{
     TunnelManager, TunnelRuleIdRequest, TunnelRuleInput, TunnelRuleWithState, TunnelStartRequest,
 };
@@ -551,6 +553,29 @@ pub async fn local_terminal_open(
     request: LocalTerminalOpenRequest,
 ) -> Result<String, AppError> {
     manager.connect_local(app, request).await
+}
+
+#[tauri::command]
+pub async fn telnet_terminal_open(
+    app: AppHandle,
+    manager: State<'_, TerminalManager>,
+    request: TelnetTerminalOpenRequest,
+) -> Result<String, AppError> {
+    manager.connect_telnet(app, request).await
+}
+
+#[tauri::command]
+pub fn serial_list_ports() -> Result<Vec<SerialPortEntry>, AppError> {
+    crate::terminal::serial::list_serial_ports()
+}
+
+#[tauri::command]
+pub async fn serial_terminal_open(
+    app: AppHandle,
+    manager: State<'_, TerminalManager>,
+    request: SerialTerminalOpenRequest,
+) -> Result<String, AppError> {
+    manager.connect_serial(app, request).await
 }
 
 #[tauri::command]

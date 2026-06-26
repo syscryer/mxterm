@@ -64,6 +64,11 @@ import type {
   RemoteFileWriteResult,
 } from "../../features/files/remoteFileTypes";
 import type {
+  SerialPortEntry,
+  SerialTerminalOpenRequest,
+  TelnetTerminalOpenRequest,
+} from "../../features/terminal/characterSessionTypes";
+import type {
   LocalTerminalOpenRequest,
   LocalTerminalProfile,
   WindowsPtyInfo,
@@ -388,6 +393,18 @@ export function localTerminalListProfiles(input?: {
 
 export function localTerminalOpen(request: LocalTerminalOpenRequest) {
   return invoke<string>("local_terminal_open", { request });
+}
+
+export function telnetTerminalOpen(request: TelnetTerminalOpenRequest) {
+  return invoke<string>("telnet_terminal_open", { request });
+}
+
+export function serialListPorts() {
+  return invoke<SerialPortEntry[]>("serial_list_ports");
+}
+
+export function serialTerminalOpen(request: SerialTerminalOpenRequest) {
+  return invoke<string>("serial_terminal_open", { request });
 }
 
 export function getWindowsPtyInfo() {

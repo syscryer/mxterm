@@ -1,0 +1,5 @@
+{"file": ".trellis/spec/backend/tauri-command-contracts.md", "reason": "Backend command, storage, Telnet, serial, sync, and MCP contract checks."}
+{"file": ".trellis/spec/frontend/tauri-command-contracts.md", "reason": "Typed wrapper, Telnet/serial profile, VNC workspace, and noVNC lazy-load contract checks."}
+{"file": ".trellis/spec/frontend/component-guidelines.md", "reason": "Settings UI, global token, and large settings catalog performance conventions."}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "Cross-layer data flow review across storage, commands, wrappers, and UI."}
+{"file": ".trellis/spec/guides/code-reuse-thinking-guide.md", "reason": "Shared wrapper and repeated contract logic review."}

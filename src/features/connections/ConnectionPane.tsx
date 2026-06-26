@@ -1011,7 +1011,11 @@ function ConnectionTreeLeaf({
                 ? "打开 RDP"
                 : connection.protocol === "vnc"
                   ? "打开 VNC"
-                  : "打开终端"}
+                  : connection.protocol === "telnet"
+                    ? "打开 Telnet"
+                    : connection.protocol === "serial"
+                      ? "打开串口"
+                      : "打开终端"}
             </span>
           </ContextMenu.Item>
           <ContextMenu.Item className="context-menu-item" onSelect={() => onEdit(connection)}>
@@ -1043,6 +1047,12 @@ function formatAddress(connection: ConnectionProfile) {
   }
   if (connection.protocol === "vnc") {
     return `VNC · ${connection.username}@${connection.host}:${connection.port.toString()}`;
+  }
+  if (connection.protocol === "telnet") {
+    return `Telnet · ${connection.host}:${connection.port.toString()}`;
+  }
+  if (connection.protocol === "serial") {
+    return `串口 · ${connection.serial?.port_name || connection.host}`;
   }
   return `${connection.username}@${connection.host}:${connection.port.toString()}`;
 }
