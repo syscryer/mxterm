@@ -96,6 +96,29 @@ button {
   font-size: var(--mx-settings-ui-font-size, 14px);
 }
 
+.app-startup-shell {
+  width: 100vw;
+  height: 100vh;
+  min-width: 1100px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  color: var(--mx-subtle);
+  background: var(--mx-material-panel, var(--mx-panel));
+  font-family: var(--font-ui);
+  font-size: 13px;
+}
+
+.app-startup-spinner {
+  width: 14px;
+  height: 14px;
+  border: 1px solid var(--mx-line);
+  border-top-color: var(--mx-primary);
+  border-radius: 999px;
+  animation: mx-spin 900ms linear infinite;
+}
+
 .app-shell .ui-icon {
   width: var(--mx-ui-icon-size, 16px);
   height: var(--mx-ui-icon-size, 16px);

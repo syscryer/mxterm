@@ -53,9 +53,7 @@ import {
   X,
 } from "lucide-react";
 
-import { ConnectionDialog } from "../connections/ConnectionDialog";
 import { ConnectionPane } from "../connections/ConnectionPane";
-import { ConnectionSearchDialog } from "../connections/ConnectionSearchDialog";
 import { ConnectionSystemLogo } from "../connections/ConnectionSystemLogo";
 import type {
   ConnectionAuthKind,
@@ -82,6 +80,7 @@ import {
   formatVncRunnerKind,
 } from "../connections/connectionTypes";
 import { connectionTimestampOf, sortConnectionsByRecent } from "../connections/connectionSearch";
+import { connectionInfoFromVncProfile } from "../connections/vncConnectionInfo";
 // RemoteFileEditor 内部静态 import 了 monaco-editor（主体约 4MB）及其 5 个 worker
 // （合计约 10MB）。用 React.lazy 延迟到真正打开远程文件编辑标签时才加载，
 // 避免在应用启动时解析 monaco 导致 release 构建下首屏卡顿和全局卡顿。
@@ -89,13 +88,48 @@ const RemoteFileEditor = lazy(async () => {
   const module = await import("../editor/RemoteFileEditor");
   return { default: module.RemoteFileEditor };
 });
+const ConnectionDialog = lazy(async () => {
+  const module = await import("../connections/ConnectionDialog");
+  return { default: module.ConnectionDialog };
+});
+const ConnectionSearchDialog = lazy(async () => {
+  const module = await import("../connections/ConnectionSearchDialog");
+  return { default: module.ConnectionSearchDialog };
+});
+const RemoteFilePanel = lazy(async () => {
+  const module = await import("../files/RemoteFilePanel");
+  return { default: module.RemoteFilePanel };
+});
+const MonitorPanel = lazy(async () => {
+  const module = await import("../monitor/MonitorPanel");
+  return { default: module.MonitorPanel };
+});
+const SettingsView = lazy(async () => {
+  const module = await import("../settings/SettingsView");
+  return { default: module.SettingsView };
+});
+const TunnelPanel = lazy(async () => {
+  const module = await import("../tunnels/TunnelPanel");
+  return { default: module.TunnelPanel };
+});
+const DockerToolPanel = lazy(async () => {
+  const module = await import("../tools/DockerToolPanel");
+  return { default: module.DockerToolPanel };
+});
+const CommandLibraryPanel = lazy(async () => {
+  const module = await import("../commands/CommandLibraryPanel");
+  return { default: module.CommandLibraryPanel };
+});
+const VncViewerSurface = lazy(async () => {
+  const module = await import("./VncViewerSurface");
+  return { default: module.VncViewerSurface };
+});
+const TerminalPanel = lazy(async () => {
+  const module = await import("../terminal/TerminalPanel");
+  return { default: module.TerminalPanel };
+});
 import type { RemoteFileEditorTab } from "../editor/remoteFileEditorTypes";
-import {
-  RemoteFilePanel,
-  type RemoteFileTool,
-  type RemoteFileUploadItem,
-} from "../files/RemoteFilePanel";
-import { MonitorPanel } from "../monitor/MonitorPanel";
+import type { RemoteFileTool, RemoteFileUploadItem } from "../files/RemoteFilePanel";
 import {
   isRemotePathStrictDescendant,
   normalizeRemotePath,
@@ -113,9 +147,6 @@ import type {
   RemoteFileTransferProgressEvent,
   RemoteFileUploadResult,
 } from "../files/remoteFileTypes";
-import { SettingsView } from "../settings/SettingsView";
-import { TunnelPanel } from "../tunnels/TunnelPanel";
-import { DockerToolPanel } from "../tools/DockerToolPanel";
 import type { DockerContainerSummary } from "../tools/dockerTypes";
 import {
   getTerminalColorScheme,
@@ -142,19 +173,13 @@ import type {
   CommandHistoryScope,
   CommandSnippet,
 } from "../commands/commandLibraryTypes";
-import {
-  CommandLibraryPanel,
-  type CommandHistoryScopeOption,
-} from "../commands/CommandLibraryPanel";
+import type { CommandHistoryScopeOption } from "../commands/CommandLibraryPanel";
 import { compareCommandLibraryTimestampsDesc } from "../commands/commandLibraryTime";
 import {
   parseHostKeyError,
   type HostKeyDecision,
 } from "../connections/hostKeyErrors";
-import {
-  TerminalPanel,
-  type TerminalSearchNavigationRequest,
-} from "../terminal/TerminalPanel";
+import type { TerminalSearchNavigationRequest } from "../terminal/TerminalPanel";
 import { useShortcutManager, type ShortcutHandler } from "../shortcuts/useShortcutManager";
 import type { TerminalOutputEvent } from "../terminal/terminalTypes";
 import { ConfirmDialog } from "../../shared/ui/ConfirmDialog";
@@ -231,10 +256,6 @@ import {
 import { initializeWindowStatePersistence } from "../../shared/tauri/windowState";
 import { Tooltip } from "../../shared/ui/Tooltip";
 import { AppTitlebar } from "./AppTitlebar";
-import {
-  connectionInfoFromVncProfile,
-  VncViewerSurface,
-} from "./VncViewerSurface";
 import {
   LocalTerminalIcon,
   localTerminalTitle,
@@ -716,6 +737,8 @@ export function WorkspaceShell() {
   const [remoteFileTextValue, setRemoteFileTextValue] = useState("");
   const [remoteFileTextError, setRemoteFileTextError] = useState<string | null>(null);
   const [rightTool, setRightTool] = useState<RemoteFileTool>("files");
+  const [dockerToolPanelLoaded, setDockerToolPanelLoaded] = useState(false);
+  const [settingsViewLoaded, setSettingsViewLoaded] = useState(false);
   const [remoteFileTransfers, setRemoteFileTransfers] = useState<RemoteFileTransferItem[]>([]);
   const [nativeFileDropTargetPath, setNativeFileDropTargetPath] = useState<string | null>(null);
   const [remoteFileProperties, setRemoteFileProperties] =
@@ -787,6 +810,12 @@ export function WorkspaceShell() {
   useEffect(() => {
     vncSessionsRef.current = vncSessions;
   }, [vncSessions]);
+
+  useEffect(() => {
+    if (activeView === "settings") {
+      setSettingsViewLoaded(true);
+    }
+  }, [activeView]);
 
   useEffect(() => initializeWindowStatePersistence(), []);
 
@@ -1250,6 +1279,9 @@ export function WorkspaceShell() {
   const showRdpWorkspace = !showingHome && showingRdp && hasSessionWorkspace;
   const showVncWorkspace = !showingHome && showingVnc && hasSessionWorkspace;
   const showWorkspaceToolPane = !showingHome && hasSessionWorkspace;
+  const shouldShowDockerToolPanel = showSessionWorkspace && rightTool === "tools";
+  const shouldRenderDockerToolPanel = dockerToolPanelLoaded || shouldShowDockerToolPanel;
+  const shouldRenderSettingsView = settingsViewLoaded || activeView === "settings";
   const activeConnectionSelectionId =
     activeWorkspaceMode === "ssh" || activeWorkspaceMode === "rdp" || activeWorkspaceMode === "vnc"
       ? activeConnectionId
@@ -1320,6 +1352,12 @@ export function WorkspaceShell() {
     "--left-pane-custom-width": `${leftPaneWidth.toString()}px`,
     "--right-pane-custom-width": `${rightPaneWidth.toString()}px`,
   } as CSSProperties;
+
+  useEffect(() => {
+    if (shouldShowDockerToolPanel) {
+      setDockerToolPanelLoaded(true);
+    }
+  }, [shouldShowDockerToolPanel]);
 
   useLayoutEffect(() => {
     const body = document.body;
@@ -6624,34 +6662,46 @@ export function WorkspaceShell() {
                         onTrustHostKey={() => void trustHostKeyAndRetry(tab.id, tabStep)}
                       />
                     ) : tab.type === "terminal" && tab.sessionId ? (
-                      <TerminalPanel
-                        active={showSessionWorkspace && tab.id === activeTabId}
-                        connection={connectionById.get(tab.connectionId) || null}
-                        fontFamily={terminalFontFamily}
-                        fontSize={settings.appearance.terminalFontSize}
-                        initialSessionId={tab.sessionId}
-                        initialOutput={tab.warmupOutput}
-                        initialRequestId={tab.requestId}
+                      <Suspense
                         key={tab.id}
-                        onCurrentDirectoryChange={updateTerminalDirectory}
-                        onSearchClose={closeTerminalSearch}
-                        onSearchCaseSensitiveToggle={toggleTerminalSearchCaseSensitive}
-                        onSearchQueryChange={updateTerminalSearchQuery}
-                        onStatusChange={updateTabStatus}
-                        onTerminalInputCommand={
-                          settings.command.recordTerminalInputHistory
-                            ? (tabId, command) => void recordTerminalInputHistoryCommand(tabId, command)
-                            : undefined
+                        fallback={
+                          <DirectTerminalStatusPanel
+                            active={showSessionWorkspace && tab.id === activeTabId}
+                            connection={connectionById.get(tab.connectionId) || null}
+                            error={null}
+                            status="正在加载终端"
+                            title={tab.title}
+                          />
                         }
-                        onWarmupCaptureReady={stopTerminalWarmupCapture}
-                        searchCaseSensitive={Boolean(terminalSearchByTabId[tab.id]?.caseSensitive)}
-                        searchNavigationRequest={terminalSearchNavigationRequest}
-                        searchOpen={Boolean(terminalSearchByTabId[tab.id]?.open)}
-                        searchQuery={terminalSearchByTabId[tab.id]?.query || ""}
-                        tabId={tab.id}
-                        theme={terminalColorScheme.theme}
-                        title={tab.title}
-                      />
+                      >
+                        <TerminalPanel
+                          active={showSessionWorkspace && tab.id === activeTabId}
+                          connection={connectionById.get(tab.connectionId) || null}
+                          fontFamily={terminalFontFamily}
+                          fontSize={settings.appearance.terminalFontSize}
+                          initialSessionId={tab.sessionId}
+                          initialOutput={tab.warmupOutput}
+                          initialRequestId={tab.requestId}
+                          onCurrentDirectoryChange={updateTerminalDirectory}
+                          onSearchClose={closeTerminalSearch}
+                          onSearchCaseSensitiveToggle={toggleTerminalSearchCaseSensitive}
+                          onSearchQueryChange={updateTerminalSearchQuery}
+                          onStatusChange={updateTabStatus}
+                          onTerminalInputCommand={
+                            settings.command.recordTerminalInputHistory
+                              ? (tabId, command) => void recordTerminalInputHistoryCommand(tabId, command)
+                              : undefined
+                          }
+                          onWarmupCaptureReady={stopTerminalWarmupCapture}
+                          searchCaseSensitive={Boolean(terminalSearchByTabId[tab.id]?.caseSensitive)}
+                          searchNavigationRequest={terminalSearchNavigationRequest}
+                          searchOpen={Boolean(terminalSearchByTabId[tab.id]?.open)}
+                          searchQuery={terminalSearchByTabId[tab.id]?.query || ""}
+                          tabId={tab.id}
+                          theme={terminalColorScheme.theme}
+                          title={tab.title}
+                        />
+                      </Suspense>
                     ) : tab.type === "terminal" ? (
                       <DirectTerminalStatusPanel
                         active={showSessionWorkspace && tab.id === activeTabId}
@@ -7221,35 +7271,53 @@ export function WorkspaceShell() {
                   ) : (
                     localTerminalTabs.map((tab) =>
                       tab.sessionId ? (
-                        <TerminalPanel
-                          active={showingLocalTerminal && tab.id === activeLocalTerminalTabId}
-                          autoConnect={false}
-                          connection={null}
-                          fontFamily={terminalFontFamily}
-                          fontSize={settings.appearance.terminalFontSize}
-                          initialSessionId={tab.sessionId}
-                          initialOutput={tab.warmupOutput}
-                          initialRequestId={tab.requestId}
+                        <Suspense
                           key={tab.id}
-                          onSearchClose={closeTerminalSearch}
-                          onSearchCaseSensitiveToggle={toggleTerminalSearchCaseSensitive}
-                          onSearchQueryChange={updateTerminalSearchQuery}
-                          onStatusChange={updateLocalTerminalTabStatus}
-                          onTerminalInputCommand={
-                            settings.command.recordTerminalInputHistory
-                              ? (tabId, command) => void recordTerminalInputHistoryCommand(tabId, command)
-                              : undefined
+                          fallback={
+                            <LocalTerminalStatusPanel
+                              active={showingLocalTerminal && tab.id === activeLocalTerminalTabId}
+                              error={null}
+                              profile={
+                                tab.source === "local"
+                                  ? localTerminalProfiles.find((profile) => profile.id === tab.profileId) || null
+                                  : null
+                              }
+                              source={tab.source || "local"}
+                              status="正在加载终端"
+                              title={tab.title}
+                              onOpenSettings={openLocalTerminalSettings}
+                            />
                           }
-                          onWarmupCaptureReady={stopTerminalWarmupCapture}
-                          searchCaseSensitive={Boolean(terminalSearchByTabId[tab.id]?.caseSensitive)}
-                          searchNavigationRequest={terminalSearchNavigationRequest}
-                          searchOpen={Boolean(terminalSearchByTabId[tab.id]?.open)}
-                          searchQuery={terminalSearchByTabId[tab.id]?.query || ""}
-                          tabId={tab.id}
-                          theme={terminalColorScheme.theme}
-                          title={tab.title}
-                          windowsPty={windowsPtyInfo}
-                        />
+                        >
+                          <TerminalPanel
+                            active={showingLocalTerminal && tab.id === activeLocalTerminalTabId}
+                            autoConnect={false}
+                            connection={null}
+                            fontFamily={terminalFontFamily}
+                            fontSize={settings.appearance.terminalFontSize}
+                            initialSessionId={tab.sessionId}
+                            initialOutput={tab.warmupOutput}
+                            initialRequestId={tab.requestId}
+                            onSearchClose={closeTerminalSearch}
+                            onSearchCaseSensitiveToggle={toggleTerminalSearchCaseSensitive}
+                            onSearchQueryChange={updateTerminalSearchQuery}
+                            onStatusChange={updateLocalTerminalTabStatus}
+                            onTerminalInputCommand={
+                              settings.command.recordTerminalInputHistory
+                                ? (tabId, command) => void recordTerminalInputHistoryCommand(tabId, command)
+                                : undefined
+                            }
+                            onWarmupCaptureReady={stopTerminalWarmupCapture}
+                            searchCaseSensitive={Boolean(terminalSearchByTabId[tab.id]?.caseSensitive)}
+                            searchNavigationRequest={terminalSearchNavigationRequest}
+                            searchOpen={Boolean(terminalSearchByTabId[tab.id]?.open)}
+                            searchQuery={terminalSearchByTabId[tab.id]?.query || ""}
+                            tabId={tab.id}
+                            theme={terminalColorScheme.theme}
+                            title={tab.title}
+                            windowsPty={windowsPtyInfo}
+                          />
+                        </Suspense>
                       ) : (
                         <LocalTerminalStatusPanel
                           active={showingLocalTerminal && tab.id === activeLocalTerminalTabId}
@@ -7300,143 +7368,167 @@ export function WorkspaceShell() {
         ) : null}
 
         {showWorkspaceToolPane ? (
-          <RemoteFilePanel
-            activeTool={rightTool}
-            availableTools={
-              showingRdp || showingVnc
-                ? ["tools"]
-                : activeWorkspaceMode === "local"
-                  ? ["commands"]
-                  : undefined
+          <Suspense
+            fallback={
+              <aside className="tool-pane" aria-label="右侧工具面板">
+                <p className="file-panel-empty">正在加载工具面板...</p>
+              </aside>
             }
-            connection={remoteFileConnection}
-            key={remoteFilePanelKey}
-            refreshRequest={remoteFileRefreshRequest}
-            nativeDropTargetPath={nativeFileDropTargetPath}
-            monitorPanel={
-              <MonitorPanel
-                active={showSessionWorkspace && !rightPaneCollapsed && rightTool === "monitor"}
-                connection={remoteFileConnection}
-              />
-            }
-            commandPanel={
-              <CommandLibraryPanel
-                activeHistoryId={selectedCommandHistoryId}
-                activeSnippetId={selectedCommandSnippetId}
-                error={commandLibraryError}
-                historyEntries={commandHistoryEntries}
-                historyScopeOptions={commandHistoryScopeOptions}
-                historyScopeValue={commandHistoryScopeKey}
-                loading={commandLibraryLoading}
-                groups={commandSnippetGroups}
-                snippets={commandSnippets}
-                unavailableReason={commandLibraryUnavailableReason}
-                onClearHistory={() => setCommandHistoryClearOpen(true)}
-                onCopyHistory={(entry) => void copyCommandLibraryText(entry.command, "历史命令")}
-                onCopySnippet={(snippet) =>
-                  void copyCommandLibraryText(snippet.command, `片段“${snippet.title}”`)
-                }
-                onCreateGroup={() => openCommandSnippetGroupCreateDialog()}
-                onCreateSnippet={(group) => openCommandSnippetDialog(null, group)}
-                onDeleteGroup={(group) => setPendingCommandSnippetGroupDelete(group)}
-                onDeleteHistory={setPendingCommandHistoryDelete}
-                onDeleteSnippet={setPendingCommandSnippetDelete}
-                onEditSnippet={openCommandSnippetDialog}
-                onHistoryToSnippet={saveHistoryAsSnippet}
-                onHistoryScopeChange={setCommandHistoryScopeKey}
-                onInsertHistory={insertCommandHistoryEntry}
-                onInsertSnippet={insertCommandSnippet}
-                onRenameGroup={openCommandSnippetGroupRenameDialog}
-                onRunHistory={(entry) => void runCommandHistoryEntry(entry)}
-                onRunSnippet={(snippet) => void runCommandSnippet(snippet)}
-              />
-            }
-            tunnelPanel={
-              <TunnelPanel activeConnectionId={showSessionWorkspace ? activeConnectionId : null} connections={connections} />
-            }
-            toolsPanel={
-              showingRdp ? (
-                <RdpSessionToolPanel
-                  connection={activeConnection}
-                  session={activeRdpSession}
-                  onCopyCommand={(session) => void copyText(rdpSessionCommandText(session))}
-                  onCopyRdpFile={(session) => void copyText(rdpSessionFileText(session))}
-                  onPreview={(session) => void previewRdpSessionLaunch(session.id)}
-                  onRetry={(session) => retryRdpSession(session.id)}
+          >
+            <RemoteFilePanel
+              activeTool={rightTool}
+              availableTools={
+                showingRdp || showingVnc
+                  ? ["tools"]
+                  : activeWorkspaceMode === "local"
+                    ? ["commands"]
+                    : undefined
+              }
+              connection={remoteFileConnection}
+              key={remoteFilePanelKey}
+              refreshRequest={remoteFileRefreshRequest}
+              nativeDropTargetPath={nativeFileDropTargetPath}
+              monitorPanel={
+                <Suspense fallback={<p className="file-panel-empty">正在加载监控...</p>}>
+                  <MonitorPanel
+                    active={showSessionWorkspace && !rightPaneCollapsed && rightTool === "monitor"}
+                    connection={remoteFileConnection}
+                  />
+                </Suspense>
+              }
+              commandPanel={
+                <Suspense fallback={<p className="file-panel-empty">正在加载命令库...</p>}>
+                  <CommandLibraryPanel
+                    activeHistoryId={selectedCommandHistoryId}
+                    activeSnippetId={selectedCommandSnippetId}
+                    error={commandLibraryError}
+                    historyEntries={commandHistoryEntries}
+                    historyScopeOptions={commandHistoryScopeOptions}
+                    historyScopeValue={commandHistoryScopeKey}
+                    loading={commandLibraryLoading}
+                    groups={commandSnippetGroups}
+                    snippets={commandSnippets}
+                    unavailableReason={commandLibraryUnavailableReason}
+                    onClearHistory={() => setCommandHistoryClearOpen(true)}
+                    onCopyHistory={(entry) => void copyCommandLibraryText(entry.command, "历史命令")}
+                    onCopySnippet={(snippet) =>
+                      void copyCommandLibraryText(snippet.command, `片段“${snippet.title}”`)
+                    }
+                    onCreateGroup={() => openCommandSnippetGroupCreateDialog()}
+                    onCreateSnippet={(group) => openCommandSnippetDialog(null, group)}
+                    onDeleteGroup={(group) => setPendingCommandSnippetGroupDelete(group)}
+                    onDeleteHistory={setPendingCommandHistoryDelete}
+                    onDeleteSnippet={setPendingCommandSnippetDelete}
+                    onEditSnippet={openCommandSnippetDialog}
+                    onHistoryToSnippet={saveHistoryAsSnippet}
+                    onHistoryScopeChange={setCommandHistoryScopeKey}
+                    onInsertHistory={insertCommandHistoryEntry}
+                    onInsertSnippet={insertCommandSnippet}
+                    onRenameGroup={openCommandSnippetGroupRenameDialog}
+                    onRunHistory={(entry) => void runCommandHistoryEntry(entry)}
+                    onRunSnippet={(snippet) => void runCommandSnippet(snippet)}
+                  />
+                </Suspense>
+              }
+              tunnelPanel={
+                <Suspense fallback={<p className="file-panel-empty">正在加载隧道...</p>}>
+                  <TunnelPanel activeConnectionId={showSessionWorkspace ? activeConnectionId : null} connections={connections} />
+                </Suspense>
+              }
+              toolsPanel={
+                showingRdp ? (
+                  <RdpSessionToolPanel
+                    connection={activeConnection}
+                    session={activeRdpSession}
+                    onCopyCommand={(session) => void copyText(rdpSessionCommandText(session))}
+                    onCopyRdpFile={(session) => void copyText(rdpSessionFileText(session))}
+                    onPreview={(session) => void previewRdpSessionLaunch(session.id)}
+                    onRetry={(session) => retryRdpSession(session.id)}
+                  />
+                ) : showingVnc ? (
+                  <VncSessionToolPanel
+                    connection={activeConnection}
+                    session={activeVncSession}
+                    onCopyCommand={(session) => void copyText(vncSessionCommandText(session))}
+                    onPreview={(session) => void previewVncSessionLaunch(session.id)}
+                    onRetry={(session) => retryVncSession(session.id)}
+                  />
+                ) : shouldRenderDockerToolPanel ? (
+                  <Suspense fallback={<p className="file-panel-empty">正在加载 Docker 面板...</p>}>
+                    <DockerToolPanel
+                      active={showSessionWorkspace && !rightPaneCollapsed && rightTool === "tools"}
+                      connection={remoteFileConnection}
+                      onCopyText={copyText}
+                      onOpenContainerTerminal={openDockerContainerTerminal}
+                    />
+                  </Suspense>
+                ) : null
+              }
+              transferPanel={
+                <RemoteFileTransferPanel
+                  transfers={remoteFileTransfers}
+                  onCancel={requestCancelTransfer}
+                  onClearFinished={clearFinishedTransfers}
+                  onCopyPath={copyRemotePath}
+                  onRemove={removeRemoteFileTransfer}
+                  onRetry={retryRemoteFileTransfer}
+                  onOpenLocalPath={openLocalTransferPath}
+                  onRevealLocalPath={revealLocalTransferPath}
                 />
-              ) : showingVnc ? (
-                <VncSessionToolPanel
-                  connection={activeConnection}
-                  session={activeVncSession}
-                  onCopyCommand={(session) => void copyText(vncSessionCommandText(session))}
-                  onPreview={(session) => void previewVncSessionLaunch(session.id)}
-                  onRetry={(session) => retryVncSession(session.id)}
-                />
-              ) : (
-                <DockerToolPanel
-                  active={showSessionWorkspace && !rightPaneCollapsed && rightTool === "tools"}
-                  connection={remoteFileConnection}
-                  onCopyText={copyText}
-                  onOpenContainerTerminal={openDockerContainerTerminal}
-                />
-              )
-            }
-            transferPanel={
-              <RemoteFileTransferPanel
-                transfers={remoteFileTransfers}
-                onCancel={requestCancelTransfer}
-                onClearFinished={clearFinishedTransfers}
-                onCopyPath={copyRemotePath}
-                onRemove={removeRemoteFileTransfer}
-                onRetry={retryRemoteFileTransfer}
-                onOpenLocalPath={openLocalTransferPath}
-                onRevealLocalPath={revealLocalTransferPath}
-              />
-            }
-            onCopyPath={copyRemotePath}
-            onCreateDirectory={requestCreateRemoteDirectory}
-            onCreateFile={requestCreateRemoteFile}
-            onDeleteEntries={requestDeleteRemoteEntries}
-            onDeleteEntry={requestDeleteRemoteEntry}
-            onDownloadEntries={downloadRemoteFiles}
-            onDownloadEntry={downloadRemoteFile}
-            onOpenFile={openRemoteFile}
-            onRenameEntry={requestRenameRemoteEntry}
-            onShowProperties={showRemoteFileProperties}
-            onToolChange={setRightTool}
-            onUploadDirectory={uploadRemoteDirectory}
-            onUploadFile={uploadRemoteFile}
-            onUploadItems={uploadRemoteItems}
-            terminalPath={activeTerminalDirectory}
-          />
+              }
+              onCopyPath={copyRemotePath}
+              onCreateDirectory={requestCreateRemoteDirectory}
+              onCreateFile={requestCreateRemoteFile}
+              onDeleteEntries={requestDeleteRemoteEntries}
+              onDeleteEntry={requestDeleteRemoteEntry}
+              onDownloadEntries={downloadRemoteFiles}
+              onDownloadEntry={downloadRemoteFile}
+              onOpenFile={openRemoteFile}
+              onRenameEntry={requestRenameRemoteEntry}
+              onShowProperties={showRemoteFileProperties}
+              onToolChange={setRightTool}
+              onUploadDirectory={uploadRemoteDirectory}
+              onUploadFile={uploadRemoteFile}
+              onUploadItems={uploadRemoteItems}
+              terminalPath={activeTerminalDirectory}
+            />
+          </Suspense>
         ) : null}
 
-        <ConnectionDialog
-          allowPasswordReveal={effectiveAllowPasswordReveal}
-          connection={editingConnection}
-          connections={connections}
-          credentials={credentials}
-          defaultGroup={pendingConnectionGroupName}
-          groups={connectionGroupCatalog.groups}
-          onClose={closeConnectionDialog}
-          onDelete={deleteConnection}
-          onManageCredentials={openCredentialSettings}
-          onSave={saveConnectionFromDialog}
-          onTest={testConnectionFromDialog}
-          onTrustHostKey={knownHostTrust}
-          open={dialogOpen}
-        />
+        {dialogOpen ? (
+          <Suspense fallback={<ConnectionDialogFallback />}>
+            <ConnectionDialog
+              allowPasswordReveal={effectiveAllowPasswordReveal}
+              connection={editingConnection}
+              connections={connections}
+              credentials={credentials}
+              defaultGroup={pendingConnectionGroupName}
+              groups={connectionGroupCatalog.groups}
+              onClose={closeConnectionDialog}
+              onDelete={deleteConnection}
+              onManageCredentials={openCredentialSettings}
+              onSave={saveConnectionFromDialog}
+              onTest={testConnectionFromDialog}
+              onTrustHostKey={knownHostTrust}
+              open={dialogOpen}
+            />
+          </Suspense>
+        ) : null}
       </main>
 
-      <ConnectionSearchDialog
-        activeConnectionId={activeConnectionId}
-        connections={connections}
-        open={connectionSearchOpen}
-        query={connectionSearchQuery}
-        onOpenChange={setConnectionSearchOpen}
-        onQueryChange={setConnectionSearchQuery}
-        onSelectConnection={openConnectionSession}
-      />
+      {connectionSearchOpen ? (
+        <Suspense fallback={<ConnectionSearchDialogFallback />}>
+          <ConnectionSearchDialog
+            activeConnectionId={activeConnectionId}
+            connections={connections}
+            open={connectionSearchOpen}
+            query={connectionSearchQuery}
+            onOpenChange={setConnectionSearchOpen}
+            onQueryChange={setConnectionSearchQuery}
+            onSelectConnection={openConnectionSession}
+          />
+        </Suspense>
+      ) : null}
 
       <Dialog.Root
         open={commandSnippetDialogOpen}
@@ -7976,45 +8068,49 @@ export function WorkspaceShell() {
         </Dialog.Portal>
       </Dialog.Root>
 
-        <SettingsView
-          appUpdate={appUpdate}
-          activeSection={settingsSectionRequest}
-          activeSectionRequestKey={settingsSectionRequestKey}
-          connections={connections}
-          credentials={credentials}
-          credentialError={credentialError}
-          credentialLoading={credentialLoading}
-          effectiveWindowMaterial={effectiveWindowMaterial}
-          hidden={activeView !== "settings"}
-          secretVaultBusy={secretVault.unlocking}
-          secretVaultError={secretVault.error}
-          settings={settings}
-          supportedWindowMaterials={supportedWindowMaterials}
-          onDeleteCredential={deleteCredentialFromSettings}
-          onDisableMasterPassword={async () => {
-            const nextStatus = await secretVault.disableMasterPassword();
-            return Boolean(nextStatus?.unlocked);
-          }}
-          onEnableMasterPassword={async (masterPassword) => {
-            const nextStatus = await secretVault.enableMasterPassword(masterPassword);
-            return Boolean(nextStatus?.unlocked);
-          }}
-          onUnlockSecuritySettings={async (masterPassword) => {
-            const nextStatus = await secretVault.unlock(masterPassword);
-            return Boolean(nextStatus?.unlocked);
-          }}
-          onReset={reset}
-          onReturnWorkspace={returnFromSettings}
-          onSaveCredential={saveCredentialFromSettings}
-          onUpdateAppearance={updateAppearance}
-          onUpdateBasic={updateBasic}
-          onUpdateCommand={updateCommand}
-          onUpdateFileTransfer={updateFileTransfer}
-          onUpdateLocalTerminal={updateLocalTerminal}
-          onUpdateSecurity={updateSecurity}
-          onUpdateShortcuts={updateShortcuts}
-          onUpdateTerminalTheme={updateTerminalTheme}
-        />
+      {shouldRenderSettingsView ? (
+        <Suspense fallback={<SettingsViewFallback hidden={activeView !== "settings"} />}>
+          <SettingsView
+            appUpdate={appUpdate}
+            activeSection={settingsSectionRequest}
+            activeSectionRequestKey={settingsSectionRequestKey}
+            connections={connections}
+            credentials={credentials}
+            credentialError={credentialError}
+            credentialLoading={credentialLoading}
+            effectiveWindowMaterial={effectiveWindowMaterial}
+            hidden={activeView !== "settings"}
+            secretVaultBusy={secretVault.unlocking}
+            secretVaultError={secretVault.error}
+            settings={settings}
+            supportedWindowMaterials={supportedWindowMaterials}
+            onDeleteCredential={deleteCredentialFromSettings}
+            onDisableMasterPassword={async () => {
+              const nextStatus = await secretVault.disableMasterPassword();
+              return Boolean(nextStatus?.unlocked);
+            }}
+            onEnableMasterPassword={async (masterPassword) => {
+              const nextStatus = await secretVault.enableMasterPassword(masterPassword);
+              return Boolean(nextStatus?.unlocked);
+            }}
+            onUnlockSecuritySettings={async (masterPassword) => {
+              const nextStatus = await secretVault.unlock(masterPassword);
+              return Boolean(nextStatus?.unlocked);
+            }}
+            onReset={reset}
+            onReturnWorkspace={returnFromSettings}
+            onSaveCredential={saveCredentialFromSettings}
+            onUpdateAppearance={updateAppearance}
+            onUpdateBasic={updateBasic}
+            onUpdateCommand={updateCommand}
+            onUpdateFileTransfer={updateFileTransfer}
+            onUpdateLocalTerminal={updateLocalTerminal}
+            onUpdateSecurity={updateSecurity}
+            onUpdateShortcuts={updateShortcuts}
+            onUpdateTerminalTheme={updateTerminalTheme}
+          />
+        </Suspense>
+      ) : null}
     </div>
   );
 
@@ -8022,6 +8118,57 @@ export function WorkspaceShell() {
     setDialogOpen(false);
     setPendingConnectionGroupName(null);
   }
+}
+
+function ConnectionDialogFallback() {
+  return (
+    <Dialog.Root open>
+      <Dialog.Portal>
+        <Dialog.Overlay className="dialog-backdrop" />
+        <Dialog.Content className="confirm-dialog" aria-label="加载连接配置">
+          <div className="confirm-dialog-icon" aria-hidden="true">
+            <Loader2 className="ui-icon spin" />
+          </div>
+          <div className="confirm-dialog-copy">
+            <Dialog.Title className="confirm-dialog-title">正在加载连接配置</Dialog.Title>
+            <Dialog.Description className="confirm-dialog-description">
+              首次打开需要加载表单模块。
+            </Dialog.Description>
+          </div>
+        </Dialog.Content>
+      </Dialog.Portal>
+    </Dialog.Root>
+  );
+}
+
+function ConnectionSearchDialogFallback() {
+  return (
+    <Dialog.Root open>
+      <Dialog.Overlay className="dialog-backdrop connection-search-backdrop" />
+      <Dialog.Content className="connection-search-dialog" aria-label="加载连接搜索">
+        <header className="connection-search-head">
+          <div>
+            <Dialog.Title className="connection-search-title">快速打开连接</Dialog.Title>
+            <Dialog.Description className="sr-only">正在加载连接搜索</Dialog.Description>
+          </div>
+        </header>
+        <p className="file-panel-empty">正在加载连接搜索...</p>
+      </Dialog.Content>
+    </Dialog.Root>
+  );
+}
+
+function SettingsViewFallback({ hidden }: { hidden: boolean }) {
+  return (
+    <section className="settings-view" hidden={hidden} aria-label="设置" aria-hidden={hidden}>
+      <aside className="settings-sidebar app-sidebar" aria-label="设置分类" />
+      <main className="settings-content">
+        <section className="settings-page-section">
+          <p className="file-panel-empty">正在加载设置...</p>
+        </section>
+      </main>
+    </section>
+  );
 }
 
 function RemoteFileTransferPanel({
@@ -8600,14 +8747,16 @@ function VncSessionStatusPanel({
         ) : null}
 
         {showEmbeddedViewer && session.result ? (
-          <VncViewerSurface
-            active={active}
-            config={config}
-            connection={connectionInfoFromVncProfile(connection)}
-            result={session.result}
-            onError={onError}
-            onMessage={onMessage}
-          />
+          <Suspense fallback={<p className="file-panel-empty">正在加载 VNC 画面...</p>}>
+            <VncViewerSurface
+              active={active}
+              config={config}
+              connection={connectionInfoFromVncProfile(connection)}
+              result={session.result}
+              onError={onError}
+              onMessage={onMessage}
+            />
+          </Suspense>
         ) : (
           <div className="rdp-session-preview-grid">
             <section className="rdp-session-preview-card">
