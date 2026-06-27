@@ -7,6 +7,7 @@ mod docker_tools;
 mod events;
 mod known_hosts;
 pub mod mcp;
+mod network_tools;
 mod rdp;
 mod remote_exec_pool;
 mod remote_files;
@@ -35,6 +36,7 @@ pub fn run() {
         .manage(remote_monitor::RemoteMonitorManager::default())
         .manage(docker_tools::DockerExecSessionManager::default())
         .manage(docker_tools::DockerLogStreamManager::default())
+        .manage(network_tools::NetworkDiagnosticSessionManager::default())
         .manage(remote_files::RemoteFileManager::default())
         .manage(terminal::manager::TerminalManager::default())
         .manage(rdp::RdpSessionManager::default())
@@ -140,6 +142,7 @@ pub fn run() {
             commands::docker_engine_read_config,
             commands::docker_engine_save_config,
             commands::docker_exec_invalidate_connection,
+            commands::network_diagnostic_run,
             commands::tunnel_list,
             commands::tunnel_upsert,
             commands::tunnel_delete,

@@ -1,6 +1,7 @@
 export type DockerContainerAction = "start" | "stop" | "restart" | "remove";
 export type DockerEngineAction = "start" | "stop" | "restart";
 export type DockerRestartPolicyKind = "no" | "always" | "unless-stopped" | "on-failure";
+export type NetworkDiagnosticKind = "ping" | "tcp" | "dns" | "trace" | "http";
 
 export interface DockerContainerSummary {
   id: string;
@@ -178,4 +179,22 @@ export interface DockerEngineConfigResult {
   path: string;
   exists: boolean;
   content: string;
+}
+
+export interface NetworkDiagnosticRequest {
+  kind: NetworkDiagnosticKind;
+  target: string;
+  port?: number | null;
+}
+
+export interface NetworkDiagnosticResult {
+  kind: NetworkDiagnosticKind;
+  target: string;
+  command_label: string;
+  ok: boolean;
+  exit_status?: number | null;
+  duration_ms: number;
+  summary: string;
+  stdout: string;
+  stderr: string;
 }

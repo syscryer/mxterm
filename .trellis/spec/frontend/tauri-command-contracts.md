@@ -1605,6 +1605,102 @@ void saveUpdate({
 
 The UI updates the full persisted contract and preserves non-filtered ids unless the user explicitly changes them.
 
+## Scenario: Network Diagnostics Toolbox UI
+
+### 1. Scope / Trigger
+
+- Trigger: frontend code adds or changes the right-pane network diagnostics tab, network diagnostic typed wrapper, or result rendering.
+- Source files: `src/shared/tauri/commands.ts`, `src/features/tools/dockerTypes.ts`, `src/features/tools/DockerToolPanel.tsx`, and `src/styles/app.css`.
+- Network diagnostics run from the active saved SSH connection. Frontend components must pass only `connection_id` plus structured diagnostic parameters; they must not pass SSH passwords, private keys, usernames, or raw host fields.
+
+### 2. Signatures
+
+```ts
+type NetworkDiagnosticKind = "ping" | "tcp" | "dns" | "trace" | "http"
+
+type NetworkDiagnosticRequest = {
+  kind: NetworkDiagnosticKind
+  target: string
+  port?: number | null
+}
+
+type NetworkDiagnosticResult = {
+  kind: NetworkDiagnosticKind
+  target: string
+  command_label: string
+  ok: boolean
+  exit_status?: number | null
+  duration_ms: number
+  summary: string
+  stdout: string
+  stderr: string
+}
+
+networkDiagnosticRun(
+  connectionId: string,
+  request: NetworkDiagnosticRequest,
+): Promise<NetworkDiagnosticResult>
+```
+
+### 3. Contracts
+
+- Components must call `networkDiagnosticRun(...)` from `src/shared/tauri/commands.ts`; do not call `invoke("network_diagnostic_run")` directly from UI code.
+- The network tab lives inside the existing right-pane toolbox beside Docker and scheduled tasks. It must reuse toolbox layout, Lucide icons, shared button/input behavior, and global `--mx-*` token styles.
+- Supported diagnostics are Ping, TCP port probe, DNS lookup, route trace, and HTTP header check.
+- TCP is the only kind that sends `port`; non-TCP calls should send `null` or omit it.
+- Browser preview without Tauri may render deterministic sample results for layout inspection, but real desktop execution must go through the typed wrapper.
+- Result rendering must show status, target, duration, exit status, command label, summary, stdout, and stderr. Failed remote commands should keep stdout/stderr visible instead of replacing them with a generic error.
+
+### 4. Validation & Error Matrix
+
+| Condition | Frontend behavior |
+| --- | --- |
+| No active SSH connection | Show a neutral unavailable state and do not call `networkDiagnosticRun`. |
+| Blank target | Show inline validation feedback before calling Rust. |
+| TCP port is blank or outside `1..=65535` | Show inline validation feedback before calling Rust. |
+| No Tauri runtime | Render deterministic preview output and keep SSH credentials out of the browser path. |
+| Rust returns `network_diagnostic_target_missing` or `network_diagnostic_port_invalid` | Keep the form visible and show the Rust message inline. |
+| Remote command exits non-zero | Render `ok=false`, summary, exit status, stdout, and stderr from the returned result. |
+
+### 5. Good / Base / Bad Cases
+
+- Good: the network tab receives the active saved connection id, validates visible form fields, calls `networkDiagnosticRun(connection.id, request)`, and renders the structured result.
+- Good: output copy uses the current returned stdout/stderr buffer and does not rerun a remote command.
+- Base: browser preview has no Tauri runtime; the tab renders stable sample output so the layout remains inspectable.
+- Bad: a component calls raw `invoke`, passes SSH credential fields, hides stderr on failure, or creates a separate visual system instead of using toolbox styles and tokens.
+
+### 6. Tests Required
+
+- Run `npm run check` after changing network diagnostic types, wrappers, panel props, or CSS class usage.
+- Cross-check TypeScript request/response field names against Rust structs in `src-tauri/src/network_tools.rs`.
+- Browser/desktop visual checks should cover no connection, each diagnostic kind, TCP port validation, success result, failed result with stderr, copy output, and dark theme token contrast.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```tsx
+await invoke("network_diagnostic_run", {
+  request: {
+    host: connection.host,
+    username: connection.username,
+    password,
+    kind,
+    target,
+  },
+});
+```
+
+#### Correct
+
+```tsx
+await networkDiagnosticRun(connection.id, {
+  kind: "tcp",
+  target,
+  port,
+});
+```
+
 ## Scenario: Docker Toolbox UI
 
 ### 1. Scope / Trigger

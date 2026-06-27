@@ -2149,6 +2149,97 @@ manager.upload_prepared_snapshot(&client, &settings, prepared).await?;
 
 The WebDAV layer transports snapshot artifacts only; the snapshot layer owns encryption, validation, and import/export behavior.
 
+## Scenario: Network Diagnostics Commands
+
+### 1. Scope / Trigger
+
+- Trigger: backend code adds or changes remote network diagnostics, the `network_diagnostic_run` Tauri command, command construction, or network diagnostic request/result structs.
+- Source files: `src-tauri/src/network_tools.rs`, `src-tauri/src/commands.rs`, `src-tauri/src/lib.rs`, `src/shared/tauri/commands.ts`, and `src/features/tools/dockerTypes.ts`.
+- Network diagnostics are read-only remote commands executed through a saved SSH connection id. They must not accept dynamic plaintext credential fields.
+
+### 2. Signatures
+
+- `network_diagnostic_run(app: AppHandle, manager: State<NetworkDiagnosticSessionManager>, request: NetworkDiagnosticRequest) -> Result<NetworkDiagnosticResult, AppError>`
+
+`NetworkDiagnosticRequest` fields:
+
+```rust
+connection_id: String
+kind: NetworkDiagnosticKind // "ping" | "tcp" | "dns" | "trace" | "http"
+target: String
+port: Option<u16>
+```
+
+`NetworkDiagnosticResult` serializes to React as:
+
+```rust
+kind: NetworkDiagnosticKind
+target: String
+command_label: String
+ok: bool
+exit_status: Option<i32>
+duration_ms: u64
+summary: String
+stdout: String
+stderr: String
+```
+
+### 3. Contracts
+
+- `network_diagnostic_run` must resolve the saved connection through `resolve_saved_connection(app, connection_id, None)` and execute through `NetworkDiagnosticSessionManager`, an alias of `RemoteExecSessionPool`.
+- The frontend sends only a saved `connection_id` plus diagnostic parameters. Rust owns connection resolution and command construction.
+- User-controlled targets must be trimmed, validated as nonblank, and passed through `quote_posix_shell` or as positional shell arguments. Do not concatenate unquoted target text into a shell script body.
+- Supported remote command strategy:
+  - Ping: `ping` with finite count and timeout.
+  - TCP: `nc -vz` when available; fallback to bash `/dev/tcp`.
+  - DNS: `dig +short`, fallback to `nslookup`, then `getent hosts`.
+  - Trace: `tracepath`, fallback to `traceroute`.
+  - HTTP: `curl -I -L --max-time`; targets without `http://` or `https://` default to `https://`.
+- Each diagnostic command must have a remote timeout so missing tools or hung routes do not block the UI indefinitely.
+- Remote non-zero exits should return `NetworkDiagnosticResult { ok: false, stdout, stderr, exit_status }` instead of converting every failed probe into an `AppError`. Validation and SSH/session failures still return `AppError`.
+- Read-only diagnostics may use `RemoteExecRetry::ReconnectOnce` for stale cached SSH exec sessions.
+
+### 4. Validation & Error Matrix
+
+| Condition | Error code / behavior | Recoverable |
+| --- | --- | --- |
+| Blank connection id | `network_connection_missing` | true |
+| Blank target | `network_diagnostic_target_missing` | true |
+| TCP port is missing or invalid | `network_diagnostic_port_invalid` | true |
+| Saved connection cannot resolve or SSH exec fails | Propagate existing SSH / storage `AppError` | varies |
+| Remote diagnostic exits non-zero | Return result with `ok=false`, stdout/stderr, and exit status | n/a |
+
+### 5. Good / Base / Bad Cases
+
+- Good: `network_diagnostic_run` receives `connection_id`, resolves the saved SSH config, quotes every target, runs the diagnostic with a timeout, and returns structured stdout/stderr.
+- Good: TCP fallback passes host and port as shell arguments before using `/dev/tcp/$1/$2`, rather than embedding the target directly into the script.
+- Base: a host without `dig` can still resolve through `nslookup` or `getent hosts`; a host without trace tools returns `ok=false` with the remote error text.
+- Bad: a command accepts SSH password fields, manually reimplements connection resolution, appends an unquoted target to shell, or treats non-zero ping/traceroute exits as missing UI data.
+
+### 6. Tests Required
+
+- Unit-test `build_diagnostic_command` for ping quoting, TCP fallback, DNS fallback, trace fallback, HTTP `https://` normalization, and TCP port validation.
+- Run `cargo test --manifest-path src-tauri/Cargo.toml network_tools --lib` after changing diagnostic command construction or validation.
+- Run `cargo check --manifest-path src-tauri/Cargo.toml` after adding or changing command registration, request/result structs, or manager state.
+- Cross-check backend request/response field names with `src/features/tools/dockerTypes.ts` and `src/shared/tauri/commands.ts`.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```rust
+let command = format!("ping -c 4 {}", request.target);
+```
+
+#### Correct
+
+```rust
+let command = format!(
+    "timeout 12 ping -c 4 -W 2 {}",
+    quote_posix_shell(target),
+);
+```
+
 ## Scenario: Docker Toolbox Commands
 
 ### 1. Scope / Trigger

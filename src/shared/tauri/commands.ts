@@ -42,6 +42,8 @@ import type {
   DockerLogsResult,
   DockerNetworkSummary,
   DockerRestartPolicyKind,
+  NetworkDiagnosticRequest,
+  NetworkDiagnosticResult,
 } from "../../features/tools/dockerTypes";
 import type {
   LocalPathMetadataResult,
@@ -641,6 +643,18 @@ export function dockerEngineSaveConfig(connectionId: string, content: string) {
     request: {
       connection_id: connectionId,
       content,
+    },
+  });
+}
+
+export function networkDiagnosticRun(
+  connectionId: string,
+  request: NetworkDiagnosticRequest,
+) {
+  return invoke<NetworkDiagnosticResult>("network_diagnostic_run", {
+    request: {
+      ...request,
+      connection_id: connectionId,
     },
   });
 }
