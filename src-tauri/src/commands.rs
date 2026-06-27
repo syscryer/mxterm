@@ -32,6 +32,9 @@ use crate::docker_tools::{
 };
 use crate::events::RemoteFileTransferProgressEvent;
 use crate::known_hosts::HostKeyInfo;
+use crate::network_tools::{
+    NetworkDiagnosticRequest, NetworkDiagnosticResult, NetworkDiagnosticSessionManager,
+};
 use crate::rdp::{
     RdpConnectionRequest, RdpLaunchPreview, RdpLaunchResult, RdpResizeRequest,
     RdpRunnerProbeRequest, RdpRunnerProbeResult, RdpSessionCloseResult, RdpSessionManager,
@@ -841,6 +844,15 @@ pub async fn docker_exec_invalidate_connection(
         .invalidate_connection(request.connection_id.trim())
         .await;
     Ok(())
+}
+
+#[tauri::command]
+pub async fn network_diagnostic_run(
+    app: AppHandle,
+    manager: State<'_, NetworkDiagnosticSessionManager>,
+    request: NetworkDiagnosticRequest,
+) -> Result<NetworkDiagnosticResult, AppError> {
+    crate::network_tools::run_diagnostic(&app, &manager, request).await
 }
 
 #[tauri::command]

@@ -7614,6 +7614,272 @@ button {
   line-height: 1.45;
 }
 
+.network-diagnostics {
+  flex: 1 1 0;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--mx-panel);
+}
+
+.network-diagnostics-summary .ui-icon {
+  width: 18px;
+  height: 18px;
+  color: var(--mx-primary);
+}
+
+.network-diagnostic-form {
+  flex: 0 0 auto;
+  border-bottom: 1px solid var(--mx-line-soft);
+  display: grid;
+  gap: 9px;
+  padding: 10px;
+  background: var(--mx-panel);
+}
+
+.network-diagnostic-kind-grid {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 5px;
+}
+
+.network-diagnostic-kind-grid button {
+  min-width: 0;
+  height: 30px;
+  border: 1px solid var(--mx-line);
+  border-radius: 7px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  padding: 0 6px;
+  color: var(--mx-muted);
+  background: var(--mx-panel);
+  font-size: 11.5px;
+  font-weight: 560;
+}
+
+.network-diagnostic-kind-grid button:hover,
+.network-diagnostic-kind-grid button.active {
+  border-color: var(--mx-line-strong);
+  color: var(--mx-text);
+  background: var(--mx-chrome-active);
+}
+
+.network-diagnostic-kind-grid .ui-icon {
+  width: 13px;
+  height: 13px;
+}
+
+.network-diagnostic-field {
+  min-width: 0;
+  display: grid;
+  gap: 5px;
+}
+
+.network-diagnostic-field span {
+  color: var(--mx-muted);
+  font-size: 11px;
+  font-weight: 560;
+}
+
+.network-diagnostic-field input {
+  width: 100%;
+  min-width: 0;
+  height: 30px;
+  border: 1px solid var(--mx-line);
+  border-radius: 7px;
+  padding: 0 8px;
+  color: var(--mx-text);
+  background: var(--mx-panel-soft);
+  font: inherit;
+  font-size: 12px;
+  outline: none;
+}
+
+.network-diagnostic-field input::placeholder {
+  color: var(--mx-subtle);
+}
+
+.network-diagnostic-field input:focus {
+  border-color: color-mix(in srgb, var(--mx-primary) 48%, var(--mx-line));
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--mx-primary) 14%, transparent);
+}
+
+.network-diagnostic-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.network-diagnostic-result {
+  flex: 1 1 0;
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+  display: grid;
+  align-content: start;
+  gap: 9px;
+  padding: 10px;
+  scrollbar-color: transparent transparent;
+  scrollbar-width: thin;
+}
+
+.network-diagnostic-result:hover {
+  scrollbar-color: var(--mx-scrollbar-thumb-hover) transparent;
+}
+
+.network-diagnostic-result::-webkit-scrollbar {
+  width: var(--mx-scrollbar-size);
+  height: var(--mx-scrollbar-size);
+}
+
+.network-diagnostic-result::-webkit-scrollbar-track,
+.network-diagnostic-result::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+.network-diagnostic-result::-webkit-scrollbar-button,
+.network-diagnostic-result::-webkit-scrollbar-button:single-button {
+  display: none;
+  width: 0;
+  height: 0;
+}
+
+.network-diagnostic-result::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  background: transparent;
+}
+
+.network-diagnostic-result:hover::-webkit-scrollbar-thumb,
+.network-diagnostic-result::-webkit-scrollbar-thumb:hover {
+  background: var(--mx-scrollbar-thumb-hover);
+}
+
+.network-diagnostic-result-head {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+}
+
+.network-diagnostic-result-head > div {
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.network-diagnostic-result-head strong {
+  color: var(--mx-text);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.network-diagnostic-status {
+  border: 1px solid var(--mx-line);
+  border-radius: 999px;
+  padding: 2px 7px;
+  color: var(--mx-muted);
+  background: var(--mx-panel-soft);
+  font-size: 11px;
+  font-weight: 620;
+}
+
+.network-diagnostic-status.success {
+  border-color: color-mix(in srgb, var(--mx-success) 38%, var(--mx-line));
+  color: var(--mx-success);
+  background: color-mix(in srgb, var(--mx-success) 8%, var(--mx-panel));
+}
+
+.network-diagnostic-status.failed {
+  border-color: color-mix(in srgb, var(--mx-danger) 38%, var(--mx-line));
+  color: var(--mx-danger);
+  background: color-mix(in srgb, var(--mx-danger) 8%, var(--mx-panel));
+}
+
+.network-diagnostic-facts {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.network-diagnostic-facts > div {
+  min-width: 0;
+  border: 1px solid var(--mx-line-soft);
+  border-radius: 7px;
+  display: grid;
+  gap: 3px;
+  padding: 7px;
+  background: var(--mx-panel-soft);
+}
+
+.network-diagnostic-facts span {
+  color: var(--mx-subtle);
+  font-size: 10.5px;
+}
+
+.network-diagnostic-facts code {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--mx-text);
+  font-size: 11.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.network-diagnostic-summary {
+  margin: 0;
+  border: 1px solid var(--mx-line-soft);
+  border-radius: 7px;
+  padding: 8px;
+  color: var(--mx-muted);
+  background: var(--mx-panel-soft);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.network-diagnostic-output-grid {
+  min-width: 0;
+  display: grid;
+  gap: 8px;
+}
+
+.network-diagnostic-output-block {
+  min-width: 0;
+  border: 1px solid var(--mx-line-soft);
+  border-radius: 7px;
+  overflow: hidden;
+  background: var(--mx-panel-soft);
+}
+
+.network-diagnostic-output-block > span {
+  border-bottom: 1px solid var(--mx-line-soft);
+  display: block;
+  padding: 6px 8px;
+  color: var(--mx-subtle);
+  font-size: 10.5px;
+  font-weight: 620;
+}
+
+.network-diagnostic-output-block pre {
+  max-height: 180px;
+  overflow: auto;
+  margin: 0;
+  padding: 8px;
+  color: var(--mx-text);
+  font-family: var(--mx-font-mono);
+  font-size: 11.5px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-break: break-word;
+  scrollbar-color: var(--mx-scrollbar-thumb-hover) transparent;
+  scrollbar-width: thin;
+}
+
 .docker-pull-dialog,
 .docker-run-dialog,
 .docker-detail-dialog,

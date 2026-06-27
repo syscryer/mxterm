@@ -9,6 +9,7 @@ import {
   Eraser,
   Download,
   FileJson,
+  Globe2,
   HardDrive,
   Image as ImageIcon,
   ListRestart,
@@ -20,7 +21,9 @@ import {
   Power,
   PowerOff,
   Pause,
+  RadioTower,
   RefreshCw,
+  Route,
   RotateCw,
   ScrollText,
   Save,
@@ -62,6 +65,7 @@ import {
   dockerListContainers,
   dockerListImages,
   dockerListNetworks,
+  networkDiagnosticRun,
 } from "../../shared/tauri/commands";
 import { selectDockerLogSavePath } from "../../shared/tauri/dialog";
 import { hasTauriRuntime } from "../../shared/tauri/runtime";
@@ -88,6 +92,8 @@ import type {
   DockerLogsResult,
   DockerNetworkSummary,
   DockerRestartPolicyKind,
+  NetworkDiagnosticKind,
+  NetworkDiagnosticResult,
 } from "./dockerTypes";
 
 type ToolboxView = "docker" | "network" | "schedule";
@@ -135,6 +141,17 @@ const toolboxViews: Array<{ icon: LucideIcon; label: string; value: ToolboxView 
 const containerAutoRefreshMs = 10_000;
 const imageAutoRefreshMs = 30_000;
 const engineAutoRefreshMs = 30_000;
+const networkDiagnosticOptions: Array<{
+  icon: LucideIcon;
+  label: string;
+  value: NetworkDiagnosticKind;
+}> = [
+  { icon: RadioTower, label: "Ping", value: "ping" },
+  { icon: Network, label: "TCP", value: "tcp" },
+  { icon: Globe2, label: "DNS", value: "dns" },
+  { icon: Route, label: "路由", value: "trace" },
+  { icon: ScrollText, label: "HTTP", value: "http" },
+];
 const dockerRestartPolicyOptions: Array<{ label: string; value: DockerRestartPolicyKind }> = [
   { label: "No", value: "no" },
   { label: "Always", value: "always" },
@@ -218,6 +235,12 @@ export function DockerToolPanel({
   const [imageRunNetworksLoading, setImageRunNetworksLoading] = useState(false);
   const [imageRunError, setImageRunError] = useState<string | null>(null);
   const [imageRunning, setImageRunning] = useState(false);
+  const [diagnosticKind, setDiagnosticKind] = useState<NetworkDiagnosticKind>("ping");
+  const [diagnosticTarget, setDiagnosticTarget] = useState("");
+  const [diagnosticPort, setDiagnosticPort] = useState("443");
+  const [diagnosticRunning, setDiagnosticRunning] = useState(false);
+  const [diagnosticResult, setDiagnosticResult] = useState<NetworkDiagnosticResult | null>(null);
+  const [diagnosticError, setDiagnosticError] = useState<string | null>(null);
   const [documentVisible, setDocumentVisible] = useState(
     () => document.visibilityState !== "hidden",
   );
@@ -294,6 +317,9 @@ export function DockerToolPanel({
     setImageRunNetworksLoading(false);
     setImageRunError(null);
     setImageRunning(false);
+    setDiagnosticResult(null);
+    setDiagnosticError(null);
+    setDiagnosticRunning(false);
     setEngineActionTarget(null);
     setRestartAfterSave(false);
     dockerInitialLoadRef.current = false;
@@ -1134,6 +1160,62 @@ export function DockerToolPanel({
     setLogsError(null);
   }
 
+  async function runNetworkDiagnostic(event?: FormEvent<HTMLFormElement>) {
+    event?.preventDefault();
+    if (!connectionId) {
+      setDiagnosticError("请先打开一个 SSH 会话。");
+      return;
+    }
+    const target = diagnosticTarget.trim();
+    if (!target) {
+      setDiagnosticError("请输入诊断目标。");
+      return;
+    }
+    const portValue = Number(diagnosticPort);
+    if (
+      diagnosticKind === "tcp" &&
+      (!Number.isInteger(portValue) || portValue < 1 || portValue > 65535)
+    ) {
+      setDiagnosticError("请输入 1-65535 之间的 TCP 端口。");
+      return;
+    }
+
+    setDiagnosticRunning(true);
+    setDiagnosticError(null);
+    setDiagnosticResult(null);
+    try {
+      const request = {
+        kind: diagnosticKind,
+        target,
+        port: diagnosticKind === "tcp" ? portValue : null,
+      };
+      const result = hasTauriRuntime()
+        ? await networkDiagnosticRun(connectionId, request)
+        : createPreviewNetworkDiagnosticResult(request);
+      setDiagnosticResult(result);
+    } catch (nextError) {
+      setDiagnosticError(formatDockerError(nextError));
+    } finally {
+      setDiagnosticRunning(false);
+    }
+  }
+
+  function resetNetworkDiagnostic() {
+    setDiagnosticTarget("");
+    setDiagnosticPort("443");
+    setDiagnosticResult(null);
+    setDiagnosticError(null);
+  }
+
+  async function copyDiagnosticOutput() {
+    const content = formatNetworkDiagnosticOutput(diagnosticResult);
+    if (!content) {
+      setDiagnosticError("当前没有可复制的诊断输出。");
+      return;
+    }
+    await copyValue(content, "诊断输出");
+  }
+
   async function copyValue(value: string, label: string) {
     try {
       if (onCopyText) {
@@ -1326,10 +1408,24 @@ export function DockerToolPanel({
           )}
         </div>
       ) : toolboxView === "network" ? (
-        <ToolboxEmptyState
-          icon={Network}
-          title="网络诊断待接入"
-          description="后续会在这里放 ping、traceroute、dig 等远端排障工具。"
+        <NetworkDiagnosticsView
+          connection={connection}
+          error={diagnosticError}
+          kind={diagnosticKind}
+          port={diagnosticPort}
+          result={diagnosticResult}
+          running={diagnosticRunning}
+          target={diagnosticTarget}
+          onChangeKind={(kind) => {
+            setDiagnosticKind(kind);
+            setDiagnosticError(null);
+            setDiagnosticResult(null);
+          }}
+          onChangePort={setDiagnosticPort}
+          onChangeTarget={setDiagnosticTarget}
+          onCopyOutput={() => void copyDiagnosticOutput()}
+          onReset={resetNetworkDiagnostic}
+          onRun={(event) => void runNetworkDiagnostic(event)}
         />
       ) : (
         <ToolboxEmptyState
@@ -2896,6 +2992,218 @@ function ToolboxEmptyState({
   );
 }
 
+function NetworkDiagnosticsView({
+  connection,
+  error,
+  kind,
+  onChangeKind,
+  onChangePort,
+  onChangeTarget,
+  onCopyOutput,
+  onReset,
+  onRun,
+  port,
+  result,
+  running,
+  target,
+}: {
+  connection: ConnectionProfile | null;
+  error: string | null;
+  kind: NetworkDiagnosticKind;
+  onChangeKind: (kind: NetworkDiagnosticKind) => void;
+  onChangePort: (value: string) => void;
+  onChangeTarget: (value: string) => void;
+  onCopyOutput: () => void;
+  onReset: () => void;
+  onRun: (event: FormEvent<HTMLFormElement>) => void;
+  port: string;
+  result: NetworkDiagnosticResult | null;
+  running: boolean;
+  target: string;
+}) {
+  const selectedOption = networkDiagnosticOptions.find((option) => option.value === kind);
+  const SelectedIcon = selectedOption?.icon || Network;
+
+  if (!connection) {
+    return (
+      <div className="network-diagnostics">
+        <ToolboxEmptyState
+          icon={Network}
+          title="暂无 SSH 会话"
+          description="打开或切换到一个 SSH 会话后，可以从远端主机视角执行网络诊断。"
+        />
+      </div>
+    );
+  }
+
+  return (
+    <div className="network-diagnostics">
+      <header className="docker-tool-summary network-diagnostics-summary">
+        <div>
+          <strong>网络诊断</strong>
+          <span>{connection.name} · 从当前 SSH 主机执行</span>
+        </div>
+        <SelectedIcon className="ui-icon" aria-hidden="true" />
+      </header>
+
+      <form className="network-diagnostic-form" onSubmit={onRun}>
+        <div className="network-diagnostic-kind-grid" aria-label="诊断类型">
+          {networkDiagnosticOptions.map((option) => {
+            const Icon = option.icon;
+            return (
+              <button
+                className={kind === option.value ? "active" : ""}
+                key={option.value}
+                type="button"
+                onClick={() => onChangeKind(option.value)}
+              >
+                <Icon className="ui-icon" aria-hidden="true" />
+                {option.label}
+              </button>
+            );
+          })}
+        </div>
+
+        <label className="network-diagnostic-field">
+          <span>{kind === "http" ? "URL / 域名" : "目标主机"}</span>
+          <input
+            value={target}
+            onChange={(event) => onChangeTarget(event.target.value)}
+            placeholder={networkDiagnosticPlaceholder(kind)}
+            spellCheck={false}
+          />
+        </label>
+
+        {kind === "tcp" ? (
+          <label className="network-diagnostic-field">
+            <span>TCP 端口</span>
+            <input
+              inputMode="numeric"
+              min={1}
+              max={65535}
+              type="number"
+              value={port}
+              onChange={(event) => onChangePort(event.target.value)}
+              placeholder="443"
+            />
+          </label>
+        ) : null}
+
+        {error ? <div className="docker-inline-error">{error}</div> : null}
+
+        <div className="network-diagnostic-actions">
+          <button
+            className="toolbox-mini-button primary"
+            type="submit"
+            disabled={running}
+          >
+            {running ? (
+              <LoaderCircle className="ui-icon spin" aria-hidden="true" />
+            ) : (
+              <Play className="ui-icon" aria-hidden="true" />
+            )}
+            {running ? "运行中" : "运行诊断"}
+          </button>
+          <button
+            className="toolbox-mini-button"
+            type="button"
+            disabled={running}
+            onClick={onReset}
+          >
+            <Eraser className="ui-icon" aria-hidden="true" />
+            重置
+          </button>
+        </div>
+      </form>
+
+      <NetworkDiagnosticResultView result={result} onCopyOutput={onCopyOutput} />
+    </div>
+  );
+}
+
+function NetworkDiagnosticResultView({
+  onCopyOutput,
+  result,
+}: {
+  onCopyOutput: () => void;
+  result: NetworkDiagnosticResult | null;
+}) {
+  if (!result) {
+    return (
+      <ToolboxEmptyState
+        icon={RadioTower}
+        title="等待诊断"
+        description="选择类型并输入目标后运行，结果会显示摘要和原始输出。"
+      />
+    );
+  }
+
+  const stdout = result.stdout.trim();
+  const stderr = result.stderr.trim();
+
+  return (
+    <section className="network-diagnostic-result">
+      <header className="network-diagnostic-result-head">
+        <div>
+          <span className={`network-diagnostic-status ${result.ok ? "success" : "failed"}`}>
+            {result.ok ? "成功" : "失败"}
+          </span>
+          <strong>{networkDiagnosticLabel(result.kind)}</strong>
+        </div>
+        <button
+          className="toolbox-icon-button"
+          type="button"
+          aria-label="复制诊断输出"
+          onClick={onCopyOutput}
+        >
+          <Copy className="ui-icon" aria-hidden="true" />
+        </button>
+      </header>
+
+      <div className="network-diagnostic-facts">
+        <div>
+          <span>目标</span>
+          <code>{result.target}</code>
+        </div>
+        <div>
+          <span>耗时</span>
+          <code>{result.duration_ms.toString()} ms</code>
+        </div>
+        <div>
+          <span>退出码</span>
+          <code>{result.exit_status ?? "-"}</code>
+        </div>
+        <div>
+          <span>命令</span>
+          <code>{result.command_label}</code>
+        </div>
+      </div>
+
+      <p className="network-diagnostic-summary">{result.summary}</p>
+
+      <div className="network-diagnostic-output-grid">
+        <NetworkDiagnosticOutputBlock title="stdout" content={stdout} />
+        <NetworkDiagnosticOutputBlock title="stderr" content={stderr} />
+      </div>
+    </section>
+  );
+}
+
+function NetworkDiagnosticOutputBlock({
+  content,
+  title,
+}: {
+  content: string;
+  title: string;
+}) {
+  return (
+    <div className="network-diagnostic-output-block">
+      <span>{title}</span>
+      <pre>{content || "-"}</pre>
+    </div>
+  );
+}
+
 function isContainerRunning(container: DockerContainerSummary) {
   return normalizeState(container.state) === "running";
 }
@@ -3014,6 +3322,75 @@ function preferredDockerRunNetwork(networks: DockerNetworkSummary[]) {
   const bridge = networks.find((network) => network.name === "bridge");
   const first = bridge || networks[0];
   return first ? first.id || first.name : dockerRunDefaultNetworkValue;
+}
+
+function networkDiagnosticLabel(kind: NetworkDiagnosticKind) {
+  return networkDiagnosticOptions.find((option) => option.value === kind)?.label || kind;
+}
+
+function networkDiagnosticPlaceholder(kind: NetworkDiagnosticKind) {
+  switch (kind) {
+    case "ping":
+      return "example.com / 10.0.0.1";
+    case "tcp":
+      return "api.example.com / 10.0.0.10";
+    case "dns":
+      return "example.com";
+    case "trace":
+      return "example.com / 8.8.8.8";
+    case "http":
+      return "https://example.com/health";
+    default:
+      return "example.com";
+  }
+}
+
+function formatNetworkDiagnosticOutput(result: NetworkDiagnosticResult | null) {
+  if (!result) {
+    return "";
+  }
+  const parts = [
+    `${networkDiagnosticLabel(result.kind)} ${result.ok ? "success" : "failed"}`,
+    `target: ${result.target}`,
+    `duration_ms: ${result.duration_ms.toString()}`,
+    `exit_status: ${result.exit_status ?? "-"}`,
+    "",
+    "stdout:",
+    result.stdout.trim() || "-",
+    "",
+    "stderr:",
+    result.stderr.trim() || "-",
+  ];
+  return parts.join("\n");
+}
+
+function createPreviewNetworkDiagnosticResult(request: {
+  kind: NetworkDiagnosticKind;
+  target: string;
+  port?: number | null;
+}): NetworkDiagnosticResult {
+  const target =
+    request.kind === "http" && !/^https?:\/\//i.test(request.target)
+      ? `https://${request.target}`
+      : request.target;
+  const stdoutByKind: Record<NetworkDiagnosticKind, string> = {
+    ping: `PING ${target} (${target}) 56(84) bytes of data.\n64 bytes from ${target}: icmp_seq=1 ttl=56 time=18.4 ms\n64 bytes from ${target}: icmp_seq=2 ttl=56 time=18.1 ms\n\n--- ${target} ping statistics ---\n2 packets transmitted, 2 received, 0% packet loss`,
+    tcp: `Connection to ${target} ${String(request.port || 443)} port [tcp/https] succeeded!`,
+    dns: `93.184.216.34\n2606:2800:220:1:248:1893:25c8:1946`,
+    trace: ` 1?: [LOCALHOST]                      pmtu 1500\n 1:  gateway.local                         1.221ms\n 2:  edge.example.net                     12.884ms\n 3:  ${target}                            18.402ms reached`,
+    http: `HTTP/2 200\nserver: preview\ncontent-type: text/html; charset=utf-8`,
+  };
+  return {
+    kind: request.kind,
+    target,
+    command_label: request.kind,
+    ok: true,
+    exit_status: 0,
+    duration_ms: 42,
+    summary: "预览诊断完成。",
+    stdout: stdoutByKind[request.kind],
+    stderr: "",
+  };
 }
 
 function normalizeImageRunDraft(draft: DockerImageRunDraft): DockerImageRunRequest | string {
