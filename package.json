@@ -14,6 +14,9 @@
     "package:all": "node scripts/build-platform.mjs all",
     "test": "node -e \"console.log('frontend tests not configured yet')\"",
     "test:release": "node --test scripts/build-platform.test.mjs scripts/release-assets.test.mjs scripts/generate-latest-json.test.mjs",
+    "check:ironrdp-macos-prototype": "node scripts/check-ironrdp-macos-prototype.mjs",
+    "check:rdp-release-readiness": "node scripts/check-rdp-release-readiness.mjs",
+    "prototype:ironrdp-viewer": "node scripts/prototype-ironrdp-viewer.mjs",
     "preview": "vite preview",
     "tauri": "tauri",
     "tauri:dev": "tauri dev"

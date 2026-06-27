@@ -17,12 +17,17 @@ import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 
 import { AppSelect } from "../../shared/ui/AppSelect";
 import { ConfirmDialog } from "../../shared/ui/ConfirmDialog";
+import { usernameInputAttributes } from "../../shared/ui/inputAttributes";
 import {
   connectionRevealInlineSecret,
   rdpTestRunner,
   serialListPorts,
   vncTestRunner,
 } from "../../shared/tauri/commands";
+import {
+  getPlatformCapabilities,
+  resolveDesktopPlatform,
+} from "../../shared/tauri/platformCapabilities";
 import { hasTauriRuntime } from "../../shared/tauri/runtime";
 import type {
   ConnectionAuthKind,
@@ -56,9 +61,12 @@ import {
   defaultSerialConfig,
   defaultTelnetConfig,
   defaultVncConfig,
+  defaultRdpExternalRunnerForPlatform,
   formatRdpRunnerKind,
   formatVncRunnerKind,
   normalizeTerminalEncoding,
+  rdpExternalModeLabelForPlatform,
+  rdpExternalModeNoteForPlatform,
   terminalEncodingOptions,
   vncPerformancePresetDefaults,
 } from "./connectionTypes";
@@ -219,11 +227,6 @@ const rdpGatewayOptions: Array<{ label: string; value: RdpGatewayMode }> = [
   { label: "指定网关", value: "explicit" },
 ];
 
-const rdpRunnerModeOptions: Array<{ label: string; value: RdpRenderMode }> = [
-  { label: "内置宿主", value: "embedded" },
-  { label: "mstsc.exe 模式", value: "external" },
-];
-
 const rdpPerformanceOptions: Array<{ label: string; value: RdpPerformancePreset }> = [
   { label: "自动", value: "auto" },
   { label: "局域网", value: "lan" },
@@ -327,6 +330,33 @@ export function ConnectionDialog({
   const groupOptions = useMemo(
     () => buildGroupOptions(groups, form.group || ""),
     [form.group, groups],
+  );
+  const desktopPlatform = useMemo(() => resolveDesktopPlatform(), []);
+  const platformCapabilities = useMemo(
+    () => getPlatformCapabilities(desktopPlatform),
+    [desktopPlatform],
+  );
+  const defaultRdpExternalRunner = useMemo(
+    () => defaultRdpExternalRunnerForPlatform(desktopPlatform),
+    [desktopPlatform],
+  );
+  const rdpRunnerModeOptions = useMemo<Array<{ label: string; value: RdpRenderMode }>>(
+    () => {
+      const options: Array<{ label: string; value: RdpRenderMode }> = [];
+      if (platformCapabilities.supportsEmbeddedRdp) {
+        options.push({ label: "内置宿主", value: "embedded" });
+      }
+      options.push({
+        label: rdpExternalModeLabelForPlatform(desktopPlatform),
+        value: "external",
+      });
+      return options;
+    },
+    [desktopPlatform, platformCapabilities.supportsEmbeddedRdp],
+  );
+  const rdpExternalModeNote = useMemo(
+    () => rdpExternalModeNoteForPlatform(desktopPlatform),
+    [desktopPlatform],
   );
   const protocol = form.protocol || "ssh";
   const isRdp = protocol === "rdp";
@@ -461,13 +491,16 @@ export function ConnectionDialog({
       }
       const result = await rdpTestRunner((form.rdp || defaultRdpConfig).runner);
       if (result.default_runner) {
+        const availabilityDetail = `${formatRdpRunnerKind(result.default_runner)} 可用。${
+          result.supports_embedded
+            ? "当前平台支持嵌入式会话。"
+            : "嵌入式 host 暂不可用时会自动外部启动。"
+        }`;
         setTestState("success");
         setFeedback({
-          detail: `${formatRdpRunnerKind(result.default_runner)} 可用。${
-            result.supports_embedded
-              ? "当前平台支持嵌入式会话。"
-              : "嵌入式 host 暂不可用时会自动外部启动。"
-          }`,
+          detail: result.setup_hint
+            ? `${availabilityDetail}${result.setup_hint}`
+            : availabilityDetail,
           title: "RDP runner 检查通过",
         });
       } else {
@@ -1255,6 +1288,7 @@ export function ConnectionDialog({
               ) : (
                 <input
                   required
+                  {...usernameInputAttributes}
                   value={form.username}
                   onChange={(event) => setForm({ ...form, username: event.target.value })}
                   placeholder="vncuser"
@@ -1305,6 +1339,7 @@ export function ConnectionDialog({
                   <span>用户名</span>
                   <input
                     required
+                    {...usernameInputAttributes}
                     value={form.username}
                     onChange={(event) => setForm({ ...form, username: event.target.value })}
                     placeholder="administrator"
@@ -1471,6 +1506,7 @@ export function ConnectionDialog({
                   <span>用户名</span>
                   <input
                     required
+                    {...usernameInputAttributes}
                     value={form.username}
                     onChange={(event) => setForm({ ...form, username: event.target.value })}
                     placeholder="root"
@@ -1518,6 +1554,7 @@ export function ConnectionDialog({
                 <span>用户名</span>
                 <input
                   required
+                  {...usernameInputAttributes}
                   value={form.username}
                   onChange={(event) => setForm({ ...form, username: event.target.value })}
                   placeholder="root"
@@ -1756,6 +1793,7 @@ export function ConnectionDialog({
               <label>
                 <span>代理用户名</span>
                 <input
+                  {...usernameInputAttributes}
                   value={proxy.username || ""}
                   onChange={(event) =>
                     setForm({
@@ -1842,7 +1880,9 @@ export function ConnectionDialog({
     const rdp = withDefaultRdpConfig(form.rdp);
     const gatewayMode = rdp.gateway?.mode || "disabled";
     const runnerRenderMode: Exclude<RdpRenderMode, "custom"> =
-      rdp.runner.render_mode === "external" ? "external" : "embedded";
+      rdp.runner.render_mode === "external" || !platformCapabilities.supportsEmbeddedRdp
+        ? "external"
+        : "embedded";
     const fullScreenMode: RdpDisplayMode =
       rdp.display.mode === "windowed" ? "embedded" : rdp.display.mode;
     const resolutionMode = rdp.display.dynamic_resize ? "adaptive" : "fixed";
@@ -1864,7 +1904,8 @@ export function ConnectionDialog({
                     runner: {
                       ...rdp.runner,
                       render_mode: renderMode,
-                      preferred_runner: renderMode === "external" ? "mstsc" : undefined,
+                      preferred_runner:
+                        renderMode === "external" ? defaultRdpExternalRunner : undefined,
                       custom_executable: undefined,
                       custom_args_template: undefined,
                     },
@@ -1951,7 +1992,7 @@ export function ConnectionDialog({
           </div>
           {runnerRenderMode === "external" ? (
             <p className="connection-dialog-note connection-dialog-note-inline">
-              mstsc.exe 模式会通过系统远程桌面客户端打开，适合需要系统客户端兼容行为的场景。
+              {rdpExternalModeNote}
             </p>
           ) : null}
         </section>

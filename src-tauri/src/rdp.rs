@@ -402,8 +402,20 @@ pub fn probe_runner(request: RdpRunnerProbeRequest) -> Result<RdpRunnerProbeResu
             }
         }
         RdpPlatform::Macos => {
-            if default_runner.is_none() {
-                setup_hint = Some("macOS RDP 客户端适配将在后续按平台单独启用。".to_string());
+            if let Ok(macos_app) = select_macos_app_runner() {
+                available_runners.push(RdpRunnerKind::MacosApp);
+                if default_runner.is_none() {
+                    default_runner = Some(RdpRunnerKind::MacosApp);
+                    default_executable = Some(macos_app.executable.to_string_lossy().to_string());
+                    setup_hint = Some(match find_macos_rdp_app_name() {
+                        Some(app_name) => {
+                            format!("将使用 {app_name} 打开 .rdp 文件，凭据由客户端提示。")
+                        }
+                        None => "未检测到 Windows App / Microsoft Remote Desktop，将尝试系统默认 .rdp 处理程序；建议先安装官方 RDP 客户端。".to_string(),
+                    });
+                }
+            } else if default_runner.is_none() {
+                setup_hint = Some("未找到 macOS open 命令，无法启动系统 RDP 客户端。".to_string());
             }
         }
         RdpPlatform::Unknown => {
@@ -723,7 +735,8 @@ fn select_runner(rdp: &RdpConnectionConfig) -> Result<SelectedRunner, AppError> 
                 fallback_reason: None,
             })
         }
-        RdpPlatform::Macos | RdpPlatform::Unknown => select_custom_runner(&rdp.runner),
+        RdpPlatform::Macos => select_macos_app_runner(),
+        RdpPlatform::Unknown => select_custom_runner(&rdp.runner),
     }
 }
 
@@ -758,6 +771,28 @@ fn select_windows_mstsc_runner() -> Result<SelectedRunner, AppError> {
     })?;
     Ok(SelectedRunner {
         runner: RdpRunnerKind::Mstsc,
+        executable,
+        fallback_reason: None,
+    })
+}
+
+fn select_macos_app_runner() -> Result<SelectedRunner, AppError> {
+    let executable = PathBuf::from("/usr/bin/open");
+    let executable = if executable.is_file() {
+        executable
+    } else {
+        find_executable("open").ok_or_else(|| {
+            AppError::new(
+                "rdp_runner_missing",
+                "未找到 macOS open 命令。",
+                "open command is missing",
+                true,
+            )
+        })?
+    };
+
+    Ok(SelectedRunner {
+        runner: RdpRunnerKind::MacosApp,
         executable,
         fallback_reason: None,
     })
@@ -824,13 +859,8 @@ fn build_launch_plan(
         }),
         RdpRunnerKind::Mstsc => build_mstsc_plan(app, resolved, preview),
         RdpRunnerKind::Freerdp => build_freerdp_plan(resolved),
+        RdpRunnerKind::MacosApp => build_macos_app_plan(app, resolved, preview),
         RdpRunnerKind::Custom => build_custom_plan(app, resolved, preview),
-        RdpRunnerKind::MacosApp => Err(AppError::new(
-            "rdp_runner_unsupported",
-            "该 RDP runner 暂未启用。",
-            format!("runner={:?}", selected.runner),
-            true,
-        )),
     }
 }
 
@@ -901,6 +931,23 @@ fn build_freerdp_plan(resolved: &ResolvedRdpConnection) -> Result<LaunchPlan, Ap
             "外部 FreeRDP runner 将自行提示凭据，MXterm 不会通过命令行传递密码。".to_string(),
         ],
     })
+}
+
+fn build_macos_app_plan(
+    app: &AppHandle,
+    resolved: &ResolvedRdpConnection,
+    preview: bool,
+) -> Result<LaunchPlan, AppError> {
+    let mut plan = build_mstsc_plan(app, resolved, preview)?;
+    if let Some(path_arg) = plan.args.first().cloned() {
+        plan.args = macos_rdp_open_args(path_arg);
+    }
+    let client_label =
+        find_macos_rdp_app_name().unwrap_or_else(|| "系统默认 RDP 客户端".to_string());
+    plan.warnings.push(format!(
+        "macOS 将通过 {client_label} 打开 .rdp 文件，MXterm 不会通过命令行传递密码。"
+    ));
+    Ok(plan)
 }
 
 fn build_custom_plan(
@@ -1323,6 +1370,42 @@ fn find_windows_mstscax() -> Option<PathBuf> {
         .map(|root| root.join("System32").join("mstscax.dll"))
         .filter(|path| path.is_file())
         .or_else(|| find_first_executable(&["mstscax.dll"]))
+}
+
+fn find_macos_rdp_app_name() -> Option<String> {
+    ["Windows App", "Microsoft Remote Desktop"]
+        .into_iter()
+        .find(|name| macos_app_bundle_exists(name))
+        .map(str::to_string)
+}
+
+fn macos_app_bundle_exists(name: &str) -> bool {
+    let bundle_name = format!("{name}.app");
+    macos_application_dirs()
+        .into_iter()
+        .any(|dir| dir.join(&bundle_name).is_dir())
+}
+
+fn macos_application_dirs() -> Vec<PathBuf> {
+    let mut dirs = vec![
+        PathBuf::from("/Applications"),
+        PathBuf::from("/System/Applications"),
+    ];
+    if let Some(home) = env::var_os("HOME") {
+        dirs.push(PathBuf::from(home).join("Applications"));
+    }
+    dirs
+}
+
+fn macos_rdp_open_args(path_arg: String) -> Vec<String> {
+    macos_rdp_open_args_with_app(path_arg, find_macos_rdp_app_name())
+}
+
+fn macos_rdp_open_args_with_app(path_arg: String, app_name: Option<String>) -> Vec<String> {
+    if let Some(app_name) = app_name {
+        return vec!["-a".to_string(), app_name, path_arg];
+    }
+    vec![path_arg]
 }
 
 fn find_custom_executable(value: &str) -> Option<PathBuf> {
@@ -5266,7 +5349,7 @@ fn with_activex_control_context(control_name: &str, stage: &str, error: AppError
 
 #[cfg(test)]
 mod tests {
-    use super::serialize_rdp_file;
+    use super::{macos_rdp_open_args_with_app, serialize_rdp_file};
     use crate::connections::{
         ConnectionAdvancedConfig, ConnectionCredentialMode, ConnectionJumpConfig,
         ConnectionProfile, ConnectionProtocol, ConnectionProxyConfig, RdpCertificatePolicy,
@@ -5380,5 +5463,22 @@ mod tests {
         assert!(content.contains("allow desktop composition:i:0\r\n"));
         assert!(content.contains("disable themes:i:1\r\n"));
         assert!(content.contains("disable cursor setting:i:1\r\n"));
+    }
+
+    #[test]
+    fn macos_rdp_open_args_target_official_client_when_found() {
+        let args = macos_rdp_open_args_with_app(
+            "/tmp/example.rdp".to_string(),
+            Some("Windows App".to_string()),
+        );
+
+        assert_eq!(args, vec!["-a", "Windows App", "/tmp/example.rdp"]);
+    }
+
+    #[test]
+    fn macos_rdp_open_args_fall_back_to_default_handler() {
+        let args = macos_rdp_open_args_with_app("/tmp/example.rdp".to_string(), None);
+
+        assert_eq!(args, vec!["/tmp/example.rdp"]);
     }
 }

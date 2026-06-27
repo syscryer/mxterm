@@ -2406,6 +2406,7 @@ button {
   border-bottom: 1px solid var(--mx-line);
   background: var(--mx-title);
   backdrop-filter: blur(14px) saturate(1.18);
+  cursor: default;
   user-select: none;
 }
 
@@ -2610,6 +2611,10 @@ button {
 .window-control.close:hover {
   color: #ffffff;
   background: #d83b3b;
+}
+
+.macos-traffic-lights {
+  display: none;
 }
 
 .right-collapse-button {
@@ -5037,6 +5042,7 @@ button {
 .terminal-workbench-pane[data-terminal-tone="dark"] .terminal-subtabs {
   border-bottom: 1px solid rgb(15 23 42 / 6%);
   background: var(--mx-panel);
+  background-clip: padding-box;
   box-shadow: none;
   backdrop-filter: none;
   -webkit-backdrop-filter: none;
@@ -5266,6 +5272,10 @@ button {
   background:
     linear-gradient(90deg, transparent, color-mix(in srgb, var(--mx-panel) 82%, transparent) 8px),
     color-mix(in srgb, var(--mx-panel) 76%, transparent);
+}
+
+.terminal-workbench-pane[data-terminal-tone="dark"] .terminal-subtab-actions {
+  background: transparent;
 }
 
 .command-sender-toggle.active {
@@ -13342,6 +13352,11 @@ body {
   background: transparent;
 }
 
+.app-shell[data-platform="macos"] {
+  border-radius: var(--mx-window-corner-radius);
+  overflow: hidden;
+}
+
 .app-shell::before {
   content: "";
   position: absolute;
@@ -13350,6 +13365,20 @@ body {
   background:
     linear-gradient(180deg, var(--mx-chrome-glow), transparent 58%),
     var(--mx-chrome-fill);
+  pointer-events: none;
+}
+
+.app-shell[data-platform="macos"]::before {
+  border-radius: inherit;
+}
+
+.app-shell[data-platform="macos"]::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 30;
+  border-radius: inherit;
+  box-shadow: inset 0 0 0 1px var(--mx-chrome-line);
   pointer-events: none;
 }
 
@@ -13372,12 +13401,113 @@ body {
   z-index: 1;
 }
 
+.app-shell[data-platform="macos"] .macos-traffic-lights {
+  position: absolute;
+  top: 0;
+  left: 13px;
+  z-index: 2;
+  height: 36px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.app-shell[data-platform="macos"] .macos-traffic-light {
+  position: relative;
+  width: 12px;
+  height: 12px;
+  border: 0;
+  border-radius: 999px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  background: var(--mx-macos-traffic-close);
+  box-shadow: none;
+}
+
+.app-shell[data-platform="macos"] .macos-traffic-light.minimize {
+  background: var(--mx-macos-traffic-minimize);
+}
+
+.app-shell[data-platform="macos"] .macos-traffic-light.zoom {
+  background: var(--mx-macos-traffic-zoom);
+}
+
+.app-shell[data-platform="macos"] .macos-traffic-light::before,
+.app-shell[data-platform="macos"] .macos-traffic-light::after {
+  content: "";
+  position: absolute;
+  border-radius: 999px;
+  background: var(--mx-macos-traffic-glyph);
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+
+.app-shell[data-platform="macos"] .macos-traffic-lights:hover .macos-traffic-light::before,
+.app-shell[data-platform="macos"] .macos-traffic-lights:hover .macos-traffic-light::after,
+.app-shell[data-platform="macos"] .macos-traffic-light:focus-visible::before,
+.app-shell[data-platform="macos"] .macos-traffic-light:focus-visible::after {
+  opacity: 0.72;
+}
+
+.app-shell[data-platform="macos"] .macos-traffic-light.close::before,
+.app-shell[data-platform="macos"] .macos-traffic-light.close::after {
+  width: 6px;
+  height: 1.4px;
+}
+
+.app-shell[data-platform="macos"] .macos-traffic-light.close::before {
+  transform: rotate(45deg);
+}
+
+.app-shell[data-platform="macos"] .macos-traffic-light.close::after {
+  transform: rotate(-45deg);
+}
+
+.app-shell[data-platform="macos"] .macos-traffic-light.minimize::before {
+  width: 6px;
+  height: 1.4px;
+}
+
+.app-shell[data-platform="macos"] .macos-traffic-light.minimize::after {
+  content: none;
+}
+
+.app-shell[data-platform="macos"] .macos-traffic-light.zoom::before {
+  width: 6px;
+  height: 1.4px;
+}
+
+.app-shell[data-platform="macos"] .macos-traffic-light.zoom::after {
+  width: 1.4px;
+  height: 6px;
+}
+
+.app-shell[data-platform="macos"] .macos-traffic-light:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--mx-primary) 55%, transparent);
+  outline-offset: 2px;
+}
+
 .app-shell[data-window-material="auto"] .custom-titlebar {
   background: var(--mx-sidebar-surface);
 }
 
 .title-leading {
   border-right-color: transparent;
+}
+
+.app-shell[data-platform="macos"] .title-leading {
+  padding-left: 74px;
+}
+
+.app-shell[data-platform="macos"] .title-pane-toggle .title-tool-icon {
+  width: 19px;
+  height: 19px;
+  stroke-width: 1.2;
+}
+
+.app-shell[data-platform="macos"][data-left-collapsed="true"] {
+  --title-left-width: 118px;
 }
 
 .title-sidebar-tools {
@@ -13399,6 +13529,10 @@ body {
 
 .window-control:hover {
   background: var(--mx-sidebar-hover);
+}
+
+.app-shell[data-platform="macos"] .window-controls {
+  display: none;
 }
 
 .workspace-shell,
@@ -13546,6 +13680,27 @@ body {
 
 .settings-sidebar {
   background: transparent;
+}
+
+.app-shell[data-platform="macos"] :where(.main-workbench, .connection-home-body) {
+  background: transparent;
+}
+
+.app-shell[data-platform="macos"] :where(.connection-home, .connection-step-page, .settings-content) {
+  background: var(--mx-material-panel, var(--mx-panel));
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+.app-shell[data-platform="macos"] .session-workbench {
+  background:
+    linear-gradient(
+      to bottom,
+      var(--mx-panel) 0 var(--terminal-glassbar-height),
+      var(--mx-terminal) var(--terminal-glassbar-height) 100%
+    );
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
 }
 
 .settings-nav-item.active {
