@@ -160,6 +160,16 @@ Ant Design, Mantine, or similar libraries just to fix one modal or button.
   terminal output, tables, and forms remain readable. When a settings navigation
   rail needs the same behavior as the workspace connection rail, add the shared
   `app-sidebar` class instead of creating a separate settings-only skin.
+- macOS window chrome keeps Tauri decorations disabled and uses custom traffic
+  lights inside `AppTitlebar`. Scope traffic-light layout, rounded transparent
+  window clipping, and hidden right-side window controls to
+  `.app-shell[data-platform="macos"]` so Windows keeps its existing Mica/custom
+  control behavior. Do not switch macOS to a native decorated titlebar without a
+  design review because it changes the app tabbar and window-layout contract.
+- macOS transparent-window glass should prefer the native Tauri window material
+  plus token-driven translucent fills. Avoid large-area CSS `backdrop-filter`
+  blur on the root chrome, sidebars, or content panels; it can trigger visible
+  resampling/shimmer during live window drag on macOS.
 - For the codem-style Windows material effect, prefer transparent chrome
   surfaces over tinted sidebar panels: Mica, Acrylic, and Mica Alt should let
   `.custom-titlebar` and `.app-sidebar` reveal the native/root material layer,
@@ -453,6 +463,10 @@ Ant Design, Mantine, or similar libraries just to fix one modal or button.
 - Do not spread window material backgrounds across every card, table, dialog, or
   settings panel. The material mode should be visible in the app chrome, while
   dense work surfaces stay opaque enough to read.
+- Do not let broad macOS workspace containers such as `.connection-home-body`
+  or `.main-workbench` carry a full `--mx-panel` fill. Put the glass/material on
+  the shared outer surface, then keep tables, cards, forms, and terminal panes
+  readable with the normal panel/terminal tokens.
 
 ## Performance Boundaries
 

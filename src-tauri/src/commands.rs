@@ -2740,6 +2740,7 @@ fn window_material_info(id: i32) -> WindowMaterial {
         2 => "Mica",
         3 => "Acrylic",
         4 => "Mica Alt",
+        10 => "macOS Glass",
         _ => "Auto",
     };
 
@@ -2839,7 +2840,69 @@ mod window_material {
     }
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "macos")]
+mod window_material {
+    use super::{window_material_info, WindowMaterial};
+    use tauri::{
+        window::{Effect, EffectState, EffectsBuilder},
+        Manager,
+    };
+
+    const MACOS_GLASS_MATERIAL: i32 = 10;
+
+    pub fn supported_window_materials() -> Vec<WindowMaterial> {
+        vec![
+            window_material_info(0),
+            window_material_info(MACOS_GLASS_MATERIAL),
+        ]
+    }
+
+    pub fn set_window_material(
+        app: &tauri::AppHandle,
+        material: i32,
+    ) -> Result<WindowMaterial, String> {
+        let material = normalize_material(material)?;
+        let window = app
+            .get_webview_window("main")
+            .ok_or_else(|| "main window not found".to_string())?;
+        // On macOS the window layer accepts transparency, while WebView background
+        // updates can report unsupported after the window layer has been applied.
+        let _ = window.set_background_color(None);
+
+        match material {
+            0 => window
+                .set_effects(
+                    EffectsBuilder::new()
+                        .effect(Effect::UnderWindowBackground)
+                        .state(EffectState::FollowsWindowActiveState)
+                        .radius(12.0)
+                        .build(),
+                )
+                .map_err(|error| format!("set macOS default vibrancy failed: {error}"))?,
+            MACOS_GLASS_MATERIAL => window
+                .set_effects(
+                    EffectsBuilder::new()
+                        .effect(Effect::UnderWindowBackground)
+                        .state(EffectState::FollowsWindowActiveState)
+                        .radius(12.0)
+                        .build(),
+                )
+                .map_err(|error| format!("set macOS vibrancy failed: {error}"))?,
+            _ => unreachable!("material is normalized before applying"),
+        }
+
+        Ok(window_material_info(material))
+    }
+
+    fn normalize_material(material: i32) -> Result<i32, String> {
+        match material {
+            0 | MACOS_GLASS_MATERIAL => Ok(material),
+            _ => Err(format!("unsupported macOS window material: {material}")),
+        }
+    }
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
 mod window_material {
     use super::{window_material_info, WindowMaterial};
 

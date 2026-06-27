@@ -1655,6 +1655,7 @@ Material ids:
 2 => "Mica"
 3 => "Acrylic"
 4 => "Mica Alt"
+10 => "macOS Glass"
 ```
 
 Frontend string mapping:
@@ -1664,6 +1665,7 @@ auto = 0
 mica = 2
 acrylic = 3
 micaAlt = 4
+macosGlass = 10
 ```
 
 ### 3. Contracts
@@ -1672,7 +1674,8 @@ micaAlt = 4
 - `WindowMaterial.id` is the only cross-layer machine-readable value; `name` is display/debug metadata and must not be parsed by React.
 - Windows support uses DWM `DWMWA_SYSTEMBACKDROP_TYPE`. Keep Windows-only dependencies under `[target.'cfg(windows)'.dependencies]`.
 - Windows should expose `auto` on every build and add `mica`, `acrylic`, and `micaAlt` only when the OS build supports DWM system backdrop types.
-- Non-Windows platforms return only `auto` from `get_supported_window_materials` and reject non-`auto` values from `set_window_material`.
+- macOS should expose `auto` plus `macosGlass`. Both must keep the WebView/window transparent and apply a native `UnderWindowBackground` effect through Tauri; this requires `app.macOSPrivateApi = true` and the `tauri` `macos-private-api` feature.
+- Linux/unknown platforms return only `auto` from `get_supported_window_materials` and reject non-`auto` values from `set_window_material`.
 - Invalid numeric material ids must be rejected before calling platform APIs.
 - Native material failure is recoverable and should return an `AppError` with code `window_material_set_failed`.
 - CSS material tokens remain the visual fallback. Backend command failure must not prevent the app from rendering.
@@ -1683,15 +1686,17 @@ micaAlt = 4
 | --- | --- | --- |
 | `get_supported_window_materials` on unsupported platform | Returns `[Auto]` | n/a |
 | `set_window_material` with `0` on unsupported platform | Returns `Auto` | n/a |
-| `set_window_material` with `2`, `3`, or `4` on unsupported platform | `window_material_set_failed` | true |
+| `set_window_material` with `2`, `3`, `4`, or `10` on unsupported platform | `window_material_set_failed` | true |
+| `set_window_material` with `10` on macOS | Applies `UnderWindowBackground` and returns `macOS Glass` | n/a |
 | `set_window_material` with any unknown id | `window_material_set_failed` | true |
 | Main window handle cannot be resolved | `window_material_set_failed` | true |
-| DWM backdrop call fails | `window_material_set_failed` | true |
+| DWM/window effect call fails | `window_material_set_failed` | true |
 
 ### 5. Good / Base / Bad Cases
 
 - Good: Windows 11 build supporting DWM backdrop returns ids `0`, `2`, `3`, and `4`; React chooses `mica`, sends `2`, and Rust applies `DWMWA_SYSTEMBACKDROP_TYPE`.
-- Good: non-Windows returns only `auto`; React normalizes a previously saved `mica` setting to `auto` and does not keep retrying unsupported native material.
+- Good: macOS returns ids `0` and `10`; React chooses `macosGlass`, sends `10`, and Rust applies the native transparent window effect without enabling Windows-only DWM code.
+- Good: Linux returns only `auto`; React normalizes a previously saved `mica` setting to `auto` and does not keep retrying unsupported native material.
 - Base: browser preview has no Tauri runtime; no backend command is called, and CSS fallback still uses `data-window-material`.
 - Bad: backend returns `"Mica"` as the only payload, accepts arbitrary integer ids, registers the command in Rust but not the frontend wrapper, or adds Windows dependencies as unconditional cross-platform dependencies.
 
@@ -1700,6 +1705,7 @@ micaAlt = 4
 - Run `cargo check --manifest-path src-tauri/Cargo.toml` after changing command registration, material ids, Windows dependencies, or platform modules.
 - Run `pnpm check` after changing frontend wrappers or `WindowMaterialMode`.
 - Run `npm run build` after changing CSS material tokens or settings UI.
+- Run the release-readiness guard that covers platform window config after changing `src-tauri/tauri*.conf.json`.
 - Cross-check backend ids against `windowMaterialIds` in `src/shared/tauri/windowMaterial.ts` in the same task.
 - Add unit or integration tests if material support logic gains more platforms or more complex OS-version branching.
 

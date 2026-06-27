@@ -44,6 +44,7 @@ import {
 import { AppSelect } from "../../shared/ui/AppSelect";
 import { Tooltip } from "../../shared/ui/Tooltip";
 import { ConfirmDialog } from "../../shared/ui/ConfirmDialog";
+import { usernameInputAttributes } from "../../shared/ui/inputAttributes";
 import {
   selectLocalDownloadDirectory,
   selectLocalPrivateKeyFile,
@@ -1245,6 +1246,7 @@ function CredentialSettingsSection({
               <span>用户名</span>
               <input
                 className="settings-input"
+                {...usernameInputAttributes}
                 value={form.username || ""}
                 placeholder="例如：root、deploy"
                 aria-label="账号用户名"
