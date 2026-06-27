@@ -6,16 +6,8 @@ import { pathToFileURL } from "node:url";
 
 const updaterTargets = [
   {
-    platform: "windows-x86_64",
-    match: (fileName) => fileName.endsWith("-windows-x64.exe"),
-  },
-  {
     platform: "darwin-aarch64",
     match: (fileName) => fileName.endsWith("-macos-arm64.app.tar.gz"),
-  },
-  {
-    platform: "linux-x86_64",
-    match: (fileName) => fileName.endsWith("-linux-x64.AppImage"),
   },
 ];
 
