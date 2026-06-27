@@ -463,12 +463,18 @@ Ant Design, Mantine, or similar libraries just to fix one modal or button.
   workspace module graph before that startup work. Load the app shell
   dynamically, restore/show the current window through shared Tauri helpers, and
   keep first-visible theme data on `document.body` in sync with
-  `WorkspaceShell`.
+  `WorkspaceShell`. After the window state is restored, `main.tsx` should render
+  only the lightweight `App` shell; route/view modules such as `WorkspaceShell`
+  and VNC runner should be `React.lazy` components inside `App` so the remembered
+  window can appear before the full workspace chunk finishes parsing.
 - Heavy feature dependencies and large static datasets must stay out of the
   startup path. Use dynamic imports at the first real feature boundary, or an
   idle-task preload after the initial workspace has settled. Do not import
   rarely used viewers, editors, or catalog-sized settings data at
-  `WorkspaceShell` module scope.
+  `WorkspaceShell` module scope. Keep `TerminalPanel` and xterm addons out of
+  `WorkspaceShell` module scope as well; wrap terminal render sites in
+  `Suspense` and use the existing terminal status panels as fallback so warmup
+  output handoff remains owned by the mounted terminal panel.
 - `src/features/settings/terminalColorSchemes.ts` is the lightweight contract for
   terminal themes: it may inline the default fallback and helper functions, but
   the full `terminalColorSchemesData.ts` catalog must only load through

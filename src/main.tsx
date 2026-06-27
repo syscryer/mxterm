@@ -16,7 +16,9 @@ async function bootstrap() {
   const appReady = import("./App");
 
   const [, { default: App }] = await Promise.all([windowStateReady, appReady]);
-  ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(<App />);
+  ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
+    <App />,
+  );
 
   window.requestAnimationFrame(() => {
     void showCurrentWindow();
