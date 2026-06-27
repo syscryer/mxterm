@@ -18,7 +18,6 @@ import { openPath, revealItemInDir } from "@tauri-apps/plugin-opener";
 import { getCurrentWebview, type DragDropEvent } from "@tauri-apps/api/webview";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import type { IWindowsPty } from "@xterm/xterm";
-import type RFB from "@novnc/novnc";
 import { createPortal } from "react-dom";
 import {
   AlertTriangle,
@@ -71,9 +70,9 @@ import type {
   RdpLaunchPreview,
   RdpLaunchResult,
   RdpRunnerKind,
-  VncConnectionConfig,
   VncLaunchPreview,
   VncLaunchResult,
+  VncRunnerWindowPayload,
   VncRunnerKind,
 } from "../connections/connectionTypes";
 import {
@@ -211,9 +210,15 @@ import {
 } from "../../shared/tauri/commands";
 import { selectLocalUploadDirectories, selectLocalUploadFiles } from "../../shared/tauri/dialog";
 import {
+  emitVncRunnerWindowCloseRequest,
+  emitVncRunnerWindowPayload,
   listenRemoteFileTransferProgress,
   listenRdpSessionClosed,
   listenTerminalOutput,
+  listenVncRunnerWindowClosed,
+  listenVncRunnerWindowError,
+  listenVncRunnerWindowMessage,
+  listenVncRunnerWindowReady,
 } from "../../shared/tauri/events";
 import { hasTauriRuntime } from "../../shared/tauri/runtime";
 import {
@@ -226,6 +231,10 @@ import {
 import { initializeWindowStatePersistence } from "../../shared/tauri/windowState";
 import { Tooltip } from "../../shared/ui/Tooltip";
 import { AppTitlebar } from "./AppTitlebar";
+import {
+  connectionInfoFromVncProfile,
+  VncViewerSurface,
+} from "./VncViewerSurface";
 import {
   LocalTerminalIcon,
   localTerminalTitle,
@@ -244,6 +253,8 @@ type SerialConnectionProfile = ConnectionProfile & { protocol: "serial" };
 type SshConnectionProfile = ConnectionProfile & {
   protocol?: "ssh" | null | undefined;
 };
+
+const VNC_RUNNER_HOST_WINDOW_LABEL = "vnc-runner-host";
 
 interface TerminalTab {
   connectionStep?: ConnectionStepState | null;
@@ -273,7 +284,7 @@ interface RdpSessionTab {
   title: string;
 }
 
-type VncSessionStatus = "launching" | "embedded" | "external" | "error";
+type VncSessionStatus = "launching" | "embedded" | "windowed" | "external" | "error";
 
 interface VncSessionTab {
   connectionId: string;
@@ -285,6 +296,7 @@ interface VncSessionTab {
   result?: VncLaunchResult | null;
   status: VncSessionStatus;
   title: string;
+  windowLabel?: string | null;
 }
 
 interface ConnectionSessionSummary {
@@ -600,6 +612,8 @@ export function WorkspaceShell() {
   const rdpSessionsRef = useRef<RdpSessionTab[]>([]);
   const [vncSessions, setVncSessions] = useState<VncSessionTab[]>([]);
   const vncSessionsRef = useRef<VncSessionTab[]>([]);
+  const pendingVncRunnerWindowPayloadsRef = useRef(new Map<string, VncRunnerWindowPayload>());
+  const vncRunnerWindowReadyRef = useRef(false);
   const rdpEmbeddedViewportRefs = useRef(new Map<string, HTMLDivElement>());
   const [activeRdpSessionId, setActiveRdpSessionId] = useState<string | null>(null);
   const [activeVncSessionId, setActiveVncSessionId] = useState<string | null>(null);
@@ -1527,6 +1541,78 @@ export function WorkspaceShell() {
       unlisten?.();
     };
   }, [activeConnectionId, activeRdpSessionId, activeWorkspaceMode, remoteFileTabs.length]);
+
+  useEffect(() => {
+    if (!hasTauriRuntime()) {
+      return;
+    }
+
+    let disposed = false;
+    const unlisteners: Array<() => void> = [];
+
+    void Promise.all([
+      listenVncRunnerWindowReady((event) => {
+        if (disposed) {
+          return;
+        }
+        vncRunnerWindowReadyRef.current = true;
+        pendingVncRunnerWindowPayloadsRef.current.forEach((payload, sessionId) => {
+          if (payload.window_label !== event.window_label) {
+            return;
+          }
+          void emitVncRunnerWindowPayload(event.window_label, payload)
+            .then(() => {
+              pendingVncRunnerWindowPayloadsRef.current.delete(sessionId);
+            })
+            .catch(() => undefined);
+        });
+      }),
+      listenVncRunnerWindowClosed((event) => {
+        if (disposed) {
+          return;
+        }
+        pendingVncRunnerWindowPayloadsRef.current.delete(event.workspace_session_id);
+        closeVncSessions([event.workspace_session_id], { notifyRunnerWindow: false });
+      }),
+      listenVncRunnerWindowMessage((event) => {
+        if (disposed || !vncSessionExists(event.workspace_session_id)) {
+          return;
+        }
+        updateVncSession(event.workspace_session_id, (session) => ({
+          ...session,
+          message: event.message,
+        }));
+      }),
+      listenVncRunnerWindowError((event) => {
+        if (disposed || !vncSessionExists(event.workspace_session_id)) {
+          return;
+        }
+        const session = vncSessionsRef.current.find(
+          (item) => item.id === event.workspace_session_id,
+        );
+        if (session?.result?.session_id) {
+          void vncCloseSession(session.result.session_id).catch(() => undefined);
+        }
+        updateVncSession(event.workspace_session_id, (current) => ({
+          ...current,
+          error: event.message,
+          message: null,
+          status: "error",
+        }));
+      }),
+    ]).then((cleanups) => {
+      if (disposed) {
+        cleanups.forEach((cleanup) => cleanup());
+      } else {
+        unlisteners.push(...cleanups);
+      }
+    });
+
+    return () => {
+      disposed = true;
+      unlisteners.forEach((unlisten) => unlisten());
+    };
+  }, [activeConnectionId, activeVncSessionId, activeWorkspaceMode, remoteFileTabs.length]);
 
   useEffect(() => {
     if (!hasTauriRuntime()) {
@@ -4767,13 +4853,18 @@ export function WorkspaceShell() {
   }
 
   async function runVncSession(sessionId: string, connection: ConnectionProfile) {
+    const renderMode = connection.vnc?.runner.render_mode || defaultVncConfig.runner.render_mode;
+    const openInRunnerHost = renderMode === "windowed";
     updateVncSession(sessionId, (session) => ({
       ...session,
       error: null,
-      message: "正在创建 VNC 本地桥接并启动 noVNC。",
+      message: openInRunnerHost
+        ? "正在创建 VNC 本地桥接并打开 runner host。"
+        : "正在创建 VNC 本地桥接并启动 noVNC。",
       preview: null,
       result: null,
       status: "launching",
+      windowLabel: null,
     }));
 
     if (!hasTauriRuntime()) {
@@ -4783,9 +4874,11 @@ export function WorkspaceShell() {
       }
       updateVncSession(sessionId, (session) => ({
         ...session,
-        message: "浏览器预览模式不会创建 VNC 桥接，真实运行时会打开 noVNC 内嵌画面。",
+        message: openInRunnerHost
+          ? "浏览器预览模式不会创建 VNC 桥接，真实运行时会打开 VNC runner host。"
+          : "浏览器预览模式不会创建 VNC 桥接，真实运行时会打开 noVNC 内嵌画面。",
         preview: previewVncLaunchForBrowser(connection),
-        status: "external",
+        status: openInRunnerHost ? "windowed" : "external",
       }));
       void markConnected(connection.id);
       return;
@@ -4799,6 +4892,38 @@ export function WorkspaceShell() {
         }
         return;
       }
+      if (result.embedded && openInRunnerHost) {
+        try {
+          const windowLabel = await openVncRunnerHostWindow(sessionId, connection, result);
+          if (!vncSessionExists(sessionId)) {
+            await vncCloseSession(result.session_id).catch(() => undefined);
+            void emitVncRunnerWindowCloseRequest(windowLabel, {
+              window_label: windowLabel,
+              workspace_session_id: sessionId,
+            }).catch(() => undefined);
+            return;
+          }
+          updateVncSession(sessionId, (session) => ({
+            ...session,
+            error: null,
+            message: result.fallback_reason || "VNC 画面已交给 RDP 风格 runner host。",
+            result,
+            status: "windowed",
+            windowLabel,
+          }));
+          void markConnected(connection.id);
+          return;
+        } catch (error) {
+          await vncCloseSession(result.session_id).catch(() => undefined);
+          updateVncSession(sessionId, (session) => ({
+            ...session,
+            error: `VNC runner host 打开失败：${formatDetailedError(error)}`,
+            message: null,
+            status: "error",
+          }));
+          return;
+        }
+      }
       updateVncSession(sessionId, (session) => ({
         ...session,
         error: null,
@@ -4809,6 +4934,7 @@ export function WorkspaceShell() {
             : "VNC 客户端已启动，凭据由客户端提示。"),
         result,
         status: result.embedded ? "embedded" : "external",
+        windowLabel: null,
       }));
       void markConnected(connection.id);
     } catch (error) {
@@ -4822,6 +4948,60 @@ export function WorkspaceShell() {
         status: "error",
       }));
     }
+  }
+
+  async function openVncRunnerHostWindow(
+    sessionId: string,
+    connection: ConnectionProfile,
+    result: VncLaunchResult,
+  ) {
+    const { WebviewWindow } = await import("@tauri-apps/api/webviewWindow");
+    const windowLabel = VNC_RUNNER_HOST_WINDOW_LABEL;
+    const payload: VncRunnerWindowPayload = {
+      config: connection.vnc || defaultVncConfig,
+      connection: connectionInfoFromVncProfile(connection) || {
+        host: connection.host,
+        name: connection.name,
+        port: connection.port || 5900,
+        username: connection.username,
+      },
+      result,
+      window_label: windowLabel,
+      workspace_session_id: sessionId,
+    };
+    pendingVncRunnerWindowPayloadsRef.current.set(sessionId, payload);
+
+    let host = await WebviewWindow.getByLabel(windowLabel);
+    if (!host) {
+      vncRunnerWindowReadyRef.current = false;
+      host = new WebviewWindow(windowLabel, {
+        center: true,
+        decorations: false,
+        focus: true,
+        height: 820,
+        minHeight: 480,
+        minWidth: 720,
+        parent: "main",
+        resizable: true,
+        title: "mXterm VNC",
+        url: vncRunnerWindowUrl(),
+        visible: true,
+        width: 1280,
+      });
+      await waitForWebviewWindowCreation(host);
+    } else {
+      vncRunnerWindowReadyRef.current = true;
+      await host.unminimize().catch(() => undefined);
+      await host.show().catch(() => undefined);
+      await host.setFocus().catch(() => undefined);
+    }
+
+    if (vncRunnerWindowReadyRef.current) {
+      await emitVncRunnerWindowPayload(windowLabel, payload);
+      pendingVncRunnerWindowPayloadsRef.current.delete(sessionId);
+    }
+
+    return windowLabel;
   }
 
   async function previewVncSessionLaunch(sessionId: string) {
@@ -4931,18 +5111,31 @@ export function WorkspaceShell() {
     });
   }
 
-  function closeVncSessions(sessionIds: string[]) {
+  function closeVncSessions(
+    sessionIds: string[],
+    options: { notifyRunnerWindow?: boolean } = {},
+  ) {
     if (sessionIds.length === 0) {
       return;
     }
 
+    const notifyRunnerWindow = options.notifyRunnerWindow ?? true;
     const closingIds = new Set(sessionIds);
     const closingSessions = vncSessionsRef.current.filter((session) => closingIds.has(session.id));
+    closingSessions.forEach((session) => {
+      pendingVncRunnerWindowPayloadsRef.current.delete(session.id);
+    });
     if (hasTauriRuntime()) {
       closingSessions.forEach((session) => {
         const backendSessionId = session.result?.session_id;
         if (backendSessionId) {
           void vncCloseSession(backendSessionId).catch(() => undefined);
+        }
+        if (notifyRunnerWindow && session.windowLabel) {
+          void emitVncRunnerWindowCloseRequest(session.windowLabel, {
+            window_label: session.windowLabel,
+            workspace_session_id: session.id,
+          }).catch(() => undefined);
         }
       });
     }
@@ -6863,14 +7056,17 @@ export function WorkspaceShell() {
                           message,
                         }))
                       }
-                      onError={(message) =>
+                      onError={(message) => {
+                        if (session.result?.session_id) {
+                          void vncCloseSession(session.result.session_id).catch(() => undefined);
+                        }
                         updateVncSession(session.id, (current) => ({
                           ...current,
                           error: message,
                           message: null,
                           status: "error",
-                        }))
-                      }
+                        }));
+                      }}
                       onPreview={() => void previewVncSessionLaunch(session.id)}
                       onRetry={() => retryVncSession(session.id)}
                     />
@@ -8354,7 +8550,7 @@ function VncSessionStatusPanel({
                 <Loader2 className="ui-icon spin" />
               ) : session.status === "error" ? (
                 <CircleAlert className="ui-icon" />
-              ) : session.status === "embedded" ? (
+              ) : session.status === "embedded" || session.status === "windowed" ? (
                 <MonitorPlay className="ui-icon" />
               ) : (
                 <ExternalLink className="ui-icon" />
@@ -8404,10 +8600,10 @@ function VncSessionStatusPanel({
         ) : null}
 
         {showEmbeddedViewer && session.result ? (
-          <VncEmbeddedViewer
+          <VncViewerSurface
             active={active}
             config={config}
-            connection={connection}
+            connection={connectionInfoFromVncProfile(connection)}
             result={session.result}
             onError={onError}
             onMessage={onMessage}
@@ -8430,235 +8626,6 @@ function VncSessionStatusPanel({
         )}
       </div>
     </section>
-  );
-}
-
-function VncEmbeddedViewer({
-  active,
-  config,
-  connection,
-  result,
-  onError,
-  onMessage,
-}: {
-  active: boolean;
-  config: VncConnectionConfig;
-  connection: ConnectionProfile | null;
-  result: VncLaunchResult;
-  onError: (message: string) => void;
-  onMessage: (message: string) => void;
-}) {
-  const mountRef = useRef<HTMLDivElement | null>(null);
-  const rfbRef = useRef<RFB | null>(null);
-  const onErrorRef = useRef(onError);
-  const onMessageRef = useRef(onMessage);
-  const [connected, setConnected] = useState(false);
-  const [desktopName, setDesktopName] = useState("");
-  const [passwordRequired, setPasswordRequired] = useState(false);
-  const [passwordDraft, setPasswordDraft] = useState("");
-  const [clipboardDraft, setClipboardDraft] = useState("");
-
-  useEffect(() => {
-    onErrorRef.current = onError;
-  }, [onError]);
-
-  useEffect(() => {
-    onMessageRef.current = onMessage;
-  }, [onMessage]);
-
-  useEffect(() => {
-    const mount = mountRef.current;
-    const websocketUrl = result.websocket_url;
-    if (!mount || !websocketUrl) {
-      return undefined;
-    }
-    const mountElement = mount;
-    const viewerWebsocketUrl = websocketUrl;
-
-    mountElement.replaceChildren();
-    setConnected(false);
-    setDesktopName("");
-    setPasswordRequired(false);
-    setPasswordDraft("");
-
-    const credentials =
-      result.password || connection?.username
-        ? {
-            password: result.password || undefined,
-            username: connection?.username || undefined,
-          }
-        : undefined;
-    let disposed = false;
-    let rfb: RFB | null = null;
-
-    const handleConnect = () => {
-      setConnected(true);
-      setPasswordRequired(false);
-      setPasswordDraft("");
-      onMessageRef.current("VNC 画面已连接。");
-    };
-    const handleDisconnect = (event: CustomEvent<{ clean: boolean }>) => {
-      setConnected(false);
-      onMessageRef.current(event.detail.clean ? "VNC 画面已断开。" : "VNC 连接已中断。");
-    };
-    const handleCredentialsRequired = () => {
-      if (result.password) {
-        rfb?.sendCredentials({
-          password: result.password,
-          username: connection?.username || undefined,
-        });
-        return;
-      }
-      setPasswordRequired(true);
-      onMessageRef.current("VNC 服务端要求输入密码。");
-    };
-    const handleSecurityFailure = (event: CustomEvent<{ reason: string; status: number }>) => {
-      onErrorRef.current(event.detail.reason || `VNC 安全协商失败（${event.detail.status.toString()}）。`);
-    };
-    const handleDesktopName = (event: CustomEvent<{ name: string }>) => {
-      setDesktopName(event.detail.name || "");
-    };
-
-    async function connectVncViewer() {
-      try {
-        const module = await import("@novnc/novnc");
-        if (disposed) {
-          return;
-        }
-        const nextRfb = new module.default(mountElement, viewerWebsocketUrl, {
-          credentials,
-          shared: config.input.shared,
-        });
-        rfb = nextRfb;
-        rfbRef.current = nextRfb;
-        applyVncRfbSettings(nextRfb, config);
-        nextRfb.addEventListener("connect", handleConnect);
-        nextRfb.addEventListener("disconnect", handleDisconnect);
-        nextRfb.addEventListener("credentialsrequired", handleCredentialsRequired);
-        nextRfb.addEventListener("securityfailure", handleSecurityFailure);
-        nextRfb.addEventListener("desktopname", handleDesktopName);
-        nextRfb.focus();
-      } catch (error) {
-        if (!disposed) {
-          onErrorRef.current(`VNC 画面加载失败：${formatError(error)}`);
-        }
-      }
-    }
-
-    void connectVncViewer();
-
-    return () => {
-      disposed = true;
-      if (rfb) {
-        rfb.removeEventListener("connect", handleConnect);
-        rfb.removeEventListener("disconnect", handleDisconnect as EventListener);
-        rfb.removeEventListener("credentialsrequired", handleCredentialsRequired);
-        rfb.removeEventListener("securityfailure", handleSecurityFailure as EventListener);
-        rfb.removeEventListener("desktopname", handleDesktopName as EventListener);
-        rfb.disconnect();
-      }
-      if (!rfb || rfbRef.current === rfb) {
-        rfbRef.current = null;
-      }
-      mountElement.replaceChildren();
-    };
-  }, [
-    config,
-    connection?.username,
-    result.password,
-    result.session_id,
-    result.websocket_url,
-  ]);
-
-  useEffect(() => {
-    if (rfbRef.current) {
-      applyVncRfbSettings(rfbRef.current, config);
-    }
-  }, [config]);
-
-  useEffect(() => {
-    if (active && connected) {
-      rfbRef.current?.focus();
-    }
-  }, [active, connected]);
-
-  function submitPassword(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    const password = passwordDraft;
-    if (!password) {
-      return;
-    }
-    rfbRef.current?.sendCredentials({
-      password,
-      username: connection?.username || undefined,
-    });
-    setPasswordDraft("");
-    setPasswordRequired(false);
-  }
-
-  function sendCtrlAltDel() {
-    rfbRef.current?.sendCtrlAltDel();
-    rfbRef.current?.focus();
-  }
-
-  function pasteClipboard() {
-    if (!clipboardDraft) {
-      return;
-    }
-    rfbRef.current?.clipboardPasteFrom(clipboardDraft);
-    rfbRef.current?.focus();
-  }
-
-  return (
-    <div
-      className="vnc-viewer-shell"
-      data-connected={connected ? "true" : "false"}
-      data-scale-mode={config.display.scale_mode}
-    >
-      <div className="vnc-viewer-toolbar">
-        <span>
-          {connected ? "已连接" : "连接中"}
-          {desktopName ? ` · ${desktopName}` : ""}
-        </span>
-        <div>
-          {config.input.clipboard ? (
-            <>
-              <input
-                aria-label="VNC 剪贴板文本"
-                value={clipboardDraft}
-                onChange={(event) => setClipboardDraft(event.target.value)}
-                placeholder="剪贴板文本"
-              />
-              <button type="button" disabled={!clipboardDraft} onClick={pasteClipboard}>
-                <Clipboard className="ui-icon" aria-hidden="true" />
-                <span>粘贴</span>
-              </button>
-            </>
-          ) : null}
-          <button type="button" disabled={!connected || config.input.view_only} onClick={sendCtrlAltDel}>
-            <KeyRound className="ui-icon" aria-hidden="true" />
-            <span>Ctrl+Alt+Del</span>
-          </button>
-        </div>
-      </div>
-      <div className="vnc-viewer-mount" ref={mountRef} />
-      {passwordRequired ? (
-        <form className="vnc-password-prompt" onSubmit={submitPassword}>
-          <span>VNC 密码</span>
-          <input
-            autoFocus
-            aria-label="VNC 密码"
-            type="password"
-            value={passwordDraft}
-            onChange={(event) => setPasswordDraft(event.target.value)}
-          />
-          <button type="submit" disabled={!passwordDraft}>
-            <KeyRound className="ui-icon" aria-hidden="true" />
-            <span>发送</span>
-          </button>
-        </form>
-      ) : null}
-    </div>
   );
 }
 
@@ -8739,7 +8706,7 @@ function VncSessionToolPanel({
       {session.preview || session.result ? (
         <section className="rdp-tool-preview">
           <strong>启动材料</strong>
-          <code>{vncSessionCommandText(session) || "noVNC 内嵌模式不需要外部命令。"}</code>
+          <code>{vncSessionCommandText(session) || "noVNC 模式不需要外部命令。"}</code>
           {session.preview?.setup_hint || session.result?.setup_hint ? (
             <small>{session.preview?.setup_hint || session.result?.setup_hint}</small>
           ) : null}
@@ -9994,6 +9961,35 @@ function wait(ms: number) {
   return new Promise((resolve) => window.setTimeout(resolve, ms));
 }
 
+function vncRunnerWindowUrl() {
+  const url = new URL(window.location.href);
+  url.search = "view=vnc-runner";
+  url.hash = "";
+  return url.toString();
+}
+
+function waitForWebviewWindowCreation(
+  windowRef: import("@tauri-apps/api/webviewWindow").WebviewWindow,
+) {
+  return new Promise<void>((resolve, reject) => {
+    let settled = false;
+    const finish = (callback: () => void) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      callback();
+    };
+
+    void windowRef.once("tauri://created", () => {
+      finish(resolve);
+    });
+    void windowRef.once("tauri://error", (event) => {
+      finish(() => reject(event.payload));
+    });
+  });
+}
+
 function formatRelativeTime(value?: string | null) {
   const normalized = value?.trim().toLowerCase();
 
@@ -11025,6 +11021,8 @@ function vncStatusLabel(status: VncSessionStatus) {
       return "启动中";
     case "embedded":
       return "内嵌画面";
+    case "windowed":
+      return "runner 窗口";
     case "external":
       return "外部客户端";
     case "error":
@@ -11038,6 +11036,8 @@ function vncRenderModeLabel(mode: string) {
   switch (mode) {
     case "embedded":
       return "noVNC 内嵌";
+    case "windowed":
+      return "RDP 窗口 noVNC";
     case "external":
       return "外部客户端";
     case "custom":
@@ -11080,26 +11080,6 @@ function vncInputSummary(
   return enabled.join(" · ");
 }
 
-function applyVncRfbSettings(rfb: RFB, config: VncConnectionConfig) {
-  const qualityLevel =
-    typeof config.performance.quality_level === "number"
-      ? Math.min(9, Math.max(0, config.performance.quality_level))
-      : 6;
-  const compressionLevel =
-    typeof config.performance.compression_level === "number"
-      ? Math.min(9, Math.max(0, config.performance.compression_level))
-      : 2;
-
-  rfb.viewOnly = config.input.view_only;
-  rfb.focusOnClick = true;
-  rfb.clipViewport = config.display.clip_viewport;
-  rfb.dragViewport = config.display.clip_viewport;
-  rfb.scaleViewport = config.display.scale_mode !== "actual";
-  rfb.resizeSession = config.display.resize_session;
-  rfb.qualityLevel = qualityLevel;
-  rfb.compressionLevel = compressionLevel;
-}
-
 function previewVncLaunchForBrowser(connection: ConnectionProfile): VncLaunchPreview {
   const config = connection.vnc || defaultVncConfig;
   const renderMode = config.runner.render_mode || "embedded";
@@ -11107,7 +11087,7 @@ function previewVncLaunchForBrowser(connection: ConnectionProfile): VncLaunchPre
     config.runner.preferred_runner ||
     (renderMode === "custom"
       ? "custom"
-      : renderMode === "embedded"
+      : renderMode === "embedded" || renderMode === "windowed"
         ? "novnc"
         : "vncviewer");
   const executable =
@@ -11167,6 +11147,9 @@ function vncSessionCommandText(session: VncSessionTab) {
 function vncSessionPrimaryDetail(session: VncSessionTab) {
   if (session.status === "embedded") {
     return { title: "启动方式", value: "noVNC 本地桥接" };
+  }
+  if (session.status === "windowed") {
+    return { title: "启动方式", value: "RDP 风格 runner host" };
   }
   const command = vncSessionCommandText(session);
   if (command) {
