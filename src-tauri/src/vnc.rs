@@ -1,7 +1,9 @@
 use std::env;
+use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Mutex;
+use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
@@ -20,6 +22,9 @@ use crate::connections::{
     VncRunnerKind,
 };
 use crate::storage_repository::StorageRepository;
+
+const VNC_TARGET_CONNECT_TIMEOUT: Duration = Duration::from_secs(8);
+const VNC_BRIDGE_READ_BUFFER_BYTES: usize = 64 * 1024;
 
 #[derive(Clone, Debug, Deserialize)]
 pub struct VncConnectionRequest {
@@ -169,7 +174,12 @@ pub fn probe_runner(request: VncRunnerProbeRequest) -> Result<VncRunnerProbeResu
             _ => VncRunnerKind::Tigervnc,
         };
         available_runners.push(runner.clone());
-        if default_executable.is_none() && !matches!(config.render_mode, VncRenderMode::Embedded) {
+        if default_executable.is_none()
+            && !matches!(
+                config.render_mode,
+                VncRenderMode::Embedded | VncRenderMode::Windowed
+            )
+        {
             default_runner = Some(runner);
             default_executable = Some(viewer.to_string_lossy().to_string());
         }
@@ -381,6 +391,7 @@ async fn relay_single_client(
     target_host: String,
     target_port: u16,
 ) -> Result<(), AppError> {
+    let browser_stream = configure_vnc_bridge_stream(browser_stream);
     let websocket = accept_hdr_async(browser_stream, |request: &Request, response: Response| {
         if request.uri().path() == expected_path {
             return Ok(response);
@@ -398,16 +409,7 @@ async fn relay_single_client(
             true,
         )
     })?;
-    let tcp = TcpStream::connect((target_host.as_str(), target_port))
-        .await
-        .map_err(|error| {
-            AppError::new(
-                "vnc_target_connect_failed",
-                "VNC 目标主机连接失败。",
-                format!("target={target_host}:{target_port}, error={error}"),
-                true,
-            )
-        })?;
+    let tcp = configure_vnc_bridge_stream(connect_vnc_target(&target_host, target_port).await?);
 
     let (mut ws_sink, mut ws_stream) = websocket.split();
     let (mut tcp_reader, mut tcp_writer) = tcp.into_split();
@@ -427,7 +429,7 @@ async fn relay_single_client(
     };
 
     let target_to_browser = async {
-        let mut buffer = [0_u8; 8192];
+        let mut buffer = vec![0_u8; VNC_BRIDGE_READ_BUFFER_BYTES];
         loop {
             let read = tcp_reader.read(&mut buffer).await.map_err(vnc_io_error)?;
             if read == 0 {
@@ -446,6 +448,73 @@ async fn relay_single_client(
         result = browser_to_target => result,
         result = target_to_browser => result,
     }
+}
+
+fn configure_vnc_bridge_stream(stream: TcpStream) -> TcpStream {
+    let _ = stream.set_nodelay(true);
+    stream
+}
+
+async fn connect_vnc_target(target_host: &str, target_port: u16) -> Result<TcpStream, AppError> {
+    with_vnc_target_connect_timeout(
+        target_host,
+        target_port,
+        VNC_TARGET_CONNECT_TIMEOUT,
+        TcpStream::connect((target_host, target_port)),
+    )
+    .await
+}
+
+async fn with_vnc_target_connect_timeout<T, F>(
+    target_host: &str,
+    target_port: u16,
+    connect_timeout: Duration,
+    future: F,
+) -> Result<T, AppError>
+where
+    F: Future<Output = std::io::Result<T>>,
+{
+    match tokio::time::timeout(connect_timeout, future).await {
+        Ok(Ok(stream)) => Ok(stream),
+        Ok(Err(error)) => Err(vnc_target_connect_failed_error(
+            target_host,
+            target_port,
+            error,
+        )),
+        Err(_) => Err(vnc_target_connect_timeout_error(
+            target_host,
+            target_port,
+            connect_timeout,
+        )),
+    }
+}
+
+fn vnc_target_connect_failed_error(
+    target_host: &str,
+    target_port: u16,
+    error: std::io::Error,
+) -> AppError {
+    AppError::new(
+        "vnc_target_connect_failed",
+        "VNC 目标主机连接失败。",
+        format!("target={target_host}:{target_port}, error={error}"),
+        true,
+    )
+}
+
+fn vnc_target_connect_timeout_error(
+    target_host: &str,
+    target_port: u16,
+    connect_timeout: Duration,
+) -> AppError {
+    AppError::new(
+        "vnc_target_connect_timeout",
+        &format!(
+            "VNC 目标主机连接超时，请检查 {target_host}:{target_port} 的屏幕共享、端口和防火墙。"
+        ),
+        format!("target={target_host}:{target_port}, timeout={connect_timeout:?}"),
+        true,
+    )
 }
 
 fn resolve_vnc_connection(
@@ -482,7 +551,10 @@ fn resolve_vnc_connection(
 }
 
 fn select_runner(vnc: &VncConnectionConfig) -> Result<SelectedVncRunner, AppError> {
-    if matches!(vnc.runner.render_mode, VncRenderMode::Embedded) {
+    if matches!(
+        vnc.runner.render_mode,
+        VncRenderMode::Embedded | VncRenderMode::Windowed
+    ) {
         return Ok(SelectedVncRunner {
             runner: VncRunnerKind::Novnc,
             executable: None,
@@ -578,8 +650,10 @@ fn preview_warnings(vnc: &VncConnectionConfig, runner: VncRunnerKind) -> Vec<Str
     if !matches!(runner, VncRunnerKind::Novnc) {
         warnings.push("外部 VNC 客户端不会接收 MXterm 保存的密码。".to_string());
     }
-    if matches!(vnc.runner.render_mode, VncRenderMode::Embedded)
-        && !matches!(runner, VncRunnerKind::Novnc)
+    if matches!(
+        vnc.runner.render_mode,
+        VncRenderMode::Embedded | VncRenderMode::Windowed
+    ) && !matches!(runner, VncRunnerKind::Novnc)
     {
         warnings.push("嵌入式 noVNC 不可用时才会回退到外部客户端。".to_string());
     }
@@ -674,7 +748,10 @@ fn vnc_websocket_error(error: tokio_tungstenite::tungstenite::Error) -> AppError
 
 #[cfg(test)]
 mod tests {
-    use super::split_runner_args;
+    use super::{split_runner_args, with_vnc_target_connect_timeout};
+    use std::future;
+    use std::io;
+    use std::time::Duration;
 
     #[test]
     fn split_runner_args_drops_blank_segments() {
@@ -682,5 +759,36 @@ mod tests {
             split_runner_args("  -ViewOnly   -Shared=0  "),
             vec!["-ViewOnly".to_string(), "-Shared=0".to_string()]
         );
+    }
+
+    #[tokio::test]
+    async fn target_connect_timeout_maps_to_recoverable_error() {
+        let error = with_vnc_target_connect_timeout::<(), _>(
+            "192.168.31.49",
+            5900,
+            Duration::from_millis(1),
+            future::pending(),
+        )
+        .await
+        .unwrap_err();
+
+        assert_eq!(error.code, "vnc_target_connect_timeout");
+        assert!(error.message.contains("192.168.31.49:5900"));
+        assert!(error.raw_message.contains("timeout="));
+        assert!(error.recoverable);
+    }
+
+    #[tokio::test]
+    async fn target_connect_io_error_keeps_failed_code() {
+        let error =
+            with_vnc_target_connect_timeout("127.0.0.1", 5900, Duration::from_secs(1), async {
+                Err::<(), _>(io::Error::new(io::ErrorKind::ConnectionRefused, "closed"))
+            })
+            .await
+            .unwrap_err();
+
+        assert_eq!(error.code, "vnc_target_connect_failed");
+        assert!(error.raw_message.contains("127.0.0.1:5900"));
+        assert!(error.recoverable);
     }
 }
