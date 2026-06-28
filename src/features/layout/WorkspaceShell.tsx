@@ -6444,10 +6444,12 @@ export function WorkspaceShell() {
                       {remoteFileTabs.map((tab) => (
                         <RemoteFileEditor
                           active={!showingHome && tab.id === activeRemoteFileTab?.id}
+                          desktopPlatform={desktopPlatform}
                           fontFamily={terminalFontFamily}
                           fontSize={settings.appearance.terminalFontSize}
                           key={tab.id}
                           tab={tab}
+                          themeMode={settings.appearance.themeMode}
                           onChange={handleRemoteFileChange}
                           onClose={closeRemoteFileTab}
                           onDiscard={discardRemoteFileChanges}
