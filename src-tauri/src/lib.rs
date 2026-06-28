@@ -25,6 +25,7 @@ mod vnc;
 mod webdav;
 mod webdav_sync;
 use storage_vault::VaultState;
+use tauri::Manager;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -50,7 +51,11 @@ pub fn run() {
                 let app_handle = app.handle().clone();
                 let _ = commands::set_window_material(app_handle, 2);
             }
-            let _ = app;
+            #[cfg(target_os = "macos")]
+            if let Some(main_window) = app.get_webview_window("main") {
+                let _ = main_window.show();
+                let _ = main_window.set_focus();
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

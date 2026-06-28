@@ -74,6 +74,7 @@ import type {
   VncRunnerKind,
 } from "../connections/connectionTypes";
 import {
+  defaultRdpExternalRunnerForPlatform,
   defaultJumpConfig,
   defaultVncConfig,
   formatRdpRunnerKind,
@@ -247,10 +248,13 @@ import {
 } from "../../shared/tauri/events";
 import { hasTauriRuntime } from "../../shared/tauri/runtime";
 import {
-  getPlatformWindowMaterials,
+  type DesktopPlatform,
+  getPlatformCapabilities,
+  resolveDesktopPlatform,
+} from "../../shared/tauri/platformCapabilities";
+import {
   getSupportedWindowMaterials,
   normalizeWindowMaterial,
-  resolveDesktopPlatform,
   setWindowMaterial,
 } from "../../shared/tauri/windowMaterial";
 import { initializeWindowStatePersistence } from "../../shared/tauri/windowState";
@@ -758,11 +762,15 @@ export function WorkspaceShell() {
   const [connectionGroupCatalog, setConnectionGroupCatalog] =
     useState<ConnectionGroupCatalog>({ assignments: {}, groups: [] });
   const desktopPlatform = useMemo(() => resolveDesktopPlatform(), []);
+  const platformCapabilities = useMemo(
+    () => getPlatformCapabilities(desktopPlatform),
+    [desktopPlatform],
+  );
   const [windowsPtyInfo, setWindowsPtyInfo] = useState<IWindowsPty | undefined>(() =>
     toWindowsPtyOption(null, desktopPlatform),
   );
   const [supportedWindowMaterials, setSupportedWindowMaterials] = useState<WindowMaterialMode[]>(
-    () => getPlatformWindowMaterials(desktopPlatform),
+    () => platformCapabilities.windowMaterials,
   );
   const workspaceShellRef = useRef<HTMLElement | null>(null);
   const loadCommandLibrary = useCallback(async () => {
@@ -1389,7 +1397,7 @@ export function WorkspaceShell() {
   ]);
 
   useEffect(() => {
-    if (desktopPlatform !== "windows") {
+    if (!platformCapabilities.supportsWindowsPty) {
       setWindowsPtyInfo(undefined);
       return;
     }
@@ -1415,7 +1423,7 @@ export function WorkspaceShell() {
     return () => {
       disposed = true;
     };
-  }, [desktopPlatform]);
+  }, [desktopPlatform, platformCapabilities.supportsWindowsPty]);
 
   useEffect(() => {
     let disposed = false;
@@ -4619,7 +4627,7 @@ export function WorkspaceShell() {
       updateRdpSession(sessionId, (session) => ({
         ...session,
         message: "浏览器预览模式不会启动桌面客户端，真实运行时会打开 RDP runner 或原生子窗口。",
-        preview: previewRdpLaunchForBrowser(connection),
+        preview: previewRdpLaunchForBrowser(connection, desktopPlatform),
         status: "external",
       }));
       void markConnected(connection.id);
@@ -4684,7 +4692,7 @@ export function WorkspaceShell() {
     try {
       const preview = hasTauriRuntime()
         ? await rdpPreviewLaunch(connection.id)
-        : previewRdpLaunchForBrowser(connection);
+        : previewRdpLaunchForBrowser(connection, desktopPlatform);
       updateRdpSession(sessionId, (current) => ({
         ...current,
         message: "启动预览已更新，内容已隐藏敏感凭据。",
@@ -6474,10 +6482,12 @@ export function WorkspaceShell() {
                       {remoteFileTabs.map((tab) => (
                         <RemoteFileEditor
                           active={!showingHome && tab.id === activeRemoteFileTab?.id}
+                          desktopPlatform={desktopPlatform}
                           fontFamily={terminalFontFamily}
                           fontSize={settings.appearance.terminalFontSize}
                           key={tab.id}
                           tab={tab}
+                          themeMode={settings.appearance.themeMode}
                           onChange={handleRemoteFileChange}
                           onClose={closeRemoteFileTab}
                           onDiscard={discardRemoteFileChanges}
@@ -11024,21 +11034,27 @@ function rdpAudioLabel(mode: string) {
   return "本机";
 }
 
-function previewRdpLaunchForBrowser(connection: ConnectionProfile): RdpLaunchPreview {
+function previewRdpLaunchForBrowser(
+  connection: ConnectionProfile,
+  platform: DesktopPlatform = resolveDesktopPlatform(),
+): RdpLaunchPreview {
   const config = connection.rdp;
   const renderMode = config?.runner.render_mode || "embedded";
+  const externalRunner = defaultRdpExternalRunnerForPlatform(platform);
   const runner: RdpRunnerKind =
     config?.runner.preferred_runner ||
     (renderMode === "custom"
       ? "custom"
-      : renderMode === "embedded"
+      : renderMode === "embedded" && platform === "windows"
         ? "mstsc_activex"
-        : "mstsc");
+        : externalRunner);
   const executable =
     runner === "custom"
       ? config?.runner.custom_executable || "custom-rdp-client"
       : runner === "freerdp"
         ? "xfreerdp"
+        : runner === "macos_app"
+          ? "/usr/bin/open"
         : runner === "mstsc_activex"
           ? "mstscax.dll"
           : "mstsc.exe";
@@ -11053,6 +11069,8 @@ function previewRdpLaunchForBrowser(connection: ConnectionProfile): RdpLaunchPre
         ]
       : runner === "custom"
         ? [config?.runner.custom_args_template || "{rdp_file}"]
+        : runner === "macos_app"
+          ? ["<generated.rdp>"]
         : runner === "mstsc_activex"
           ? []
           : ["<generated.rdp>"];
@@ -11068,8 +11086,16 @@ function previewRdpLaunchForBrowser(connection: ConnectionProfile): RdpLaunchPre
     args,
     connection_id: connection.id,
     executable,
-    fallback_reason: runner === "mstsc" ? "浏览器预览按 Windows 外部 runner 展示。" : null,
-    rdp_file_content: runner === "mstsc" || runner === "custom" ? previewRdpFileContent(connection) : null,
+    fallback_reason:
+      runner === "mstsc"
+        ? "浏览器预览按 Windows 外部 runner 展示。"
+        : runner === "macos_app"
+          ? "浏览器预览按 macOS 系统 RDP 客户端展示。"
+          : null,
+    rdp_file_content:
+      runner === "mstsc" || runner === "macos_app" || runner === "custom"
+        ? previewRdpFileContent(connection)
+        : null,
     render_mode: renderMode,
     runner,
     setup_hint: null,

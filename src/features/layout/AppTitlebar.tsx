@@ -65,6 +65,27 @@ export function AppTitlebar({
       onDoubleClick={handleTitlebarDoubleClick}
       onPointerDown={handleDragStart}
     >
+      <div className="macos-traffic-lights" role="group" aria-label="窗口控制">
+        <button
+          className="macos-traffic-light close"
+          type="button"
+          aria-label="关闭窗口"
+          onClick={() => void runTauriWindowAction("close")}
+        />
+        <button
+          className="macos-traffic-light minimize"
+          type="button"
+          aria-label="最小化"
+          onClick={() => void runTauriWindowAction("minimize")}
+        />
+        <button
+          className="macos-traffic-light zoom"
+          type="button"
+          aria-label="缩放窗口"
+          onClick={() => void runTauriWindowAction("toggleMaximize")}
+        />
+      </div>
+
       <div className="title-leading">
         <Tooltip label={leftPaneCollapsed ? "展开侧边栏" : "收起侧边栏"}>
           <button

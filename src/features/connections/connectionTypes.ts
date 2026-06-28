@@ -636,12 +636,44 @@ export function formatRdpRunnerKind(runner?: RdpRunnerKind | null) {
     case "freerdp":
       return "FreeRDP";
     case "macos_app":
-      return "macOS RDP App";
+      return "macOS 系统 RDP 客户端";
     case "custom":
       return "自定义 RDP 客户端";
     default:
       return "自动选择";
   }
+}
+
+export function defaultRdpExternalRunnerForPlatform(
+  platform?: RdpPlatform | string | null,
+): RdpRunnerKind {
+  if (platform === "macos") {
+    return "macos_app";
+  }
+  if (platform === "linux") {
+    return "freerdp";
+  }
+  return "mstsc";
+}
+
+export function rdpExternalModeLabelForPlatform(platform?: RdpPlatform | string | null) {
+  if (platform === "macos") {
+    return "系统 RDP 客户端";
+  }
+  if (platform === "linux") {
+    return "FreeRDP";
+  }
+  return "mstsc.exe 模式";
+}
+
+export function rdpExternalModeNoteForPlatform(platform?: RdpPlatform | string | null) {
+  if (platform === "macos") {
+    return "系统 RDP 客户端模式会通过 Windows App / Microsoft Remote Desktop 打开 .rdp 文件，适合需要官方客户端兼容行为的场景。";
+  }
+  if (platform === "linux") {
+    return "FreeRDP 模式会通过系统 FreeRDP 客户端打开，适合需要外部客户端兼容行为的场景。";
+  }
+  return "mstsc.exe 模式会通过系统远程桌面客户端打开，适合需要系统客户端兼容行为的场景。";
 }
 
 export function formatVncRunnerKind(runner?: VncRunnerKind | null) {

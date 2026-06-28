@@ -31,9 +31,11 @@ import {
 } from "../../shared/tauri/events";
 import { hasTauriRuntime } from "../../shared/tauri/runtime";
 import {
-  getPlatformWindowMaterials,
-  normalizeWindowMaterial,
+  getPlatformCapabilities,
   resolveDesktopPlatform,
+} from "../../shared/tauri/platformCapabilities";
+import {
+  normalizeWindowMaterial,
 } from "../../shared/tauri/windowMaterial";
 import { resolveSettingsStyle } from "../settings/settingsTypes";
 import { useSettings } from "../settings/useSettings";
@@ -55,9 +57,13 @@ export function VncRunnerWindowApp() {
   const reportedClosedRef = useRef<Set<string>>(new Set());
   const dragStartRef = useRef<{ x: number; y: number } | null>(null);
   const desktopPlatform = useMemo(() => resolveDesktopPlatform(), []);
+  const platformCapabilities = useMemo(
+    () => getPlatformCapabilities(desktopPlatform),
+    [desktopPlatform],
+  );
   const effectiveWindowMaterial = normalizeWindowMaterial(
     settings.appearance.windowMaterial,
-    getPlatformWindowMaterials(desktopPlatform),
+    platformCapabilities.windowMaterials,
   );
   const rootStyle = resolveSettingsStyle(settings) as CSSProperties;
 

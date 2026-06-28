@@ -1068,7 +1068,7 @@ Frontend types mirror Rust snake_case fields. `CommandSnippet.group` is a displa
 ### 2. Signatures
 
 ```ts
-type WindowMaterialMode = "auto" | "mica" | "acrylic" | "micaAlt";
+type WindowMaterialMode = "auto" | "mica" | "acrylic" | "micaAlt" | "macosGlass";
 
 type NativeWindowMaterial = {
   id: number;
@@ -1093,6 +1093,7 @@ auto = 0
 mica = 2
 acrylic = 3
 micaAlt = 4
+macosGlass = 10
 ```
 
 ### 3. Contracts
@@ -1107,8 +1108,9 @@ micaAlt = 4
 - CSS material visuals belong in token/style files. Native material commands should not be required for the app to look coherent in preview.
 - The desktop window must allow the WebView to reveal native material. Keep the main window `transparent: true` in `src-tauri/tauri.conf.json` and provide an initial `windowEffects.effects` entry such as `mica`; runtime material changes still flow through `setWindowMaterial(...)`.
 - Tauri startup may apply the initial Windows backdrop in `src-tauri/src/lib.rs` setup (for example Mica id `2`) so the native material is visible before React settings finish loading. `WorkspaceShell` remains the owner of persisted runtime material changes after the frontend mounts.
-- CSS fallback material should be chrome-focused: root `.app-shell` material layer, `.custom-titlebar`, and shared `.app-sidebar` rails use the material tokens, while main workspace/settings content remains on clear panel surfaces.
-- `auto` is the non-material fallback mode, not a transparent material reveal mode. CSS must keep the chrome backed by an opaque fallback layer such as root `.app-shell::before` using `--mx-chrome-fill` across the titlebar and sidebars; reserve native transparent reveal for `mica`, `acrylic`, and `micaAlt`.
+- macOS transparent material requires both `src-tauri/tauri.conf.json` `app.macOSPrivateApi = true` and the Rust `tauri` dependency `macos-private-api` feature; missing either can leave a transparent window unsupported or fail `cargo check`.
+- CSS fallback material should be chrome-focused: root `.app-shell` material layer, `.custom-titlebar`, and shared `.app-sidebar` rails use material tokens. macOS may also use low-alpha material tokens on broad workspace shells such as `.connection-home` and `.settings-content`, while dense cards, tables, forms, and terminal surfaces stay on readable `--mx-panel` / `--mx-terminal` surfaces.
+- On Windows, `auto` is the non-material fallback mode, not a transparent material reveal mode. Keep Windows auto backed by a coherent chrome layer. On macOS, `auto` is allowed to map to the native default glass-backed window effect, with `macosGlass` as the stronger visual option.
 
 ### 4. Validation & Error Matrix
 
@@ -1126,7 +1128,8 @@ micaAlt = 4
 
 - Good: `SettingsView` renders material options from `supportedWindowMaterials`, writes a `WindowMaterialMode`, and lets `WorkspaceShell` normalize and apply the native side effect.
 - Good: browser preview on Windows shows codem-style material choices as CSS fallback, while a Tauri desktop build replaces that with the Rust-reported support list.
-- Base: non-Windows platforms expose only `auto`; the setting row remains stable and the app uses CSS material tokens.
+- Good: macOS exposes `auto` and `macosGlass`; broad workspace shells can reveal glass, but `.connection-board`, settings panels, forms, and terminal panes remain readable.
+- Base: Linux/unknown platforms expose only `auto`; the setting row remains stable and the app uses CSS material tokens.
 - Bad: a component persists `2` for Mica, calls `invoke("set_window_material", ...)` directly, or assumes every Windows version supports Acrylic.
 
 ### 6. Tests Required
@@ -1134,6 +1137,7 @@ micaAlt = 4
 - Run `pnpm check` after changing `WindowMaterialMode`, material wrappers, `WorkspaceShell`, or settings props.
 - Run `npm run build` after changing material CSS tokens, appearance settings UI, or `src-tauri/tauri.conf.json` window material settings.
 - Run `cargo fmt --manifest-path src-tauri/Cargo.toml --check` and `cargo check --manifest-path src-tauri/Cargo.toml` after changing `src-tauri/src/lib.rs`, command names, numeric ids, or backend response shape.
+- Run the platform release-readiness guard after changing `src-tauri/tauri*.conf.json` or platform material availability.
 - Browser-preview check: switch theme to dark, switch material, and verify `.app-shell` has `data-theme-mode` and `data-window-material` plus dark `--mx-*` tokens.
 - Cross-check frontend material ids against backend `window_material_info(...)` in the same task.
 

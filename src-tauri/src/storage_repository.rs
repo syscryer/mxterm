@@ -2848,6 +2848,17 @@ mod tests {
     }
 
     #[test]
+    fn connection_upsert_preserves_username_case() {
+        let (repo, _db_path, _secrets) = temp_repository("username-case");
+
+        let saved = repo
+            .connection_upsert(password_connection_input(), "2026-06-20T00:00:00+08:00")
+            .unwrap();
+
+        assert_eq!(saved.username, "root");
+    }
+
+    #[test]
     fn resolve_saved_connection_reads_saved_credential_secret_from_store() {
         let (repo, _db_path, _secrets) = temp_repository("saved-credential");
         let credential = repo

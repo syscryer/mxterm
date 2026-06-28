@@ -1,0 +1,21 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "app": {
+    "windows": [
+      {
+        "title": "MXterm",
+        "width": 1440,
+        "height": 900,
+        "minWidth": 1100,
+        "minHeight": 720,
+        "visible": false,
+        "decorations": false,
+        "transparent": true,
+        "windowEffects": {
+          "effects": ["mica"]
+        },
+        "dragDropEnabled": true
+      }
+    ]
+  }
+}

@@ -10,6 +10,7 @@
     "frontendDist": "../dist"
   },
   "app": {
+    "macOSPrivateApi": true,
     "windows": [
       {
         "title": "MXterm",
@@ -17,12 +18,9 @@
         "height": 900,
         "minWidth": 1100,
         "minHeight": 720,
-        "visible": false,
+        "visible": true,
         "decorations": false,
         "transparent": true,
-        "windowEffects": {
-          "effects": ["mica"]
-        },
         "dragDropEnabled": true
       }
     ],
