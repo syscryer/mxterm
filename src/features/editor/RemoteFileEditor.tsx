@@ -1,5 +1,5 @@
 import { AlertTriangle, Loader2, RefreshCw, RotateCcw, Save, Search, X } from "lucide-react";
-import { useCallback, useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import * as monaco from "monaco-editor";
 import CssWorker from "monaco-editor/esm/vs/language/css/css.worker?worker";
 import EditorWorker from "monaco-editor/esm/vs/editor/editor.worker?worker";
@@ -7,6 +7,8 @@ import HtmlWorker from "monaco-editor/esm/vs/language/html/html.worker?worker";
 import JsonWorker from "monaco-editor/esm/vs/language/json/json.worker?worker";
 import TsWorker from "monaco-editor/esm/vs/language/typescript/ts.worker?worker";
 
+import type { ThemeMode } from "../settings/settingsTypes";
+import type { DesktopPlatform } from "../../shared/tauri/platformCapabilities";
 import { Tooltip } from "../../shared/ui/Tooltip";
 import {
   registerRemoteFileEditorLanguages,
@@ -40,9 +42,11 @@ registerRemoteFileEditorLanguages(monaco);
 
 interface RemoteFileEditorProps {
   active: boolean;
+  desktopPlatform: DesktopPlatform;
   fontFamily: string;
   fontSize: number;
   tab: RemoteFileEditorTab;
+  themeMode: ThemeMode;
   onChange: (tabId: string, content: string) => void;
   onClose: (tabId: string) => void;
   onDiscard: (tabId: string) => void;
@@ -52,6 +56,7 @@ interface RemoteFileEditorProps {
 
 export function RemoteFileEditor({
   active,
+  desktopPlatform,
   fontFamily,
   fontSize,
   onChange,
@@ -60,6 +65,7 @@ export function RemoteFileEditor({
   onReload,
   onSave,
   tab,
+  themeMode,
 }: RemoteFileEditorProps) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const editorRef = useRef<monaco.editor.IStandaloneCodeEditor | null>(null);
@@ -68,9 +74,13 @@ export function RemoteFileEditor({
   const onSaveRef = useRef(onSave);
   const applyingContentRef = useRef(false);
   const layoutFrameRef = useRef<number | null>(null);
+  const [systemPrefersDark, setSystemPrefersDark] = useState(readSystemPrefersDark);
+  const editorTheme = resolveRemoteEditorTheme(desktopPlatform, themeMode, systemPrefersDark);
+  const editorThemeRef = useRef(editorTheme);
 
   onChangeRef.current = onChange;
   onSaveRef.current = onSave;
+  editorThemeRef.current = editorTheme;
 
   const scheduleEditorLayout = useCallback(() => {
     if (layoutFrameRef.current !== null) {
@@ -108,7 +118,7 @@ export function RemoteFileEditor({
       renderLineHighlight: "line",
       scrollBeyondLastLine: false,
       tabSize: 2,
-      theme: "vs",
+      theme: editorThemeRef.current,
       wordWrap: "off",
     });
 
@@ -133,6 +143,23 @@ export function RemoteFileEditor({
       modelRef.current = null;
     };
   }, [scheduleEditorLayout, tab.connectionId, tab.id, tab.path]);
+
+  useEffect(() => {
+    monaco.editor.setTheme(editorTheme);
+  }, [editorTheme]);
+
+  useEffect(() => {
+    if (desktopPlatform !== "macos" || themeMode !== "system" || typeof window === "undefined") {
+      return;
+    }
+
+    const query = window.matchMedia("(prefers-color-scheme: dark)");
+    const syncSystemTheme = () => setSystemPrefersDark(query.matches);
+    syncSystemTheme();
+    query.addEventListener("change", syncSystemTheme);
+
+    return () => query.removeEventListener("change", syncSystemTheme);
+  }, [desktopPlatform, themeMode]);
 
   useEffect(() => {
     const model = modelRef.current;
@@ -277,4 +304,18 @@ function remoteFileStatusLabel(tab: RemoteFileEditorTab) {
   if (tab.saveState === "conflict") return "远端已变化";
   if (tab.saveState === "error") return tab.error || "操作失败";
   return "就绪";
+}
+
+function readSystemPrefersDark() {
+  return typeof window !== "undefined" && window.matchMedia("(prefers-color-scheme: dark)").matches;
+}
+
+function resolveRemoteEditorTheme(
+  desktopPlatform: DesktopPlatform,
+  themeMode: ThemeMode,
+  systemPrefersDark: boolean,
+) {
+  const useMacosDarkEditor =
+    desktopPlatform === "macos" && (themeMode === "dark" || (themeMode === "system" && systemPrefersDark));
+  return useMacosDarkEditor ? "vs-dark" : "vs";
 }
