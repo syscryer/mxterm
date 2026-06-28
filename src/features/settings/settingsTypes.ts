@@ -27,7 +27,7 @@ export type AccentColor = "blue" | "slate" | "emerald" | "amber" | "rose" | "vio
 export type FontSettingMode = "preset" | "custom";
 export type InterfaceDensity = "comfortable" | "compact";
 export type IconSize = "small" | "medium" | "large";
-export type WindowMaterialMode = "auto" | "mica" | "acrylic" | "micaAlt";
+export type WindowMaterialMode = "auto" | "mica" | "acrylic" | "micaAlt" | "macosGlass";
 export type FileTransferConflictPolicy = "ask" | "overwrite" | "skip" | "rename";
 export type FileTransferTimestampFormat =
   | "yyyyMMddHHmm"
@@ -435,7 +435,7 @@ export function normalizeSettings(value: unknown): MxtermSettings {
       ),
       windowMaterial: normalizeOneOf(
         appearance.windowMaterial,
-        ["auto", "mica", "acrylic", "micaAlt"],
+        ["auto", "mica", "acrylic", "micaAlt", "macosGlass"],
         defaultSettings.appearance.windowMaterial,
       ),
     },

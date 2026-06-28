@@ -16,6 +16,7 @@ import {
 } from "lucide-react";
 
 import { ConfirmDialog } from "../../shared/ui/ConfirmDialog";
+import { usernameInputAttributes } from "../../shared/ui/inputAttributes";
 import {
   webdavDownloadSnapshot,
   webdavFetchRemoteInfo,
@@ -231,6 +232,7 @@ export function WebDavSyncSettingsSection() {
               <span>用户名</span>
               <input
                 className="settings-input"
+                {...usernameInputAttributes}
                 value={form.username}
                 autoComplete="username"
                 onChange={(event) =>

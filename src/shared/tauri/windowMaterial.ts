@@ -1,18 +1,25 @@
 import type { WindowMaterialMode } from "../../features/settings/settingsTypes";
 import {
+  getPlatformCapabilities,
+  getPlatformWindowMaterials,
+  resolveDesktopPlatform,
+  type DesktopPlatform,
+} from "./platformCapabilities";
+import {
   getSupportedWindowMaterialsCommand,
   setWindowMaterialCommand,
   type NativeWindowMaterial,
 } from "./commands";
 import { hasTauriRuntime } from "./runtime";
 
-export type DesktopPlatform = "macos" | "windows" | "linux" | "unknown";
+export { getPlatformWindowMaterials, resolveDesktopPlatform, type DesktopPlatform };
 
 const windowMaterialIds: Record<WindowMaterialMode, number> = {
   auto: 0,
   mica: 2,
   acrylic: 3,
   micaAlt: 4,
+  macosGlass: 10,
 };
 
 const windowMaterialById: Record<number, WindowMaterialMode | undefined> = {
@@ -20,6 +27,7 @@ const windowMaterialById: Record<number, WindowMaterialMode | undefined> = {
   2: "mica",
   3: "acrylic",
   4: "micaAlt",
+  10: "macosGlass",
 };
 
 const windowMaterialLabels: Record<WindowMaterialMode, string> = {
@@ -27,39 +35,8 @@ const windowMaterialLabels: Record<WindowMaterialMode, string> = {
   mica: "Mica",
   acrylic: "Acrylic",
   micaAlt: "Mica Alt",
+  macosGlass: "macOS Glass",
 };
-
-export function resolveDesktopPlatform(): DesktopPlatform {
-  if (typeof navigator === "undefined") {
-    return "unknown";
-  }
-
-  const navigatorWithUserAgentData = navigator as Navigator & {
-    userAgentData?: {
-      platform?: string;
-    };
-  };
-  const platformText = [
-    navigatorWithUserAgentData.userAgentData?.platform,
-    navigator.platform,
-    navigator.userAgent,
-  ]
-    .filter((value): value is string => typeof value === "string" && value.length > 0)
-    .join(" ");
-
-  if (/mac/i.test(platformText)) return "macos";
-  if (/win/i.test(platformText)) return "windows";
-  if (/linux|x11/i.test(platformText)) return "linux";
-  return "unknown";
-}
-
-export function getPlatformWindowMaterials(platform: DesktopPlatform): WindowMaterialMode[] {
-  if (platform === "windows") {
-    return ["auto", "mica", "acrylic", "micaAlt"];
-  }
-
-  return ["auto"];
-}
 
 export function normalizeWindowMaterial(
   material: WindowMaterialMode,
@@ -77,7 +54,7 @@ export function getWindowMaterialLabel(material: WindowMaterialMode) {
 }
 
 export async function getSupportedWindowMaterials(): Promise<WindowMaterialMode[]> {
-  const fallback = getPlatformWindowMaterials(resolveDesktopPlatform());
+  const fallback = getPlatformCapabilities().windowMaterials;
 
   if (!hasTauriRuntime()) {
     return fallback;

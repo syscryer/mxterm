@@ -8,11 +8,13 @@ import {
   connectionSetFavorite,
   connectionUpsert,
 } from "../../shared/tauri/commands";
+import { resolveDesktopPlatform } from "../../shared/tauri/platformCapabilities";
 import { hasTauriRuntime } from "../../shared/tauri/runtime";
 import {
   defaultAdvancedConfig,
   defaultJumpConfig,
   defaultProxyConfig,
+  defaultRdpExternalRunnerForPlatform,
   defaultRdpConfig,
   defaultSerialConfig,
   defaultTelnetConfig,
@@ -711,6 +713,7 @@ function normalizeRdpConfig(input?: RdpConnectionConfig | null): RdpConnectionCo
   const gatewayMode = rdp.gateway?.mode || "disabled";
   const remoteAppEnabled = Boolean(rdp.remote_app?.enabled);
   const renderMode = rdp.runner?.render_mode === "external" ? "external" : "embedded";
+  const externalRunner = defaultRdpExternalRunnerForPlatform(resolveDesktopPlatform());
   const displayMode =
     rdp.display?.mode === "windowed" ? defaultRdpConfig.display.mode : rdp.display?.mode;
 
@@ -768,7 +771,7 @@ function normalizeRdpConfig(input?: RdpConnectionConfig | null): RdpConnectionCo
     },
     runner: {
       render_mode: renderMode,
-      preferred_runner: renderMode === "external" ? "mstsc" : undefined,
+      preferred_runner: renderMode === "external" ? externalRunner : undefined,
       custom_executable: undefined,
       custom_args_template: undefined,
     },

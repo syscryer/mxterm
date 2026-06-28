@@ -2429,6 +2429,7 @@ button {
   border-bottom: 1px solid var(--mx-line);
   background: var(--mx-title);
   backdrop-filter: blur(14px) saturate(1.18);
+  cursor: default;
   user-select: none;
 }
 
@@ -2633,6 +2634,10 @@ button {
 .window-control.close:hover {
   color: #ffffff;
   background: #d83b3b;
+}
+
+.macos-traffic-lights {
+  display: none;
 }
 
 .right-collapse-button {
@@ -5060,6 +5065,7 @@ button {
 .terminal-workbench-pane[data-terminal-tone="dark"] .terminal-subtabs {
   border-bottom: 1px solid rgb(15 23 42 / 6%);
   background: var(--mx-panel);
+  background-clip: padding-box;
   box-shadow: none;
   backdrop-filter: none;
   -webkit-backdrop-filter: none;
@@ -5289,6 +5295,10 @@ button {
   background:
     linear-gradient(90deg, transparent, color-mix(in srgb, var(--mx-panel) 82%, transparent) 8px),
     color-mix(in srgb, var(--mx-panel) 76%, transparent);
+}
+
+.terminal-workbench-pane[data-terminal-tone="dark"] .terminal-subtab-actions {
+  background: transparent;
 }
 
 .command-sender-toggle.active {
@@ -11373,6 +11383,11 @@ body.vnc-runner-window-body {
   backdrop-filter: blur(12px) saturate(0.9);
 }
 
+body[data-platform="macos"] .dialog-backdrop {
+  border-radius: var(--mx-window-corner-radius);
+  clip-path: inset(0 round var(--mx-window-corner-radius));
+}
+
 .confirm-backdrop {
   z-index: 22;
   background: rgb(15 23 42 / 24%);
@@ -13365,6 +13380,11 @@ body {
   background: transparent;
 }
 
+.app-shell[data-platform="macos"] {
+  border-radius: var(--mx-window-corner-radius);
+  overflow: hidden;
+}
+
 .app-shell::before {
   content: "";
   position: absolute;
@@ -13373,6 +13393,20 @@ body {
   background:
     linear-gradient(180deg, var(--mx-chrome-glow), transparent 58%),
     var(--mx-chrome-fill);
+  pointer-events: none;
+}
+
+.app-shell[data-platform="macos"]::before {
+  border-radius: inherit;
+}
+
+.app-shell[data-platform="macos"]::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 30;
+  border-radius: inherit;
+  box-shadow: inset 0 0 0 1px var(--mx-chrome-line);
   pointer-events: none;
 }
 
@@ -13395,12 +13429,113 @@ body {
   z-index: 1;
 }
 
+.app-shell[data-platform="macos"] .macos-traffic-lights {
+  position: absolute;
+  top: 0;
+  left: 13px;
+  z-index: 2;
+  height: 36px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.app-shell[data-platform="macos"] .macos-traffic-light {
+  position: relative;
+  width: 12px;
+  height: 12px;
+  border: 0;
+  border-radius: 999px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  background: var(--mx-macos-traffic-close);
+  box-shadow: none;
+}
+
+.app-shell[data-platform="macos"] .macos-traffic-light.minimize {
+  background: var(--mx-macos-traffic-minimize);
+}
+
+.app-shell[data-platform="macos"] .macos-traffic-light.zoom {
+  background: var(--mx-macos-traffic-zoom);
+}
+
+.app-shell[data-platform="macos"] .macos-traffic-light::before,
+.app-shell[data-platform="macos"] .macos-traffic-light::after {
+  content: "";
+  position: absolute;
+  border-radius: 999px;
+  background: var(--mx-macos-traffic-glyph);
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+
+.app-shell[data-platform="macos"] .macos-traffic-lights:hover .macos-traffic-light::before,
+.app-shell[data-platform="macos"] .macos-traffic-lights:hover .macos-traffic-light::after,
+.app-shell[data-platform="macos"] .macos-traffic-light:focus-visible::before,
+.app-shell[data-platform="macos"] .macos-traffic-light:focus-visible::after {
+  opacity: 0.72;
+}
+
+.app-shell[data-platform="macos"] .macos-traffic-light.close::before,
+.app-shell[data-platform="macos"] .macos-traffic-light.close::after {
+  width: 6px;
+  height: 1.4px;
+}
+
+.app-shell[data-platform="macos"] .macos-traffic-light.close::before {
+  transform: rotate(45deg);
+}
+
+.app-shell[data-platform="macos"] .macos-traffic-light.close::after {
+  transform: rotate(-45deg);
+}
+
+.app-shell[data-platform="macos"] .macos-traffic-light.minimize::before {
+  width: 6px;
+  height: 1.4px;
+}
+
+.app-shell[data-platform="macos"] .macos-traffic-light.minimize::after {
+  content: none;
+}
+
+.app-shell[data-platform="macos"] .macos-traffic-light.zoom::before {
+  width: 6px;
+  height: 1.4px;
+}
+
+.app-shell[data-platform="macos"] .macos-traffic-light.zoom::after {
+  width: 1.4px;
+  height: 6px;
+}
+
+.app-shell[data-platform="macos"] .macos-traffic-light:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--mx-primary) 55%, transparent);
+  outline-offset: 2px;
+}
+
 .app-shell[data-window-material="auto"] .custom-titlebar {
   background: var(--mx-sidebar-surface);
 }
 
 .title-leading {
   border-right-color: transparent;
+}
+
+.app-shell[data-platform="macos"] .title-leading {
+  padding-left: 74px;
+}
+
+.app-shell[data-platform="macos"] .title-pane-toggle .title-tool-icon {
+  width: 19px;
+  height: 19px;
+  stroke-width: 1.2;
+}
+
+.app-shell[data-platform="macos"][data-left-collapsed="true"] {
+  --title-left-width: 118px;
 }
 
 .title-sidebar-tools {
@@ -13422,6 +13557,10 @@ body {
 
 .window-control:hover {
   background: var(--mx-sidebar-hover);
+}
+
+.app-shell[data-platform="macos"] .window-controls {
+  display: none;
 }
 
 .workspace-shell,
@@ -13569,6 +13708,649 @@ body {
 
 .settings-sidebar {
   background: transparent;
+}
+
+.app-shell[data-platform="macos"] :where(.main-workbench, .connection-home-body) {
+  background: transparent;
+}
+
+.app-shell[data-platform="macos"] :where(.connection-home, .connection-step-page, .settings-content) {
+  background: var(--mx-material-panel, var(--mx-panel));
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+.app-shell[data-platform="macos"] .session-workbench {
+  background:
+    linear-gradient(
+      to bottom,
+      var(--mx-panel) 0 var(--terminal-glassbar-height),
+      var(--mx-terminal) var(--terminal-glassbar-height) 100%
+    );
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+:where(
+  .app-shell[data-platform="macos"][data-theme-mode="dark"],
+  body[data-platform="macos"][data-theme-mode="dark"]
+) :where(
+  .dialog-backdrop,
+  .confirm-backdrop,
+  .connection-search-backdrop,
+  .vault-gate-overlay
+) {
+  background: rgb(2 6 23 / 46%);
+  backdrop-filter: blur(10px) saturate(0.94);
+  -webkit-backdrop-filter: blur(10px) saturate(0.94);
+}
+
+:where(
+  .app-shell[data-platform="macos"][data-theme-mode="dark"],
+  body[data-platform="macos"][data-theme-mode="dark"]
+) :where(
+  .ui-tooltip,
+  .context-menu-content,
+  .upload-menu,
+  .dropdown-menu-content,
+  .select-menu-content,
+  .popover-content,
+  .app-select-menu,
+  .connection-search-dialog,
+  .vault-gate-panel
+) {
+  color-scheme: dark;
+  color: var(--mx-text);
+  border-color: var(--mx-glass-border);
+  background: var(--mx-glass-bg-strong);
+  box-shadow: var(--mx-glass-shadow);
+}
+
+body[data-platform="macos"][data-theme-mode="dark"] .ui-tooltip-arrow {
+  fill: color-mix(in srgb, var(--mx-panel) 88%, transparent);
+}
+
+.app-shell[data-platform="macos"][data-theme-mode="dark"] .custom-titlebar {
+  border-bottom-color: var(--mx-chrome-line);
+  background: var(--mx-sidebar-surface);
+}
+
+.app-shell[data-platform="macos"][data-theme-mode="dark"] .title-leading {
+  border-right-color: transparent;
+}
+
+.app-shell[data-platform="macos"][data-theme-mode="dark"] .settings-sidebar {
+  background: var(--mx-sidebar-surface);
+  border-right-color: var(--mx-sidebar-border);
+}
+
+.app-shell[data-platform="macos"][data-theme-mode="dark"] .settings-sidebar :where(.settings-return, .settings-nav-item) {
+  color: color-mix(in srgb, var(--mx-text) 74%, var(--mx-muted) 26%);
+}
+
+.app-shell[data-platform="macos"][data-theme-mode="dark"] .settings-sidebar :where(.settings-return .ui-icon, .settings-nav-item .ui-icon) {
+  color: color-mix(in srgb, var(--mx-text) 62%, var(--mx-muted) 38%);
+}
+
+.app-shell[data-platform="macos"][data-theme-mode="dark"] .settings-sidebar .settings-nav-item strong {
+  color: color-mix(in srgb, var(--mx-text) 88%, var(--mx-muted) 12%);
+}
+
+.app-shell[data-platform="macos"][data-theme-mode="dark"] .settings-sidebar :where(.settings-nav-item small, .settings-sidebar-foot) {
+  color: color-mix(in srgb, var(--mx-muted) 82%, var(--mx-text) 18%);
+}
+
+.app-shell[data-platform="macos"][data-theme-mode="dark"] .settings-sidebar :where(.settings-return:hover, .settings-nav-item:hover) {
+  color: var(--mx-text);
+  background: color-mix(in srgb, var(--mx-sidebar-hover) 86%, var(--mx-text) 8%);
+}
+
+.app-shell[data-platform="macos"][data-theme-mode="dark"] .settings-sidebar .settings-nav-item.active {
+  color: var(--mx-text);
+  background: color-mix(in srgb, var(--mx-sidebar-active) 88%, var(--mx-text) 7%);
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 7%);
+}
+
+.app-shell[data-platform="macos"][data-theme-mode="dark"] .settings-sidebar .settings-nav-item.active small {
+  color: color-mix(in srgb, var(--mx-text) 68%, var(--mx-muted) 32%);
+}
+
+.app-shell[data-platform="macos"][data-theme-mode="dark"] .settings-sidebar .settings-nav-item.active .ui-icon {
+  color: color-mix(in srgb, var(--mx-text) 78%, var(--mx-primary) 22%);
+}
+
+.app-shell[data-platform="macos"][data-theme-mode="dark"] :where(.main-workbench, .settings-content) {
+  border-top-left-radius: 0;
+}
+
+.app-shell[data-platform="macos"][data-theme-mode="dark"] .app-sidebar::after {
+  background:
+    linear-gradient(90deg, var(--mx-sidebar-sheen-edge), transparent 22%),
+    radial-gradient(circle at 18% 8%, rgb(255 255 255 / 7%), transparent 28%);
+  opacity: 0.64;
+}
+
+.app-shell[data-platform="macos"][data-theme-mode="dark"] :where(
+  .remote-editor-tabs,
+  .terminal-subtabs,
+  .top-tabs,
+  .editor-tabs,
+  .tool-tabs
+) {
+  border-color: var(--mx-chrome-line);
+  background:
+    linear-gradient(145deg, rgb(255 255 255 / 6%), rgb(255 255 255 / 2%)),
+    color-mix(in srgb, var(--mx-panel) 90%, transparent);
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 5%);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+.app-shell[data-platform="macos"][data-theme-mode="dark"] .terminal-workbench-pane[data-terminal-tone="dark"] .terminal-subtabs {
+  background: color-mix(in srgb, var(--mx-panel) 92%, transparent);
+}
+
+.app-shell[data-platform="macos"][data-theme-mode="dark"] :where(.remote-editor-tabs, .terminal-subtabs) {
+  border-top-left-radius: 0;
+}
+
+.app-shell[data-platform="macos"][data-theme-mode="dark"] :where(
+  .app-select-trigger,
+  .settings-input,
+  .settings-select,
+  .connection-dialog input,
+  .connection-dialog select,
+  .connection-dialog textarea,
+  .group-dialog input,
+  .remote-file-name-field input
+) {
+  background: color-mix(in srgb, var(--mx-panel) 92%, transparent);
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 7%);
+}
+
+.app-shell[data-platform="macos"][data-theme-mode="dark"] :where(
+  .app-select-trigger:hover:not(:disabled),
+  .app-select-trigger[aria-expanded="true"]
+) {
+  background: color-mix(in srgb, var(--mx-panel) 88%, var(--mx-primary) 8%);
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--mx-primary) 18%, transparent),
+    inset 0 1px 0 rgb(255 255 255 / 9%);
+}
+
+.app-shell[data-platform="macos"][data-theme-mode="dark"] :where(
+  .connection-step-page,
+  .terminal-direct-status,
+  .local-terminal-empty,
+  .local-terminal-status
+) {
+  background:
+    radial-gradient(circle at 50% 12%, color-mix(in srgb, var(--mx-primary) 9%, transparent), transparent 32%),
+    linear-gradient(
+      180deg,
+      color-mix(in srgb, var(--mx-panel) 94%, transparent),
+      var(--mx-panel) 48%,
+      var(--mx-panel-soft)
+    );
+}
+
+.app-shell[data-platform="macos"][data-theme-mode="dark"] :where(
+  .connection-step-detail,
+  .connection-step-log > div,
+  .terminal-direct-status > div,
+  .summary-block,
+  .summary-item,
+  .action-cell,
+  .action-head,
+  .remote-file-editor-compactbar,
+  .remote-file-monaco,
+  .repository-icon-button,
+  .remote-file-editor-status
+) {
+  color: var(--mx-text);
+  border-color: var(--mx-line);
+  background: color-mix(in srgb, var(--mx-panel) 94%, transparent);
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 5%);
+}
+
+.app-shell[data-platform="macos"][data-theme-mode="dark"] :where(
+  .connection-step-error .connection-step-secondary-button,
+  .local-terminal-status-actions button
+) {
+  color: var(--mx-text);
+  border-color: var(--mx-line);
+  background: color-mix(in srgb, var(--mx-panel) 90%, transparent);
+  box-shadow: none;
+}
+
+.app-shell[data-platform="macos"][data-theme-mode="dark"] :where(
+  .connection-step-actions button:hover,
+  .connection-step-error button:hover,
+  .connection-prompt-form button:hover,
+  .host-key-confirm button:hover,
+  .connection-step-error .connection-step-secondary-button:hover,
+  .local-terminal-status-actions button:hover:not(:disabled),
+  .repository-icon-button:hover:not(:disabled)
+) {
+  color: var(--mx-text);
+  border-color: var(--mx-line-strong);
+  background: var(--mx-active);
+  box-shadow: none;
+}
+
+.app-shell[data-platform="macos"][data-theme-mode="dark"] :where(
+  .connection-row:hover .action-cell,
+  .connection-row:hover .action-head
+) {
+  background: transparent;
+}
+
+.app-shell[data-platform="macos"][data-theme-mode="dark"] :where(
+  .connection-row:hover,
+  .quick-link:hover,
+  .activity-row:hover
+) {
+  color: var(--mx-text);
+  background: var(--mx-active);
+}
+
+.app-shell[data-platform="macos"][data-theme-mode="dark"] :where(
+  .connection-action-icon:hover,
+  .connection-action-icon.favorite.active
+) {
+  color: color-mix(in srgb, var(--mx-text) 86%, var(--mx-muted) 14%);
+  background: var(--mx-active);
+}
+
+.app-shell[data-platform="macos"][data-theme-mode="dark"] .connection-action-icon.connect:hover {
+  color: color-mix(in srgb, var(--mx-primary) 68%, var(--mx-text) 32%);
+  background: color-mix(in srgb, var(--mx-primary) 12%, var(--mx-panel));
+}
+
+.app-shell[data-platform="macos"][data-theme-mode="dark"] :where(
+  .pane-error,
+  .form-error,
+  .connection-board-error,
+  .remote-file-dialog-error
+) {
+  color: color-mix(in srgb, var(--mx-danger) 84%, var(--mx-text));
+}
+
+.app-shell[data-platform="macos"][data-theme-mode="dark"] :where(
+  .connection-step-orb,
+  .connection-step-state,
+  .connection-step-list li.active .connection-step-marker,
+  .connection-prompt-form header > .ui-icon,
+  .host-key-confirm header > .ui-icon
+) {
+  color: var(--mx-primary);
+  border-color: color-mix(in srgb, var(--mx-primary) 32%, var(--mx-line));
+  background: color-mix(in srgb, var(--mx-primary) 14%, var(--mx-panel));
+  box-shadow: none;
+}
+
+.app-shell[data-platform="macos"][data-theme-mode="dark"] :where(
+  .connection-step-orb.success,
+  .connection-step-state.success,
+  .connection-step-list li.done .connection-step-marker,
+  .connection-step-success,
+  .connection-dialog-test-result.success
+) {
+  color: color-mix(in srgb, var(--mx-success) 82%, var(--mx-text));
+  border-color: color-mix(in srgb, var(--mx-success) 26%, var(--mx-line));
+  background: color-mix(in srgb, var(--mx-success) 12%, var(--mx-panel));
+  box-shadow: none;
+}
+
+.app-shell[data-platform="macos"][data-theme-mode="dark"] :where(
+  .connection-step-orb.error,
+  .connection-step-state.error,
+  .connection-step-list li.error .connection-step-marker,
+  .connection-step-detail.is-error,
+  .connection-step-error header > .ui-icon,
+  .connection-step-error .connection-step-retry-button,
+  .terminal-direct-status.is-error > div,
+  .remote-file-editor-status[data-state="error"],
+  .remote-file-editor-status[data-state="conflict"],
+  .connection-dialog-test-result.error
+) {
+  color: color-mix(in srgb, var(--mx-danger) 84%, var(--mx-text));
+  border-color: color-mix(in srgb, var(--mx-danger) 28%, var(--mx-line));
+  background: color-mix(in srgb, var(--mx-danger) 10%, var(--mx-panel));
+  box-shadow: none;
+}
+
+.app-shell[data-platform="macos"][data-theme-mode="dark"] :where(
+  .connection-step-list li.error,
+  .connection-step-error header strong,
+  .connection-step-error-tip,
+  .connection-step-error .connection-step-retry-button,
+  .terminal-direct-status.is-error .ui-icon,
+  .terminal-direct-status small,
+  .remote-file-editor-status[data-state="error"],
+  .remote-file-editor-status[data-state="conflict"],
+  .connection-dialog-test-result.error > .ui-icon
+) {
+  color: color-mix(in srgb, var(--mx-danger) 82%, var(--mx-text));
+}
+
+.app-shell[data-platform="macos"][data-theme-mode="dark"] .connection-step-error .connection-step-retry-button:hover {
+  color: color-mix(in srgb, var(--mx-danger) 92%, var(--mx-text));
+  border-color: color-mix(in srgb, var(--mx-danger) 36%, var(--mx-line));
+  background: color-mix(in srgb, var(--mx-danger) 14%, var(--mx-panel));
+  box-shadow: none;
+}
+
+@media (prefers-color-scheme: dark) {
+  :where(
+    .app-shell[data-platform="macos"][data-theme-mode="system"],
+    body[data-platform="macos"][data-theme-mode="system"]
+  ) :where(
+    .dialog-backdrop,
+    .confirm-backdrop,
+    .connection-search-backdrop,
+    .vault-gate-overlay
+  ) {
+    background: rgb(2 6 23 / 46%);
+    backdrop-filter: blur(10px) saturate(0.94);
+    -webkit-backdrop-filter: blur(10px) saturate(0.94);
+  }
+
+  :where(
+    .app-shell[data-platform="macos"][data-theme-mode="system"],
+    body[data-platform="macos"][data-theme-mode="system"]
+  ) :where(
+    .ui-tooltip,
+    .context-menu-content,
+    .upload-menu,
+    .dropdown-menu-content,
+    .select-menu-content,
+    .popover-content,
+    .app-select-menu,
+    .connection-search-dialog,
+    .vault-gate-panel
+  ) {
+    color-scheme: dark;
+    color: var(--mx-text);
+    border-color: var(--mx-glass-border);
+    background: var(--mx-glass-bg-strong);
+    box-shadow: var(--mx-glass-shadow);
+  }
+
+  body[data-platform="macos"][data-theme-mode="system"] .ui-tooltip-arrow {
+    fill: color-mix(in srgb, var(--mx-panel) 88%, transparent);
+  }
+
+  .app-shell[data-platform="macos"][data-theme-mode="system"] .custom-titlebar {
+    border-bottom-color: var(--mx-chrome-line);
+    background: var(--mx-sidebar-surface);
+  }
+
+  .app-shell[data-platform="macos"][data-theme-mode="system"] .title-leading {
+    border-right-color: transparent;
+  }
+
+  .app-shell[data-platform="macos"][data-theme-mode="system"] .settings-sidebar {
+    background: var(--mx-sidebar-surface);
+    border-right-color: var(--mx-sidebar-border);
+  }
+
+  .app-shell[data-platform="macos"][data-theme-mode="system"] .settings-sidebar :where(.settings-return, .settings-nav-item) {
+    color: color-mix(in srgb, var(--mx-text) 74%, var(--mx-muted) 26%);
+  }
+
+  .app-shell[data-platform="macos"][data-theme-mode="system"] .settings-sidebar :where(.settings-return .ui-icon, .settings-nav-item .ui-icon) {
+    color: color-mix(in srgb, var(--mx-text) 62%, var(--mx-muted) 38%);
+  }
+
+  .app-shell[data-platform="macos"][data-theme-mode="system"] .settings-sidebar .settings-nav-item strong {
+    color: color-mix(in srgb, var(--mx-text) 88%, var(--mx-muted) 12%);
+  }
+
+  .app-shell[data-platform="macos"][data-theme-mode="system"] .settings-sidebar :where(.settings-nav-item small, .settings-sidebar-foot) {
+    color: color-mix(in srgb, var(--mx-muted) 82%, var(--mx-text) 18%);
+  }
+
+  .app-shell[data-platform="macos"][data-theme-mode="system"] .settings-sidebar :where(.settings-return:hover, .settings-nav-item:hover) {
+    color: var(--mx-text);
+    background: color-mix(in srgb, var(--mx-sidebar-hover) 86%, var(--mx-text) 8%);
+  }
+
+  .app-shell[data-platform="macos"][data-theme-mode="system"] .settings-sidebar .settings-nav-item.active {
+    color: var(--mx-text);
+    background: color-mix(in srgb, var(--mx-sidebar-active) 88%, var(--mx-text) 7%);
+    box-shadow: inset 0 1px 0 rgb(255 255 255 / 7%);
+  }
+
+  .app-shell[data-platform="macos"][data-theme-mode="system"] .settings-sidebar .settings-nav-item.active small {
+    color: color-mix(in srgb, var(--mx-text) 68%, var(--mx-muted) 32%);
+  }
+
+  .app-shell[data-platform="macos"][data-theme-mode="system"] .settings-sidebar .settings-nav-item.active .ui-icon {
+    color: color-mix(in srgb, var(--mx-text) 78%, var(--mx-primary) 22%);
+  }
+
+  .app-shell[data-platform="macos"][data-theme-mode="system"] :where(.main-workbench, .settings-content) {
+    border-top-left-radius: 0;
+  }
+
+  .app-shell[data-platform="macos"][data-theme-mode="system"] .app-sidebar::after {
+    background:
+      linear-gradient(90deg, var(--mx-sidebar-sheen-edge), transparent 22%),
+      radial-gradient(circle at 18% 8%, rgb(255 255 255 / 7%), transparent 28%);
+    opacity: 0.64;
+  }
+
+  .app-shell[data-platform="macos"][data-theme-mode="system"] :where(
+    .remote-editor-tabs,
+    .terminal-subtabs,
+    .top-tabs,
+    .editor-tabs,
+    .tool-tabs
+  ) {
+    border-color: var(--mx-chrome-line);
+    background:
+      linear-gradient(145deg, rgb(255 255 255 / 6%), rgb(255 255 255 / 2%)),
+      color-mix(in srgb, var(--mx-panel) 90%, transparent);
+    box-shadow: inset 0 1px 0 rgb(255 255 255 / 5%);
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
+
+  .app-shell[data-platform="macos"][data-theme-mode="system"] .terminal-workbench-pane[data-terminal-tone="dark"] .terminal-subtabs {
+    background: color-mix(in srgb, var(--mx-panel) 92%, transparent);
+  }
+
+  .app-shell[data-platform="macos"][data-theme-mode="system"] :where(.remote-editor-tabs, .terminal-subtabs) {
+    border-top-left-radius: 0;
+  }
+
+  .app-shell[data-platform="macos"][data-theme-mode="system"] :where(
+    .app-select-trigger,
+    .settings-input,
+    .settings-select,
+    .connection-dialog input,
+    .connection-dialog select,
+    .connection-dialog textarea,
+    .group-dialog input,
+    .remote-file-name-field input
+  ) {
+    background: color-mix(in srgb, var(--mx-panel) 92%, transparent);
+    box-shadow: inset 0 1px 0 rgb(255 255 255 / 7%);
+  }
+
+  .app-shell[data-platform="macos"][data-theme-mode="system"] :where(
+    .app-select-trigger:hover:not(:disabled),
+    .app-select-trigger[aria-expanded="true"]
+  ) {
+    background: color-mix(in srgb, var(--mx-panel) 88%, var(--mx-primary) 8%);
+    box-shadow:
+      0 0 0 1px color-mix(in srgb, var(--mx-primary) 18%, transparent),
+      inset 0 1px 0 rgb(255 255 255 / 9%);
+  }
+
+  .app-shell[data-platform="macos"][data-theme-mode="system"] :where(
+    .connection-step-page,
+    .terminal-direct-status,
+    .local-terminal-empty,
+    .local-terminal-status
+  ) {
+    background:
+      radial-gradient(circle at 50% 12%, color-mix(in srgb, var(--mx-primary) 9%, transparent), transparent 32%),
+      linear-gradient(
+        180deg,
+        color-mix(in srgb, var(--mx-panel) 94%, transparent),
+        var(--mx-panel) 48%,
+        var(--mx-panel-soft)
+      );
+  }
+
+  .app-shell[data-platform="macos"][data-theme-mode="system"] :where(
+    .connection-step-detail,
+    .connection-step-log > div,
+    .terminal-direct-status > div,
+    .summary-block,
+    .summary-item,
+    .action-cell,
+    .action-head,
+    .remote-file-editor-compactbar,
+    .remote-file-monaco,
+    .repository-icon-button,
+    .remote-file-editor-status
+  ) {
+    color: var(--mx-text);
+    border-color: var(--mx-line);
+    background: color-mix(in srgb, var(--mx-panel) 94%, transparent);
+    box-shadow: inset 0 1px 0 rgb(255 255 255 / 5%);
+  }
+
+  .app-shell[data-platform="macos"][data-theme-mode="system"] :where(
+    .connection-step-error .connection-step-secondary-button,
+    .local-terminal-status-actions button
+  ) {
+    color: var(--mx-text);
+    border-color: var(--mx-line);
+    background: color-mix(in srgb, var(--mx-panel) 90%, transparent);
+    box-shadow: none;
+  }
+
+  .app-shell[data-platform="macos"][data-theme-mode="system"] :where(
+    .connection-step-actions button:hover,
+    .connection-step-error button:hover,
+    .connection-prompt-form button:hover,
+    .host-key-confirm button:hover,
+    .connection-step-error .connection-step-secondary-button:hover,
+    .local-terminal-status-actions button:hover:not(:disabled),
+    .repository-icon-button:hover:not(:disabled)
+  ) {
+    color: var(--mx-text);
+    border-color: var(--mx-line-strong);
+    background: var(--mx-active);
+    box-shadow: none;
+  }
+
+  .app-shell[data-platform="macos"][data-theme-mode="system"] :where(
+    .connection-row:hover .action-cell,
+    .connection-row:hover .action-head
+  ) {
+    background: transparent;
+  }
+
+  .app-shell[data-platform="macos"][data-theme-mode="system"] :where(
+    .connection-row:hover,
+    .quick-link:hover,
+    .activity-row:hover
+  ) {
+    color: var(--mx-text);
+    background: var(--mx-active);
+  }
+
+  .app-shell[data-platform="macos"][data-theme-mode="system"] :where(
+    .connection-action-icon:hover,
+    .connection-action-icon.favorite.active
+  ) {
+    color: color-mix(in srgb, var(--mx-text) 86%, var(--mx-muted) 14%);
+    background: var(--mx-active);
+  }
+
+  .app-shell[data-platform="macos"][data-theme-mode="system"] .connection-action-icon.connect:hover {
+    color: color-mix(in srgb, var(--mx-primary) 68%, var(--mx-text) 32%);
+    background: color-mix(in srgb, var(--mx-primary) 12%, var(--mx-panel));
+  }
+
+  .app-shell[data-platform="macos"][data-theme-mode="system"] :where(
+    .pane-error,
+    .form-error,
+    .connection-board-error,
+    .remote-file-dialog-error
+  ) {
+    color: color-mix(in srgb, var(--mx-danger) 84%, var(--mx-text));
+  }
+
+  .app-shell[data-platform="macos"][data-theme-mode="system"] :where(
+    .connection-step-orb,
+    .connection-step-state,
+    .connection-step-list li.active .connection-step-marker,
+    .connection-prompt-form header > .ui-icon,
+    .host-key-confirm header > .ui-icon
+  ) {
+    color: var(--mx-primary);
+    border-color: color-mix(in srgb, var(--mx-primary) 32%, var(--mx-line));
+    background: color-mix(in srgb, var(--mx-primary) 14%, var(--mx-panel));
+    box-shadow: none;
+  }
+
+  .app-shell[data-platform="macos"][data-theme-mode="system"] :where(
+    .connection-step-orb.success,
+    .connection-step-state.success,
+    .connection-step-list li.done .connection-step-marker,
+    .connection-step-success,
+    .connection-dialog-test-result.success
+  ) {
+    color: color-mix(in srgb, var(--mx-success) 82%, var(--mx-text));
+    border-color: color-mix(in srgb, var(--mx-success) 26%, var(--mx-line));
+    background: color-mix(in srgb, var(--mx-success) 12%, var(--mx-panel));
+    box-shadow: none;
+  }
+
+  .app-shell[data-platform="macos"][data-theme-mode="system"] :where(
+    .connection-step-orb.error,
+    .connection-step-state.error,
+    .connection-step-list li.error .connection-step-marker,
+    .connection-step-detail.is-error,
+    .connection-step-error header > .ui-icon,
+    .connection-step-error .connection-step-retry-button,
+    .terminal-direct-status.is-error > div,
+    .remote-file-editor-status[data-state="error"],
+    .remote-file-editor-status[data-state="conflict"],
+    .connection-dialog-test-result.error
+  ) {
+    color: color-mix(in srgb, var(--mx-danger) 84%, var(--mx-text));
+    border-color: color-mix(in srgb, var(--mx-danger) 28%, var(--mx-line));
+    background: color-mix(in srgb, var(--mx-danger) 10%, var(--mx-panel));
+    box-shadow: none;
+  }
+
+  .app-shell[data-platform="macos"][data-theme-mode="system"] :where(
+    .connection-step-list li.error,
+    .connection-step-error header strong,
+    .connection-step-error-tip,
+    .connection-step-error .connection-step-retry-button,
+    .terminal-direct-status.is-error .ui-icon,
+    .terminal-direct-status small,
+    .remote-file-editor-status[data-state="error"],
+    .remote-file-editor-status[data-state="conflict"],
+    .connection-dialog-test-result.error > .ui-icon
+  ) {
+    color: color-mix(in srgb, var(--mx-danger) 82%, var(--mx-text));
+  }
+
+  .app-shell[data-platform="macos"][data-theme-mode="system"] .connection-step-error .connection-step-retry-button:hover {
+    color: color-mix(in srgb, var(--mx-danger) 92%, var(--mx-text));
+    border-color: color-mix(in srgb, var(--mx-danger) 36%, var(--mx-line));
+    background: color-mix(in srgb, var(--mx-danger) 14%, var(--mx-panel));
+    box-shadow: none;
+  }
 }
 
 .settings-nav-item.active {
