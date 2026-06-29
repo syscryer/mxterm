@@ -94,6 +94,7 @@ import {
   type ShortcutSettings,
   type TerminalThemeSettings,
   type TerminalFontPreset,
+  type TerminalCursorStyle,
   type UiFontPreset,
   type WindowMaterialMode,
   uiFontPresets,
@@ -2045,6 +2046,26 @@ function AppearanceSettingsSection({
             value={settings.terminalFontSize}
             values={[12, 13, 14, 15, 16] as const}
             onChange={(terminalFontSize) => onUpdate({ terminalFontSize })}
+          />
+        </SettingsRow>
+
+        <SettingsRow icon={Terminal} title="光标样式" description="控制终端光标外观，已打开会话会即时更新。">
+          <SegmentedControl<TerminalCursorStyle>
+            value={settings.cursorStyle}
+            options={[
+              { value: "block", label: "块" },
+              { value: "bar", label: "竖线" },
+              { value: "underline", label: "下划线" },
+            ]}
+            onChange={(cursorStyle) => onUpdate({ cursorStyle })}
+          />
+        </SettingsRow>
+
+        <SettingsRow icon={Terminal} title="光标闪烁" description="关闭后使用静态光标，适合长时间阅读或录屏。">
+          <SettingsToggle
+            checked={settings.cursorBlink}
+            label="启用光标闪烁"
+            onChange={(cursorBlink) => onUpdate({ cursorBlink })}
           />
         </SettingsRow>
 
