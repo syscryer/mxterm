@@ -63,7 +63,7 @@
   --font-mono: "Cascadia Mono", Consolas, "Microsoft YaHei UI", monospace;
   color-scheme: light;
   color: var(--mx-text);
-  background: var(--mx-bg);
+  background: transparent;
   font-family: var(--font-ui);
 }
 
@@ -110,14 +110,6 @@
   --mx-sidebar-sheen-top: rgb(255 255 255 / 0%);
   --mx-sidebar-sheen-edge: rgb(255 255 255 / 0%);
   --mx-sidebar-shadow: none;
-}
-
-/* Windows WebView2 输入时透明问题：移除渐变中的透明部分 */
-.app-shell[data-platform="windows"][data-window-material="mica"] {
-  --mx-material-bg:
-    radial-gradient(circle at 18% 0%, color-mix(in srgb, var(--mx-primary) 13%, var(--mx-bg)), var(--mx-bg) 34%),
-    linear-gradient(145deg, rgb(255 255 255 / 100%), rgb(235 239 245 / 100%)),
-    var(--mx-bg);
 }
 
 .app-shell[data-window-material="acrylic"] {
@@ -273,13 +265,6 @@ body[data-theme-mode="dark"] {
 .app-shell[data-theme-mode="dark"][data-window-material="auto"],
 body[data-theme-mode="dark"][data-window-material="auto"] {
   --mx-title: #1b1f26;
-}
-
-/* Windows WebView2 输入时透明问题：深色模式也移除渐变中的透明部分 */
-.app-shell[data-platform="windows"][data-theme-mode="dark"] {
-  --mx-material-bg:
-    radial-gradient(circle at 18% 0%, color-mix(in srgb, var(--mx-primary) 12%, var(--mx-bg)), var(--mx-bg) 36%),
-    linear-gradient(180deg, #101318, #0c0f14);
 }
 
 .app-shell[data-theme-mode="dark"][data-window-material="mica"],
@@ -464,13 +449,6 @@ body[data-platform="macos"][data-theme-mode="dark"] {
   .app-shell[data-theme-mode="system"][data-window-material="auto"],
   body[data-theme-mode="system"][data-window-material="auto"] {
     --mx-title: #1b1f26;
-  }
-
-  /* Windows WebView2 输入时透明问题：system 主题深色模式也移除渐变中的透明部分 */
-  .app-shell[data-platform="windows"][data-theme-mode="system"] {
-    --mx-material-bg:
-      radial-gradient(circle at 18% 0%, color-mix(in srgb, var(--mx-primary) 12%, var(--mx-bg)), var(--mx-bg) 36%),
-      linear-gradient(180deg, #101318, #0c0f14);
   }
 
   .app-shell[data-theme-mode="system"][data-window-material="mica"],
