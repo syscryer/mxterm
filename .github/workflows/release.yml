@@ -27,10 +27,18 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          - runner: windows-latest
+            target: windows-x64
+            package_script: package:win
+            bundle_root: src-tauri/target/release/bundle
           - runner: macos-26
             target: macos-arm64
             package_script: package:mac-arm64
             bundle_root: src-tauri/target/aarch64-apple-darwin/release/bundle
+          - runner: ubuntu-22.04
+            target: linux-x64
+            package_script: package:linux
+            bundle_root: src-tauri/target/x86_64-unknown-linux-gnu/release/bundle
 
     steps:
       - name: Checkout
@@ -53,6 +61,28 @@ jobs:
       - name: Add macOS target
         if: matrix.target == 'macos-arm64'
         run: rustup target add aarch64-apple-darwin
+
+      - name: Add Linux target
+        if: matrix.target == 'linux-x64'
+        run: rustup target add x86_64-unknown-linux-gnu
+
+      - name: Install Linux build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            curl \
+            file \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libssl-dev \
+            libwebkit2gtk-4.1-dev \
+            libxdo-dev \
+            patchelf \
+            pkg-config \
+            rpm \
+            wget
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -93,6 +123,11 @@ jobs:
             exit 1
           fi
 
+      - name: Windows code signing extension point
+        if: matrix.target == 'windows-x64'
+        shell: bash
+        run: echo "Windows Authenticode signing is intentionally not configured yet; add certificate import/signing here later."
+
       - name: macOS signing and notarization extension point
         if: matrix.target == 'macos-arm64'
         shell: bash
@@ -121,6 +156,26 @@ jobs:
             --bundle-root "$bundle_root" \
             --out-dir release-assets \
             --artifact "${{ matrix.target }}"
+
+          if [ "${{ matrix.target }}" = "windows-x64" ]; then
+            portable_root="release-assets/mXterm-portable"
+            mkdir -p "$portable_root"
+            find src-tauri/target/release -mindepth 1 -maxdepth 1 \
+              ! -name bundle \
+              ! -name build \
+              ! -name deps \
+              ! -name _up_ \
+              ! -name incremental \
+              -exec cp -R {} "$portable_root/" \;
+
+            if [ -d "src-tauri/target/release/_up_" ]; then
+              cp -R src-tauri/target/release/_up_ "$portable_root/_up_"
+            fi
+
+            printf "portable\n" > "$portable_root/portable.marker"
+            powershell -NoProfile -Command "Compress-Archive -Path 'release-assets/mXterm-portable/*' -DestinationPath 'release-assets/mXterm-portable-windows-x64.zip' -Force"
+            rm -rf "$portable_root"
+          fi
 
           if [ "$(find release-assets -type f | wc -l | tr -d ' ')" = "0" ]; then
             echo "::error::No release assets were collected"
