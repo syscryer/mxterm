@@ -34,6 +34,7 @@ import {
 } from "./terminalSemanticHighlight";
 import { normalizeStartupOutput } from "./terminalStartupOutput";
 import { Tooltip } from "../../shared/ui/Tooltip";
+import type { TerminalCursorStyle } from "../settings/settingsTypes";
 
 const TERMINAL_SCROLLBAR_WIDTH = 6;
 const STARTUP_OUTPUT_BUFFER_MS = 250;
@@ -53,6 +54,8 @@ interface TerminalPanelProps {
   active: boolean;
   connection: ConnectionProfile | null;
   autoConnect?: boolean;
+  cursorBlink?: boolean;
+  cursorStyle?: TerminalCursorStyle;
   fontFamily: string;
   fontSize: number;
   initialOutput?: number[];
@@ -79,6 +82,8 @@ export function TerminalPanel({
   active,
   connection,
   autoConnect = true,
+  cursorBlink = true,
+  cursorStyle = "block",
   fontFamily,
   fontSize,
   initialOutput = [],
@@ -164,7 +169,8 @@ export function TerminalPanel({
 
     const terminal = new Terminal({
       allowProposedApi: true,
-      cursorBlink: true,
+      cursorBlink,
+      cursorStyle,
       fontFamily,
       fontSize,
       overviewRuler: {
@@ -577,6 +583,24 @@ export function TerminalPanel({
     terminal.options.fontSize = fontSize;
     fitAndSyncTerminalSize(terminal, fitAddonRef.current, sessionIdRef.current, lastSyncedSizeRef);
   }, [fontSize]);
+
+  useEffect(() => {
+    const terminal = terminalRef.current;
+    if (!terminal || terminal.options.cursorStyle === cursorStyle) {
+      return;
+    }
+
+    terminal.options.cursorStyle = cursorStyle;
+  }, [cursorStyle]);
+
+  useEffect(() => {
+    const terminal = terminalRef.current;
+    if (!terminal || terminal.options.cursorBlink === cursorBlink) {
+      return;
+    }
+
+    terminal.options.cursorBlink = cursorBlink;
+  }, [cursorBlink]);
 
   useEffect(() => {
     const terminal = terminalRef.current;

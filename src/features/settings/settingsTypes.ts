@@ -28,6 +28,7 @@ export type FontSettingMode = "preset" | "custom";
 export type InterfaceDensity = "comfortable" | "compact";
 export type IconSize = "small" | "medium" | "large";
 export type WindowMaterialMode = "auto" | "mica" | "acrylic" | "micaAlt" | "macosGlass";
+export type TerminalCursorStyle = "block" | "bar" | "underline";
 export type FileTransferConflictPolicy = "ask" | "overwrite" | "skip" | "rename";
 export type FileTransferTimestampFormat =
   | "yyyyMMddHHmm"
@@ -59,6 +60,8 @@ export interface BasicSettings {
 export interface AppearanceSettings {
   accentColor: AccentColor;
   accentColorCustom: string;
+  cursorBlink: boolean;
+  cursorStyle: TerminalCursorStyle;
   density: InterfaceDensity;
   iconSize: IconSize;
   rememberPaneWidths: boolean;
@@ -237,6 +240,8 @@ export const defaultSettings: MxtermSettings = {
   appearance: {
     accentColor: "blue",
     accentColorCustom: "#2374C6",
+    cursorBlink: true,
+    cursorStyle: "block",
     density: "comfortable",
     iconSize: "medium",
     rememberPaneWidths: true,
@@ -375,6 +380,15 @@ export function normalizeSettings(value: unknown): MxtermSettings {
       accentColorCustom: normalizeHexColor(
         appearance.accentColorCustom,
         defaultSettings.appearance.accentColorCustom,
+      ),
+      cursorBlink: normalizeBoolean(
+        appearance.cursorBlink,
+        defaultSettings.appearance.cursorBlink,
+      ),
+      cursorStyle: normalizeOneOf(
+        appearance.cursorStyle,
+        ["block", "bar", "underline"],
+        defaultSettings.appearance.cursorStyle,
       ),
       density: normalizeOneOf(
         appearance.density,
