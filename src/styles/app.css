@@ -856,7 +856,8 @@ button {
 }
 
 .webdav-sync-section {
-  width: min(1040px, 100%);
+  width: min(960px, 100%);
+  align-content: start;
 }
 
 .webdav-sync-state {
@@ -880,17 +881,23 @@ button {
   background: color-mix(in srgb, var(--mx-success) 9%, var(--mx-panel));
 }
 
-.webdav-sync-form {
+.webdav-sync-panel,
+.webdav-sync-card {
   min-width: 0;
-  display: grid;
+  background: var(--mx-panel);
 }
 
-.webdav-sync-form-grid {
+.webdav-sync-enable-row {
+  background: var(--mx-panel);
+}
+
+.webdav-sync-fields {
   min-width: 0;
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 14px 12px;
   padding: 16px;
+  background: var(--mx-panel);
 }
 
 .webdav-sync-grid {
@@ -898,13 +905,7 @@ button {
   display: grid;
   grid-template-columns: minmax(0, 1.05fr) minmax(320px, 0.95fr);
   align-items: start;
-  gap: 16px;
-}
-
-.webdav-remote-panel,
-.webdav-operation-panel,
-.webdav-sync-config-panel {
-  min-width: 0;
+  gap: 14px;
 }
 
 .webdav-remote-info {
@@ -912,10 +913,27 @@ button {
   display: grid;
   gap: 12px;
   padding: 14px;
+  background: var(--mx-panel);
+}
+
+.webdav-remote-summary {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.webdav-remote-summary small {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--mx-muted);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .webdav-remote-badge {
-  justify-self: start;
+  flex: 0 0 auto;
   min-height: 24px;
   border: 1px solid var(--mx-line);
   border-radius: 999px;
@@ -950,7 +968,7 @@ button {
 .webdav-remote-info dl > div {
   min-width: 0;
   border: 1px solid var(--mx-line-soft);
-  border-radius: 8px;
+  border-radius: 7px;
   display: grid;
   gap: 4px;
   padding: 9px 10px;
@@ -982,6 +1000,7 @@ button {
   display: grid;
   gap: 14px;
   padding: 14px;
+  background: var(--mx-panel);
 }
 
 .webdav-operation-actions {
@@ -991,15 +1010,44 @@ button {
   gap: 8px;
 }
 
+.webdav-sync-actions {
+  background: var(--mx-panel-soft);
+}
+
+.webdav-sync-action-note {
+  min-width: 0;
+  color: var(--mx-muted);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.webdav-sync-actions button {
+  border-color: var(--mx-line);
+  color: var(--mx-text);
+  background: var(--mx-panel);
+}
+
+.webdav-sync-actions button:hover:not(:disabled) {
+  border-color: var(--mx-line-strong);
+  color: var(--mx-text);
+  background: var(--mx-active);
+}
+
+.webdav-sync-actions button:disabled {
+  color: var(--mx-subtle);
+  background: var(--mx-panel-soft);
+}
+
 .webdav-sync-actions .primary-button {
   border-color: color-mix(in srgb, var(--mx-primary) 82%, var(--mx-line));
-  color: #ffffff;
+  color: var(--mx-panel);
   background: var(--mx-primary);
+  box-shadow: 0 4px 10px color-mix(in srgb, var(--mx-primary) 20%, transparent);
 }
 
 .webdav-sync-actions .primary-button:hover:not(:disabled) {
   border-color: color-mix(in srgb, var(--mx-primary) 88%, var(--mx-line-strong));
-  color: #ffffff;
+  color: var(--mx-panel);
   background: color-mix(in srgb, var(--mx-primary) 90%, var(--mx-text));
 }
 
@@ -1030,7 +1078,7 @@ button {
 
 @media (max-width: 920px) {
   .webdav-sync-grid,
-  .webdav-sync-form-grid,
+  .webdav-sync-fields,
   .webdav-remote-info dl {
     grid-template-columns: minmax(0, 1fr);
   }

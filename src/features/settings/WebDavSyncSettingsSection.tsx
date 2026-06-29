@@ -193,15 +193,16 @@ export function WebDavSyncSettingsSection() {
       <header className="settings-section-head settings-section-head-row">
         <span>
           <h1>同步</h1>
-          <p>配置 WebDAV 手动同步，上传和下载 MXterm 的连接、账号、隧道和安全快照。</p>
+          <p>通过 WebDAV 手动上传或下载连接、账号、隧道和安全快照。</p>
         </span>
         <span className={`webdav-sync-state ${form.enabled ? "enabled" : ""}`}>
-          {form.enabled ? "已启用" : "未启用"}
+          {busyAction === "load" ? "读取中" : form.enabled ? "已启用" : "未启用"}
         </span>
       </header>
 
-      <div className="settings-panel webdav-sync-config-panel">
+      <form className="settings-panel webdav-sync-panel" onSubmit={submitSettings}>
         <SettingsRow
+          className="webdav-sync-enable-row"
           icon={Cloud}
           title="WebDAV 同步"
           description="默认关闭；启用后仍只在你点击上传或下载时同步。"
@@ -213,118 +214,127 @@ export function WebDavSyncSettingsSection() {
           />
         </SettingsRow>
 
-        <form className="webdav-sync-form" onSubmit={submitSettings}>
-          <div className="webdav-sync-form-grid">
-            <label className="credential-field credential-field-full">
-              <span>服务地址</span>
-              <input
-                className="settings-input"
-                value={form.base_url}
-                placeholder="https://dav.example.com/remote.php/dav/files/user"
-                spellCheck={false}
-                onChange={(event) =>
-                  setForm((current) => ({ ...current, base_url: event.currentTarget.value }))
+        <div className="webdav-sync-fields">
+          <label className="credential-field credential-field-full">
+            <span>服务地址</span>
+            <input
+              className="settings-input"
+              value={form.base_url}
+              placeholder="https://dav.example.com/remote.php/dav/files/user"
+              spellCheck={false}
+              onChange={(event) => {
+                const value = event.target?.value;
+                if (value !== undefined) {
+                  setForm((current) => ({ ...current, base_url: value }));
                 }
-              />
-            </label>
+              }}
+            />
+          </label>
 
-            <label className="credential-field">
-              <span>用户名</span>
-              <input
-                className="settings-input"
-                {...usernameInputAttributes}
-                value={form.username}
-                autoComplete="username"
-                onChange={(event) =>
-                  setForm((current) => ({ ...current, username: event.currentTarget.value }))
+          <label className="credential-field">
+            <span>用户名</span>
+            <input
+              className="settings-input"
+              {...usernameInputAttributes}
+              value={form.username}
+              autoComplete="username"
+              onChange={(event) => {
+                const value = event.target?.value;
+                if (value !== undefined) {
+                  setForm((current) => ({ ...current, username: value }));
                 }
-              />
-            </label>
+              }}
+            />
+          </label>
 
-            <label className="credential-field">
-              <span>WebDAV 密码 · {passwordStatus}</span>
-              <div className="credential-secret-field">
-                <LockKeyhole className="ui-icon" aria-hidden="true" />
-                <input
-                  type={showWebDavPassword ? "text" : "password"}
-                  value={form.password}
-                  autoComplete="current-password"
-                  placeholder={settings?.password_saved ? "留空保留已保存密码" : "输入 WebDAV 密码"}
-                  onChange={(event) =>
+          <label className="credential-field">
+            <span>WebDAV 密码（{passwordStatus}）</span>
+            <div className="credential-secret-field">
+              <LockKeyhole className="ui-icon" aria-hidden="true" />
+              <input
+                type={showWebDavPassword ? "text" : "password"}
+                value={form.password}
+                autoComplete="current-password"
+                placeholder={settings?.password_saved ? "留空保留已保存密码" : "输入 WebDAV 密码"}
+                onChange={(event) => {
+                  const value = event.target?.value;
+                  if (value !== undefined) {
                     setForm((current) => ({
                       ...current,
-                      password: event.currentTarget.value,
+                      password: value,
                       password_touched: true,
-                    }))
+                    }));
                   }
-                />
-                <button
-                  type="button"
-                  aria-label={showWebDavPassword ? "隐藏 WebDAV 密码" : "显示 WebDAV 密码"}
-                  onClick={() => setShowWebDavPassword((value) => !value)}
-                >
-                  {showWebDavPassword ? (
-                    <EyeOff className="ui-icon" aria-hidden="true" />
-                  ) : (
-                    <Eye className="ui-icon" aria-hidden="true" />
-                  )}
-                </button>
-              </div>
-            </label>
-
-            <label className="credential-field">
-              <span>远端目录</span>
-              <input
-                className="settings-input"
-                value={form.remote_root}
-                spellCheck={false}
-                onChange={(event) =>
-                  setForm((current) => ({ ...current, remote_root: event.currentTarget.value }))
-                }
+                }}
               />
-            </label>
-
-            <label className="credential-field">
-              <span>Profile</span>
-              <input
-                className="settings-input"
-                value={form.profile}
-                spellCheck={false}
-                onChange={(event) =>
-                  setForm((current) => ({ ...current, profile: event.currentTarget.value }))
-                }
-              />
-            </label>
-          </div>
-
-          <footer className="credential-form-actions webdav-sync-actions">
-            <div>
               <button
-                className="settings-action-button"
                 type="button"
-                disabled={busy || !runtimeAvailable}
-                onClick={() => void testConnection()}
+                aria-label={showWebDavPassword ? "隐藏 WebDAV 密码" : "显示 WebDAV 密码"}
+                onClick={() => setShowWebDavPassword((value) => !value)}
               >
-                <Wifi className="ui-icon" aria-hidden="true" />
-                {busyAction === "test" ? "测试中" : "测试连接"}
+                {showWebDavPassword ? (
+                  <EyeOff className="ui-icon" aria-hidden="true" />
+                ) : (
+                  <Eye className="ui-icon" aria-hidden="true" />
+                )}
               </button>
             </div>
-            <div>
-              <button
-                className="primary-button"
-                type="submit"
-                disabled={busy || !runtimeAvailable}
-              >
-                <Save className="ui-icon" aria-hidden="true" />
-                {busyAction === "save" ? "保存中" : "保存设置"}
-              </button>
-            </div>
-          </footer>
-        </form>
-      </div>
+          </label>
+
+          <label className="credential-field">
+            <span>远端目录</span>
+            <input
+              className="settings-input"
+              value={form.remote_root}
+              spellCheck={false}
+              onChange={(event) => {
+                const value = event.target?.value;
+                if (value !== undefined) {
+                  setForm((current) => ({ ...current, remote_root: value }));
+                }
+              }}
+            />
+          </label>
+
+          <label className="credential-field">
+            <span>Profile</span>
+            <input
+              className="settings-input"
+              value={form.profile}
+              spellCheck={false}
+              onChange={(event) => {
+                const value = event.target?.value;
+                if (value !== undefined) {
+                  setForm((current) => ({ ...current, profile: value }));
+                }
+              }}
+            />
+          </label>
+        </div>
+
+        <footer className="credential-form-actions webdav-sync-actions">
+          <span className="webdav-sync-action-note">
+            {runtimeAvailable ? "先保存配置，再执行远端读取或同步操作。" : "桌面模式下才能保存和同步。"}
+          </span>
+          <div>
+            <button
+              type="button"
+              disabled={busy || !runtimeAvailable}
+              onClick={() => void testConnection()}
+            >
+              <Wifi className="ui-icon" aria-hidden="true" />
+              {busyAction === "test" ? "测试中" : "测试连接"}
+            </button>
+            <button className="primary-button" type="submit" disabled={busy || !runtimeAvailable}>
+              <Save className="ui-icon" aria-hidden="true" />
+              {busyAction === "save" ? "保存中" : "保存设置"}
+            </button>
+          </div>
+        </footer>
+      </form>
 
       <div className="webdav-sync-grid">
-        <section className="settings-panel webdav-remote-panel" aria-label="远端快照">
+        <section className="settings-panel webdav-sync-card" aria-label="远端快照">
           <header className="local-terminal-panel-head">
             <span>
               <strong>远端快照</strong>
@@ -343,9 +353,12 @@ export function WebDavSyncSettingsSection() {
 
           {remoteInfo ? (
             <div className="webdav-remote-info">
-              <span className={`webdav-remote-badge ${remoteInfo.compatible ? "ok" : "warn"}`}>
-                {remoteInfo.compatible ? "兼容" : remoteInfo.exists ? "不兼容" : "空目录"}
-              </span>
+              <div className="webdav-remote-summary">
+                <span className={`webdav-remote-badge ${remoteInfo.compatible ? "ok" : "warn"}`}>
+                  {remoteInfo.compatible ? "兼容" : remoteInfo.exists ? "不兼容" : "空目录"}
+                </span>
+                <small>{remoteInfo.exists ? "远端 manifest.json 已读取" : "远端还没有快照"}</small>
+              </div>
               <dl>
                 <div>
                   <dt>来源设备</dt>
@@ -374,7 +387,7 @@ export function WebDavSyncSettingsSection() {
           )}
         </section>
 
-        <section className="settings-panel webdav-operation-panel" aria-label="同步操作">
+        <section className="settings-panel webdav-sync-card" aria-label="同步操作">
           <header className="local-terminal-panel-head">
             <span>
               <strong>手动同步</strong>
@@ -393,7 +406,12 @@ export function WebDavSyncSettingsSection() {
                   value={syncPassword}
                   autoComplete="new-password"
                   placeholder="上传含密码快照时必填"
-                  onChange={(event) => setSyncPassword(event.currentTarget.value)}
+                  onChange={(event) => {
+                    const value = event.target?.value;
+                    if (value !== undefined) {
+                      setSyncPassword(value);
+                    }
+                  }}
                 />
                 <button
                   type="button"

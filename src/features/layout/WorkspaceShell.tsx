@@ -257,6 +257,7 @@ import {
   normalizeWindowMaterial,
   setWindowMaterial,
 } from "../../shared/tauri/windowMaterial";
+import { syncCurrentWebviewBackground } from "../../shared/tauri/webviewBackground";
 import { initializeWindowStatePersistence } from "../../shared/tauri/windowState";
 import { Tooltip } from "../../shared/ui/Tooltip";
 import { AppTitlebar } from "./AppTitlebar";
@@ -1379,6 +1380,21 @@ export function WorkspaceShell() {
       body.style.setProperty(name, value);
     }
 
+    void syncCurrentWebviewBackground();
+
+    // system 主题模式下，监听系统深浅色切换，同步 WebView 背景
+    let mediaQuery: MediaQueryList | null = null;
+    let cleanup: (() => void) | null = null;
+
+    if (settings.appearance.themeMode === "system") {
+      mediaQuery = window.matchMedia("(prefers-color-scheme: dark)");
+      const handleChange = () => {
+        void syncCurrentWebviewBackground();
+      };
+      mediaQuery.addEventListener("change", handleChange);
+      cleanup = () => mediaQuery?.removeEventListener("change", handleChange);
+    }
+
     return () => {
       delete document.body.dataset.themeMode;
       delete document.body.dataset.windowMaterial;
@@ -1387,6 +1403,7 @@ export function WorkspaceShell() {
       for (const name of Object.keys(portalThemeStyle)) {
         body.style.removeProperty(name);
       }
+      cleanup?.();
     };
   }, [
     desktopPlatform,
