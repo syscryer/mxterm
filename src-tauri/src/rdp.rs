@@ -2092,7 +2092,15 @@ fn process_native_host_commands(
                 reveal_native_host_window(hwnd);
             }
             NativeRdpHostCommand::CloseSession { session_id } => {
+                use windows::Win32::Foundation::{LPARAM, WPARAM};
+                use windows::Win32::UI::WindowsAndMessaging::{PostMessageW, WM_CLOSE};
+
                 close_activex_host_session(hwnd, state, &session_id, false);
+                if state.sessions.is_empty() {
+                    unsafe {
+                        let _ = PostMessageW(Some(hwnd), WM_CLOSE, WPARAM(0), LPARAM(0));
+                    }
+                }
                 keep_running = !state.sessions.is_empty();
             }
             NativeRdpHostCommand::ActivateSession { session_id } => {
