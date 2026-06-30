@@ -223,6 +223,7 @@ import {
   rdpCloseSession,
   rdpLaunchConnection,
   rdpPreviewLaunch,
+  rdpRevealSession,
   rdpResizeEmbeddedSession,
   vncCloseSession,
   vncLaunchConnection,
@@ -4603,6 +4604,7 @@ export function WorkspaceShell() {
     const existingSession = preferredRdpSessionForConnection(connection.id);
     if (existingSession) {
       activateRdpSession(existingSession);
+      revealNativeRdpHostSession(existingSession);
       return;
     }
 
@@ -4613,6 +4615,7 @@ export function WorkspaceShell() {
     const existingSession = preferredRdpSessionForConnection(connection.id);
     if (existingSession) {
       activateRdpSession(existingSession);
+      revealNativeRdpHostSession(existingSession);
       return;
     }
 
@@ -4624,6 +4627,17 @@ export function WorkspaceShell() {
     });
     activateRdpSession(session);
     void runRdpSession(session.id, connection);
+  }
+
+  function revealNativeRdpHostSession(session: RdpSessionTab) {
+    if (!hasTauriRuntime()) {
+      return;
+    }
+    const backendSessionId = session.result?.session_id;
+    if (!backendSessionId || session.result?.runner !== "mstsc_activex") {
+      return;
+    }
+    void rdpRevealSession(backendSessionId).catch(() => undefined);
   }
 
   async function runRdpSession(sessionId: string, connection: ConnectionProfile) {

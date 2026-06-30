@@ -112,6 +112,21 @@ pub struct RdpSessionResizeResult {
     pub message: String,
 }
 
+#[derive(Clone, Debug, Serialize)]
+pub struct RdpSessionRevealResult {
+    pub ok: bool,
+    pub message: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct PersistedRdpHostWindowState {
+    x: i32,
+    y: i32,
+    width: u32,
+    height: u32,
+    maximized: bool,
+}
+
 #[derive(Debug, Default)]
 pub struct RdpSessionManager {
     sessions: Mutex<std::collections::HashMap<String, ManagedRdpSession>>,
@@ -132,7 +147,6 @@ struct ManagedRdpSession {
 #[derive(Clone)]
 struct NativeRdpHostHandle {
     hwnd: isize,
-    owner_hwnd: isize,
     command_tx: Sender<NativeRdpHostCommand>,
     command_rx_ptr: usize,
     atl_ptr: isize,
@@ -149,7 +163,6 @@ impl std::fmt::Debug for NativeRdpHostHandle {
             formatter
                 .debug_struct("NativeRdpHostHandle")
                 .field("hwnd", &self.hwnd)
-                .field("owner_hwnd", &self.owner_hwnd)
                 .field("command_rx_ptr", &self.command_rx_ptr)
                 .field("atl_ptr", &self.atl_ptr)
                 .finish_non_exhaustive()
@@ -169,6 +182,9 @@ enum NativeRdpHostCommand {
         response: SyncSender<Result<HostedRdpSession, AppError>>,
     },
     CloseSession {
+        session_id: String,
+    },
+    ActivateSession {
         session_id: String,
     },
     Resize {
@@ -199,10 +215,7 @@ const MX_RDP_CONTROL_RESIZE_SUBCLASS_ID: usize = 0x4d58_5244_5052_535a;
 
 impl RdpSessionManager {
     #[cfg(windows)]
-    fn native_host_for_owner(
-        &self,
-        owner_hwnd: isize,
-    ) -> Result<Option<NativeRdpHostHandle>, AppError> {
+    fn native_host(&self) -> Result<Option<NativeRdpHostHandle>, AppError> {
         use windows::Win32::Foundation::HWND;
         use windows::Win32::UI::WindowsAndMessaging::IsWindow;
 
@@ -216,7 +229,7 @@ impl RdpSessionManager {
         })?;
         if let Some(handle) = host.as_ref() {
             let hwnd = HWND(handle.hwnd as *mut std::ffi::c_void);
-            if handle.owner_hwnd == owner_hwnd && unsafe { IsWindow(Some(hwnd)).as_bool() } {
+            if unsafe { IsWindow(Some(hwnd)).as_bool() } {
                 return Ok(Some(handle.clone()));
             }
         }
@@ -639,6 +652,55 @@ pub fn resize_embedded_session(
             applied: false,
             message: error.message,
         },
+    }
+}
+
+pub fn reveal_session(
+    manager: &RdpSessionManager,
+    request: RdpSessionRequest,
+) -> RdpSessionRevealResult {
+    #[cfg(windows)]
+    {
+        match manager.get(&request.session_id) {
+            Ok(Some(session)) if session.embedded => {
+                if let Ok(Some(host)) = manager.native_host_by_hwnd(session.hwnd) {
+                    let _ = host.command_tx.send(NativeRdpHostCommand::ActivateSession {
+                        session_id: request.session_id.clone(),
+                    });
+                    post_native_host_command_message(host.hwnd, host.command_rx_ptr, host.atl_ptr);
+                    return RdpSessionRevealResult {
+                        ok: true,
+                        message: format!("已唤起 RDP 会话 {}。", request.session_id),
+                    };
+                }
+
+                return RdpSessionRevealResult {
+                    ok: false,
+                    message: format!("RDP 会话 {} 当前没有可用宿主窗口。", request.session_id),
+                };
+            }
+            Ok(Some(_)) | Ok(None) => {
+                return RdpSessionRevealResult {
+                    ok: false,
+                    message: format!("RDP 会话 {} 当前不是可唤起的嵌入宿主。", request.session_id),
+                };
+            }
+            Err(error) => {
+                return RdpSessionRevealResult {
+                    ok: false,
+                    message: error.message,
+                };
+            }
+        }
+    }
+
+    #[cfg(not(windows))]
+    {
+        let _ = (manager, request);
+        RdpSessionRevealResult {
+            ok: false,
+            message: "当前平台暂不支持唤起嵌入式 RDP 宿主。".to_string(),
+        }
     }
 }
 
@@ -1612,7 +1674,7 @@ async fn host_activex_session(
     let bounds = native_session_window_bounds(owner, &config, bounds);
     let owner_hwnd = owner.0 as isize;
 
-    if let Some(host) = manager.native_host_for_owner(owner_hwnd)? {
+    if let Some(host) = manager.native_host()? {
         let (response_tx, response_rx) = mpsc::sync_channel(1);
         let command_rx = host.command_rx_ptr;
         let atl = host.atl_ptr;
@@ -1697,7 +1759,6 @@ async fn host_activex_session(
     })?;
     manager.set_native_host(NativeRdpHostHandle {
         hwnd: hosted.hwnd,
-        owner_hwnd,
         command_tx,
         command_rx_ptr,
         atl_ptr,
@@ -1844,6 +1905,124 @@ fn main_window_hwnd(app: &AppHandle) -> Result<windows::Win32::Foundation::HWND,
 }
 
 #[cfg(windows)]
+fn rdp_host_window_state_path(app: &AppHandle) -> Result<PathBuf, AppError> {
+    let dir = app.path().app_data_dir().map_err(|error| {
+        AppError::new(
+            "rdp_window_state_dir_failed",
+            "RDP 窗口状态目录获取失败。",
+            error.to_string(),
+            true,
+        )
+    })?;
+    Ok(dir.join("rdp-host-window-state.json"))
+}
+
+#[cfg(windows)]
+fn load_persisted_rdp_host_window_state(
+    app: &AppHandle,
+) -> Option<PersistedRdpHostWindowState> {
+    let path = rdp_host_window_state_path(app).ok()?;
+    let content = fs::read_to_string(path).ok()?;
+    serde_json::from_str::<PersistedRdpHostWindowState>(&content).ok()
+}
+
+#[cfg(windows)]
+fn persist_rdp_host_window_state(
+    app: &AppHandle,
+    hwnd: windows::Win32::Foundation::HWND,
+) -> Result<(), AppError> {
+    use windows::Win32::UI::WindowsAndMessaging::{
+        GetWindowPlacement, WINDOWPLACEMENT,
+    };
+
+    let mut placement = WINDOWPLACEMENT::default();
+    placement.length = std::mem::size_of::<WINDOWPLACEMENT>() as u32;
+    unsafe {
+        GetWindowPlacement(hwnd, &mut placement).map_err(|error| {
+            AppError::new(
+                "rdp_window_state_read_failed",
+                "RDP 窗口状态读取失败。",
+                error.to_string(),
+                true,
+            )
+        })?;
+    }
+
+    let normal = placement.rcNormalPosition;
+    let width = (normal.right - normal.left).max(720) as u32;
+    let height = (normal.bottom - normal.top).max(480) as u32;
+    let state = PersistedRdpHostWindowState {
+        x: normal.left,
+        y: normal.top,
+        width,
+        height,
+        maximized: placement.showCmd
+            == windows::Win32::UI::WindowsAndMessaging::SW_MAXIMIZE.0 as u32,
+    };
+
+    let path = rdp_host_window_state_path(app)?;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|error| {
+            AppError::new(
+                "rdp_window_state_dir_create_failed",
+                "RDP 窗口状态目录创建失败。",
+                error.to_string(),
+                true,
+            )
+        })?;
+    }
+    let content = serde_json::to_string_pretty(&state).map_err(|error| {
+        AppError::new(
+            "rdp_window_state_serialize_failed",
+            "RDP 窗口状态保存失败。",
+            error.to_string(),
+            true,
+        )
+    })?;
+    fs::write(path, content).map_err(|error| {
+        AppError::new(
+            "rdp_window_state_write_failed",
+            "RDP 窗口状态写入失败。",
+            error.to_string(),
+            true,
+        )
+    })
+}
+
+#[cfg(windows)]
+fn maybe_apply_persisted_rdp_host_window_state(
+    app: &AppHandle,
+    bounds: &mut RdpEmbeddedBounds,
+) -> Option<PersistedRdpHostWindowState> {
+    let persisted = load_persisted_rdp_host_window_state(app)?;
+    if bounds.x == i32::MIN {
+        bounds.x = persisted.x;
+    }
+    if bounds.y == i32::MIN {
+        bounds.y = persisted.y;
+    }
+    bounds.width = persisted.width.max(720);
+    bounds.height = persisted.height.max(480);
+    Some(persisted)
+}
+
+#[cfg(windows)]
+fn reveal_native_host_window(hwnd: windows::Win32::Foundation::HWND) {
+    use windows::Win32::UI::WindowsAndMessaging::{
+        IsIconic, SetForegroundWindow, ShowWindow, SW_RESTORE, SW_SHOW,
+    };
+
+    unsafe {
+        if IsIconic(hwnd).as_bool() {
+            let _ = ShowWindow(hwnd, SW_RESTORE);
+        } else {
+            let _ = ShowWindow(hwnd, SW_SHOW);
+        }
+        let _ = SetForegroundWindow(hwnd);
+    }
+}
+
+#[cfg(windows)]
 struct ActiveXHostWindowState {
     app: AppHandle,
     sessions: Vec<ActiveXHostSession>,
@@ -1910,10 +2089,21 @@ fn process_native_host_commands(
                 config.desktop_scale_factor = desktop_scale_factor_for_window(hwnd);
                 let result = add_activex_host_session(hwnd, state, atl, session_id, config);
                 let _ = response.send(result);
+                reveal_native_host_window(hwnd);
             }
             NativeRdpHostCommand::CloseSession { session_id } => {
                 close_activex_host_session(hwnd, state, &session_id, false);
                 keep_running = !state.sessions.is_empty();
+            }
+            NativeRdpHostCommand::ActivateSession { session_id } => {
+                if let Some(index) = state
+                    .sessions
+                    .iter()
+                    .position(|session| session.session_id == session_id)
+                {
+                    activate_activex_tab(hwnd, state, index);
+                }
+                reveal_native_host_window(hwnd);
             }
             NativeRdpHostCommand::Resize { bounds } => {
                 resize_activex_host_window(hwnd, &bounds);
@@ -2198,11 +2388,11 @@ fn run_activex_host(
     use windows::Win32::System::LibraryLoader::GetModuleHandleW;
     use windows::Win32::UI::WindowsAndMessaging::{
         CreateWindowExW, DestroyWindow, DispatchMessageW, GetMessageW, PostMessageW,
-        RegisterClassW, SetWindowLongPtrW, TranslateMessage, WINDOW_EX_STYLE, WNDCLASSW,
-        WS_CLIPCHILDREN, WS_CLIPSIBLINGS, WS_OVERLAPPEDWINDOW, WS_VISIBLE,
+        RegisterClassW, SetWindowLongPtrW, TranslateMessage, WNDCLASSW,
+        WS_CLIPCHILDREN, WS_CLIPSIBLINGS, WS_EX_APPWINDOW, WS_OVERLAPPEDWINDOW, WS_VISIBLE,
     };
 
-    let owner = HWND(owner_hwnd as *mut std::ffi::c_void);
+    let _owner = HWND(owner_hwnd as *mut std::ffi::c_void);
     let coinit = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE) };
     if coinit.is_err() {
         return Err(activex_error(
@@ -2244,30 +2434,41 @@ fn run_activex_host(
             let _ = RegisterClassW(&class);
         }
 
-        let width = bounds.width.min(i32::MAX as u32) as i32;
-        let height = bounds.height.min(i32::MAX as u32) as i32;
-        let x = if bounds.x == i32::MIN {
+        let mut initial_bounds = bounds;
+        let persisted_state =
+            maybe_apply_persisted_rdp_host_window_state(&app, &mut initial_bounds);
+        let width = initial_bounds.width.min(i32::MAX as u32) as i32;
+        let height = initial_bounds.height.min(i32::MAX as u32) as i32;
+        let x = if initial_bounds.x == i32::MIN {
             windows::Win32::UI::WindowsAndMessaging::CW_USEDEFAULT
         } else {
-            bounds.x
+            initial_bounds.x
         };
-        let y = if bounds.y == i32::MIN {
+        let y = if initial_bounds.y == i32::MIN {
             windows::Win32::UI::WindowsAndMessaging::CW_USEDEFAULT
         } else {
-            bounds.y
+            initial_bounds.y
         };
         let title = to_wide_null(&config.title);
+        // 保留完整 WS_OVERLAPPEDWINDOW：所有标准窗口 bit 齐全，最小化/恢复/最大化/任务栏
+        // 生命周期与「带系统标题栏的普通窗口」完全一致（该配置下 MSTSC ActiveX 恢复不冻结）。
+        // 系统标题栏由 WM_NCCALCSIZE 视觉隐藏，
+        // 而非从 style 砍掉 caption，避免破坏 DWM 非客户区/恢复序列。
+        let host_window_style = WS_OVERLAPPEDWINDOW
+            | WS_VISIBLE
+            | WS_CLIPCHILDREN
+            | WS_CLIPSIBLINGS;
         let hwnd = unsafe {
             CreateWindowExW(
-                WINDOW_EX_STYLE::default(),
+                WS_EX_APPWINDOW,
                 PCWSTR(class_name.as_ptr()),
                 PCWSTR(title.as_ptr()),
-                WS_OVERLAPPEDWINDOW | WS_VISIBLE | WS_CLIPCHILDREN | WS_CLIPSIBLINGS,
+                host_window_style,
                 x,
                 y,
                 width,
                 height,
-                Some(owner),
+                None,
                 None,
                 Some(instance.into()),
                 None::<*const c_void>,
@@ -2282,6 +2483,9 @@ fn run_activex_host(
             )
         })?;
         configure_native_host_frame(hwnd);
+        if persisted_state.as_ref().is_some_and(|state| state.maximized) {
+            toggle_native_host_maximize(hwnd);
+        }
         config.desktop_scale_factor = desktop_scale_factor_for_window(hwnd);
         let resize_grips = create_native_host_resize_grips(hwnd);
 
@@ -2366,9 +2570,10 @@ unsafe extern "system" fn rdp_activex_host_wndproc(
     use windows::Win32::UI::Controls::WM_MOUSELEAVE;
     use windows::Win32::UI::WindowsAndMessaging::{
         DefWindowProcW, GetWindowLongPtrW, KillTimer, PostQuitMessage, SetWindowLongPtrW,
-        GWLP_USERDATA, HTCAPTION, WM_CAPTURECHANGED, WM_DPICHANGED, WM_ERASEBKGND,
-        WM_GETMINMAXINFO, WM_LBUTTONDBLCLK, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE,
-        WM_NCCALCSIZE, WM_NCDESTROY, WM_NCHITTEST, WM_NCLBUTTONDBLCLK, WM_PAINT, WM_SIZE, WM_TIMER,
+        GWLP_USERDATA, HTCAPTION, SC_RESTORE, SIZE_MINIMIZED, WM_ACTIVATE, WM_CAPTURECHANGED,
+        WM_DPICHANGED, WM_ERASEBKGND, WM_GETMINMAXINFO, WM_LBUTTONDBLCLK, WM_LBUTTONDOWN,
+        WM_LBUTTONUP, WM_MOUSEMOVE, WM_NCCALCSIZE, WM_NCDESTROY, WM_NCHITTEST,
+        WM_NCLBUTTONDBLCLK, WM_PAINT, WM_SHOWWINDOW, WM_SIZE, WM_SYSCOMMAND, WM_TIMER,
     };
 
     if message == MX_RDP_HOST_PROCESS_COMMANDS {
@@ -2384,8 +2589,38 @@ unsafe extern "system" fn rdp_activex_host_wndproc(
             }
         }
     } else if message == WM_NCCALCSIZE {
-        if wparam.0 != 0 {
-            adjust_native_host_maximized_client_rect(hwnd, lparam);
+        // 先让系统按标准 WS_OVERLAPPEDWINDOW 计算非客户区（正确处理最大化、多显示器、
+        // 任务栏避让以及最小化→恢复的生命周期），再把客户区顶部复位到窗口顶部，
+        // 仅在视觉上抹掉系统标题栏，保留左/右/下的标准 resize 细边框。
+        if wparam.0 == 0 {
+            return DefWindowProcW(hwnd, message, wparam, lparam);
+        }
+        use windows::Win32::UI::HiDpi::GetSystemMetricsForDpi;
+        use windows::Win32::UI::WindowsAndMessaging::{
+            IsZoomed, NCCALCSIZE_PARAMS, SM_CXPADDEDBORDER, SM_CYFRAME,
+        };
+
+        let params = lparam.0 as *mut NCCALCSIZE_PARAMS;
+        if params.is_null() {
+            return DefWindowProcW(hwnd, message, wparam, lparam);
+        }
+        // 记录默认框架计算前的原始顶部坐标。
+        let original_top = unsafe { (*params).rgrc[0].top };
+        // 让系统完成标准非客户区计算。
+        let default_result = DefWindowProcW(hwnd, message, wparam, lparam);
+        if default_result.0 != 0 {
+            return default_result;
+        }
+        let mut new_top = original_top;
+        if unsafe { IsZoomed(hwnd).as_bool() } {
+            // 最大化时系统会把窗口上移一个 resize 边框高度；加回去避免顶部内容被裁切。
+            let dpi = window_dpi_for_window(hwnd);
+            let frame_y = unsafe { GetSystemMetricsForDpi(SM_CYFRAME, dpi) };
+            let padding = unsafe { GetSystemMetricsForDpi(SM_CXPADDEDBORDER, dpi) };
+            new_top += frame_y + padding;
+        }
+        unsafe {
+            (*params).rgrc[0].top = new_top;
         }
         return windows::Win32::Foundation::LRESULT(0);
     } else if message == WM_NCHITTEST {
@@ -2399,8 +2634,37 @@ unsafe extern "system" fn rdp_activex_host_wndproc(
     } else if message == WM_SIZE || message == WM_DPICHANGED {
         let state = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut ActiveXHostWindowState;
         if !state.is_null() {
-            layout_activex_host_sessions(hwnd, &mut *state, message == WM_DPICHANGED);
-            invalidate_activex_host_window(hwnd);
+            if message == WM_DPICHANGED || wparam.0 != SIZE_MINIMIZED as usize {
+                refresh_activex_host_window_after_restore(
+                    hwnd,
+                    &mut *state,
+                    message == WM_DPICHANGED,
+                );
+            }
+        }
+    } else if message == WM_SHOWWINDOW && wparam.0 != 0 {
+        let state = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut ActiveXHostWindowState;
+        if !state.is_null() {
+            refresh_activex_host_window_after_restore(hwnd, &mut *state, false);
+        }
+    } else if message == WM_SYSCOMMAND && (wparam.0 & 0xFFF0) == SC_RESTORE as usize {
+        // 处理从任务栏恢复窗口。WM_SYSCOMMAND 低 4 位被系统保留，需 & 0xFFF0 再比较。
+        let result = DefWindowProcW(hwnd, message, wparam, lparam);
+        let state = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut ActiveXHostWindowState;
+        if !state.is_null() {
+            // 恢复后，主动唤醒 ActiveX child HWND
+            refresh_activex_host_window_after_restore(hwnd, &mut *state, false);
+            wake_activex_sessions_after_restore(hwnd, &mut *state);
+        }
+        return result;
+    } else if message == WM_ACTIVATE {
+        let state = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut ActiveXHostWindowState;
+        if !state.is_null() {
+            let activated = (wparam.0 & 0xFFFF) != 0; // WA_INACTIVE = 0
+            if activated {
+                // 窗口激活时，确保当前 tab 的 ActiveX 也激活
+                wake_activex_sessions_after_restore(hwnd, &mut *state);
+            }
         }
     } else if message == WM_GETMINMAXINFO {
         update_native_host_minmax_info(hwnd, lparam);
@@ -2460,6 +2724,10 @@ unsafe extern "system" fn rdp_activex_host_wndproc(
             return windows::Win32::Foundation::LRESULT(0);
         }
     } else if message == WM_NCDESTROY {
+        let state = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut ActiveXHostWindowState;
+        if !state.is_null() {
+            let _ = persist_rdp_host_window_state(&(*state).app, hwnd);
+        }
         let _ = SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
         PostQuitMessage(0);
     }
@@ -3597,6 +3865,70 @@ fn invalidate_activex_host_window(hwnd: windows::Win32::Foundation::HWND) {
 }
 
 #[cfg(windows)]
+fn refresh_activex_host_window_after_restore(
+    hwnd: windows::Win32::Foundation::HWND,
+    state: &mut ActiveXHostWindowState,
+    force_display_sync: bool,
+) {
+    use windows::Win32::Graphics::Gdi::{
+        RedrawWindow, RDW_ALLCHILDREN, RDW_FRAME, RDW_INVALIDATE, RDW_UPDATENOW,
+    };
+    use windows::Win32::UI::WindowsAndMessaging::IsIconic;
+
+    if unsafe { IsIconic(hwnd).as_bool() } {
+        return;
+    }
+
+    layout_activex_host_sessions(hwnd, state, force_display_sync);
+    invalidate_activex_host_window(hwnd);
+    unsafe {
+        let _ = RedrawWindow(
+            Some(hwnd),
+            None,
+            None,
+            RDW_INVALIDATE | RDW_UPDATENOW | RDW_ALLCHILDREN | RDW_FRAME,
+        );
+    }
+}
+
+#[cfg(windows)]
+fn wake_activex_sessions_after_restore(
+    _hwnd: windows::Win32::Foundation::HWND,
+    state: &mut ActiveXHostWindowState,
+) {
+    use windows::Win32::Graphics::Gdi::{InvalidateRect, UpdateWindow};
+    use windows::Win32::UI::WindowsAndMessaging::{
+        SetWindowPos, ShowWindow, HWND_TOP, SET_WINDOW_POS_FLAGS, SWP_FRAMECHANGED,
+        SWP_NOMOVE, SWP_NOSIZE, SW_HIDE, SW_SHOW,
+    };
+
+    let active_index = state.active_index;
+    for (index, session) in state.sessions.iter_mut().enumerate() {
+        if index == active_index {
+            let child_hwnd = session.control_hwnd;
+            unsafe {
+                // 先隐藏再显示，强制 ActiveX surface 重新绘制。
+                let _ = ShowWindow(child_hwnd, SW_HIDE);
+                let _ = ShowWindow(child_hwnd, SW_SHOW);
+
+                let _ = SetWindowPos(
+                    child_hwnd,
+                    Some(HWND_TOP),
+                    0,
+                    0,
+                    0,
+                    0,
+                    SET_WINDOW_POS_FLAGS(SWP_NOMOVE.0 | SWP_NOSIZE.0 | SWP_FRAMECHANGED.0),
+                );
+
+                let _ = InvalidateRect(Some(child_hwnd), None, true);
+                let _ = UpdateWindow(child_hwnd);
+            }
+        }
+    }
+}
+
+#[cfg(windows)]
 fn configure_native_host_frame(hwnd: windows::Win32::Foundation::HWND) {
     use std::ffi::c_void;
     use std::mem::size_of;
@@ -4007,6 +4339,7 @@ fn toggle_native_host_maximize(hwnd: windows::Win32::Foundation::HWND) {
 }
 
 #[cfg(windows)]
+#[allow(dead_code)]
 fn adjust_native_host_maximized_client_rect(
     hwnd: windows::Win32::Foundation::HWND,
     lparam: windows::Win32::Foundation::LPARAM,
@@ -4014,11 +4347,9 @@ fn adjust_native_host_maximized_client_rect(
     use windows::Win32::Graphics::Gdi::{
         GetMonitorInfoW, MonitorFromWindow, MONITORINFO, MONITOR_FROM_FLAGS,
     };
-    use windows::Win32::UI::WindowsAndMessaging::{IsZoomed, NCCALCSIZE_PARAMS};
+    use windows::Win32::UI::WindowsAndMessaging::NCCALCSIZE_PARAMS;
 
-    if !unsafe { IsZoomed(hwnd).as_bool() } {
-        return;
-    }
+    // 注意：此函数仅在最大化时调用，用于调整到工作区边界
     let params = lparam.0 as *mut NCCALCSIZE_PARAMS;
     if params.is_null() {
         return;

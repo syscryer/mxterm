@@ -410,6 +410,11 @@ export interface RdpSessionResizeResult {
   message: string;
 }
 
+export interface RdpSessionRevealResult {
+  ok: boolean;
+  message: string;
+}
+
 export interface RdpSessionClosedEvent {
   session_id: string;
 }
