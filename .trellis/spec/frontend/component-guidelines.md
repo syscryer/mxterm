@@ -117,6 +117,12 @@ Ant Design, Mantine, or similar libraries just to fix one modal or button.
   right-click menus, upload menus, and tooltips. The mXterm version should stay
   tighter and calmer than codem's large popovers: light blur, fine borders,
   modest shadow, and 7-10px radii.
+- Titlebar overflow menus should reuse the existing connection-search dialog
+  shell and titlebar tool button styling instead of inventing a separate chrome
+  surface. Keep a small fixed set of visible session tabs, pin the active
+  session into that set when overflow happens, and move the remaining sessions
+  into a compact body-ported `⋯` menu. Do not leave the titlebar as an
+  unbounded horizontal scroller once tabs exceed the visible cap.
 - Radix portals render outside `.app-shell` by default, so they must receive the
   same theme context through `document.body`. `WorkspaceShell` owns the body
   `data-theme-mode`, `data-window-material`, density/platform attributes, and
