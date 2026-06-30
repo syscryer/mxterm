@@ -3543,6 +3543,7 @@ button {
   grid-area: 1 / 1;
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
+  overflow: hidden;
   background: var(--mx-panel);
 }
 
@@ -4543,6 +4544,7 @@ button {
   grid-template-columns: minmax(620px, 1fr) 284px;
   gap: 16px;
   padding: 14px 20px 22px;
+  overflow: hidden;
   background: var(--mx-panel);
 }
 
@@ -4551,8 +4553,16 @@ button {
   min-height: 0;
   border: 1px solid var(--mx-line);
   border-radius: 8px;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
   overflow: hidden;
   background: var(--mx-panel);
+}
+
+.connection-board-body {
+  min-height: 0;
+  overflow: auto;
+  scrollbar-gutter: stable;
 }
 
 .connection-head,
@@ -4865,8 +4875,10 @@ button {
 
 .side-summary {
   min-width: 0;
+  min-height: 0;
   display: grid;
   align-content: start;
+  align-self: start;
   gap: 14px;
 }
 
