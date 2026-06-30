@@ -24,6 +24,8 @@ mod tunnels;
 mod vnc;
 mod webdav;
 mod webdav_sync;
+#[cfg(target_os = "macos")]
+use tauri::Manager;
 use storage_vault::VaultState;
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
