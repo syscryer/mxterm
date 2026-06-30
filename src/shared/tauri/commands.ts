@@ -15,6 +15,7 @@ import type {
   RdpRunnerConfig,
   RdpRunnerProbeResult,
   RdpSessionCloseResult,
+  RdpSessionRevealResult,
   RdpSessionResizeResult,
   VncLaunchPreview,
   VncLaunchResult,
@@ -288,6 +289,14 @@ export function rdpTestRunner(config?: RdpRunnerConfig | null) {
 
 export function rdpCloseSession(sessionId: string) {
   return invoke<RdpSessionCloseResult>("rdp_close_session", {
+    request: {
+      session_id: sessionId,
+    },
+  });
+}
+
+export function rdpRevealSession(sessionId: string) {
+  return invoke<RdpSessionRevealResult>("rdp_reveal_session", {
     request: {
       session_id: sessionId,
     },

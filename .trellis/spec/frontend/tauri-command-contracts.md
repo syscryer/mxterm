@@ -1288,6 +1288,7 @@ rdpLaunchConnection(connectionId: string, bounds?: RdpEmbeddedBounds | null): Pr
 rdpPreviewLaunch(connectionId: string): Promise<RdpLaunchPreview>
 rdpTestRunner(config?: RdpRunnerConfig | null): Promise<RdpRunnerProbeResult>
 rdpCloseSession(sessionId: string): Promise<RdpSessionCloseResult>
+rdpRevealSession(sessionId: string): Promise<RdpSessionRevealResult>
 rdpResizeEmbeddedSession(sessionId: string, bounds: RdpEmbeddedBounds): Promise<RdpSessionResizeResult>
 listenRdpSessionClosed(handler: (event: RdpSessionClosedEvent) => void): Promise<UnlistenFn>
 ```
@@ -1304,6 +1305,7 @@ listenRdpSessionClosed(handler: (event: RdpSessionClosedEvent) => void): Promise
 - RDP workspace sessions are runtime UI state. Do not persist runner session ids on `ConnectionProfile`.
 - When an RDP profile requests `render_mode = "embedded"`, `WorkspaceShell` may call `rdpLaunchConnection(connection.id)` without a DOM viewport. The current Windows ActiveX implementation opens a manager-owned native RDP host window instead of painting inside the WebView.
 - On Windows, `runner = "mstsc_activex"` with `embedded = false` means the backend opened or reused a manager-owned native ActiveX host window. Multiple RDP sessions should appear as native tabs inside that same host window. Show a native-window status, keep preview/retry/close controls available, and do not display a DOM embedded placeholder. `runner = "mstsc"` remains the external `.rdp` fallback path.
+- When `WorkspaceShell` reopens an existing runtime RDP session whose backend result is `runner = "mstsc_activex"`, it should call `rdpRevealSession(result.session_id)` after activating the workspace tab so the independent native host window is restored and focused instead of silently staying minimized.
 - `rdp:session_closed` carries the backend `session_id`. `WorkspaceShell` must map it back to `RdpSessionTab.result.session_id`, remove only those runtime tabs locally, and avoid inferring closure from connection id or title. This keeps native-host tab close and whole-window close in sync with React without deleting unrelated sessions on the same connection.
 - Embedded launch may still return `embedded=true` in a future true DOM-embedded implementation. Treat the returned result as authoritative and only run viewport resize synchronization when `result.embedded === true`.
 - For `embedded=true` sessions, `WorkspaceShell` must observe the viewport size and call `rdpResizeEmbeddedSession(result.session_id, bounds)` on resize/activation changes. For `runner = "mstsc_activex"` and `embedded = false`, do not call resize on app window movement or React tab activation; the native host window owns its own tabs, size, position, remote-resolution sync, and host DPI scaling.
@@ -1320,6 +1322,7 @@ listenRdpSessionClosed(handler: (event: RdpSessionClosedEvent) => void): Promise
 | No Tauri runtime | Show static runner preview and do not launch a desktop client. |
 | `rdpLaunchConnection` succeeds with `embedded=true` | Keep an RDP session tab active and render embedded-session status. |
 | `rdpLaunchConnection` succeeds with `embedded=false` and `runner="mstsc_activex"` | Render native-window status, runner, fallback/status reason, preview/retry/close controls, and no DOM embedded placeholder; later RDP launches may reuse the same native host window as another native tab. |
+| User reopens an existing `runner="mstsc_activex"` RDP runtime session | Activate the workspace tab and call `rdpRevealSession(result.session_id)` so the native host window is restored/focused. |
 | `rdp:session_closed` arrives for a known backend session id | Remove the matching RDP runtime tab locally and let normal workspace fallback choose the next tab/home state. |
 | `rdp:session_closed` arrives for an unknown backend session id | Ignore it; do not close sessions by connection id or active state. |
 | `rdpLaunchConnection` succeeds with `embedded=false` and an external runner | Render external-launch status, runner, fallback reason, and copyable redacted command/material. |
