@@ -2219,6 +2219,7 @@ export function WorkspaceShell() {
     }
 
     setActiveConnectionId(null);
+    setActiveWorkspaceMode("home");
     setHomeActive(true);
   }
 
@@ -3373,13 +3374,41 @@ export function WorkspaceShell() {
         !rdpSessionsRef.current.some((session) => session.connectionId !== connection.id) &&
         !vncSessionsRef.current.some((session) => session.connectionId !== connection.id)
       ) {
+        setActiveConnectionId(null);
+        setActiveTabId(null);
+        setActiveWorkspaceMode("home");
         setHomeActive(true);
       }
-      if (!nextTabs.some((tab) => tab.id === activeTabId)) {
+      if (activeConnectionId === connection.id) {
+        const nextActiveTab = nextTabs[0] || null;
+        const nextActiveFile =
+          remoteFileTabs.find((tab) => tab.connectionId !== connection.id) ||
+          remoteFileTabs[0] ||
+          null;
+        setActiveTabId(nextActiveTab?.id || null);
+        setActiveConnectionId(nextActiveTab?.connectionId || nextActiveFile?.connectionId || null);
+        if (nextActiveFile && !nextActiveTab) {
+          setActiveRemoteFileTabId(nextActiveFile.id);
+        } else if (!nextActiveTab) {
+          const nextRdpSession =
+            rdpSessionsRef.current.find((session) => session.connectionId !== connection.id) || null;
+          if (nextRdpSession) {
+            activateRdpSession(nextRdpSession);
+          } else {
+            const nextVncSession =
+              vncSessionsRef.current.find((session) => session.connectionId !== connection.id) || null;
+            if (nextVncSession) {
+              activateVncSession(nextVncSession);
+            } else {
+              const nextLocalTerminalTab = localTerminalTabsRef.current[0] || null;
+              if (nextLocalTerminalTab) {
+                activateLocalTerminalTab(nextLocalTerminalTab);
+              }
+            }
+          }
+        }
+      } else if (!nextTabs.some((tab) => tab.id === activeTabId)) {
         setActiveTabId(nextTabs[0]?.id || null);
-      }
-      if (!nextTabs.some((tab) => tab.connectionId === activeConnectionId)) {
-        setActiveConnectionId(nextTabs[0]?.connectionId || null);
       }
       return nextTabs;
     });
@@ -3564,6 +3593,47 @@ export function WorkspaceShell() {
     return terminalTabsRef.current.some((tab) => tab.id === tabId);
   }
 
+  function syncCommandSenderTargetTab(connectionId: string, tabId: string) {
+    setCommandSenderTargetTabByConnectionId((tabs) =>
+      tabs[connectionId] === tabId ? tabs : { ...tabs, [connectionId]: tabId },
+    );
+    setSelectedCommandTargetKeys((keys) =>
+      keys.map((key) => {
+        const [keyConnectionId] = key.split(":", 2);
+        return keyConnectionId === connectionId ? commandSenderTargetKey(connectionId, tabId) : key;
+      }),
+    );
+  }
+
+  function returnHomeWhenWorkspaceEmpty({
+    localCount = localTerminalTabsRef.current.length,
+    rdpCount = rdpSessionsRef.current.length,
+    sshCount = terminalTabsRef.current.length,
+    vncCount = vncSessionsRef.current.length,
+  }: {
+    localCount?: number;
+    rdpCount?: number;
+    sshCount?: number;
+    vncCount?: number;
+  } = {}) {
+    // 远程文件 tab 必须依附一个活的 SSH 终端才能渲染（见 activeRemoteFileTabs 派生）。
+    // 因此只要没有终端/RDP/VNC/本地终端，即使剩孤立 remoteFile 也视作工作区为空，直接回首页。
+    if (
+      sshCount === 0 &&
+      localCount === 0 &&
+      rdpCount === 0 &&
+      vncCount === 0
+    ) {
+      setActiveConnectionId(null);
+      setActiveTabId(null);
+      setActiveRdpSessionId(null);
+      setActiveVncSessionId(null);
+      setActiveLocalTerminalTabId(null);
+      setActiveWorkspaceMode("home");
+      setHomeActive(true);
+    }
+  }
+
   function rememberActiveTab(tab: TerminalTab) {
     setActiveTabByConnectionId((activeTabs) =>
       activeTabs[tab.connectionId] === tab.id
@@ -3603,6 +3673,7 @@ export function WorkspaceShell() {
     setActiveConnectionId(tab.connectionId);
     setActiveTabId(tab.id);
     rememberActiveTab(tab);
+    syncCommandSenderTargetTab(tab.connectionId, tab.id);
   }
 
   function toggleTerminalSearch(tabId: string | null | undefined) {
@@ -4242,6 +4313,7 @@ export function WorkspaceShell() {
     setActiveWorkspaceMode("local");
     setHomeActive(false);
     setActiveLocalTerminalTabId(tab.id);
+    syncCommandSenderTargetTab(localCommandSenderTargetId, tab.id);
   }
 
   function resolveDefaultLocalTerminalProfile() {
@@ -4796,10 +4868,8 @@ export function WorkspaceShell() {
             activateTerminalTab(nextTerminalTab);
           } else if (nextLocalTerminalTab) {
             activateLocalTerminalTab(nextLocalTerminalTab);
-          } else if (remoteFileTabs.length === 0) {
-            setActiveConnectionId(null);
-            setActiveWorkspaceMode("home");
-            setHomeActive(true);
+          } else {
+            returnHomeWhenWorkspaceEmpty({ rdpCount: nextSessions.length });
           }
         }
       }
@@ -5176,10 +5246,8 @@ export function WorkspaceShell() {
             activateTerminalTab(nextTerminalTab);
           } else if (nextLocalTerminalTab) {
             activateLocalTerminalTab(nextLocalTerminalTab);
-          } else if (remoteFileTabs.length === 0) {
-            setActiveConnectionId(null);
-            setActiveWorkspaceMode("home");
-            setHomeActive(true);
+          } else {
+            returnHomeWhenWorkspaceEmpty({ vncCount: nextSessions.length });
           }
         }
       }
@@ -5338,6 +5406,9 @@ export function WorkspaceShell() {
         rdpSessionsRef.current.length === 0 &&
         vncSessionsRef.current.length === 0
       ) {
+        setActiveTabId(null);
+        setActiveConnectionId(null);
+        setActiveWorkspaceMode("home");
         setHomeActive(true);
       }
 
@@ -5364,6 +5435,18 @@ export function WorkspaceShell() {
           rememberActiveTab(nextActiveTab);
         } else if (activeClosingTab) {
           forgetActiveConnectionTabs([activeClosingTab.connectionId]);
+          if (!nextActiveFile) {
+            const nextRdpSession = rdpSessionsRef.current[0] || null;
+            const nextVncSession = vncSessionsRef.current[0] || null;
+            const nextLocalTerminalTab = localTerminalTabsRef.current[0] || null;
+            if (nextRdpSession) {
+              activateRdpSession(nextRdpSession);
+            } else if (nextVncSession) {
+              activateVncSession(nextVncSession);
+            } else if (nextLocalTerminalTab) {
+              activateLocalTerminalTab(nextLocalTerminalTab);
+            }
+          }
         }
       } else if (
         closingActiveConnectionTab &&
@@ -5380,6 +5463,8 @@ export function WorkspaceShell() {
           activateRdpSession(rdpSessionsRef.current[0]);
         } else if (!nextTabs[0] && !nextActiveFile && vncSessionsRef.current.length > 0) {
           activateVncSession(vncSessionsRef.current[0]);
+        } else if (!nextTabs[0] && !nextActiveFile && localTerminalTabsRef.current.length > 0) {
+          activateLocalTerminalTab(localTerminalTabsRef.current[0]);
         }
       }
       return nextTabs;
@@ -5450,6 +5535,9 @@ export function WorkspaceShell() {
         !rdpSessionsRef.current.some((session) => !closingConnectionIds.has(session.connectionId)) &&
         !vncSessionsRef.current.some((session) => !closingConnectionIds.has(session.connectionId))
       ) {
+        setActiveConnectionId(null);
+        setActiveTabId(null);
+        setActiveWorkspaceMode("home");
         setHomeActive(true);
       }
 
@@ -5475,6 +5563,11 @@ export function WorkspaceShell() {
             );
             if (nextVncSession) {
               activateVncSession(nextVncSession);
+            } else {
+              const nextLocalTerminalTab = localTerminalTabsRef.current[0] || null;
+              if (nextLocalTerminalTab) {
+                activateLocalTerminalTab(nextLocalTerminalTab);
+              }
             }
           }
         }
