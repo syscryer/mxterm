@@ -74,13 +74,13 @@ button {
 .app-shell {
   --mx-scrollbar-size: 6px;
   --mx-scrollbar-thumb: transparent;
-  --mx-scrollbar-thumb-hover: rgb(100 116 139 / 10%);
-  --mx-scrollbar-thumb-active: rgb(100 116 139 / 18%);
+  --mx-scrollbar-thumb-hover: rgb(100 116 139 / 8%);
+  --mx-scrollbar-thumb-active: rgb(100 116 139 / 14%);
   --mx-scrollbar-track: transparent;
   --mx-terminal-scrollbar-size: 6px;
   --mx-terminal-scrollbar-thumb: transparent;
-  --mx-terminal-scrollbar-thumb-hover: rgb(100 116 139 / 14%);
-  --mx-terminal-scrollbar-thumb-active: rgb(100 116 139 / 22%);
+  --mx-terminal-scrollbar-thumb-hover: rgb(100 116 139 / 10%);
+  --mx-terminal-scrollbar-thumb-active: rgb(100 116 139 / 18%);
   --terminal-glassbar-height: 32px;
   --title-left-width: var(--left-pane-custom-width, 336px);
   --left-pane-width: var(--left-pane-custom-width, 336px);
@@ -2555,14 +2555,19 @@ button {
   align-items: center;
   justify-content: flex-start;
   gap: 6px;
-  overflow-x: auto;
-  overflow-y: hidden;
+  overflow: hidden;
   padding: 0 10px;
   scrollbar-width: none;
 }
 
 .title-session-tabs::-webkit-scrollbar {
   display: none;
+}
+
+.title-session-switcher-menu {
+  --mx-scrollbar-size: 5px;
+  --mx-scrollbar-thumb-hover: rgb(100 116 139 / 7%);
+  --mx-scrollbar-thumb-active: rgb(100 116 139 / 12%);
 }
 
 .title-tool-button {
@@ -2578,6 +2583,15 @@ button {
 }
 
 .title-tool-button:hover {
+  color: var(--mx-text);
+  background: var(--mx-active);
+}
+
+.title-session-switcher-button {
+  color: var(--mx-muted);
+}
+
+.title-session-switcher-button:hover {
   color: var(--mx-text);
   background: var(--mx-active);
 }
@@ -11612,6 +11626,133 @@ body[data-platform="macos"] .dialog-backdrop {
   background: color-mix(in srgb, var(--mx-primary) 8%, transparent);
 }
 
+.title-session-switcher-menu {
+  top: var(--title-session-switcher-top, 76px);
+  left: var(--title-session-switcher-left, 50%);
+  width: min(448px, var(--title-session-switcher-width, 392px));
+  max-height: min(560px, var(--title-session-switcher-max-height, 560px));
+  padding: 10px;
+  gap: 9px;
+  grid-template-rows: auto auto auto minmax(0, 1fr);
+  transform: none;
+}
+
+.title-session-switcher-head {
+  gap: 8px;
+}
+
+.title-session-switcher-subtitle {
+  margin: 3px 0 0;
+  color: var(--mx-muted);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.title-session-switcher-input-wrap {
+  height: 32px;
+}
+
+.title-session-switcher-results {
+  gap: 2px;
+  padding-right: 1px;
+  overflow-x: hidden;
+  scrollbar-color: var(--mx-scrollbar-thumb-hover) transparent;
+  scrollbar-width: thin;
+}
+
+.title-session-switcher-results::-webkit-scrollbar {
+  width: var(--mx-scrollbar-size);
+  height: var(--mx-scrollbar-size);
+}
+
+.title-session-switcher-results::-webkit-scrollbar-track,
+.title-session-switcher-results::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+.title-session-switcher-results::-webkit-scrollbar-button,
+.title-session-switcher-results::-webkit-scrollbar-button:single-button,
+.title-session-switcher-results::-webkit-scrollbar-button:vertical:start:decrement,
+.title-session-switcher-results::-webkit-scrollbar-button:vertical:end:increment {
+  display: none;
+  width: 0;
+  height: 0;
+}
+
+.title-session-switcher-results::-webkit-scrollbar-thumb {
+  border: 2px solid transparent;
+  border-radius: 999px;
+  background-clip: padding-box;
+  background-color: var(--mx-scrollbar-thumb);
+}
+
+.title-session-switcher-results:hover::-webkit-scrollbar-thumb,
+.title-session-switcher-results::-webkit-scrollbar-thumb:hover {
+  background-color: var(--mx-scrollbar-thumb-hover);
+}
+
+.title-session-switcher-results::-webkit-scrollbar-thumb:active {
+  background-color: var(--mx-scrollbar-thumb-active);
+}
+
+.title-session-switcher-row {
+  grid-template-columns: 24px minmax(0, 1fr) auto;
+  gap: 8px;
+  min-height: 40px;
+  padding: 5px 7px;
+}
+
+.title-session-switcher-row .os-logo {
+  width: 22px;
+  height: 22px;
+}
+
+.title-session-switcher-main {
+  gap: 2px;
+}
+
+.title-session-switcher-main strong {
+  font-size: 12px;
+}
+
+.title-session-switcher-main small {
+  font-size: 10px;
+}
+
+.title-session-switcher-side {
+  max-width: 220px;
+  gap: 5px;
+}
+
+.title-session-switcher-close {
+  width: 20px;
+  height: 20px;
+  border: 0;
+  border-radius: 5px;
+  display: grid;
+  place-items: center;
+  color: var(--mx-subtle);
+  background: transparent;
+  cursor: pointer;
+  opacity: 0;
+  pointer-events: none;
+  transition:
+    opacity 120ms ease,
+    background 120ms ease,
+    color 120ms ease;
+}
+
+.title-session-switcher-row:hover .title-session-switcher-close,
+.title-session-switcher-row.active .title-session-switcher-close {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.title-session-switcher-close:hover {
+  color: var(--mx-text);
+  background: rgb(148 163 184 / 16%);
+}
+
 .connection-search-result .os-logo {
   justify-self: center;
 }
@@ -13803,6 +13944,7 @@ body {
   .dropdown-menu-content,
   .select-menu-content,
   .popover-content,
+  .title-session-switcher-menu,
   .app-select-menu,
   .connection-search-dialog,
   .vault-gate-panel
@@ -14114,6 +14256,7 @@ body[data-platform="macos"][data-theme-mode="dark"] .ui-tooltip-arrow {
     .dropdown-menu-content,
     .select-menu-content,
     .popover-content,
+    .title-session-switcher-menu,
     .app-select-menu,
     .connection-search-dialog,
     .vault-gate-panel
