@@ -9917,75 +9917,76 @@ function ConnectionHome({
             <span>备注</span>
             <span className="action-head">操作</span>
           </div>
+          <div className="connection-board-body">
+            {loading ? <p className="connection-board-note">加载连接中...</p> : null}
+            {error ? <p className="connection-board-error">{error}</p> : null}
+            {!loading && rows.length === 0 ? (
+              <p className="connection-board-note">暂无匹配连接</p>
+            ) : null}
 
-          {loading ? <p className="connection-board-note">加载连接中...</p> : null}
-          {error ? <p className="connection-board-error">{error}</p> : null}
-          {!loading && rows.length === 0 ? (
-            <p className="connection-board-note">暂无匹配连接</p>
-          ) : null}
+            {rows.map((connection) => {
+              const latencyState = latencyByConnectionId[connection.id];
+              const lastConnectedAt = connection.last_connected_at;
+              const hasLastConnectedAt = Boolean(lastConnectedAt);
 
-          {rows.map((connection) => {
-            const latencyState = latencyByConnectionId[connection.id];
-            const lastConnectedAt = connection.last_connected_at;
-            const hasLastConnectedAt = Boolean(lastConnectedAt);
-
-            return (
-              <div className="connection-row" role="row" key={connection.id}>
-                <span className="system-cell">
-                  <ConnectionSystemLogo connection={connection} />
-                </span>
-                <span className="last-cell">
-                  <strong>{hasLastConnectedAt ? formatRelativeTime(lastConnectedAt) : "未连接"}</strong>
-                  <span>
-                    {lastConnectedAt === "demo"
-                      ? "最近使用"
-                      : hasLastConnectedAt
-                        ? "最近连接"
-                        : "等待首次连接"}
+              return (
+                <div className="connection-row" role="row" key={connection.id}>
+                  <span className="system-cell">
+                    <ConnectionSystemLogo connection={connection} />
                   </span>
-                </span>
-                <span className="latency-cell">
-                  <LatencyIndicator state={latencyState} />
-                </span>
-                <span className="name-cell">
-                  <span className="connection-name">{connection.name}</span>
-                  <span className="connection-user">{connection.username}@{connection.host}:{connection.port.toString()}</span>
-                </span>
-                <span className="remark-cell">
-                  <span className="remark-main">{primaryNote(connection)}</span>
-                </span>
-                <span className="action-cell">
-                  <button
-                    className="connection-action-icon connect"
-                    type="button"
-                    aria-label={`连接 ${connection.name}`}
-                    title="连接"
-                    onClick={() => onConnect(connection)}
-                  >
-                    <Play className="ui-icon" aria-hidden="true" />
-                  </button>
-                  <button
-                    className="connection-action-icon"
-                    type="button"
-                    aria-label={`编辑 ${connection.name}`}
-                    title="编辑"
-                    onClick={() => onEdit(connection)}
-                  >
-                    <Pencil className="ui-icon" aria-hidden="true" />
-                  </button>
-                  <button
-                    className="connection-action-icon"
-                    type="button"
-                    aria-label={`删除 ${connection.name}`}
-                    title="删除"
-                    onClick={() => setDeleteTarget(connection)}
-                  >
-                    <Trash2 className="ui-icon" aria-hidden="true" />
-                  </button>
-                </span>
-              </div>
-            );
-          })}
+                  <span className="last-cell">
+                    <strong>{hasLastConnectedAt ? formatRelativeTime(lastConnectedAt) : "未连接"}</strong>
+                    <span>
+                      {lastConnectedAt === "demo"
+                        ? "最近使用"
+                        : hasLastConnectedAt
+                          ? "最近连接"
+                          : "等待首次连接"}
+                    </span>
+                  </span>
+                  <span className="latency-cell">
+                    <LatencyIndicator state={latencyState} />
+                  </span>
+                  <span className="name-cell">
+                    <span className="connection-name">{connection.name}</span>
+                    <span className="connection-user">{connection.username}@{connection.host}:{connection.port.toString()}</span>
+                  </span>
+                  <span className="remark-cell">
+                    <span className="remark-main">{primaryNote(connection)}</span>
+                  </span>
+                  <span className="action-cell">
+                    <button
+                      className="connection-action-icon connect"
+                      type="button"
+                      aria-label={`连接 ${connection.name}`}
+                      title="连接"
+                      onClick={() => onConnect(connection)}
+                    >
+                      <Play className="ui-icon" aria-hidden="true" />
+                    </button>
+                    <button
+                      className="connection-action-icon"
+                      type="button"
+                      aria-label={`编辑 ${connection.name}`}
+                      title="编辑"
+                      onClick={() => onEdit(connection)}
+                    >
+                      <Pencil className="ui-icon" aria-hidden="true" />
+                    </button>
+                    <button
+                      className="connection-action-icon"
+                      type="button"
+                      aria-label={`删除 ${connection.name}`}
+                      title="删除"
+                      onClick={() => setDeleteTarget(connection)}
+                    >
+                      <Trash2 className="ui-icon" aria-hidden="true" />
+                    </button>
+                  </span>
+                </div>
+              );
+            })}
+          </div>
         </section>
 
         <aside className="side-summary" aria-label="连接概览和仓库维护">

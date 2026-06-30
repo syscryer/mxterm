@@ -1,4 +1,5 @@
 import type { CSSProperties } from "react";
+import { Monitor, type LucideIcon } from "lucide-react";
 import {
   siAlibabacloud,
   siAlmalinux,
@@ -34,6 +35,8 @@ export type ConnectionSystemKind =
   | "freebsd"
   | "macos"
   | "alinux"
+  | "rdp"
+  | "vnc"
   | "linux";
 
 interface ConnectionSystemLogoProps {
@@ -44,26 +47,46 @@ interface ConnectionSystemLogoProps {
 }
 
 interface ConnectionSystemIconDefinition {
-  icon: SimpleIcon;
   label?: string;
 }
 
-const CONNECTION_SYSTEM_ICONS: Record<ConnectionSystemKind, ConnectionSystemIconDefinition> = {
-  alinux: { icon: siAlibabacloud, label: "Alibaba Cloud Linux" },
-  almalinux: { icon: siAlmalinux },
-  alpine: { icon: siAlpinelinux },
-  arch: { icon: siArchlinux },
-  centos: { icon: siCentos },
-  debian: { icon: siDebian },
-  fedora: { icon: siFedora },
-  freebsd: { icon: siFreebsd },
-  linux: { icon: siLinux },
-  macos: { icon: siApple, label: "macOS" },
-  opensuse: { icon: siOpensuse },
-  redhat: { icon: siRedhat, label: "Red Hat Enterprise Linux" },
-  rocky: { icon: siRockylinux },
-  suse: { icon: siSuse },
-  ubuntu: { icon: siUbuntu },
+interface CustomIconDefinition extends ConnectionSystemIconDefinition {
+  kind: "custom";
+}
+
+interface SimpleIconDefinition extends ConnectionSystemIconDefinition {
+  kind: "simple";
+  icon: SimpleIcon;
+}
+
+interface LucideIconDefinition extends ConnectionSystemIconDefinition {
+  kind: "lucide";
+  icon: LucideIcon;
+}
+
+type ConnectionSystemIconEntry =
+  | CustomIconDefinition
+  | SimpleIconDefinition
+  | LucideIconDefinition;
+
+const CONNECTION_SYSTEM_ICONS: Record<ConnectionSystemKind, ConnectionSystemIconEntry> = {
+  alinux: { kind: "simple", icon: siAlibabacloud, label: "Alibaba Cloud Linux" },
+  almalinux: { kind: "simple", icon: siAlmalinux },
+  alpine: { kind: "simple", icon: siAlpinelinux },
+  arch: { kind: "simple", icon: siArchlinux },
+  centos: { kind: "simple", icon: siCentos },
+  debian: { kind: "simple", icon: siDebian },
+  fedora: { kind: "simple", icon: siFedora },
+  freebsd: { kind: "simple", icon: siFreebsd },
+  linux: { kind: "simple", icon: siLinux },
+  macos: { kind: "simple", icon: siApple, label: "macOS" },
+  opensuse: { kind: "simple", icon: siOpensuse },
+  rdp: { kind: "custom", label: "RDP" },
+  redhat: { kind: "simple", icon: siRedhat, label: "Red Hat Enterprise Linux" },
+  rocky: { kind: "simple", icon: siRockylinux },
+  suse: { kind: "simple", icon: siSuse },
+  ubuntu: { kind: "simple", icon: siUbuntu },
+  vnc: { kind: "lucide", icon: Monitor, label: "VNC" },
 };
 
 export function ConnectionSystemLogo({
@@ -76,7 +99,12 @@ export function ConnectionSystemLogo({
   const definition = CONNECTION_SYSTEM_ICONS[resolvedKind];
   const label = getConnectionSystemLabel(resolvedKind);
   const style = {
-    "--os-logo-color": getSystemLogoColor(definition.icon),
+    "--os-logo-color":
+      definition.kind === "simple"
+        ? getSystemLogoColor(definition.icon)
+        : resolvedKind === "rdp"
+          ? "#1793d1"
+          : "var(--mx-primary)",
   } as CSSProperties;
 
   return (
@@ -88,14 +116,27 @@ export function ConnectionSystemLogo({
       data-system-kind={resolvedKind}
       title={decorative ? undefined : label}
     >
-      <svg viewBox="0 0 24 24" aria-hidden="true">
-        <path fill="currentColor" d={definition.icon.path} />
-      </svg>
+      {definition.kind === "custom" ? (
+        <WindowsSystemLogo ariaHidden />
+      ) : definition.kind === "lucide" ? (
+        <definition.icon className="ui-icon" aria-hidden="true" />
+      ) : (
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path fill="currentColor" d={definition.icon.path} />
+        </svg>
+      )}
     </span>
   );
 }
 
 export function inferConnectionSystemKind(connection: ConnectionProfile): ConnectionSystemKind {
+  if (connection.protocol === "rdp") {
+    return "rdp";
+  }
+  if (connection.protocol === "vnc") {
+    return "vnc";
+  }
+
   const remoteKind = inferSystemKindFromText(
     [
       connection.remote_os_id || "",
@@ -166,7 +207,15 @@ function inferSystemKindFromText(rawText: string): ConnectionSystemKind | null {
 
 export function getConnectionSystemLabel(kind: ConnectionSystemKind) {
   const definition = CONNECTION_SYSTEM_ICONS[kind];
-  return definition.label || definition.icon.title;
+  if (definition.label) {
+    return definition.label;
+  }
+
+  if (definition.kind === "simple") {
+    return definition.icon.title;
+  }
+
+  return kind.toUpperCase();
 }
 
 function getSystemLogoColor(icon: SimpleIcon) {
@@ -180,5 +229,16 @@ function getSystemLogoColor(icon: SimpleIcon) {
 function matchesSystemText(text: string, patterns: Array<RegExp | string>) {
   return patterns.some((pattern) =>
     typeof pattern === "string" ? text.includes(pattern) : pattern.test(text),
+  );
+}
+
+function WindowsSystemLogo({ ariaHidden = false }: { ariaHidden?: boolean }) {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden={ariaHidden}>
+      <rect x="2.05" y="2.05" width="8.95" height="8.95" rx="0.88" fill="currentColor" opacity="0.92" />
+      <rect x="13" y="2.05" width="8.95" height="8.95" rx="0.88" fill="currentColor" opacity="0.92" />
+      <rect x="2.05" y="13" width="8.95" height="8.95" rx="0.88" fill="currentColor" opacity="0.92" />
+      <rect x="13" y="13" width="8.95" height="8.95" rx="0.88" fill="currentColor" opacity="0.92" />
+    </svg>
   );
 }
