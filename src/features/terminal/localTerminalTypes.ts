@@ -54,6 +54,7 @@ export interface WindowsPtyInfo {
 }
 
 export interface LocalTerminalSettings {
+  ctrlVPaste: boolean;
   defaultProfileId: string | null;
   hiddenProfileIds: string[];
   customProfiles: LocalTerminalProfileInput[];

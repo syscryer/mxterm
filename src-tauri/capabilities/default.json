@@ -21,6 +21,8 @@
     "dialog:allow-save",
     "opener:default",
     "process:default",
-    "updater:default"
+    "updater:default",
+    "clipboard-manager:allow-read-text",
+    "clipboard-manager:allow-write-text"
   ]
 }

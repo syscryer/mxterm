@@ -221,6 +221,7 @@ export const defaultSettings: MxtermSettings = {
     timestampFormat: "yyyyMMddHHmm",
   },
   localTerminal: {
+    ctrlVPaste: true,
     defaultProfileId: null,
     hiddenProfileIds: [],
     customProfiles: [],
@@ -333,6 +334,10 @@ export function normalizeSettings(value: unknown): MxtermSettings {
       ),
     },
     localTerminal: {
+      ctrlVPaste: normalizeBoolean(
+        localTerminal.ctrlVPaste,
+        defaultSettings.localTerminal.ctrlVPaste,
+      ),
       defaultProfileId: normalizeOptionalString(
         localTerminal.defaultProfileId,
         defaultSettings.localTerminal.defaultProfileId,

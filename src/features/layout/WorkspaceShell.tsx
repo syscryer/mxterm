@@ -6811,6 +6811,7 @@ export function WorkspaceShell() {
                         <TerminalPanel
                           active={showSessionWorkspace && tab.id === activeTabId}
                           connection={connectionById.get(tab.connectionId) || null}
+                          ctrlVPaste={settings.localTerminal.ctrlVPaste}
                           cursorBlink={settings.appearance.cursorBlink}
                           cursorStyle={settings.appearance.cursorStyle}
                           fontFamily={terminalFontFamily}
@@ -7429,6 +7430,7 @@ export function WorkspaceShell() {
                             active={showingLocalTerminal && tab.id === activeLocalTerminalTabId}
                             autoConnect={false}
                             connection={null}
+                            ctrlVPaste={settings.localTerminal.ctrlVPaste}
                             cursorBlink={settings.appearance.cursorBlink}
                             cursorStyle={settings.appearance.cursorStyle}
                             fontFamily={terminalFontFamily}
