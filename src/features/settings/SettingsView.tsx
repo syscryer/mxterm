@@ -2326,6 +2326,17 @@ function LocalTerminalSettingsSection({
             onChange={(reopenLastLocalWorkspace) => onUpdate({ reopenLastLocalWorkspace })}
           />
         </SettingsRow>
+        <SettingsRow
+          icon={Keyboard}
+          title="Ctrl+V 粘贴到终端"
+          description="开启后终端聚焦时 Ctrl+V 直接粘贴剪贴板内容；关闭后该按键交给 shell、Vim 或其他终端程序处理。"
+        >
+          <SettingsToggle
+            checked={settings.ctrlVPaste}
+            label="Ctrl+V 粘贴到终端"
+            onChange={(ctrlVPaste) => onUpdate({ ctrlVPaste })}
+          />
+        </SettingsRow>
       </div>
 
       <div className="settings-panel local-terminal-detected-panel">

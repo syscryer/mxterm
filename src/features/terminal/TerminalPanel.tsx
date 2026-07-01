@@ -14,7 +14,7 @@ import {
   terminalResize,
   terminalWrite,
 } from "../../shared/tauri/commands";
-import { copyTextToClipboard } from "../../shared/clipboard";
+import { copyTextToClipboard, readTextFromClipboard } from "../../shared/clipboard";
 import {
   listenTerminalConnectProgress,
   listenTerminalOutput,
@@ -54,6 +54,7 @@ interface TerminalPanelProps {
   active: boolean;
   connection: ConnectionProfile | null;
   autoConnect?: boolean;
+  ctrlVPaste?: boolean;
   cursorBlink?: boolean;
   cursorStyle?: TerminalCursorStyle;
   fontFamily: string;
@@ -82,6 +83,7 @@ export function TerminalPanel({
   active,
   connection,
   autoConnect = true,
+  ctrlVPaste = true,
   cursorBlink = true,
   cursorStyle = "block",
   fontFamily,
@@ -132,6 +134,8 @@ export function TerminalPanel({
   const pendingResizeTimerRef = useRef<number | null>(null);
   const activeRef = useRef(active);
   const initialWindowsPtyRef = useRef(windowsPty);
+  const ctrlVPasteRef = useRef(ctrlVPaste);
+  const suppressNextNativePasteRef = useRef(false);
   const lastSearchNavigationRequestIdRef = useRef<number | null>(null);
   const previousSearchOpenRef = useRef(searchOpen);
   const [sessionId, setSessionId] = useState<string | null>(null);
@@ -146,6 +150,10 @@ export function TerminalPanel({
   useEffect(() => {
     onTerminalInputCommandRef.current = onTerminalInputCommand;
   }, [onTerminalInputCommand]);
+
+  useEffect(() => {
+    ctrlVPasteRef.current = ctrlVPaste;
+  }, [ctrlVPaste]);
 
   useEffect(() => {
     sessionIdRef.current = sessionId;
@@ -197,7 +205,52 @@ export function TerminalPanel({
     terminal.loadAddon(unicode11Addon);
     terminal.unicode.activeVersion = "11";
     terminal.open(hostRef.current);
+    const blockSuppressedNativePaste = (event: ClipboardEvent) => {
+      if (!suppressNextNativePasteRef.current) {
+        return;
+      }
+      suppressNextNativePasteRef.current = false;
+      event.preventDefault();
+      event.stopPropagation();
+    };
+    hostRef.current.addEventListener("paste", blockSuppressedNativePaste, true);
+    // 开启模式下 xterm 会在 keydown 阶段把 Ctrl+V 解析成控制字符 \x16 并吞掉原生 paste，
+    // 因此必须在 capture 阶段抢先拦截：阻止 xterm 处理，主动读剪贴板并写入终端。
+    // 关闭模式仍由下方 attachCustomKeyEventHandler 处理（发送 \x16 交给 shell/Vim）。
+    const interceptCtrlVPaste = (event: KeyboardEvent) => {
+      if (!ctrlVPasteRef.current || !isTerminalPasteShortcut(event)) {
+        return;
+      }
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      // 浏览器可能仍会对这次 Ctrl+V 触发原生 paste，复用抑制机制避免双重输入。
+      suppressNextNativePasteRef.current = true;
+      window.setTimeout(() => {
+        suppressNextNativePasteRef.current = false;
+      }, 0);
+      void readTextFromClipboard()
+        .then((text) => {
+          if (text) {
+            terminal.paste(text);
+          }
+        })
+        .catch(() => {});
+    };
+    hostRef.current.addEventListener("keydown", interceptCtrlVPaste, true);
     terminal.attachCustomKeyEventHandler((event) => {
+      if (isTerminalPasteShortcut(event) && !ctrlVPasteRef.current) {
+        event.preventDefault();
+        suppressNextNativePasteRef.current = true;
+        window.setTimeout(() => {
+          suppressNextNativePasteRef.current = false;
+        }, 0);
+        const activeSessionId = sessionIdRef.current;
+        if (activeSessionId) {
+          void terminalWrite(activeSessionId, "\x16").catch(() => {});
+        }
+        return false;
+      }
+
       if (!isTerminalCopyShortcut(event) || !terminal.hasSelection()) {
         return true;
       }
@@ -440,6 +493,7 @@ export function TerminalPanel({
       stopOutputListener?.();
       stopStateListener?.();
       stopProgressListener?.();
+      suppressNextNativePasteRef.current = false;
       if (startupOutputFlushTimerRef.current !== null) {
         window.clearTimeout(startupOutputFlushTimerRef.current);
         startupOutputFlushTimerRef.current = null;
@@ -451,6 +505,8 @@ export function TerminalPanel({
       clearPendingOutputSchedule();
       terminalOutputWriterRef.current = null;
       clearPendingTerminalResizeSync(pendingResizeTimerRef);
+      hostRef.current?.removeEventListener("paste", blockSuppressedNativePaste, true);
+      hostRef.current?.removeEventListener("keydown", interceptCtrlVPaste, true);
       resizeObserver.disconnect();
       resizeDisposable.dispose();
       dataDisposable.dispose();
@@ -1064,6 +1120,15 @@ function formatError(error: unknown) {
 function isTerminalCopyShortcut(event: KeyboardEvent) {
   return (
     event.key.toLowerCase() === "c" &&
+    !event.altKey &&
+    !event.shiftKey &&
+    (event.ctrlKey || event.metaKey)
+  );
+}
+
+function isTerminalPasteShortcut(event: KeyboardEvent) {
+  return (
+    event.key.toLowerCase() === "v" &&
     !event.altKey &&
     !event.shiftKey &&
     (event.ctrlKey || event.metaKey)
