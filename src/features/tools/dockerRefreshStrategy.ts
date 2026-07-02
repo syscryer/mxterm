@@ -1,5 +1,5 @@
 export type DockerInitialRefreshView = "containers" | "images" | "engine";
-export type DockerInitialRefreshToolboxView = "docker" | "network" | "schedule";
+export type DockerInitialRefreshToolboxView = "docker" | "tunnels" | "network" | "schedule";
 export type DockerAutoRefreshKind = "containers" | "images" | "engine";
 
 export interface DockerInitialRefreshInput {

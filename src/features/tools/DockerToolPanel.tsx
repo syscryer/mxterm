@@ -75,6 +75,7 @@ import { ConfirmDialog } from "../../shared/ui/ConfirmDialog";
 import { AppSelect } from "../../shared/ui/AppSelect";
 import { TabContextMenu, type TabContextMenuAction } from "../../shared/ui/TabContextMenu";
 import { Tooltip } from "../../shared/ui/Tooltip";
+import { TunnelPanel } from "../tunnels/TunnelPanel";
 import { planDockerInitialRefresh, shouldRunDockerAutoRefresh } from "./dockerRefreshStrategy";
 import { calculateDockerVirtualWindow } from "./dockerVirtualization";
 import type {
@@ -99,7 +100,7 @@ import type {
   NetworkDiagnosticResult,
 } from "./dockerTypes";
 
-type ToolboxView = "docker" | "network" | "schedule";
+type ToolboxView = "docker" | "tunnels" | "network" | "schedule";
 type DockerView = "containers" | "images" | "engine";
 type DockerRefreshKind = "containers" | "images" | "engine" | "engineConfig";
 
@@ -130,13 +131,16 @@ type DockerImageRunDraft = DockerImageRunRequest;
 
 interface DockerToolPanelProps {
   active: boolean;
+  activeConnectionId?: string | null;
   connection: ConnectionProfile | null;
+  connections?: ConnectionProfile[];
   onCopyText?: (text: string) => void | Promise<void>;
   onOpenContainerTerminal?: (container: DockerContainerSummary) => void;
 }
 
 const toolboxViews: Array<{ icon: LucideIcon; label: string; value: ToolboxView }> = [
   { icon: Box, label: "Docker", value: "docker" },
+  { icon: Route, label: "隧道", value: "tunnels" },
   { icon: Network, label: "网络诊断", value: "network" },
   { icon: Timer, label: "定时任务", value: "schedule" },
 ];
@@ -229,7 +233,9 @@ function formatDockerJsonConfig(content: string) {
 
 export function DockerToolPanel({
   active,
+  activeConnectionId = null,
   connection,
+  connections = [],
   onCopyText,
   onOpenContainerTerminal,
 }: DockerToolPanelProps) {
@@ -1574,6 +1580,11 @@ export function DockerToolPanel({
             />
           )}
         </div>
+      ) : toolboxView === "tunnels" ? (
+        <TunnelPanel
+          activeConnectionId={activeConnectionId || connectionId}
+          connections={connections}
+        />
       ) : toolboxView === "network" ? (
         <NetworkDiagnosticsView
           connection={connection}

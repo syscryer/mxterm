@@ -881,8 +881,8 @@ await remoteMonitorProcessSignal({ connectionId, pid, signal: "term" });
 
 ### 1. Scope / Trigger
 
-- Trigger: frontend code adds or changes SSH tunnel commands, tunnel types, the right-pane tunnel tool, prompt credential UI, host-key retry UI, or tunnel autostart wiring.
-- Source files: `src/shared/tauri/commands.ts`, `src/features/tunnels/tunnelTypes.ts`, `src/features/tunnels/TunnelPanel.tsx`, `src/features/files/RemoteFilePanel.tsx`, `src/features/layout/WorkspaceShell.tsx`, `src-tauri/src/commands.rs`, and `src-tauri/src/tunnels.rs`.
+- Trigger: frontend code adds or changes SSH tunnel commands, tunnel types, the toolbox tunnel view, prompt credential UI, host-key retry UI, or tunnel autostart wiring.
+- Source files: `src/shared/tauri/commands.ts`, `src/features/tunnels/tunnelTypes.ts`, `src/features/tunnels/TunnelPanel.tsx`, `src/features/tools/DockerToolPanel.tsx`, `src/features/files/RemoteFilePanel.tsx`, `src/features/layout/WorkspaceShell.tsx`, `src-tauri/src/commands.rs`, and `src-tauri/src/tunnels.rs`.
 - This is a cross-layer command contract because React edits typed tunnel rules and Rust owns persistence, saved SSH resolution, local listener lifecycle, and runtime state.
 
 ### 2. Signatures
@@ -931,8 +931,8 @@ interface TunnelRuntimeCredentialInput {
 - Prompt credentials are collected only after backend returns `credential_prompt_required` from a manual start. They are passed to `tunnelStart` once and are not stored in React rule state after the start succeeds.
 - Host-key errors from tunnel start must be parsed with the shared host-key parser, trusted through `knownHostTrust(...)`, and then retried with the same optional runtime credential.
 - Delete actions must remove a tunnel row only after `tunnelDelete(...)` succeeds. If delete fails, keep the row, show the `AppError.message`, close the confirmation dialog, and refresh the list so React does not drift from Rust runtime state.
-- `TunnelPanel` may refresh and list rules, but app-level autostart belongs in `WorkspaceShell` mount so auto-start rules run even if the user never opens the tunnel tab.
-- The right-pane entry is `RemoteFileTool = "files" | "monitor" | "tunnels" | "commands"`. File transfers are rendered as the file pane's bottom transfer dock, not as a first-level right-pane tool tab. Tunnel and command panels should still be passed through the existing `RemoteFilePanel` tool slots.
+- `TunnelPanel` may refresh and list rules, but app-level autostart belongs in `WorkspaceShell` mount so auto-start rules run even if the user never opens the toolbox tunnel view.
+- The right-pane entry is `RemoteFileTool = "files" | "monitor" | "commands" | "tools" | "ai"`. File transfers are rendered as the file pane's bottom transfer dock, not as a first-level right-pane tool tab. SSH tunnels are low-frequency global tools hosted by the `tools` entry's internal toolbox view, not by a first-level right-pane tab.
 - Tunnel UI must use Radix Dialog, Lucide icons, `AppSelect`, shared confirmation dialog, and global `--mx-*` tokens. Do not use native `<select>` or feature-local dropdown popovers.
 - A visible `running` state means data was written to the local forwarding machinery, not that the remote target command or service succeeded.
 
@@ -954,14 +954,14 @@ interface TunnelRuntimeCredentialInput {
 - Good: `TunnelPanel` submits the selected `kind`, `connection_id`, kind-specific local/remote host and port fields, and `auto_start`, then renders the returned `TunnelRuleWithState`.
 - Good: dynamic SOCKS hides remote target fields, sends `remote_host=""` and `remote_port=1`, and renders the route as local SOCKS listener to SOCKS5 over SSH.
 - Good: remote forwarding labels remote fields as the SSH-server listener and local fields as the local target, then renders the route as remote listener to local target.
-- Good: Workspace startup calls `tunnelAutostart()` once in the shell; opening the tunnel tab later calls `tunnelList()` to render current runtime state.
+- Good: Workspace startup calls `tunnelAutostart()` once in the shell; opening Tools -> Tunnels later calls `tunnelList()` to render current runtime state.
 - Good: a prompt-credential tunnel start opens a one-time password/private-key dialog and retries with `runtime_credential` only for that request.
 - Base: browser preview shows a fake stopped tunnel so CSS/layout can be inspected without a Tauri runtime.
 - Bad: a component calls `invoke("tunnel_start")` directly, stores runtime credentials in `TunnelRule`, uses native `<select>`, or reports command execution success from tunnel delivery state.
 
 ### 6. Tests Required
 
-- Run `npm run check` after changing tunnel types, wrappers, `TunnelPanel`, `RemoteFilePanel` tool props, or `WorkspaceShell` autostart wiring.
+- Run `npm run check` after changing tunnel types, wrappers, `TunnelPanel`, toolbox view wiring, `RemoteFilePanel` tool props, or `WorkspaceShell` autostart wiring.
 - Cross-check frontend tunnel types and wrapper payloads against Rust structs in `src-tauri/src/tunnels.rs` and command signatures in `src-tauri/src/commands.rs`.
 - Browser/desktop visual checks should cover empty state, list state, failed state, prompt credential dialog, host-key dialog, and dark theme token contrast when UI work is visible.
 - Run Rust tunnel tests/checks when backend payload changes require them and compile/test runs are approved for the session.
@@ -1783,7 +1783,7 @@ type DockerLogStreamEvent = {
 ### 3. Contracts
 
 - Components must use the typed wrappers in `src/shared/tauri/commands.ts`; do not call `invoke("docker_*")` directly from UI components.
-- The right-pane first-level tool id is `tools`. The toolbox owns internal tabs for Docker, network diagnostics, and scheduled tasks; only Docker has live backend commands in the first version.
+- The right-pane first-level tool id is `tools`. The toolbox owns internal tabs for Docker, SSH tunnels, network diagnostics, and scheduled tasks. SSH tunnel management is hosted here through `TunnelPanel`; switching away from Docker must not trigger Docker refresh work.
 - Docker actions require an active SSH connection. Local-terminal workspaces should not expose Docker controls unless a future task defines a local Docker model.
 - Delete container and delete image actions must use `ConfirmDialog`. Do not use `window.confirm`, bulk destructive actions, prune, or silent optimistic deletion.
 - Container terminal entry opens a new SSH terminal tab for the same saved connection and writes `docker exec -it <quoted container id> sh`. It must not embed a second terminal in the right pane or record the command as Command Sender history.
@@ -1965,7 +1965,7 @@ type AiContextBlock = {
 - Components must listen to `ai:chat_stream` through `listenAiChatStream(...)`, store the returned unlisten function, and call it during cleanup. Stream chunks must be matched by `stream_id` before mutating messages.
 - After `aiChatStreamStart(...)` returns, `AiAssistantPanel` must synchronously write the returned `stream_id` into its current stream ref before relying on React state/effects. Some providers can emit the first SSE chunk immediately, and waiting for a state commit can make the listener drop early chunks as stale.
 - `AiAssistantPanel` must be lazy-loaded from `WorkspaceShell`; do not statically import the panel component or provider logic into `main.tsx`, `App.tsx`, or top-level workspace startup code.
-- The right-pane first-level tool id is `ai`. It lives beside `files`, `monitor`, `tunnels`, `commands`, and `tools`; local terminal workspaces may expose `commands` and `ai`.
+- The right-pane first-level tool id is `ai`. It lives beside `files`, `monitor`, `commands`, and `tools`; local terminal workspaces may expose `commands` and `ai`.
 - Terminal right-click selection handoff uses xterm's selection API. The menu action only opens the AI pane and appends a visible `terminal_selection` context block; it must not automatically submit a model request.
 - Visible context blocks must show source and size metadata and be removable before send. Connection context must be redacted metadata only; do not include passwords, private keys, tokens, or full hidden connection config.
 - If a user-visible context block contains sensitive-looking text such as `Authorization: Bearer`, `api_key=`, `password=`, private-key headers, or `sk-` style keys, the AI panel must mark that context chip with a warning and keep the removable pre-send state. The warning does not silently redact or block user-selected content because complete visible context is persisted by design.

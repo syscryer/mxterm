@@ -107,10 +107,6 @@ const SettingsView = lazy(async () => {
   const module = await import("../settings/SettingsView");
   return { default: module.SettingsView };
 });
-const TunnelPanel = lazy(async () => {
-  const module = await import("../tunnels/TunnelPanel");
-  return { default: module.TunnelPanel };
-});
 const DockerToolPanel = lazy(async () => {
   const module = await import("../tools/DockerToolPanel");
   return { default: module.DockerToolPanel };
@@ -7810,19 +7806,14 @@ export function WorkspaceShell() {
                         }
                         aiPanel={panel.active ? aiAssistantPanelNode : null}
                         commandPanel={panel.active && rightTool === "commands" ? renderCommandLibraryPanel() : null}
-                        tunnelPanel={
-                          panel.active && rightTool === "tunnels" ? (
-                            <Suspense fallback={<p className="file-panel-empty">正在加载隧道...</p>}>
-                              <TunnelPanel activeConnectionId={panel.connectionId} connections={connections} />
-                            </Suspense>
-                          ) : null
-                        }
                         toolsPanel={
                           panel.renderDockerTools ? (
                             <Suspense fallback={<p className="file-panel-empty">正在加载 Docker 面板...</p>}>
                               <DockerToolPanel
-                                active={rightTool === "tools"}
+                                active={panel.active && rightTool === "tools"}
+                                activeConnectionId={panel.connectionId}
                                 connection={panelConnection}
+                                connections={connections}
                                 onCopyText={copyText}
                                 onOpenContainerTerminal={openDockerContainerTerminal}
                               />
