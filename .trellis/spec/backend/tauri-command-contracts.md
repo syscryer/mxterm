@@ -2613,3 +2613,156 @@ StorageRepository::open_root(
 ```
 
 Metadata reads stay redacted and do not depend on unlocking the local vault.
+
+## Scenario: AI Terminal Assistant Commands and Streaming
+
+### 1. Scope / Trigger
+
+- Trigger: backend code adds or changes the built-in AI chat assistant, AI provider configuration persistence, chat history tables, command-risk assessment, or `ai:chat_stream` events.
+- Source files: `src-tauri/src/ai_assistant.rs`, `src-tauri/src/events.rs`, `src-tauri/src/lib.rs`, `src-tauri/src/storage_sqlite.rs`, `src-tauri/src/storage_repository.rs`, `src/shared/tauri/commands.ts`, and `src/shared/tauri/events.ts`.
+- This is a cross-layer command contract because Rust owns API key storage, provider request protocols, streaming events, local chat persistence, and authoritative command-risk assessment while React owns visible context selection and command suggestion actions.
+
+### 2. Signatures
+
+```rust
+ai_provider_config_list(app: AppHandle) -> Result<Vec<AiProviderConfig>, AppError>
+ai_provider_config_save(app: AppHandle, request: AiProviderConfigInput) -> Result<AiProviderConfig, AppError>
+ai_provider_config_delete(app: AppHandle, request: AiProviderConfigIdRequest) -> Result<(), AppError>
+ai_provider_config_reveal_api_key(app: AppHandle, request: AiProviderConfigIdRequest) -> Result<RevealedAiProviderApiKey, AppError>
+ai_chat_session_list(app: AppHandle) -> Result<Vec<AiChatSessionSummary>, AppError>
+ai_chat_session_get(app: AppHandle, request: AiChatSessionIdRequest) -> Result<AiChatSession, AppError>
+ai_chat_session_delete(app: AppHandle, request: AiChatSessionIdRequest) -> Result<(), AppError>
+ai_chat_session_clear(app: AppHandle, request: AiChatSessionIdRequest) -> Result<AiChatSession, AppError>
+ai_chat_stream_start(app: AppHandle, manager: State<AiChatStreamManager>, request: AiChatStreamStartRequest) -> Result<AiChatStreamStartResponse, AppError>
+ai_chat_stream_stop(app: AppHandle, manager: State<AiChatStreamManager>, request: AiChatStreamStopRequest) -> Result<(), AppError>
+ai_command_assess(request: AiCommandAssessRequest) -> Result<AiCommandAssessment, AppError>
+```
+
+Persistent tables:
+
+```sql
+ai_chat_sessions(id, title, provider_config_id, created_at, updated_at)
+ai_chat_messages(id, session_id, role, content, contexts_json, commands_json, status, created_at, updated_at)
+```
+
+Event:
+
+```rust
+const AI_CHAT_STREAM_EVENT: &str = "ai:chat_stream";
+```
+
+### 3. Contracts
+
+- Provider config metadata is stored under the app-settings key `ai.provider_configs.v1`; API keys must be stored only through the vault using a stable `ai:{config_id}:api_key` slot id.
+- `AiProviderConfigInput` uses `api_key_touched` to distinguish preserve vs replace/delete. If `api_key_touched=false`, backend must preserve the existing vault entry even when `api_key` is absent or blank. If `api_key_touched=true` and the trimmed key is blank, backend deletes the vault secret.
+- `ai_provider_config_reveal_api_key` is the only command that may return a provider API key. It must load the saved config, read only that config's vault slot, and must not write the revealed key into app settings, SQLite chat tables, logs, or config list responses.
+- `provider` is a display/category value (`openai` or `claude`); `api_format` is the actual protocol (`openai_compatible` or `anthropic`) and must drive request shape.
+- OpenAI-compatible requests use chat completions shape with bearer auth and streamed `choices[0].delta.content`.
+- Anthropic requests use Messages API shape with `x-api-key`, `anthropic-version`, `max_tokens`, and streamed `content_block_delta` text. Base endpoints may be normalized by appending `/v1/messages`.
+- Chat history stores complete visible user messages, assistant content, visible context blocks, extracted command suggestions, and message status. Do not store API keys or hidden connection secrets in chat tables.
+- AI message ordering must not rely on UUID lexical order. User messages and assistant placeholders can share the same timestamp, so session reads and previews must order messages by numeric timestamp plus SQLite insertion order (`rowid`) to keep the user message before the matching assistant reply.
+- `ai_chat_stream_start` must insert the user message plus a streaming assistant placeholder before returning `stream_id`, `session_id`, `user_message_id`, and `assistant_message_id`.
+- Stream events must include `stream_id`, `session_id`, and `message_id`; React must be able to ignore stale events by `stream_id`.
+- `ai_chat_stream_stop` must be idempotent for unknown or already-finished streams, preserve partial assistant content, update the assistant message status to `stopped`, and emit `kind = "stopped"` when a live stream was stopped.
+- Command-risk detection in Rust is the authoritative check for direct terminal sends. It should catch destructive deletion, disk/partition operations, `dd of=`, downloaded script execution, firewall/route/service impact, reboot/shutdown, broad permission/user changes, and SSH config overwrites.
+- OpenAI-compatible requests must include the default terminal-assistant system prompt as a `system` message; Anthropic requests must send the same prompt through the `system` field. This keeps provider protocol differences from changing assistant behavior.
+- Provider stream parsers should accept common compatibility sentinels such as `[DONE]` when a gateway emits them, even for Anthropic-format streams.
+- SSE reading must buffer raw bytes and decode only complete SSE events. Do not decode each network chunk with lossy UTF-8 conversion, because providers can split multibyte Chinese or emoji characters across chunks.
+- Provider request and HTTP error raw messages must redact or suppress bodies that contain sensitive-looking fields such as `authorization`, `x-api-key`, `api_key`, bearer tokens, passwords, or `sk-` keys.
+
+### 4. Validation & Error Matrix
+
+| Condition | Error code | Recoverable |
+| --- | --- | --- |
+| Blank provider config name | `ai_provider_name_missing` | true |
+| Blank endpoint | `ai_provider_endpoint_missing` | true |
+| Endpoint is not a valid URL | `ai_provider_endpoint_invalid` | true |
+| Blank model | `ai_provider_model_missing` | true |
+| Provider config id is blank or missing | `ai_provider_config_missing` | true |
+| Provider config has no saved API key | `ai_api_key_missing` | true |
+| Blank chat message | `ai_message_missing` | true |
+| Blank or unknown session id | `ai_session_missing` | true |
+| Blank stream id | `ai_stream_missing` | true |
+| Provider HTTP request fails or returns non-success | `ai_provider_request_failed` | true |
+| Provider stream JSON cannot parse | `ai_stream_parse_failed` | true |
+| Provider stream emits an error payload | `ai_provider_stream_error` | true |
+| SQLite operation fails | `ai_storage_failed` | true |
+| JSON serialization fails | `ai_json_failed` | true |
+
+### 5. Good / Base / Bad Cases
+
+- Good: saving an existing provider with only the model changed sends `api_key_touched=false`, updates metadata, and preserves the vault secret.
+- Good: reveal reads the API key from vault on demand and returns it only through `RevealedAiProviderApiKey`, while `ai_provider_config_list` still exposes only `api_key_saved`.
+- Good: deleting a provider removes its vault secret and nulls `provider_config_id` on old sessions without deleting chat history.
+- Good: stopping a stream keeps partial text visible, marks the assistant message as `stopped`, and removes the stream handle.
+- Good: a provider request error truncates the response body and never includes Authorization, `x-api-key`, or the request API key.
+- Good: loading a session created by one send shows the user message before the assistant placeholder/reply even when both rows have the same timestamp.
+- Good: OpenAI-compatible and Anthropic-compatible calls both receive the same terminal-assistant system instruction.
+- Good: streamed Chinese/emoji text remains valid when UTF-8 bytes are split across provider network chunks.
+- Base: a provider exists without an API key; list returns `api_key_saved=false`, and stream start fails with `ai_api_key_missing`.
+- Bad: storing API keys in `app_settings`, SQLite chat tables, logs, raw errors, or task docs.
+- Bad: treating provider display kind as the protocol, such as forcing every `claude` config to Anthropic format when the saved `api_format` says OpenAI-compatible.
+- Bad: emitting stream chunks without `stream_id`, causing React to merge stale chunks into the active assistant message.
+- Bad: ordering messages by UUID after timestamp ties, because a random assistant id can sort before its user message.
+- Bad: calling `String::from_utf8_lossy` on each provider chunk before SSE frame boundaries are known.
+
+### 6. Tests Required
+
+- Run `cargo check --manifest-path src-tauri/Cargo.toml` after changing AI command registration, event structs, provider request structs, or storage schema.
+- Run `cargo test --manifest-path src-tauri/Cargo.toml ai_assistant --lib` after changing stream parsers, endpoint normalization, command-risk assessment, or provider config persistence.
+- Add or update Rust tests that assert:
+  - OpenAI and Anthropic SSE deltas parse correctly.
+  - Endpoint normalization appends chat/messages paths without corrupting existing full endpoints.
+  - Dangerous command patterns are classified as `dangerous`.
+  - Shell fenced code blocks become structured command suggestions.
+  - Error messages and persisted config metadata never include plaintext API keys.
+  - On-demand provider API key reveal returns the saved secret without adding it to provider metadata.
+  - Same-timestamp chat messages read back in insertion order.
+  - OpenAI-compatible request message construction includes the default system prompt.
+  - SSE event extraction preserves multibyte UTF-8 content split across byte chunks.
+- Run the full Rust suite when practical; document unrelated environment-sensitive PTY failures separately instead of hiding them in AI tests.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```rust
+repository.app_setting_set("ai.provider_configs.v1", &request, now)?;
+```
+
+This can persist the plaintext `api_key` alongside metadata.
+
+#### Correct
+
+```rust
+if request.api_key_touched {
+    repository.secret_set(&ai_api_key_reference(&secret_slot_id), api_key)?;
+}
+repository.app_setting_set(AI_PROVIDER_CONFIGS_KEY, &stored_configs, now)?;
+```
+
+Metadata and secret material stay on separate storage paths.
+
+#### Wrong
+
+```rust
+emit("ai.chat_stream", chunk)?;
+```
+
+Dot-separated event names are not the project convention and the payload lacks stale-stream routing.
+
+#### Correct
+
+```rust
+app.emit("ai:chat_stream", AiChatStreamEvent {
+    stream_id,
+    session_id,
+    message_id,
+    kind: "chunk".to_string(),
+    delta: Some(delta),
+    content: None,
+    error: None,
+})?;
+```
+
+Colon-separated events and `stream_id` matching keep the UI stream-safe.

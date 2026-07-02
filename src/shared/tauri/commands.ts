@@ -24,6 +24,16 @@ import type {
   VncSessionCloseResult,
 } from "../../features/connections/connectionTypes";
 import type {
+  AiChatSession,
+  AiChatSessionSummary,
+  AiChatStreamStartRequest,
+  AiChatStreamStartResponse,
+  AiCommandAssessment,
+  AiProviderConfig,
+  AiProviderConfigInput,
+  RevealedAiProviderApiKey,
+} from "../../features/ai/aiTypes";
+import type {
   CommandHistoryEntry,
   CommandHistoryRecordRequest,
   CommandHistoryScope,
@@ -252,6 +262,78 @@ export function commandHistoryDelete(id: string) {
 
 export function commandHistoryClear() {
   return invoke<void>("command_history_clear");
+}
+
+export function aiProviderConfigList() {
+  return invoke<AiProviderConfig[]>("ai_provider_config_list");
+}
+
+export function aiProviderConfigSave(request: AiProviderConfigInput) {
+  return invoke<AiProviderConfig>("ai_provider_config_save", { request });
+}
+
+export function aiProviderConfigDelete(id: string) {
+  return invoke<void>("ai_provider_config_delete", {
+    request: {
+      id,
+    },
+  });
+}
+
+export function aiProviderConfigRevealApiKey(id: string) {
+  return invoke<RevealedAiProviderApiKey>("ai_provider_config_reveal_api_key", {
+    request: {
+      id,
+    },
+  });
+}
+
+export function aiChatSessionList() {
+  return invoke<AiChatSessionSummary[]>("ai_chat_session_list");
+}
+
+export function aiChatSessionGet(sessionId: string) {
+  return invoke<AiChatSession>("ai_chat_session_get", {
+    request: {
+      session_id: sessionId,
+    },
+  });
+}
+
+export function aiChatSessionDelete(sessionId: string) {
+  return invoke<void>("ai_chat_session_delete", {
+    request: {
+      session_id: sessionId,
+    },
+  });
+}
+
+export function aiChatSessionClear(sessionId: string) {
+  return invoke<AiChatSession>("ai_chat_session_clear", {
+    request: {
+      session_id: sessionId,
+    },
+  });
+}
+
+export function aiChatStreamStart(request: AiChatStreamStartRequest) {
+  return invoke<AiChatStreamStartResponse>("ai_chat_stream_start", { request });
+}
+
+export function aiChatStreamStop(streamId: string) {
+  return invoke<void>("ai_chat_stream_stop", {
+    request: {
+      stream_id: streamId,
+    },
+  });
+}
+
+export function aiCommandAssess(command: string) {
+  return invoke<AiCommandAssessment>("ai_command_assess", {
+    request: {
+      command,
+    },
+  });
 }
 
 export function connectionTest(request: ConnectionRuntimeCredentialRequest) {

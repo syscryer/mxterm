@@ -194,6 +194,10 @@ impl StorageRepository {
         }
     }
 
+    pub(crate) fn sqlite_connection(&self) -> &Connection {
+        &self.connection
+    }
+
     pub fn sync_secret_count(&self) -> Result<usize, AppError> {
         let count = self
             .connection

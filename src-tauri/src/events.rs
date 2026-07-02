@@ -10,6 +10,7 @@ pub const REMOTE_FILE_TRANSFER_PROGRESS: &str = "remote_file:transfer_progress";
 pub const DOCKER_IMAGE_PULL_PROGRESS: &str = "docker:image_pull_progress";
 pub const DOCKER_LOG_STREAM_EVENT: &str = "docker:log_stream";
 pub const RDP_SESSION_CLOSED: &str = "rdp:session_closed";
+pub const AI_CHAT_STREAM_EVENT: &str = "ai:chat_stream";
 
 #[derive(Clone, Debug, Serialize)]
 pub struct TerminalOutputEvent {
@@ -65,4 +66,15 @@ pub struct DockerLogStreamEvent {
 #[derive(Clone, Debug, Serialize)]
 pub struct RdpSessionClosedEvent {
     pub session_id: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct AiChatStreamEvent {
+    pub kind: String,
+    pub stream_id: String,
+    pub session_id: String,
+    pub message_id: String,
+    pub delta: Option<String>,
+    pub content: Option<String>,
+    pub error: Option<String>,
 }

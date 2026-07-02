@@ -16,6 +16,7 @@ export type SettingsSectionId =
   | "basic"
   | "credentials"
   | "mcp"
+  | "ai"
   | "security"
   | "sync"
   | "shortcuts"

@@ -1,5 +1,7 @@
 import type { ShortcutAction, ShortcutCategory } from "./shortcutTypes";
 
+export const aiSendMessageShortcutActionId = "ai.sendMessage";
+
 export const shortcutCategories: ShortcutCategory[] = [
   { id: "general", label: "通用" },
   { id: "terminal", label: "终端" },
@@ -72,6 +74,15 @@ export const shortcutActions: ShortcutAction[] = [
     allowInTerminal: true,
   },
   {
+    id: aiSendMessageShortcutActionId,
+    category: "tools",
+    label: "发送 AI 消息",
+    description: "在 AI 对话输入框中发送当前问题。",
+    defaultBinding: "Enter",
+    scope: "workspace",
+    allowInTerminal: false,
+  },
+  {
     id: "commandSender.toggle",
     category: "tools",
     label: "打开或关闭 Command Sender",
@@ -88,4 +99,21 @@ export const defaultShortcutBindings: Record<string, string | null> = Object.fro
 
 export function getShortcutAction(actionId: string) {
   return shortcutActions.find((action) => action.id === actionId) || null;
+}
+
+export function resolveShortcutBindingById(
+  bindings: Record<string, string | null | undefined>,
+  actionId: string,
+) {
+  const action = getShortcutAction(actionId);
+  return action ? resolveShortcutBinding(bindings, action) : null;
+}
+
+export function resolveShortcutBinding(
+  bindings: Record<string, string | null | undefined>,
+  action: ShortcutAction,
+) {
+  return Object.prototype.hasOwnProperty.call(bindings, action.id)
+    ? bindings[action.id] ?? null
+    : action.defaultBinding;
 }

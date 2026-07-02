@@ -3,7 +3,8 @@ import { SearchAddon } from "@xterm/addon-search";
 import { Unicode11Addon } from "@xterm/addon-unicode11";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import { Terminal, type ITheme, type IWindowsPty } from "@xterm/xterm";
-import { CaseSensitive, ChevronDown, ChevronUp, Search, X } from "lucide-react";
+import * as ContextMenu from "@radix-ui/react-context-menu";
+import { Bot, CaseSensitive, ChevronDown, ChevronUp, Search, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import "@xterm/xterm/css/xterm.css";
 
@@ -75,6 +76,8 @@ interface TerminalPanelProps {
   onSearchCaseSensitiveToggle?: (tabId: string) => void;
   onSearchClose?: (tabId: string) => void;
   onSearchQueryChange?: (tabId: string, query: string) => void;
+  onRecentOutput?: (tabId: string, output: string) => void;
+  onSendSelectionToAi?: (tabId: string, selectedText: string) => void;
   onStatusChange: (tabId: string, status: string) => void;
   onTerminalInputCommand?: (tabId: string, command: string) => void;
 }
@@ -92,9 +95,11 @@ export function TerminalPanel({
   initialRequestId,
   initialSessionId,
   onCurrentDirectoryChange,
+  onRecentOutput,
   onSearchClose,
   onSearchCaseSensitiveToggle,
   onSearchQueryChange,
+  onSendSelectionToAi,
   onStatusChange,
   onTerminalInputCommand,
   onWarmupCaptureReady,
@@ -140,6 +145,7 @@ export function TerminalPanel({
   const previousSearchOpenRef = useRef(searchOpen);
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [listenersReady, setListenersReady] = useState(!hasTauriRuntime());
+  const [contextMenuSelection, setContextMenuSelection] = useState("");
   const [searchResultLabel, setSearchResultLabel] = useState("");
   const [status, setStatus] = useState(connection ? "待连接" : "空闲");
 
@@ -333,8 +339,10 @@ export function TerminalPanel({
       });
       if (startupOutputBufferingRef.current) {
         startupOutputBufferRef.current += decoded;
+        onRecentOutput?.(tabId, decoded);
         return;
       }
+      onRecentOutput?.(tabId, decoded);
       scheduleTerminalWrite(decoded);
     };
 
@@ -825,7 +833,33 @@ export function TerminalPanel({
           </div>
         </div>
       ) : null}
-      <div className="terminal-host" ref={hostRef} />
+      <ContextMenu.Root
+        onOpenChange={(open) => {
+          if (open) {
+            setContextMenuSelection(terminalRef.current?.getSelection().trim() || "");
+          }
+        }}
+      >
+        <ContextMenu.Trigger asChild>
+          <div className="terminal-host" ref={hostRef} />
+        </ContextMenu.Trigger>
+        <ContextMenu.Portal>
+          <ContextMenu.Content className="context-menu-content">
+            <ContextMenu.Item
+              className="context-menu-item"
+              disabled={!contextMenuSelection}
+              onSelect={() => {
+                if (contextMenuSelection) {
+                  onSendSelectionToAi?.(tabId, contextMenuSelection);
+                }
+              }}
+            >
+              <Bot className="ui-icon" aria-hidden="true" />
+              <span>发送到 AI 对话</span>
+            </ContextMenu.Item>
+          </ContextMenu.Content>
+        </ContextMenu.Portal>
+      </ContextMenu.Root>
     </section>
   );
 }

@@ -4,6 +4,7 @@ import { Keyboard, Pencil, RotateCcw, Search, X } from "lucide-react";
 import { Keybinding } from "../../shared/ui/Keybinding";
 import {
   defaultShortcutBindings,
+  resolveShortcutBinding,
   shortcutActions,
   shortcutCategories,
 } from "../shortcuts/shortcutRegistry";
@@ -229,13 +230,4 @@ export function ShortcutSettingsSection({
       </p>
     </section>
   );
-}
-
-function resolveShortcutBinding(
-  bindings: Record<string, string | null>,
-  action: ShortcutAction,
-) {
-  return Object.prototype.hasOwnProperty.call(bindings, action.id)
-    ? bindings[action.id]
-    : action.defaultBinding;
 }

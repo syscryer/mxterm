@@ -1913,3 +1913,161 @@ window.confirm("删除容器？") && removeContainerLocally(container.id);
   onOpenChange={closeDeleteDialog}
 />
 ```
+
+## Scenario: AI Terminal Assistant UI and Tauri Wrappers
+
+### 1. Scope / Trigger
+
+- Trigger: frontend code adds or changes the built-in AI assistant panel, AI provider settings, AI typed wrappers, `ai:chat_stream` event handling, terminal selection handoff, or command suggestion actions.
+- Source files: `src/features/ai/*`, `src/features/layout/WorkspaceShell.tsx`, `src/features/files/RemoteFilePanel.tsx`, `src/features/terminal/TerminalPanel.tsx`, `src/features/settings/SettingsView.tsx`, `src/shared/tauri/commands.ts`, `src/shared/tauri/events.ts`, and `src/styles/app.css`.
+- The AI assistant spans settings, right-pane tools, terminal output/context capture, command sender integration, and Rust streaming commands, so UI code must keep typed contracts and startup boundaries aligned.
+
+### 2. Signatures
+
+Typed wrappers:
+
+```ts
+aiProviderConfigList(): Promise<AiProviderConfig[]>
+aiProviderConfigSave(request: AiProviderConfigInput): Promise<AiProviderConfig>
+aiProviderConfigDelete(id: string): Promise<void>
+aiProviderConfigRevealApiKey(id: string): Promise<{ api_key: string }>
+aiChatSessionList(): Promise<AiChatSessionSummary[]>
+aiChatSessionGet(sessionId: string): Promise<AiChatSession>
+aiChatSessionDelete(sessionId: string): Promise<void>
+aiChatSessionClear(sessionId: string): Promise<AiChatSession>
+aiChatStreamStart(request: AiChatStreamStartRequest): Promise<AiChatStreamStartResponse>
+aiChatStreamStop(streamId: string): Promise<void>
+aiCommandAssess(command: string): Promise<AiCommandAssessment>
+listenAiChatStream(handler: (event: AiChatStreamEvent) => void): Promise<UnlistenFn>
+```
+
+Core payload fields:
+
+```ts
+type AiProviderKind = "openai" | "claude"
+type AiApiFormat = "openai_compatible" | "anthropic"
+type AiCommandRisk = "safe" | "dangerous"
+
+type AiContextBlock = {
+  id: string
+  kind: string
+  title: string
+  content: string
+  source: string
+  line_count: number
+  char_count: number
+}
+```
+
+### 3. Contracts
+
+- Components must call AI backend commands through `src/shared/tauri/commands.ts`; do not call raw `invoke("ai_*")` from feature components.
+- Components must listen to `ai:chat_stream` through `listenAiChatStream(...)`, store the returned unlisten function, and call it during cleanup. Stream chunks must be matched by `stream_id` before mutating messages.
+- After `aiChatStreamStart(...)` returns, `AiAssistantPanel` must synchronously write the returned `stream_id` into its current stream ref before relying on React state/effects. Some providers can emit the first SSE chunk immediately, and waiting for a state commit can make the listener drop early chunks as stale.
+- `AiAssistantPanel` must be lazy-loaded from `WorkspaceShell`; do not statically import the panel component or provider logic into `main.tsx`, `App.tsx`, or top-level workspace startup code.
+- The right-pane first-level tool id is `ai`. It lives beside `files`, `monitor`, `tunnels`, `commands`, and `tools`; local terminal workspaces may expose `commands` and `ai`.
+- Terminal right-click selection handoff uses xterm's selection API. The menu action only opens the AI pane and appends a visible `terminal_selection` context block; it must not automatically submit a model request.
+- Visible context blocks must show source and size metadata and be removable before send. Connection context must be redacted metadata only; do not include passwords, private keys, tokens, or full hidden connection config.
+- If a user-visible context block contains sensitive-looking text such as `Authorization: Bearer`, `api_key=`, `password=`, private-key headers, or `sk-` style keys, the AI panel must mark that context chip with a warning and keep the removable pre-send state. The warning does not silently redact or block user-selected content because complete visible context is persisted by design.
+- AI provider settings must use `AppSelect`, existing settings rows, project token styles, and the `api_key_touched` convention. Existing saved API keys are never prefilled during ordinary config loads, but the eye button may call `aiProviderConfigRevealApiKey(...)` on demand. Reveal-only values must keep `api_key_touched=false` until the user edits the field.
+- Assistant command suggestions may be copied, inserted into Command Sender, saved as snippets, or sent to the active terminal. Only direct terminal sends for commands assessed as `dangerous` require `ConfirmDialog`; copy, insert, and save must not be interrupted by confirmation.
+- Direct terminal sends must reuse the existing Command Sender write path so target selection, delivery status, and command history remain consistent.
+- Browser preview or non-Tauri runtime must show stable unavailable states and must not fake persistence or model calls.
+
+### 4. Validation & Error Matrix
+
+| Condition | Frontend behavior |
+| --- | --- |
+| No Tauri runtime | Show that desktop runtime is required for config save and model calls; do not call AI commands. |
+| No provider configs | Show an AI settings entry point and disable send. |
+| Provider config selected but no saved API key | Surface Rust `ai_api_key_missing` as an inline error. |
+| User sends blank input | Keep the message in the compose area and show inline validation. |
+| Stream chunk has a stale `stream_id` | Ignore it. |
+| Stream emits `error` | Keep partial assistant content, mark message error, and show the event error. |
+| User stops generation | Call `aiChatStreamStop(streamId)`, keep partial content, and show stopped status. |
+| Terminal selection is blank | Disable the context-menu action. |
+| Context block contains sensitive-looking text | Keep the chip removable and show a visible sensitive-information warning before send. |
+| Dangerous command direct-send | Show `ConfirmDialog` before `terminalWrite`. |
+| Safe command direct-send | Send without confirmation. |
+| Copy / insert / save dangerous command | Do not show the dangerous-send confirmation. |
+
+### 5. Good / Base / Bad Cases
+
+- Good: AI panel registers one stream listener, cleans it up on unmount, and ignores stale stream ids.
+- Good: stream start stores the returned `stream_id` in a ref synchronously before the UI waits for React state, so early chunks from fast providers are preserved.
+- Good: provider settings edit metadata with `api_key_touched=false` when the API key field was not changed, preserving the vault secret.
+- Good: clicking the API Key eye button reveals the saved key for the current config only, shows it in the password field, and still preserves the vault secret if the user saves without editing it.
+- Good: terminal selected text becomes a visible context chip and waits for the user to type or send a question.
+- Good: a context chip containing `password=` or `Authorization: Bearer ...` is visibly marked as sensitive and can be removed before send.
+- Good: dangerous command assessment is requested from Rust immediately before direct terminal send, with the local heuristic only as a runtime-unavailable fallback.
+- Base: user has no active SSH connection but a local terminal is active; AI still opens and can use local terminal output plus command draft context.
+- Bad: auto-sending selected terminal text to the model from a context-menu action.
+- Bad: silently attaching sensitive-looking terminal output without warning, or silently redacting user-selected context while still displaying the original text.
+- Bad: preloading AI panel code at app startup or importing provider request code into the workspace shell.
+- Bad: using `window.confirm`, native `<select>`, or feature-local menu styling for AI settings/actions.
+- Bad: updating only React stream state after `aiChatStreamStart` and letting the event listener read a stale/null ref during the first chunk.
+
+### 6. Tests Required
+
+- Run `npm run check` after changing AI types, wrappers, settings, panel props, terminal selection handoff, right-pane tab integration, or AI CSS.
+- Run `npm run build` and confirm the production output keeps `AiAssistantPanel-*.js` as a separate lazy chunk.
+- Run `node scripts/check-startup-module-boundary-source.mjs` after touching `WorkspaceShell`, `App`, startup imports, settings imports, or lazy feature boundaries.
+- Cross-check TypeScript request/response fields against Rust structs in `src-tauri/src/ai_assistant.rs`.
+- Check stream lifecycle changes for first-chunk races by ensuring `streamStateRef.current` is set before any event handler can process returned stream events.
+- Manual or automated desktop checks should cover no-config state, provider switching, streaming reply, stop, retry, session delete/clear, terminal-selection context, sensitive-context warning, command copy/insert/save/send, dangerous-send confirmation, and dark theme contrast.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```tsx
+await invoke("ai_chat_stream_start", { request });
+```
+
+This bypasses the typed command contract and makes payload drift easy.
+
+#### Correct
+
+```tsx
+const response = await aiChatStreamStart({
+  provider_config_id: selectedProvider.id,
+  session_id: activeSessionId,
+  content,
+  contexts,
+});
+```
+
+The wrapper owns the command name and request envelope.
+
+#### Wrong
+
+```tsx
+useEffect(() => {
+  void listenAiChatStream((event) => appendChunk(event.delta || ""));
+}, []);
+```
+
+This leaks the listener and appends stale chunks.
+
+#### Correct
+
+```tsx
+useEffect(() => {
+  let disposed = false;
+  let unlisten: (() => void) | null = null;
+  void listenAiChatStream((event) => {
+    if (!disposed && event.stream_id === streamStateRef.current?.streamId) {
+      applyStreamEvent(event);
+    }
+  }).then((cleanup) => {
+    if (disposed) cleanup();
+    else unlisten = cleanup;
+  });
+  return () => {
+    disposed = true;
+    unlisten?.();
+  };
+}, []);
+```
+
+The component cleans up and treats `stream_id` as the stream owner.
