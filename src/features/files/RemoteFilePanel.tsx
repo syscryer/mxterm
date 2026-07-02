@@ -1,5 +1,6 @@
 import {
   Activity,
+  Bot,
   ChevronDown,
   ChevronUp,
   ChevronRight,
@@ -54,7 +55,7 @@ import {
 } from "./remoteFilePaths";
 import type { RemoteFileEntry } from "./remoteFileTypes";
 
-export type RemoteFileTool = "files" | "monitor" | "tunnels" | "commands" | "tools";
+export type RemoteFileTool = "files" | "monitor" | "tunnels" | "commands" | "tools" | "ai";
 
 export interface RemoteFileUploadItem {
   file: File;
@@ -70,6 +71,7 @@ interface RemoteFilePanelProps {
   transferPanel?: ReactNode;
   nativeDropTargetPath?: string | null;
   monitorPanel?: ReactNode;
+  aiPanel?: ReactNode;
   commandPanel?: ReactNode;
   onCopyPath?: (path: string) => void;
   onCreateDirectory?: (parentPath: string) => void;
@@ -150,7 +152,7 @@ const previewDirectoryEntries: Record<string, RemoteFileEntry[]> = {
 
 const defaultRemotePath = "/";
 const loadingIndicatorDelayMs = 180;
-const defaultRemoteFileTools: RemoteFileTool[] = ["files", "monitor", "tunnels", "commands", "tools"];
+const defaultRemoteFileTools: RemoteFileTool[] = ["files", "monitor", "tunnels", "commands", "tools", "ai"];
 
 interface RemoteFilePanelStateSnapshot {
   activeDirectoryPath: string;
@@ -172,6 +174,7 @@ function RemoteFilePanelComponent({
   transferPanel,
   nativeDropTargetPath = null,
   monitorPanel,
+  aiPanel,
   commandPanel,
   onCopyPath,
   onCreateDirectory,
@@ -369,6 +372,9 @@ function RemoteFilePanelComponent({
       />
       <div className="tool-panel-slot" hidden={effectiveActiveTool !== "tools"}>
         {toolsPanel || <p className="file-panel-empty">打开一个 SSH 会话后显示工具。</p>}
+      </div>
+      <div className="tool-panel-slot" hidden={effectiveActiveTool !== "ai"}>
+        {aiPanel || <p className="file-panel-empty">正在加载 AI 面板...</p>}
       </div>
       {effectiveActiveTool === "monitor" ? (
         <div className="monitor-tool-body">
@@ -1065,6 +1071,12 @@ function FilePanelTabs({
         <button className={activeTool === "tools" ? "active" : ""} type="button" onClick={() => onToolChange?.("tools")}>
           <Wrench className="ui-icon" aria-hidden="true" />
           工具
+        </button>
+      ) : null}
+      {availableTools.includes("ai") ? (
+        <button className={activeTool === "ai" ? "active" : ""} type="button" onClick={() => onToolChange?.("ai")}>
+          <Bot className="ui-icon" aria-hidden="true" />
+          AI
         </button>
       ) : null}
       {onToggleRightPane ? (

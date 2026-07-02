@@ -162,6 +162,33 @@ CREATE TABLE IF NOT EXISTS command_history_scopes (
 
 CREATE INDEX IF NOT EXISTS idx_command_history_scopes_scope
     ON command_history_scopes(scope_kind, scope_id, last_used_at DESC);
+
+CREATE TABLE IF NOT EXISTS ai_chat_sessions (
+    id TEXT PRIMARY KEY,
+    title TEXT NOT NULL,
+    provider_config_id TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_ai_chat_sessions_updated_at
+    ON ai_chat_sessions(updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS ai_chat_messages (
+    id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL,
+    role TEXT NOT NULL,
+    content TEXT NOT NULL,
+    contexts_json TEXT NOT NULL DEFAULT '[]',
+    commands_json TEXT NOT NULL DEFAULT '[]',
+    status TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY(session_id) REFERENCES ai_chat_sessions(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_ai_chat_messages_session_created
+    ON ai_chat_messages(session_id, created_at ASC);
 "#;
 
 pub struct SqliteStore {

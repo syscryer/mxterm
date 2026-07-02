@@ -1,4 +1,5 @@
 import { emit, emitTo, listen } from "@tauri-apps/api/event";
+import type { AiChatStreamEvent } from "../../features/ai/aiTypes";
 import type {
   DockerImagePullProgressEvent,
   DockerLogStreamEvent,
@@ -59,6 +60,10 @@ export function listenDockerLogStream(handler: (event: DockerLogStreamEvent) => 
 
 export function listenRdpSessionClosed(handler: (event: RdpSessionClosedEvent) => void) {
   return listen<RdpSessionClosedEvent>("rdp:session_closed", (event) => handler(event.payload));
+}
+
+export function listenAiChatStream(handler: (event: AiChatStreamEvent) => void) {
+  return listen<AiChatStreamEvent>("ai:chat_stream", (event) => handler(event.payload));
 }
 
 export const VNC_RUNNER_WINDOW_PAYLOAD_EVENT = "vnc:runner_window_payload";

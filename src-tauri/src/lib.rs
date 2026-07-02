@@ -1,3 +1,4 @@
+mod ai_assistant;
 pub mod app_error;
 mod command_library;
 mod commands;
@@ -24,9 +25,9 @@ mod tunnels;
 mod vnc;
 mod webdav;
 mod webdav_sync;
+use storage_vault::VaultState;
 #[cfg(target_os = "macos")]
 use tauri::Manager;
-use storage_vault::VaultState;
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -36,6 +37,7 @@ pub fn run() {
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(remote_monitor::RemoteMonitorManager::default())
+        .manage(ai_assistant::AiChatStreamManager::default())
         .manage(docker_tools::DockerExecSessionManager::default())
         .manage(docker_tools::DockerLogStreamManager::default())
         .manage(network_tools::NetworkDiagnosticSessionManager::default())
@@ -170,6 +172,17 @@ pub fn run() {
             commands::webdav_fetch_remote_info,
             commands::webdav_upload_snapshot,
             commands::webdav_download_snapshot,
+            ai_assistant::ai_provider_config_list,
+            ai_assistant::ai_provider_config_save,
+            ai_assistant::ai_provider_config_delete,
+            ai_assistant::ai_provider_config_reveal_api_key,
+            ai_assistant::ai_chat_session_list,
+            ai_assistant::ai_chat_session_get,
+            ai_assistant::ai_chat_session_delete,
+            ai_assistant::ai_chat_session_clear,
+            ai_assistant::ai_chat_stream_start,
+            ai_assistant::ai_chat_stream_stop,
+            ai_assistant::ai_command_assess,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

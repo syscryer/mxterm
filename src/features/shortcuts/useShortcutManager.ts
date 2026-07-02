@@ -1,6 +1,6 @@
 import { useEffect, useMemo } from "react";
 
-import { shortcutActions } from "./shortcutRegistry";
+import { resolveShortcutBinding, shortcutActions } from "./shortcutRegistry";
 import { keyboardEventMatchesShortcut } from "./shortcutKeys";
 import type { ShortcutAction, ShortcutActionId } from "./shortcutTypes";
 
@@ -61,15 +61,6 @@ export function useShortcutManager({
     window.addEventListener("keydown", handleKeyDown, true);
     return () => window.removeEventListener("keydown", handleKeyDown, true);
   }, [activeBindings, handlers]);
-}
-
-function resolveShortcutBinding(
-  bindings: Record<string, string | null>,
-  action: ShortcutAction,
-) {
-  return Object.prototype.hasOwnProperty.call(bindings, action.id)
-    ? bindings[action.id]
-    : action.defaultBinding;
 }
 
 function isTerminalTarget(target: Element | null) {

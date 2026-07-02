@@ -13,12 +13,10 @@ import {
   type PointerEvent as ReactPointerEvent,
 } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
-import { DismissableLayerBranch } from "@radix-ui/react-dismissable-layer";
 import { openPath, revealItemInDir } from "@tauri-apps/plugin-opener";
 import { getCurrentWebview, type DragDropEvent } from "@tauri-apps/api/webview";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import type { IWindowsPty } from "@xterm/xterm";
-import { createPortal } from "react-dom";
 import {
   AlertTriangle,
   Archive,
@@ -121,6 +119,10 @@ const CommandLibraryPanel = lazy(async () => {
   const module = await import("../commands/CommandLibraryPanel");
   return { default: module.CommandLibraryPanel };
 });
+const AiAssistantPanel = lazy(async () => {
+  const module = await import("../ai/AiAssistantPanel");
+  return { default: module.AiAssistantPanel };
+});
 const VncViewerSurface = lazy(async () => {
   const module = await import("./VncViewerSurface");
   return { default: module.VncViewerSurface };
@@ -131,6 +133,7 @@ const TerminalPanel = lazy(async () => {
 });
 import type { RemoteFileEditorTab } from "../editor/remoteFileEditorTypes";
 import type { RemoteFileTool, RemoteFileUploadItem } from "../files/RemoteFilePanel";
+import type { AiContextBlock } from "../ai/aiTypes";
 import {
   isRemotePathStrictDescendant,
   normalizeRemotePath,
@@ -181,9 +184,14 @@ import {
   type HostKeyDecision,
 } from "../connections/hostKeyErrors";
 import type { TerminalSearchNavigationRequest } from "../terminal/TerminalPanel";
+import {
+  aiSendMessageShortcutActionId,
+  resolveShortcutBindingById,
+} from "../shortcuts/shortcutRegistry";
 import { useShortcutManager, type ShortcutHandler } from "../shortcuts/useShortcutManager";
 import type { TerminalOutputEvent } from "../terminal/terminalTypes";
 import { ConfirmDialog } from "../../shared/ui/ConfirmDialog";
+import { AnchoredSurfacePortal } from "../../shared/ui/AnchoredSurfacePortal";
 import { AppSelect } from "../../shared/ui/AppSelect";
 import { TabContextMenu } from "../../shared/ui/TabContextMenu";
 import {
@@ -723,6 +731,10 @@ export function WorkspaceShell() {
     useState<Record<string, TerminalSearchState>>({});
   const [terminalSearchNavigationRequest, setTerminalSearchNavigationRequest] =
     useState<TerminalSearchNavigationRequest | null>(null);
+  const [terminalRecentOutputByTabId, setTerminalRecentOutputByTabId] =
+    useState<Record<string, string>>({});
+  const [aiContextRequestKey, setAiContextRequestKey] = useState(0);
+  const [aiInitialContexts, setAiInitialContexts] = useState<AiContextBlock[]>([]);
   const [localTerminalTabs, setLocalTerminalTabs] = useState<LocalTerminalTab[]>([]);
   const localTerminalTabsRef = useRef<LocalTerminalTab[]>([]);
   const [localTerminalProfiles, setLocalTerminalProfiles] = useState<LocalTerminalProfile[]>([]);
@@ -744,6 +756,7 @@ export function WorkspaceShell() {
   const [remoteFileTextValue, setRemoteFileTextValue] = useState("");
   const [remoteFileTextError, setRemoteFileTextError] = useState<string | null>(null);
   const [rightTool, setRightTool] = useState<RemoteFileTool>("files");
+  const [aiAssistantPanelLoaded, setAiAssistantPanelLoaded] = useState(false);
   const [settingsViewLoaded, setSettingsViewLoaded] = useState(false);
   const [remoteFileTransfers, setRemoteFileTransfers] = useState<RemoteFileTransferItem[]>([]);
   const [nativeFileDropTargetPath, setNativeFileDropTargetPath] = useState<string | null>(null);
@@ -1264,6 +1277,10 @@ export function WorkspaceShell() {
       const entries = Object.entries(states).filter(([tabId]) => availableTabIds.has(tabId));
       return entries.length === Object.keys(states).length ? states : Object.fromEntries(entries);
     });
+    setTerminalRecentOutputByTabId((outputs) => {
+      const entries = Object.entries(outputs).filter(([tabId]) => availableTabIds.has(tabId));
+      return entries.length === Object.keys(outputs).length ? outputs : Object.fromEntries(entries);
+    });
   }, [localTerminalTabs, terminalTabs]);
 
   const activeRemoteFileTabs = activeWorkspaceMode === "ssh" && activeConnectionId && activeConnectedTerminalTab
@@ -1289,11 +1306,27 @@ export function WorkspaceShell() {
   const showRdpWorkspace = !showingHome && showingRdp && hasSessionWorkspace;
   const showVncWorkspace = !showingHome && showingVnc && hasSessionWorkspace;
   const showWorkspaceToolPane = !showingHome && hasSessionWorkspace;
+  const shouldShowAiAssistantPanel = showWorkspaceToolPane && rightTool === "ai";
+  const shouldRenderAiAssistantPanel =
+    aiAssistantPanelLoaded || shouldShowAiAssistantPanel;
   const shouldRenderSettingsView = settingsViewLoaded || activeView === "settings";
   const activeConnectionSelectionId =
     activeWorkspaceMode === "ssh" || activeWorkspaceMode === "rdp" || activeWorkspaceMode === "vnc"
       ? activeConnectionId
       : null;
+  const activeTerminalDirectory = activeConnectedTerminalTab
+    ? terminalDirectories[activeConnectedTerminalTab.id] || null
+    : null;
+  const activeAiTerminalTab =
+    activeWorkspaceMode === "local" ? activeLocalTerminalTab : activeConnectedTerminalTab;
+  const activeAiRecentTerminalOutput = activeAiTerminalTab
+    ? terminalRecentOutputByTabId[activeAiTerminalTab.id] || ""
+    : "";
+  const activeAiTerminalTitle = activeAiTerminalTab?.title || null;
+  const aiSendMessageShortcutBinding = resolveShortcutBindingById(
+    settings.shortcuts.bindings,
+    aiSendMessageShortcutActionId,
+  );
   const remoteFileConnection =
     showSessionWorkspace && activeConnectedTerminalTab ? activeConnection : null;
   const remoteFilePanelKey = showingRdp
@@ -1368,6 +1401,33 @@ export function WorkspaceShell() {
     "--left-pane-custom-width": `${leftPaneWidth.toString()}px`,
     "--right-pane-custom-width": `${rightPaneWidth.toString()}px`,
   } as CSSProperties;
+
+  useEffect(() => {
+    if (shouldShowAiAssistantPanel) {
+      setAiAssistantPanelLoaded(true);
+    }
+  }, [shouldShowAiAssistantPanel]);
+
+  const aiAssistantPanelNode = shouldRenderAiAssistantPanel ? (
+    <Suspense fallback={<p className="file-panel-empty">正在加载 AI 面板...</p>}>
+      <AiAssistantPanel
+        active={showWorkspaceToolPane && !rightPaneCollapsed && rightTool === "ai"}
+        commandDraft={commandSenderInput}
+        connection={activeWorkspaceMode === "ssh" ? activeConnection : null}
+        contextRequestKey={aiContextRequestKey}
+        initialContexts={aiInitialContexts}
+        recentCommands={commandHistoryEntries}
+        recentTerminalOutput={activeAiRecentTerminalOutput}
+        sendShortcutBinding={aiSendMessageShortcutBinding}
+        terminalDirectory={activeWorkspaceMode === "ssh" ? activeTerminalDirectory : null}
+        terminalTitle={activeAiTerminalTitle}
+        onInsertCommand={insertAiCommandToSender}
+        onOpenSettings={() => openSettingsSection("ai")}
+        onSaveCommand={saveAiCommandAsSnippet}
+        onSendCommand={sendAiCommandToTerminal}
+      />
+    </Suspense>
+  ) : null;
 
   useLayoutEffect(() => {
     const body = document.body;
@@ -1728,6 +1788,16 @@ export function WorkspaceShell() {
     setTerminalDirectories((directories) =>
       directories[tabId] === path ? directories : { ...directories, [tabId]: path },
     );
+  }, []);
+
+  const appendTerminalRecentOutput = useCallback((tabId: string, output: string) => {
+    if (!output) {
+      return;
+    }
+    setTerminalRecentOutputByTabId((items) => {
+      const nextOutput = tailStringByChars(`${items[tabId] || ""}${stripTerminalControlText(output)}`, 12000);
+      return nextOutput === items[tabId] ? items : { ...items, [tabId]: nextOutput };
+    });
   }, []);
 
   function remoteFileTabId(connectionId: string, path: string) {
@@ -3787,6 +3857,126 @@ export function WorkspaceShell() {
   function openCommandSenderAndPrepareTargets() {
     setCommandSenderOpen(true);
     return prepareCommandSenderTargets();
+  }
+
+  function sendTerminalSelectionToAi(tabId: string, selectedText: string) {
+    const content = selectedText.trim();
+    if (!content) {
+      return;
+    }
+    const sshTab = terminalTabsRef.current.find((tab) => tab.id === tabId);
+    const localTab = localTerminalTabsRef.current.find((tab) => tab.id === tabId);
+    const sourceConnection = sshTab ? connectionById.get(sshTab.connectionId) || null : null;
+    const source = sourceConnection?.name || localTab?.title || sshTab?.title || "终端选区";
+    const directory = terminalDirectories[tabId];
+    setAiInitialContexts([
+      buildAiContextBlock({
+        kind: "terminal_selection",
+        title: "终端选中文本",
+        source: directory ? `${source} · ${directory}` : source,
+        content,
+      }),
+    ]);
+    setAiContextRequestKey((key) => key + 1);
+    setAiAssistantPanelLoaded(true);
+    setRightPaneCollapsed(false);
+    setRightTool("ai");
+  }
+
+  function insertAiCommandToSender(command: string) {
+    setCommandSenderInput(command);
+    setSelectedCommandSnippetId(null);
+    setSelectedCommandHistoryId(null);
+    openCommandSenderAndPrepareTargets();
+  }
+
+  function saveAiCommandAsSnippet(command: string) {
+    setCommandSenderInput(command);
+    setSelectedCommandSnippetId(null);
+    setSelectedCommandHistoryId(null);
+    setCommandSnippetDraft(buildCommandSnippetDraft(command));
+    setCommandSnippetFormError(null);
+    setCommandSnippetDialogOpen(true);
+  }
+
+  async function sendAiCommandToTerminal(command: string) {
+    const target = resolveActiveAiCommandTarget();
+    if (!target) {
+      setCommandSenderLastSentLabel("上次发送：当前没有可写入的激活终端");
+      throw new Error("当前没有可写入的激活终端。");
+    }
+    setSelectedCommandSnippetId(null);
+    setSelectedCommandHistoryId(null);
+    await sendCommandTextToTargets(command, true, null, [target], {
+      clearInput: false,
+    });
+  }
+
+  function resolveActiveAiCommandTarget(): CommandSenderTarget | null {
+    if (activeWorkspaceMode === "local") {
+      if (!activeLocalTerminalTab?.sessionId) {
+        return null;
+      }
+      const profile = localTerminalProfiles.find((item) => item.id === activeLocalTerminalTab.profileId);
+      return {
+        connectionId: localCommandSenderTargetId,
+        deliveryStatus: "idle",
+        description: profile?.name || activeLocalTerminalTab.title,
+        historyScope: {
+          scope_kind: "local_profile",
+          scope_id: activeLocalTerminalTab.profileId,
+        },
+        key: commandSenderTargetKey(localCommandSenderTargetId, activeLocalTerminalTab.id),
+        kind: "local",
+        label: "当前激活终端",
+        sessionId: activeLocalTerminalTab.sessionId,
+        tabId: activeLocalTerminalTab.id,
+        tabs: [
+          {
+            label: activeLocalTerminalTab.title,
+            sessionId: activeLocalTerminalTab.sessionId,
+            tabId: activeLocalTerminalTab.id,
+          },
+        ],
+        tabTitle: activeLocalTerminalTab.title,
+      };
+    }
+
+    if (activeWorkspaceMode === "ssh") {
+      if (!activeConnectedTerminalTab?.sessionId) {
+        return null;
+      }
+      const connection = connectionById.get(activeConnectedTerminalTab.connectionId) || null;
+      if (connection && !isSshConnection(connection)) {
+        return null;
+      }
+      return {
+        connectionId: activeConnectedTerminalTab.connectionId,
+        deliveryStatus: "idle",
+        description: connection
+          ? formatConnectionAddress(connection)
+          : activeConnectedTerminalTab.title,
+        historyScope: {
+          scope_kind: "ssh_connection",
+          scope_id: activeConnectedTerminalTab.connectionId,
+        },
+        key: commandSenderTargetKey(activeConnectedTerminalTab.connectionId, activeConnectedTerminalTab.id),
+        kind: "ssh",
+        label: connection?.name || "当前激活终端",
+        sessionId: activeConnectedTerminalTab.sessionId,
+        tabId: activeConnectedTerminalTab.id,
+        tabs: [
+          {
+            label: activeConnectedTerminalTab.title,
+            sessionId: activeConnectedTerminalTab.sessionId,
+            tabId: activeConnectedTerminalTab.id,
+          },
+        ],
+        tabTitle: activeConnectedTerminalTab.title,
+      };
+    }
+
+    return null;
   }
 
   function insertCommandSnippet(snippet: CommandSnippet) {
@@ -6855,9 +7045,11 @@ export function WorkspaceShell() {
                           initialOutput={tab.warmupOutput}
                           initialRequestId={tab.requestId}
                           onCurrentDirectoryChange={updateTerminalDirectory}
+                          onRecentOutput={appendTerminalRecentOutput}
                           onSearchClose={closeTerminalSearch}
                           onSearchCaseSensitiveToggle={toggleTerminalSearchCaseSensitive}
                           onSearchQueryChange={updateTerminalSearchQuery}
+                          onSendSelectionToAi={sendTerminalSelectionToAi}
                           onStatusChange={updateTabStatus}
                           onTerminalInputCommand={
                             settings.command.recordTerminalInputHistory
@@ -7473,9 +7665,11 @@ export function WorkspaceShell() {
                             initialSessionId={tab.sessionId}
                             initialOutput={tab.warmupOutput}
                             initialRequestId={tab.requestId}
+                            onRecentOutput={appendTerminalRecentOutput}
                             onSearchClose={closeTerminalSearch}
                             onSearchCaseSensitiveToggle={toggleTerminalSearchCaseSensitive}
                             onSearchQueryChange={updateTerminalSearchQuery}
+                            onSendSelectionToAi={sendTerminalSelectionToAi}
                             onStatusChange={updateLocalTerminalTabStatus}
                             onTerminalInputCommand={
                               settings.command.recordTerminalInputHistory
@@ -7584,9 +7778,10 @@ export function WorkspaceShell() {
               <RemoteFilePanel
                 active={!rightPaneCollapsed}
                 activeTool={rightTool}
-                availableTools={["commands"]}
+                availableTools={["commands", "ai"]}
                 connection={null}
                 commandPanel={renderCommandLibraryPanel()}
+                aiPanel={aiAssistantPanelNode}
                 onToolChange={setRightTool}
               />
             ) : (
@@ -7613,6 +7808,7 @@ export function WorkspaceShell() {
                             </Suspense>
                           ) : null
                         }
+                        aiPanel={panel.active ? aiAssistantPanelNode : null}
                         commandPanel={panel.active && rightTool === "commands" ? renderCommandLibraryPanel() : null}
                         tunnelPanel={
                           panel.active && rightTool === "tunnels" ? (
@@ -7673,6 +7869,7 @@ export function WorkspaceShell() {
                     connection={remoteFileConnection}
                     refreshRequest={remoteFileRefreshRequest}
                     nativeDropTargetPath={nativeFileDropTargetPath}
+                    aiPanel={aiAssistantPanelNode}
                     onToolChange={setRightTool}
                   />
                 )}
@@ -7782,12 +7979,15 @@ export function WorkspaceShell() {
                   <span>标题</span>
                   <input
                     value={commandSnippetDraft.title}
-                    onChange={(event) =>
-                      setCommandSnippetDraft((draft) => ({
-                        ...draft,
-                        title: event.currentTarget.value,
-                      }))
-                    }
+                    onChange={(event) => {
+                      const value = event.target?.value;
+                      if (value !== undefined) {
+                        setCommandSnippetDraft((draft) => ({
+                          ...draft,
+                          title: value,
+                        }));
+                      }
+                    }}
                   />
                 </label>
                 <label className="command-snippet-field command-snippet-command-field">
@@ -7795,24 +7995,30 @@ export function WorkspaceShell() {
                   <textarea
                     value={commandSnippetDraft.command}
                     spellCheck={false}
-                    onChange={(event) =>
-                      setCommandSnippetDraft((draft) => ({
-                        ...draft,
-                        command: event.currentTarget.value,
-                      }))
-                    }
+                    onChange={(event) => {
+                      const value = event.target?.value;
+                      if (value !== undefined) {
+                        setCommandSnippetDraft((draft) => ({
+                          ...draft,
+                          command: value,
+                        }));
+                      }
+                    }}
                   />
                 </label>
                 <label className="command-snippet-field">
                   <span>说明</span>
                   <input
                     value={commandSnippetDraft.description}
-                    onChange={(event) =>
-                      setCommandSnippetDraft((draft) => ({
-                        ...draft,
-                        description: event.currentTarget.value,
-                      }))
-                    }
+                    onChange={(event) => {
+                      const value = event.target?.value;
+                      if (value !== undefined) {
+                        setCommandSnippetDraft((draft) => ({
+                          ...draft,
+                          description: value,
+                        }));
+                      }
+                    }}
                   />
                 </label>
                 <label className="command-snippet-field">
@@ -7820,24 +8026,30 @@ export function WorkspaceShell() {
                   <input
                     value={commandSnippetDraft.tagsText}
                     placeholder="多个标签用逗号分隔"
-                    onChange={(event) =>
-                      setCommandSnippetDraft((draft) => ({
-                        ...draft,
-                        tagsText: event.currentTarget.value,
-                      }))
-                    }
+                    onChange={(event) => {
+                      const value = event.target?.value;
+                      if (value !== undefined) {
+                        setCommandSnippetDraft((draft) => ({
+                          ...draft,
+                          tagsText: value,
+                        }));
+                      }
+                    }}
                   />
                 </label>
                 <label className="command-snippet-favorite">
                   <input
                     type="checkbox"
                     checked={commandSnippetDraft.favorite}
-                    onChange={(event) =>
-                      setCommandSnippetDraft((draft) => ({
-                        ...draft,
-                        favorite: event.currentTarget.checked,
-                      }))
-                    }
+                    onChange={(event) => {
+                      const checked = event.target?.checked;
+                      if (checked !== undefined) {
+                        setCommandSnippetDraft((draft) => ({
+                          ...draft,
+                          favorite: checked,
+                        }));
+                      }
+                    }}
                   />
                   <Star className="ui-icon" aria-hidden="true" />
                   <span>收藏置顶</span>
@@ -7901,13 +8113,14 @@ export function WorkspaceShell() {
                 <input
                   autoFocus
                   value={commandSnippetGroupDialog?.value || ""}
-                  onChange={(event) =>
-                    setCommandSnippetGroupDialog((state) =>
-                      state
-                        ? { ...state, error: null, value: event.currentTarget.value }
-                        : state,
-                    )
-                  }
+                  onChange={(event) => {
+                    const value = event.target?.value;
+                    if (value !== undefined) {
+                      setCommandSnippetGroupDialog((state) =>
+                        state ? { ...state, error: null, value } : state,
+                      );
+                    }
+                  }}
                 />
               </label>
               {commandSnippetGroupDialog?.error ? (
@@ -9175,48 +9388,8 @@ function LocalTerminalLauncher({
   onOpenProfile: (profile: LocalTerminalProfile) => void;
 }) {
   const triggerRef = useRef<HTMLButtonElement | null>(null);
-  const menuRef = useRef<HTMLDivElement | null>(null);
   const [open, setOpen] = useState(false);
-  const [position, setPosition] = useState<LocalTerminalMenuPosition | null>(null);
   const menuDisabled = disabled || loading;
-
-  useLayoutEffect(() => {
-    if (!open) {
-      return;
-    }
-    setPosition(readLocalTerminalMenuPosition(triggerRef.current));
-  }, [open]);
-
-  useEffect(() => {
-    if (!open) {
-      return;
-    }
-
-    function closeOnPointerDown(event: PointerEvent) {
-      const target = event.target as Node | null;
-      if (
-        target &&
-        (triggerRef.current?.contains(target) || menuRef.current?.contains(target))
-      ) {
-        return;
-      }
-      setOpen(false);
-    }
-
-    function updatePosition() {
-      setPosition(readLocalTerminalMenuPosition(triggerRef.current));
-    }
-
-    document.addEventListener("pointerdown", closeOnPointerDown);
-    window.addEventListener("resize", updatePosition);
-    window.addEventListener("scroll", updatePosition, true);
-
-    return () => {
-      document.removeEventListener("pointerdown", closeOnPointerDown);
-      window.removeEventListener("resize", updatePosition);
-      window.removeEventListener("scroll", updatePosition, true);
-    };
-  }, [open]);
 
   function chooseProfile(profile: LocalTerminalProfile) {
     setOpen(false);
@@ -9245,87 +9418,39 @@ function LocalTerminalLauncher({
           <ChevronDown className="ui-icon" aria-hidden="true" />
         </button>
       </Tooltip>
-      {open && position
-        ? createPortal(
-            <DismissableLayerBranch asChild>
-              <div
-                ref={menuRef}
-                className="local-terminal-profile-menu dropdown-menu-content"
-                style={
-                  {
-                    "--local-terminal-menu-left": `${position.left}px`,
-                    "--local-terminal-menu-top": `${position.top}px`,
-                    "--local-terminal-menu-max-height": `${position.maxHeight}px`,
-                    "--local-terminal-menu-width": `${position.width}px`,
-                  } as CSSProperties
-                }
-                role="menu"
-                aria-label="选择终端类型"
-              >
-                {profiles.map((profile, index) => (
-                  <button
-                    className="local-terminal-profile-menu-item dropdown-menu-item"
-                    key={profile.id}
-                    type="button"
-                    role="menuitem"
-                    onClick={() => chooseProfile(profile)}
-                  >
-                    <span className="local-terminal-menu-label">
-                      <LocalTerminalIcon className="ui-icon" kind={profile.kind} title={profile.name} />
-                      <span>{profile.name}</span>
-                    </span>
-                    {index < 9 ? (
-                      <span className="local-terminal-menu-shortcut">
-                        Ctrl+Shift+{(index + 1).toString()}
-                      </span>
-                    ) : null}
-                  </button>
-                ))}
-              </div>
-            </DismissableLayerBranch>,
-            document.body,
-          )
-        : null}
+      <AnchoredSurfacePortal
+        anchorRef={triggerRef}
+        ariaLabel="选择终端类型"
+        className="local-terminal-profile-menu dropdown-menu-content"
+        desiredHeight={420}
+        minHeight={180}
+        open={open}
+        role="menu"
+        width={320}
+        onOpenChange={setOpen}
+      >
+        {profiles.map((profile, index) => (
+          <button
+            className="local-terminal-profile-menu-item dropdown-menu-item"
+            key={profile.id}
+            type="button"
+            role="menuitem"
+            onClick={() => chooseProfile(profile)}
+          >
+            <span className="local-terminal-menu-label">
+              <LocalTerminalIcon className="ui-icon" kind={profile.kind} title={profile.name} />
+              <span>{profile.name}</span>
+            </span>
+            {index < 9 ? (
+              <span className="local-terminal-menu-shortcut">
+                Ctrl+Shift+{(index + 1).toString()}
+              </span>
+            ) : null}
+          </button>
+        ))}
+      </AnchoredSurfacePortal>
     </div>
   );
-}
-
-interface LocalTerminalMenuPosition {
-  left: number;
-  maxHeight: number;
-  top: number;
-  width: number;
-}
-
-function readLocalTerminalMenuPosition(
-  trigger: HTMLButtonElement | null,
-): LocalTerminalMenuPosition | null {
-  if (!trigger) {
-    return null;
-  }
-
-  const rect = trigger.getBoundingClientRect();
-  const viewportPadding = 12;
-  const gap = 5;
-  const width = 320;
-  const spaceBelow = window.innerHeight - rect.bottom - viewportPadding;
-  const spaceAbove = rect.top - viewportPadding;
-  const openAbove = spaceBelow < 220 && spaceAbove > spaceBelow;
-  const maxHeight = Math.max(
-    180,
-    Math.min(420, openAbove ? spaceAbove - gap : spaceBelow - gap),
-  );
-  const preferredLeft = rect.left;
-
-  return {
-    left: Math.min(
-      Math.max(viewportPadding, preferredLeft),
-      Math.max(viewportPadding, window.innerWidth - width - viewportPadding),
-    ),
-    maxHeight,
-    top: openAbove ? rect.top - gap - maxHeight : rect.bottom + gap,
-    width,
-  };
 }
 
 function DirectTerminalStatusPanel({
@@ -11782,6 +11907,40 @@ function commandSenderDeliveryLabel(status: CommandSenderDeliveryStatus) {
     return "发送失败";
   }
   return "未发送";
+}
+
+function buildAiContextBlock({
+  kind,
+  title,
+  source,
+  content,
+}: {
+  kind: string;
+  title: string;
+  source: string;
+  content: string;
+}): AiContextBlock {
+  const normalized = content.trim();
+  return {
+    id: `${kind}-${Date.now().toString()}`,
+    kind,
+    title,
+    source,
+    content: normalized,
+    line_count: normalized ? normalized.split(/\r?\n/).length : 0,
+    char_count: Array.from(normalized).length,
+  };
+}
+
+function tailStringByChars(value: string, maxChars: number) {
+  const chars = Array.from(value);
+  return chars.length <= maxChars ? value : chars.slice(chars.length - maxChars).join("");
+}
+
+function stripTerminalControlText(value: string) {
+  return value
+    .replace(/\x1b\][^\x07]*(?:\x07|\x1b\\)/g, "")
+    .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "");
 }
 
 function isCommandSenderRisky(command: string) {
