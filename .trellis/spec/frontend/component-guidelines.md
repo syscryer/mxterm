@@ -504,6 +504,18 @@ Ant Design, Mantine, or similar libraries just to fix one modal or button.
 - Lists that render 50+ rich rows/cards should use virtualization or incremental
   reveal with a stable observer. Avoid observers that rebuild on every page
   increment, because they can chain-trigger until the whole list mounts.
+- Right-pane tab switches must keep the first interactive frame free of heavy
+  tree/list restoration. When remote-file state is preserved across SSH tab
+  switches, render the panel shell first, gate the file tree and Radix
+  `ContextMenu` row subtree behind a render key, release that key with
+  `requestAnimationFrame`, and wrap the state update in `startTransition`.
+  Derived work such as visible-entry filtering, flattening expanded trees, and
+  selection ordering must return empty results until the tree is ready.
+- Workspace-level right-pane tool props should only construct the visible tool's
+  subtree. Do not pass `MonitorPanel`, `TunnelPanel`, `CommandLibraryPanel`,
+  transfer docks, or Docker tools as hidden React children just to preserve
+  state; keep state in feature caches or parent state, and mount heavy tool
+  panels only when their tab is active.
 - Do not let broad chrome/sidebar child selectors override overlay mechanics.
   Rules such as `.app-sidebar > * { position: relative; z-index: 1; }` must
   exclude fixed drag previews, floating overlays, or portal-like layers; otherwise

@@ -262,6 +262,7 @@ import { syncCurrentWebviewBackground } from "../../shared/tauri/webviewBackgrou
 import { initializeWindowStatePersistence } from "../../shared/tauri/windowState";
 import { Tooltip } from "../../shared/ui/Tooltip";
 import { AppTitlebar } from "./AppTitlebar";
+import { buildSshRemoteFilePanelStack } from "./remoteFilePanelStrategy";
 import {
   LocalTerminalIcon,
   localTerminalTitle,
@@ -743,7 +744,6 @@ export function WorkspaceShell() {
   const [remoteFileTextValue, setRemoteFileTextValue] = useState("");
   const [remoteFileTextError, setRemoteFileTextError] = useState<string | null>(null);
   const [rightTool, setRightTool] = useState<RemoteFileTool>("files");
-  const [dockerToolPanelLoaded, setDockerToolPanelLoaded] = useState(false);
   const [settingsViewLoaded, setSettingsViewLoaded] = useState(false);
   const [remoteFileTransfers, setRemoteFileTransfers] = useState<RemoteFileTransferItem[]>([]);
   const [nativeFileDropTargetPath, setNativeFileDropTargetPath] = useState<string | null>(null);
@@ -1289,16 +1289,11 @@ export function WorkspaceShell() {
   const showRdpWorkspace = !showingHome && showingRdp && hasSessionWorkspace;
   const showVncWorkspace = !showingHome && showingVnc && hasSessionWorkspace;
   const showWorkspaceToolPane = !showingHome && hasSessionWorkspace;
-  const shouldShowDockerToolPanel = showSessionWorkspace && rightTool === "tools";
-  const shouldRenderDockerToolPanel = dockerToolPanelLoaded || shouldShowDockerToolPanel;
   const shouldRenderSettingsView = settingsViewLoaded || activeView === "settings";
   const activeConnectionSelectionId =
     activeWorkspaceMode === "ssh" || activeWorkspaceMode === "rdp" || activeWorkspaceMode === "vnc"
       ? activeConnectionId
       : null;
-  const activeTerminalDirectory = activeConnectedTerminalTab
-    ? terminalDirectories[activeConnectedTerminalTab.id] || null
-    : null;
   const remoteFileConnection =
     showSessionWorkspace && activeConnectedTerminalTab ? activeConnection : null;
   const remoteFilePanelKey = showingRdp
@@ -1306,6 +1301,17 @@ export function WorkspaceShell() {
     : showingVnc
       ? activeVncSession?.id || "no-vnc-session"
       : remoteFileConnection?.id || "no-active-connection";
+  const sshRemoteFilePanelStack = useMemo(
+    () =>
+      buildSshRemoteFilePanelStack({
+        activeTabId,
+        activeWorkspaceMode,
+        rightPaneCollapsed,
+        rightTool,
+        tabs: terminalTabs,
+      }),
+    [activeTabId, activeWorkspaceMode, rightPaneCollapsed, rightTool, terminalTabs],
+  );
   // 依赖 terminalColorSchemesReady：数据预热完成后重新取值，确保终端在
   // 首屏 fallback 主题渲染后切换到用户选择的真实主题（缓存就绪前
   // getTerminalColorScheme 返回 fallback）。
@@ -1362,12 +1368,6 @@ export function WorkspaceShell() {
     "--left-pane-custom-width": `${leftPaneWidth.toString()}px`,
     "--right-pane-custom-width": `${rightPaneWidth.toString()}px`,
   } as CSSProperties;
-
-  useEffect(() => {
-    if (shouldShowDockerToolPanel) {
-      setDockerToolPanelLoaded(true);
-    }
-  }, [shouldShowDockerToolPanel]);
 
   useLayoutEffect(() => {
     const body = document.body;
@@ -6198,6 +6198,41 @@ export function WorkspaceShell() {
     );
   }
 
+  function renderCommandLibraryPanel() {
+    return (
+      <Suspense fallback={<p className="file-panel-empty">正在加载命令库...</p>}>
+        <CommandLibraryPanel
+          activeHistoryId={selectedCommandHistoryId}
+          activeSnippetId={selectedCommandSnippetId}
+          error={commandLibraryError}
+          historyEntries={commandHistoryEntries}
+          historyScopeOptions={commandHistoryScopeOptions}
+          historyScopeValue={commandHistoryScopeKey}
+          loading={commandLibraryLoading}
+          groups={commandSnippetGroups}
+          snippets={commandSnippets}
+          unavailableReason={commandLibraryUnavailableReason}
+          onClearHistory={() => setCommandHistoryClearOpen(true)}
+          onCopyHistory={(entry) => void copyCommandLibraryText(entry.command, "历史命令")}
+          onCopySnippet={(snippet) => void copyCommandLibraryText(snippet.command, `片段“${snippet.title}”`)}
+          onCreateGroup={() => openCommandSnippetGroupCreateDialog()}
+          onCreateSnippet={(group) => openCommandSnippetDialog(null, group)}
+          onDeleteGroup={(group) => setPendingCommandSnippetGroupDelete(group)}
+          onDeleteHistory={setPendingCommandHistoryDelete}
+          onDeleteSnippet={setPendingCommandSnippetDelete}
+          onEditSnippet={openCommandSnippetDialog}
+          onHistoryToSnippet={saveHistoryAsSnippet}
+          onHistoryScopeChange={setCommandHistoryScopeKey}
+          onInsertHistory={insertCommandHistoryEntry}
+          onInsertSnippet={insertCommandSnippet}
+          onRenameGroup={openCommandSnippetGroupRenameDialog}
+          onRunHistory={(entry) => void runCommandHistoryEntry(entry)}
+          onRunSnippet={(snippet) => void runCommandSnippet(snippet)}
+        />
+      </Suspense>
+    );
+  }
+
   function renderCommandSenderPanel() {
     if (!commandSenderOpen) {
       return null;
@@ -7515,123 +7550,134 @@ export function WorkspaceShell() {
               </aside>
             }
           >
-            <RemoteFilePanel
-              activeTool={rightTool}
-              availableTools={
-                showingRdp || showingVnc
-                  ? ["tools"]
-                  : activeWorkspaceMode === "local"
-                    ? ["commands"]
-                    : undefined
-              }
-              connection={remoteFileConnection}
-              key={remoteFilePanelKey}
-              refreshRequest={remoteFileRefreshRequest}
-              nativeDropTargetPath={nativeFileDropTargetPath}
-              monitorPanel={
-                <Suspense fallback={<p className="file-panel-empty">正在加载监控...</p>}>
-                  <MonitorPanel
-                    active={showSessionWorkspace && !rightPaneCollapsed && rightTool === "monitor"}
-                    connection={remoteFileConnection}
-                  />
-                </Suspense>
-              }
-              commandPanel={
-                <Suspense fallback={<p className="file-panel-empty">正在加载命令库...</p>}>
-                  <CommandLibraryPanel
-                    activeHistoryId={selectedCommandHistoryId}
-                    activeSnippetId={selectedCommandSnippetId}
-                    error={commandLibraryError}
-                    historyEntries={commandHistoryEntries}
-                    historyScopeOptions={commandHistoryScopeOptions}
-                    historyScopeValue={commandHistoryScopeKey}
-                    loading={commandLibraryLoading}
-                    groups={commandSnippetGroups}
-                    snippets={commandSnippets}
-                    unavailableReason={commandLibraryUnavailableReason}
-                    onClearHistory={() => setCommandHistoryClearOpen(true)}
-                    onCopyHistory={(entry) => void copyCommandLibraryText(entry.command, "历史命令")}
-                    onCopySnippet={(snippet) =>
-                      void copyCommandLibraryText(snippet.command, `片段“${snippet.title}”`)
-                    }
-                    onCreateGroup={() => openCommandSnippetGroupCreateDialog()}
-                    onCreateSnippet={(group) => openCommandSnippetDialog(null, group)}
-                    onDeleteGroup={(group) => setPendingCommandSnippetGroupDelete(group)}
-                    onDeleteHistory={setPendingCommandHistoryDelete}
-                    onDeleteSnippet={setPendingCommandSnippetDelete}
-                    onEditSnippet={openCommandSnippetDialog}
-                    onHistoryToSnippet={saveHistoryAsSnippet}
-                    onHistoryScopeChange={setCommandHistoryScopeKey}
-                    onInsertHistory={insertCommandHistoryEntry}
-                    onInsertSnippet={insertCommandSnippet}
-                    onRenameGroup={openCommandSnippetGroupRenameDialog}
-                    onRunHistory={(entry) => void runCommandHistoryEntry(entry)}
-                    onRunSnippet={(snippet) => void runCommandSnippet(snippet)}
-                  />
-                </Suspense>
-              }
-              tunnelPanel={
-                <Suspense fallback={<p className="file-panel-empty">正在加载隧道...</p>}>
-                  <TunnelPanel activeConnectionId={showSessionWorkspace ? activeConnectionId : null} connections={connections} />
-                </Suspense>
-              }
-              toolsPanel={
-                showingRdp ? (
-                  <RdpSessionToolPanel
-                    connection={activeConnection}
-                    session={activeRdpSession}
-                    onCopyCommand={(session) => void copyText(rdpSessionCommandText(session))}
-                    onCopyRdpFile={(session) => void copyText(rdpSessionFileText(session))}
-                    onPreview={(session) => void previewRdpSessionLaunch(session.id)}
-                    onRetry={(session) => retryRdpSession(session.id)}
-                  />
-                ) : showingVnc ? (
-                  <VncSessionToolPanel
-                    connection={activeConnection}
-                    session={activeVncSession}
-                    onCopyCommand={(session) => void copyText(vncSessionCommandText(session))}
-                    onPreview={(session) => void previewVncSessionLaunch(session.id)}
-                    onRetry={(session) => retryVncSession(session.id)}
-                  />
-                ) : shouldRenderDockerToolPanel ? (
-                  <Suspense fallback={<p className="file-panel-empty">正在加载 Docker 面板...</p>}>
-                    <DockerToolPanel
-                      active={showSessionWorkspace && !rightPaneCollapsed && rightTool === "tools"}
-                      connection={remoteFileConnection}
-                      onCopyText={copyText}
-                      onOpenContainerTerminal={openDockerContainerTerminal}
+            {showingRdp || showingVnc ? (
+              <RemoteFilePanel
+                active={!rightPaneCollapsed}
+                activeTool={rightTool}
+                availableTools={["tools"]}
+                connection={remoteFileConnection}
+                key={remoteFilePanelKey}
+                nativeDropTargetPath={nativeFileDropTargetPath}
+                onToolChange={setRightTool}
+                toolsPanel={
+                  showingRdp ? (
+                    <RdpSessionToolPanel
+                      connection={activeConnection}
+                      session={activeRdpSession}
+                      onCopyCommand={(session) => void copyText(rdpSessionCommandText(session))}
+                      onCopyRdpFile={(session) => void copyText(rdpSessionFileText(session))}
+                      onPreview={(session) => void previewRdpSessionLaunch(session.id)}
+                      onRetry={(session) => retryRdpSession(session.id)}
                     />
-                  </Suspense>
-                ) : null
-              }
-              transferPanel={
-                <RemoteFileTransferPanel
-                  transfers={remoteFileTransfers}
-                  onCancel={requestCancelTransfer}
-                  onClearFinished={clearFinishedTransfers}
-                  onCopyPath={copyRemotePath}
-                  onRemove={removeRemoteFileTransfer}
-                  onRetry={retryRemoteFileTransfer}
-                  onOpenLocalPath={openLocalTransferPath}
-                  onRevealLocalPath={revealLocalTransferPath}
-                />
-              }
-              onCopyPath={copyRemotePath}
-              onCreateDirectory={requestCreateRemoteDirectory}
-              onCreateFile={requestCreateRemoteFile}
-              onDeleteEntries={requestDeleteRemoteEntries}
-              onDeleteEntry={requestDeleteRemoteEntry}
-              onDownloadEntries={downloadRemoteFiles}
-              onDownloadEntry={downloadRemoteFile}
-              onOpenFile={openRemoteFile}
-              onRenameEntry={requestRenameRemoteEntry}
-              onShowProperties={showRemoteFileProperties}
-              onToolChange={setRightTool}
-              onUploadDirectory={uploadRemoteDirectory}
-              onUploadFile={uploadRemoteFile}
-              onUploadItems={uploadRemoteItems}
-              terminalPath={activeTerminalDirectory}
-            />
+                  ) : (
+                    <VncSessionToolPanel
+                      connection={activeConnection}
+                      session={activeVncSession}
+                      onCopyCommand={(session) => void copyText(vncSessionCommandText(session))}
+                      onPreview={(session) => void previewVncSessionLaunch(session.id)}
+                      onRetry={(session) => retryVncSession(session.id)}
+                    />
+                  )
+                }
+              />
+            ) : showingLocalTerminal ? (
+              <RemoteFilePanel
+                active={!rightPaneCollapsed}
+                activeTool={rightTool}
+                availableTools={["commands"]}
+                connection={null}
+                commandPanel={renderCommandLibraryPanel()}
+                onToolChange={setRightTool}
+              />
+            ) : (
+              <div className="remote-file-panel-stack">
+                {sshRemoteFilePanelStack.length > 0 ? (
+                  sshRemoteFilePanelStack.map((panel) => {
+                    const panelConnection = connectionById.get(panel.connectionId) || null;
+                    const panelTerminalPath = terminalDirectories[panel.tabId] || null;
+
+                    return (
+                      <RemoteFilePanel
+                        active={panel.active}
+                        activeTool={rightTool}
+                        availableTools={undefined}
+                        connection={panelConnection}
+                        key={panel.key}
+                        refreshRequest={remoteFileRefreshRequest}
+                        nativeDropTargetPath={nativeFileDropTargetPath}
+                        stateKey={panel.key}
+                        monitorPanel={
+                          panel.active && rightTool === "monitor" ? (
+                            <Suspense fallback={<p className="file-panel-empty">正在加载监控...</p>}>
+                              <MonitorPanel active connection={panelConnection} />
+                            </Suspense>
+                          ) : null
+                        }
+                        commandPanel={panel.active && rightTool === "commands" ? renderCommandLibraryPanel() : null}
+                        tunnelPanel={
+                          panel.active && rightTool === "tunnels" ? (
+                            <Suspense fallback={<p className="file-panel-empty">正在加载隧道...</p>}>
+                              <TunnelPanel activeConnectionId={panel.connectionId} connections={connections} />
+                            </Suspense>
+                          ) : null
+                        }
+                        toolsPanel={
+                          panel.renderDockerTools ? (
+                            <Suspense fallback={<p className="file-panel-empty">正在加载 Docker 面板...</p>}>
+                              <DockerToolPanel
+                                active={rightTool === "tools"}
+                                connection={panelConnection}
+                                onCopyText={copyText}
+                                onOpenContainerTerminal={openDockerContainerTerminal}
+                              />
+                            </Suspense>
+                          ) : null
+                        }
+                        transferPanel={
+                          panel.active && rightTool === "files" ? (
+                            <RemoteFileTransferPanel
+                              transfers={remoteFileTransfers}
+                              onCancel={requestCancelTransfer}
+                              onClearFinished={clearFinishedTransfers}
+                              onCopyPath={copyRemotePath}
+                              onRemove={removeRemoteFileTransfer}
+                              onRetry={retryRemoteFileTransfer}
+                              onOpenLocalPath={openLocalTransferPath}
+                              onRevealLocalPath={revealLocalTransferPath}
+                            />
+                          ) : null
+                        }
+                        onCopyPath={copyRemotePath}
+                        onCreateDirectory={requestCreateRemoteDirectory}
+                        onCreateFile={requestCreateRemoteFile}
+                        onDeleteEntries={requestDeleteRemoteEntries}
+                        onDeleteEntry={requestDeleteRemoteEntry}
+                        onDownloadEntries={downloadRemoteFiles}
+                        onDownloadEntry={downloadRemoteFile}
+                        onOpenFile={openRemoteFile}
+                        onRenameEntry={requestRenameRemoteEntry}
+                        onShowProperties={showRemoteFileProperties}
+                        onToolChange={setRightTool}
+                        onUploadDirectory={uploadRemoteDirectory}
+                        onUploadFile={uploadRemoteFile}
+                        onUploadItems={uploadRemoteItems}
+                        terminalPath={panelTerminalPath}
+                      />
+                    );
+                  })
+                ) : (
+                  <RemoteFilePanel
+                    active={!rightPaneCollapsed}
+                    activeTool={rightTool}
+                    availableTools={undefined}
+                    connection={remoteFileConnection}
+                    refreshRequest={remoteFileRefreshRequest}
+                    nativeDropTargetPath={nativeFileDropTargetPath}
+                    onToolChange={setRightTool}
+                  />
+                )}
+              </div>
+            )}
           </Suspense>
         ) : null}
 

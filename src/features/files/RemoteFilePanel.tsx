@@ -25,7 +25,10 @@ import {
 } from "lucide-react";
 import * as ContextMenu from "@radix-ui/react-context-menu";
 import {
+  memo,
+  startTransition,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -59,6 +62,7 @@ export interface RemoteFileUploadItem {
 }
 
 interface RemoteFilePanelProps {
+  active: boolean;
   activeTool: RemoteFileTool;
   availableTools?: RemoteFileTool[];
   connection: ConnectionProfile | null;
@@ -82,6 +86,7 @@ interface RemoteFilePanelProps {
   onUploadDirectory?: (parentPath: string) => void;
   onUploadFile?: (parentPath: string) => void;
   onUploadItems?: (parentPath: string, items: RemoteFileUploadItem[]) => void;
+  stateKey?: string;
   terminalPath?: string | null;
   toolsPanel?: ReactNode;
   tunnelPanel?: ReactNode;
@@ -147,7 +152,19 @@ const defaultRemotePath = "/";
 const loadingIndicatorDelayMs = 180;
 const defaultRemoteFileTools: RemoteFileTool[] = ["files", "monitor", "tunnels", "commands", "tools"];
 
-export function RemoteFilePanel({
+interface RemoteFilePanelStateSnapshot {
+  activeDirectoryPath: string;
+  currentPath: string;
+  directoryEntries: Record<string, RemoteFileEntry[]>;
+  expandedDirectories: Record<string, boolean>;
+  locatedDirectoryPath: string | null;
+  showHidden: boolean;
+}
+
+const remoteFilePanelStateCache = new Map<string, RemoteFilePanelStateSnapshot>();
+
+function RemoteFilePanelComponent({
+  active = true,
   activeTool,
   availableTools,
   connection,
@@ -171,17 +188,31 @@ export function RemoteFilePanel({
   onUploadDirectory,
   onUploadFile,
   onUploadItems,
+  stateKey,
   terminalPath,
   toolsPanel,
   tunnelPanel,
 }: RemoteFilePanelProps) {
+  const connectionId = connection?.id || null;
   const terminalDirectory = terminalPath ? normalizeRemotePath(terminalPath) : null;
-  const [currentPath, setCurrentPath] = useState(defaultRemotePath);
-  const [activeDirectoryPath, setActiveDirectoryPath] = useState(defaultRemotePath);
-  const [directoryEntries, setDirectoryEntries] = useState<Record<string, RemoteFileEntry[]>>({});
-  const [expandedDirectories, setExpandedDirectories] = useState<Record<string, boolean>>({});
-  const [locatedDirectoryPath, setLocatedDirectoryPath] = useState<string | null>(null);
-  const [showHidden, setShowHidden] = useState(false);
+  const initialStateRef = useRef<RemoteFilePanelStateSnapshot | null>(
+    stateKey ? remoteFilePanelStateCache.get(stateKey) || null : null,
+  );
+  const initialState = initialStateRef.current;
+  const [currentPath, setCurrentPath] = useState(initialState?.currentPath || defaultRemotePath);
+  const [activeDirectoryPath, setActiveDirectoryPath] = useState(
+    initialState?.activeDirectoryPath || defaultRemotePath,
+  );
+  const [directoryEntries, setDirectoryEntries] = useState<Record<string, RemoteFileEntry[]>>(
+    initialState?.directoryEntries || {},
+  );
+  const [expandedDirectories, setExpandedDirectories] = useState<Record<string, boolean>>(
+    initialState?.expandedDirectories || {},
+  );
+  const [locatedDirectoryPath, setLocatedDirectoryPath] = useState<string | null>(
+    initialState?.locatedDirectoryPath || null,
+  );
+  const [showHidden, setShowHidden] = useState(initialState?.showHidden || false);
   const [uploadMenuOpen, setUploadMenuOpen] = useState(false);
   const [dropTargetPath, setDropTargetPath] = useState<string | null>(null);
   const [loadingPath, setLoadingPath] = useState<string | null>(null);
@@ -192,26 +223,38 @@ export function RemoteFilePanel({
   const loadingIndicatorTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const connectionLoadScopeRef = useRef(0);
   const directoryLoadRequestRef = useRef(0);
-  const directoryEntriesRef = useRef<Record<string, RemoteFileEntry[]>>({});
+  const directoryEntriesRef = useRef<Record<string, RemoteFileEntry[]>>(initialState?.directoryEntries || {});
+  const lastConnectionIdRef = useRef(connectionId);
+  const mountedRef = useRef(true);
+  const visibleTools = availableTools?.length ? availableTools : defaultRemoteFileTools;
+  const effectiveActiveTool = visibleTools.includes(activeTool) ? activeTool : visibleTools[0] || "commands";
+  const filePanelRenderKey = `${stateKey || connectionId || "preview"}:${effectiveActiveTool}:${currentPath}`;
+  const [readyFilePanelRenderKey, setReadyFilePanelRenderKey] = useState("");
+  const fileTreeReady = active && readyFilePanelRenderKey === filePanelRenderKey;
 
   const entries = useMemo(
-    () => visibleEntries(directoryEntries[currentPath] || [], showHidden),
-    [currentPath, directoryEntries, showHidden],
+    () => (fileTreeReady ? visibleEntries(directoryEntries[currentPath] || [], showHidden) : []),
+    [currentPath, directoryEntries, fileTreeReady, showHidden],
   );
   const hasExpandedDirectories = useMemo(
-    () => Object.values(expandedDirectories).some(Boolean),
-    [expandedDirectories],
+    () => fileTreeReady && Object.values(expandedDirectories).some(Boolean),
+    [expandedDirectories, fileTreeReady],
   );
   const visibleRows = useMemo(
-    () => flattenVisibleRows(entries, directoryEntries, expandedDirectories, showHidden, 0),
-    [directoryEntries, entries, expandedDirectories, showHidden],
+    () => (fileTreeReady ? flattenVisibleRows(entries, directoryEntries, expandedDirectories, showHidden, 0) : []),
+    [directoryEntries, entries, expandedDirectories, fileTreeReady, showHidden],
   );
   const selectedEntries = useMemo(
-    () => selectedEntriesInVisibleOrder(selectedEntriesByPath, visibleRows),
-    [selectedEntriesByPath, visibleRows],
+    () => (fileTreeReady ? selectedEntriesInVisibleOrder(selectedEntriesByPath, visibleRows) : []),
+    [fileTreeReady, selectedEntriesByPath, visibleRows],
   );
 
   useEffect(() => {
+    const nextConnectionId = connectionId;
+    if (lastConnectionIdRef.current === nextConnectionId) {
+      return;
+    }
+    lastConnectionIdRef.current = nextConnectionId;
     connectionLoadScopeRef.current += 1;
     directoryLoadRequestRef.current += 1;
     directoryEntriesRef.current = {};
@@ -227,21 +270,74 @@ export function RemoteFilePanel({
     setVisibleLoadingPath(null);
     setError(null);
     clearLoadingIndicatorTimer();
-  }, [connection?.id]);
+  }, [connectionId]);
+
+  useLayoutEffect(() => {
+    if (!stateKey) {
+      return;
+    }
+    remoteFilePanelStateCache.set(stateKey, {
+      activeDirectoryPath,
+      currentPath,
+      directoryEntries,
+      expandedDirectories,
+      locatedDirectoryPath,
+      showHidden,
+    });
+  }, [
+    activeDirectoryPath,
+    currentPath,
+    directoryEntries,
+    expandedDirectories,
+    locatedDirectoryPath,
+    showHidden,
+    stateKey,
+  ]);
+
+  useLayoutEffect(() => {
+    if (active && effectiveActiveTool === "files" && connectionId) {
+      return;
+    }
+    setReadyFilePanelRenderKey("");
+  }, [active, connectionId, effectiveActiveTool]);
 
   useEffect(() => {
+    if (!active || effectiveActiveTool !== "files" || !connectionId) {
+      return;
+    }
+    const frameId = requestAnimationFrame(() => {
+      if (mountedRef.current) {
+        startTransition(() => {
+          setReadyFilePanelRenderKey(filePanelRenderKey);
+        });
+      }
+    });
+    return () => cancelAnimationFrame(frameId);
+  }, [active, connectionId, effectiveActiveTool, filePanelRenderKey]);
+
+  useEffect(() => {
+    // 隐藏的常驻面板不发起远程请求；切回后复用已缓存的路径和展开状态。
+    if (!active) {
+      return;
+    }
     void loadDirectory(currentPath);
-  }, [connection?.id, currentPath]);
+  }, [active, connectionId, currentPath]);
 
   useEffect(() => {
+    if (!active) {
+      return;
+    }
     if (!refreshRequest || !connection || refreshRequest.connectionId !== connection.id) {
       return;
     }
     void loadDirectory(refreshRequest.path, true);
-  }, [connection?.id, refreshRequest?.connectionId, refreshRequest?.id, refreshRequest?.path]);
+  }, [active, connectionId, refreshRequest?.connectionId, refreshRequest?.id, refreshRequest?.path]);
 
   useEffect(
     () => () => {
+      mountedRef.current = false;
+      connectionLoadScopeRef.current += 1;
+      directoryLoadRequestRef.current += 1;
       clearLoadingIndicatorTimer();
     },
     [],
@@ -251,11 +347,20 @@ export function RemoteFilePanel({
   const showCurrentPathLoading = visibleLoadingPath === currentPath;
   const disabled = !connection;
   const effectiveDropTargetPath = dropTargetPath || nativeDropTargetPath;
-  const visibleTools = availableTools?.length ? availableTools : defaultRemoteFileTools;
-  const effectiveActiveTool = visibleTools.includes(activeTool) ? activeTool : visibleTools[0] || "commands";
+
+  if (!active) {
+    return (
+      <aside
+        className="tool-pane is-hidden"
+        aria-label="右侧工具面板"
+        aria-hidden="true"
+        data-remote-file-panel-placeholder="true"
+      />
+    );
+  }
 
   return (
-    <aside className="tool-pane" aria-label="右侧工具面板">
+    <aside className={`tool-pane ${active ? "" : "is-hidden"}`} aria-label="右侧工具面板" aria-hidden={!active}>
       <FilePanelTabs
         activeTool={effectiveActiveTool}
         availableTools={visibleTools}
@@ -301,33 +406,44 @@ export function RemoteFilePanel({
           ) : (
             <>
               {error ? <p className="file-panel-error">{error}</p> : null}
-              <ContextMenu.Root>
-                <ContextMenu.Trigger asChild>
-                  <div
-                    className={`file-list ${effectiveDropTargetPath === activeDirectoryPath ? "is-drop-target" : ""}`}
-                    data-remote-file-drop-target={activeDirectoryPath}
-                    onDragEnter={(event) => handleLocalDragEnter(event, activeDirectoryPath)}
-                    onDragLeave={(event) => handleLocalDragLeave(event, activeDirectoryPath)}
-                    onDragOver={(event) => handleLocalDragOver(event, activeDirectoryPath)}
-                    onDrop={(event) => handleDropUpload(event, activeDirectoryPath)}
-                  >
-                    <section className="remote-file-tree" aria-label="远程文件树">
-                      {entries.length ? (
-                        renderRows(entries, 0)
-                      ) : showCurrentPathLoading ? (
-                        <p className="file-panel-empty">读取目录中...</p>
-                      ) : isCurrentPathLoading ? null : (
-                        <p className="file-panel-empty">当前目录为空。</p>
-                      )}
-                    </section>
-                  </div>
-                </ContextMenu.Trigger>
-                <ContextMenu.Portal>
-                  <ContextMenu.Content className="context-menu-content">
-                    {renderBlankMenu()}
-                  </ContextMenu.Content>
-                </ContextMenu.Portal>
-              </ContextMenu.Root>
+              {!fileTreeReady ? (
+                <div
+                  className={`file-list ${effectiveDropTargetPath === activeDirectoryPath ? "is-drop-target" : ""}`}
+                  data-remote-file-drop-target={activeDirectoryPath}
+                >
+                  <section className="remote-file-tree" aria-label="远程文件树">
+                    <p className="file-panel-empty">正在恢复文件视图...</p>
+                  </section>
+                </div>
+              ) : (
+                <ContextMenu.Root>
+                  <ContextMenu.Trigger asChild>
+                    <div
+                      className={`file-list ${effectiveDropTargetPath === activeDirectoryPath ? "is-drop-target" : ""}`}
+                      data-remote-file-drop-target={activeDirectoryPath}
+                      onDragEnter={(event) => handleLocalDragEnter(event, activeDirectoryPath)}
+                      onDragLeave={(event) => handleLocalDragLeave(event, activeDirectoryPath)}
+                      onDragOver={(event) => handleLocalDragOver(event, activeDirectoryPath)}
+                      onDrop={(event) => handleDropUpload(event, activeDirectoryPath)}
+                    >
+                      <section className="remote-file-tree" aria-label="远程文件树">
+                        {entries.length ? (
+                          renderRows(entries, 0)
+                        ) : showCurrentPathLoading ? (
+                          <p className="file-panel-empty">读取目录中...</p>
+                        ) : isCurrentPathLoading ? null : (
+                          <p className="file-panel-empty">当前目录为空。</p>
+                        )}
+                      </section>
+                    </div>
+                  </ContextMenu.Trigger>
+                  <ContextMenu.Portal>
+                    <ContextMenu.Content className="context-menu-content">
+                      {renderBlankMenu()}
+                    </ContextMenu.Content>
+                  </ContextMenu.Portal>
+                </ContextMenu.Root>
+              )}
             </>
           )}
           {transferPanel ? <div className="file-transfer-dock-wrap">{transferPanel}</div> : null}
@@ -452,7 +568,9 @@ export function RemoteFilePanel({
   }
 
   function isLatestDirectoryLoadRequest(scope: number, requestId: number) {
-    return connectionLoadScopeRef.current === scope && directoryLoadRequestRef.current === requestId;
+    return mountedRef.current &&
+      connectionLoadScopeRef.current === scope &&
+      directoryLoadRequestRef.current === requestId;
   }
 
   async function loadRevealPath(paths: string[]) {
@@ -895,6 +1013,15 @@ export function RemoteFilePanel({
       loadingIndicatorTimerRef.current = null;
     }
   }
+}
+
+export const RemoteFilePanel = memo(RemoteFilePanelComponent, areRemoteFilePanelPropsEqual);
+
+function areRemoteFilePanelPropsEqual(previous: RemoteFilePanelProps, next: RemoteFilePanelProps) {
+  if (!previous.active && !next.active) {
+    return previous.connection?.id === next.connection?.id && previous.stateKey === next.stateKey;
+  }
+  return false;
 }
 
 function FilePanelTabs({
