@@ -15,7 +15,6 @@ import {
   FolderPlus,
   Info,
   ListTree,
-  Network,
   PanelRightClose,
   Pencil,
   RefreshCw,
@@ -55,7 +54,7 @@ import {
 } from "./remoteFilePaths";
 import type { RemoteFileEntry } from "./remoteFileTypes";
 
-export type RemoteFileTool = "files" | "monitor" | "tunnels" | "commands" | "tools" | "ai";
+export type RemoteFileTool = "files" | "monitor" | "commands" | "tools" | "ai";
 
 export interface RemoteFileUploadItem {
   file: File;
@@ -91,7 +90,6 @@ interface RemoteFilePanelProps {
   stateKey?: string;
   terminalPath?: string | null;
   toolsPanel?: ReactNode;
-  tunnelPanel?: ReactNode;
 }
 
 interface RemoteFileRefreshRequest {
@@ -152,7 +150,7 @@ const previewDirectoryEntries: Record<string, RemoteFileEntry[]> = {
 
 const defaultRemotePath = "/";
 const loadingIndicatorDelayMs = 180;
-const defaultRemoteFileTools: RemoteFileTool[] = ["files", "monitor", "tunnels", "commands", "tools", "ai"];
+const defaultRemoteFileTools: RemoteFileTool[] = ["files", "monitor", "commands", "tools", "ai"];
 
 interface RemoteFilePanelStateSnapshot {
   activeDirectoryPath: string;
@@ -194,7 +192,6 @@ function RemoteFilePanelComponent({
   stateKey,
   terminalPath,
   toolsPanel,
-  tunnelPanel,
 }: RemoteFilePanelProps) {
   const connectionId = connection?.id || null;
   const terminalDirectory = terminalPath ? normalizeRemotePath(terminalPath) : null;
@@ -380,8 +377,6 @@ function RemoteFilePanelComponent({
         <div className="monitor-tool-body">
           {monitorPanel || <p className="file-panel-empty">打开一个 SSH 会话后显示监控。</p>}
         </div>
-      ) : effectiveActiveTool === "tunnels" ? (
-        tunnelPanel || <p className="file-panel-empty">还没有隧道规则。</p>
       ) : effectiveActiveTool === "commands" ? (
         commandPanel || <p className="file-panel-empty">还没有命令片段。</p>
       ) : effectiveActiveTool === "files" ? (
@@ -1053,12 +1048,6 @@ function FilePanelTabs({
         <button className={activeTool === "monitor" ? "active" : ""} type="button" onClick={() => onToolChange?.("monitor")}>
           <Activity className="ui-icon" aria-hidden="true" />
           监控
-        </button>
-      ) : null}
-      {availableTools.includes("tunnels") ? (
-        <button className={activeTool === "tunnels" ? "active" : ""} type="button" onClick={() => onToolChange?.("tunnels")}>
-          <Network className="ui-icon" aria-hidden="true" />
-          隧道
         </button>
       ) : null}
       {availableTools.includes("commands") ? (
