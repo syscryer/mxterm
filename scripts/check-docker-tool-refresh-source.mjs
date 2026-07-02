@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 
 const dockerPanelSource = readFileSync("src/features/tools/DockerToolPanel.tsx", "utf8");
+const dockerRefreshStrategySource = readFileSync("src/features/tools/dockerRefreshStrategy.ts", "utf8");
 const remoteFilePanelSource = readFileSync("src/features/files/RemoteFilePanel.tsx", "utf8");
 const appCssSource = readFileSync("src/styles/app.css", "utf8");
 const workspaceSource = readFileSync("src/features/layout/WorkspaceShell.tsx", "utf8");
@@ -21,7 +22,7 @@ const requiredDockerPanelSnippets = [
   "const containersRefreshRef = useRef<RefreshRunState>",
   "const imagesRefreshRef = useRef<RefreshRunState>",
   "const engineRefreshRef = useRef<RefreshRunState>",
-  "const dockerInitialLoadRef = useRef(false);",
+  'const dockerInitialLoadRef = useRef<Record<"containers" | "images", boolean>>',
   "const engineInitialLoadRef = useRef(false);",
   "function formatDockerJsonConfig(content: string)",
   "return `${JSON.stringify(JSON.parse(trimmed), null, 2)}\\n`;",
@@ -32,10 +33,12 @@ const requiredDockerPanelSnippets = [
   "formatContainerPortSegment(part)",
   ".replace(/^0\\.0\\.0\\.0:/, \"\")",
   "const dockerAutoRefreshActive = active && toolboxView === \"docker\" && Boolean(connectionId) && documentVisible;",
-  "dockerInitialLoadRef.current = false;",
+  "planDockerInitialRefresh({",
+  "initialRefreshStarted: dockerInitialLoadRef.current[dockerView]",
+  "dockerInitialLoadRef.current = {",
+  "dockerInitialLoadRef.current[plannedView] = true;",
   "engineInitialLoadRef.current = false;",
-  "if (!dockerAutoRefreshActive || dockerInitialLoadRef.current) {",
-  "dockerInitialLoadRef.current = true;",
+  "shouldRunDockerAutoRefresh({",
   "engineInitialLoadRef.current = true;",
   "if (state.inFlight) {",
   "state.pending = true;",
@@ -44,6 +47,7 @@ const requiredDockerPanelSnippets = [
   "void refreshImages({ silent: true, queueIfBusy: true });",
   "void refreshEngineStatus({ silent: true, queueIfBusy: true });",
   "void refreshEngineConfig({ preserveDirty: true, silent: true, onlyIfMissing: true });",
+  "async function refreshCurrentDockerView()",
   "const [logsContent, setLogsContent] = useState(\"\");",
   "const [logsStreamId, setLogsStreamId] = useState<string | null>(null);",
   "const [logsPaused, setLogsPaused] = useState(false);",
@@ -92,6 +96,21 @@ const requiredDockerPanelSnippets = [
 for (const snippet of requiredDockerPanelSnippets) {
   if (!dockerPanelSource.includes(snippet)) {
     throw new Error(`DockerToolPanel should keep cached auto-refresh without overlapping requests: ${snippet}`);
+  }
+}
+
+const requiredDockerRefreshStrategySnippets = [
+  "export const dockerInitialRefreshDelayMs = 1_200;",
+  "lastContainersRefreshAt <= 0",
+  "lastImagesRefreshAt <= 0",
+  "silent: false,",
+  "export function shouldRunDockerAutoRefresh",
+  "return active && dockerView === refreshKind;",
+];
+
+for (const snippet of requiredDockerRefreshStrategySnippets) {
+  if (!dockerRefreshStrategySource.includes(snippet)) {
+    throw new Error(`Docker refresh strategy should avoid tab-switch docker ps refreshes: ${snippet}`);
   }
 }
 

@@ -6796,9 +6796,26 @@ button {
 
 .docker-list--containers {
   display: grid;
+  grid-template-rows: minmax(0, 1fr) auto;
   align-content: start;
   gap: 8px;
   padding: 8px;
+  overflow: hidden;
+}
+
+.docker-container-scrollport {
+  min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  scrollbar-gutter: stable;
+}
+
+.docker-container-window {
+  min-width: 0;
+  display: grid;
+  align-content: start;
+  gap: 8px;
 }
 
 .docker-list--images {
@@ -9328,7 +9345,9 @@ button {
 }
 
 .remote-editor-stack,
+.remote-file-panel-stack,
 .terminal-stack {
+  position: relative;
   min-width: 0;
   min-height: 0;
   overflow: hidden;
@@ -9344,10 +9363,21 @@ button {
 }
 
 .remote-editor-stack .remote-file-editor,
+.remote-file-panel-stack .tool-pane,
 .terminal-stack .terminal-panel,
 .terminal-stack .terminal-direct-status {
   grid-area: 1 / 1;
   min-height: 0;
+}
+
+.tool-pane.is-hidden {
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.remote-file-panel-stack .tool-pane.is-hidden {
+  position: absolute;
+  inset: 0;
 }
 
 .terminal-direct-status {

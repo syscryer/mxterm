@@ -36,6 +36,7 @@ import {
 } from "lucide-react";
 import {
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -74,6 +75,8 @@ import { ConfirmDialog } from "../../shared/ui/ConfirmDialog";
 import { AppSelect } from "../../shared/ui/AppSelect";
 import { TabContextMenu, type TabContextMenuAction } from "../../shared/ui/TabContextMenu";
 import { Tooltip } from "../../shared/ui/Tooltip";
+import { planDockerInitialRefresh, shouldRunDockerAutoRefresh } from "./dockerRefreshStrategy";
+import { calculateDockerVirtualWindow } from "./dockerVirtualization";
 import type {
   DockerContainerAction,
   DockerContainerDetail,
@@ -160,6 +163,50 @@ const dockerRestartPolicyOptions: Array<{ label: string; value: DockerRestartPol
 ];
 const dockerRunDefaultNetworkValue = "__mx_default__";
 
+interface DockerToolPanelCacheSnapshot {
+  containers: DockerContainerSummary[];
+  dockerView: DockerView;
+  engineConfig: DockerEngineConfigResult | null;
+  engineConfigDraft: string;
+  engineStatus: DockerEngineStatus | null;
+  images: DockerImageSummary[];
+  lastContainersRefreshAt: number;
+  lastEngineConfigRefreshAt: number;
+  lastEngineRefreshAt: number;
+  lastImagesRefreshAt: number;
+  toolboxView: ToolboxView;
+}
+
+const dockerToolPanelCache = new Map<string, DockerToolPanelCacheSnapshot>();
+
+function cachedDockerToolPanelState(connectionId: string | null): DockerToolPanelCacheSnapshot | null {
+  return connectionId ? dockerToolPanelCache.get(connectionId) || null : null;
+}
+
+function updateDockerToolPanelCache(
+  connectionId: string | null,
+  patch: Partial<DockerToolPanelCacheSnapshot>,
+) {
+  if (!connectionId) {
+    return;
+  }
+  const current = dockerToolPanelCache.get(connectionId);
+  dockerToolPanelCache.set(connectionId, {
+    containers: current?.containers || [],
+    dockerView: current?.dockerView || "containers",
+    engineConfig: current?.engineConfig || null,
+    engineConfigDraft: current?.engineConfigDraft || "",
+    engineStatus: current?.engineStatus || null,
+    images: current?.images || [],
+    lastContainersRefreshAt: current?.lastContainersRefreshAt || 0,
+    lastEngineConfigRefreshAt: current?.lastEngineConfigRefreshAt || 0,
+    lastEngineRefreshAt: current?.lastEngineRefreshAt || 0,
+    lastImagesRefreshAt: current?.lastImagesRefreshAt || 0,
+    toolboxView: current?.toolboxView || "docker",
+    ...patch,
+  });
+}
+
 function createRefreshRunState(): RefreshRunState {
   return {
     inFlight: false,
@@ -186,13 +233,22 @@ export function DockerToolPanel({
   onCopyText,
   onOpenContainerTerminal,
 }: DockerToolPanelProps) {
-  const [toolboxView, setToolboxView] = useState<ToolboxView>("docker");
-  const [dockerView, setDockerView] = useState<DockerView>("containers");
-  const [containers, setContainers] = useState<DockerContainerSummary[]>([]);
-  const [images, setImages] = useState<DockerImageSummary[]>([]);
-  const [engineStatus, setEngineStatus] = useState<DockerEngineStatus | null>(null);
-  const [engineConfig, setEngineConfig] = useState<DockerEngineConfigResult | null>(null);
-  const [engineConfigDraft, setEngineConfigDraft] = useState("");
+  const initialConnectionId = connection?.id || null;
+  const initialCacheRef = useRef<DockerToolPanelCacheSnapshot | null>(
+    cachedDockerToolPanelState(initialConnectionId),
+  );
+  const initialCache = initialCacheRef.current;
+  const [toolboxView, setToolboxView] = useState<ToolboxView>(initialCache?.toolboxView || "docker");
+  const [dockerView, setDockerView] = useState<DockerView>(initialCache?.dockerView || "containers");
+  const [containers, setContainers] = useState<DockerContainerSummary[]>(initialCache?.containers || []);
+  const [images, setImages] = useState<DockerImageSummary[]>(initialCache?.images || []);
+  const [engineStatus, setEngineStatus] = useState<DockerEngineStatus | null>(
+    initialCache?.engineStatus || null,
+  );
+  const [engineConfig, setEngineConfig] = useState<DockerEngineConfigResult | null>(
+    initialCache?.engineConfig || null,
+  );
+  const [engineConfigDraft, setEngineConfigDraft] = useState(initialCache?.engineConfigDraft || "");
   const [imagePullTasks, setImagePullTasks] = useState<DockerImagePullTask[]>([]);
   const [loadingContainers, setLoadingContainers] = useState(false);
   const [loadingImages, setLoadingImages] = useState(false);
@@ -255,7 +311,10 @@ export function DockerToolPanel({
   const connectionIdRef = useRef<string | null>(connectionId);
   const logsStreamIdRef = useRef<string | null>(null);
   const logOutputRef = useRef<HTMLPreElement | null>(null);
-  const dockerInitialLoadRef = useRef(false);
+  const dockerInitialLoadRef = useRef<Record<"containers" | "images", boolean>>({
+    containers: Boolean(initialCache?.lastContainersRefreshAt),
+    images: Boolean(initialCache?.lastImagesRefreshAt),
+  });
   const engineInitialLoadRef = useRef(false);
   const runningCount = useMemo(
     () => containers.filter((container) => isContainerRunning(container)).length,
@@ -282,16 +341,19 @@ export function DockerToolPanel({
 
   useEffect(() => {
     connectionIdRef.current = connectionId;
+    const cached = cachedDockerToolPanelState(connectionId);
     const previousStreamId = logsStreamIdRef.current;
     if (previousStreamId && hasTauriRuntime()) {
       void dockerContainerLogsStop(previousStreamId);
     }
     logsStreamIdRef.current = null;
-    setContainers([]);
-    setImages([]);
-    setEngineStatus(null);
-    setEngineConfig(null);
-    setEngineConfigDraft("");
+    setToolboxView(cached?.toolboxView || "docker");
+    setDockerView(cached?.dockerView || "containers");
+    setContainers(cached?.containers || []);
+    setImages(cached?.images || []);
+    setEngineStatus(cached?.engineStatus || null);
+    setEngineConfig(cached?.engineConfig || null);
+    setEngineConfigDraft(cached?.engineConfigDraft || "");
     setError(null);
     setNotice(null);
     setLogsTarget(null);
@@ -322,7 +384,10 @@ export function DockerToolPanel({
     setDiagnosticRunning(false);
     setEngineActionTarget(null);
     setRestartAfterSave(false);
-    dockerInitialLoadRef.current = false;
+    dockerInitialLoadRef.current = {
+      containers: Boolean(cached?.lastContainersRefreshAt),
+      images: Boolean(cached?.lastImagesRefreshAt),
+    };
     engineInitialLoadRef.current = false;
     containersRefreshRef.current = createRefreshRunState();
     imagesRefreshRef.current = createRefreshRunState();
@@ -410,12 +475,42 @@ export function DockerToolPanel({
   }, []);
 
   useEffect(() => {
-    if (!dockerAutoRefreshActive || dockerInitialLoadRef.current) {
+    if (dockerView === "engine") {
       return;
     }
-    dockerInitialLoadRef.current = true;
-    void refreshDocker();
-  }, [dockerAutoRefreshActive, connectionId]);
+
+    const cache = cachedDockerToolPanelState(connectionId);
+    const plan = planDockerInitialRefresh({
+      active,
+      connectionId,
+      documentVisible,
+      dockerView,
+      initialRefreshStarted: dockerInitialLoadRef.current[dockerView],
+      lastContainersRefreshAt: cache?.lastContainersRefreshAt || 0,
+      lastImagesRefreshAt: cache?.lastImagesRefreshAt || 0,
+      now: Date.now(),
+      toolboxView,
+    });
+
+    if (!plan) {
+      if (dockerAutoRefreshActive) {
+        dockerInitialLoadRef.current[dockerView] = true;
+      }
+      return;
+    }
+
+    const plannedView = dockerView;
+    const timer = window.setTimeout(() => {
+      dockerInitialLoadRef.current[plannedView] = true;
+      if (plan.refreshContainers) {
+        void refreshContainers({ silent: plan.silent });
+      }
+      if (plan.refreshImages) {
+        void refreshImages({ silent: plan.silent });
+      }
+    }, plan.delayMs);
+    return () => window.clearTimeout(timer);
+  }, [active, connectionId, dockerAutoRefreshActive, dockerView, documentVisible, toolboxView]);
 
   useEffect(() => {
     if (
@@ -431,27 +526,45 @@ export function DockerToolPanel({
   }, [dockerAutoRefreshActive, dockerView, connectionId]);
 
   useEffect(() => {
-    if (!dockerAutoRefreshActive) {
+    if (
+      !shouldRunDockerAutoRefresh({
+        active: dockerAutoRefreshActive,
+        dockerView,
+        refreshKind: "containers",
+      })
+    ) {
       return;
     }
     const timer = window.setInterval(() => {
       void refreshContainers({ silent: true, queueIfBusy: true });
     }, containerAutoRefreshMs);
     return () => window.clearInterval(timer);
-  }, [dockerAutoRefreshActive, connectionId]);
+  }, [dockerAutoRefreshActive, dockerView, connectionId]);
 
   useEffect(() => {
-    if (!dockerAutoRefreshActive) {
+    if (
+      !shouldRunDockerAutoRefresh({
+        active: dockerAutoRefreshActive,
+        dockerView,
+        refreshKind: "images",
+      })
+    ) {
       return;
     }
     const timer = window.setInterval(() => {
       void refreshImages({ silent: true, queueIfBusy: true });
     }, imageAutoRefreshMs);
     return () => window.clearInterval(timer);
-  }, [dockerAutoRefreshActive, connectionId]);
+  }, [dockerAutoRefreshActive, dockerView, connectionId]);
 
   useEffect(() => {
-    if (!dockerAutoRefreshActive || dockerView !== "engine") {
+    if (
+      !shouldRunDockerAutoRefresh({
+        active: dockerAutoRefreshActive,
+        dockerView,
+        refreshKind: "engine",
+      })
+    ) {
       return;
     }
     const timer = window.setInterval(() => {
@@ -461,8 +574,20 @@ export function DockerToolPanel({
     return () => window.clearInterval(timer);
   }, [dockerAutoRefreshActive, dockerView, connectionId]);
 
-  async function refreshDocker() {
-    await Promise.all([refreshContainers(), refreshImages()]);
+  if (!active) {
+    return null;
+  }
+
+  async function refreshCurrentDockerView() {
+    if (dockerView === "containers") {
+      await refreshContainers();
+      return;
+    }
+    if (dockerView === "images") {
+      await refreshImages();
+      return;
+    }
+    await refreshEngineView();
   }
 
   async function refreshContainers(options: RefreshOptions = {}) {
@@ -480,6 +605,10 @@ export function DockerToolPanel({
           : previewDockerContainers();
         if (isCurrentRefresh("containers", runId, requestConnectionId)) {
           setContainers(nextContainers);
+          updateDockerToolPanelCache(requestConnectionId, {
+            containers: nextContainers,
+            lastContainersRefreshAt: Date.now(),
+          });
         }
       } catch (nextError) {
         if (isCurrentRefresh("containers", runId, requestConnectionId)) {
@@ -508,6 +637,10 @@ export function DockerToolPanel({
           : previewDockerImages();
         if (isCurrentRefresh("images", runId, requestConnectionId)) {
           setImages(nextImages);
+          updateDockerToolPanelCache(requestConnectionId, {
+            images: nextImages,
+            lastImagesRefreshAt: Date.now(),
+          });
         }
       } catch (nextError) {
         if (isCurrentRefresh("images", runId, requestConnectionId)) {
@@ -543,6 +676,10 @@ export function DockerToolPanel({
           : previewDockerEngineStatus();
         if (isCurrentRefresh("engine", runId, requestConnectionId)) {
           setEngineStatus(nextStatus);
+          updateDockerToolPanelCache(requestConnectionId, {
+            engineStatus: nextStatus,
+            lastEngineRefreshAt: Date.now(),
+          });
         }
       } catch (nextError) {
         if (isCurrentRefresh("engine", runId, requestConnectionId)) {
@@ -580,12 +717,19 @@ export function DockerToolPanel({
           ...result,
           content: formattedContent,
         };
-        setEngineConfig(formattedResult);
         const currentConfig = engineConfigRef.current;
         const draftDirty = Boolean(currentConfig && currentConfig.content !== engineConfigDraftRef.current);
+        setEngineConfig(formattedResult);
         if (!options.preserveDirty || !draftDirty) {
           setEngineConfigDraft(formattedContent);
         }
+        updateDockerToolPanelCache(requestConnectionId, {
+          engineConfig: formattedResult,
+          engineConfigDraft: !options.preserveDirty || !draftDirty
+            ? formattedContent
+            : engineConfigDraftRef.current,
+          lastEngineConfigRefreshAt: Date.now(),
+        });
       } catch (nextError) {
         if (isCurrentRefresh("engineConfig", runId, requestConnectionId)) {
           setError(formatDockerError(nextError));
@@ -650,6 +794,21 @@ export function DockerToolPanel({
       return engineRefreshRef.current;
     }
     return engineConfigRefreshRef.current;
+  }
+
+  function changeToolboxView(view: ToolboxView) {
+    setToolboxView(view);
+    updateDockerToolPanelCache(connectionId, { toolboxView: view });
+  }
+
+  function changeDockerView(view: DockerView) {
+    setDockerView(view);
+    updateDockerToolPanelCache(connectionId, { dockerView: view });
+  }
+
+  function changeEngineConfigDraft(value: string) {
+    setEngineConfigDraft(value);
+    updateDockerToolPanelCache(connectionId, { engineConfigDraft: value });
   }
 
   async function runContainerAction(
@@ -755,6 +914,14 @@ export function DockerToolPanel({
         exists: true,
         path: current?.path || "/etc/docker/daemon.json",
       }));
+      updateDockerToolPanelCache(connectionId, {
+        engineConfig: {
+          content: normalized,
+          exists: true,
+          path: engineConfig?.path || "/etc/docker/daemon.json",
+        },
+        engineConfigDraft: normalized,
+      });
       if (shouldRestart) {
         const restartResult = hasTauriRuntime()
           ? await dockerEngineAction(connectionId, "restart")
@@ -1279,7 +1446,7 @@ export function DockerToolPanel({
               className={toolboxView === item.value ? "active" : ""}
               key={item.value}
               type="button"
-              onClick={() => setToolboxView(item.value)}
+              onClick={() => changeToolboxView(item.value)}
             >
               <Icon className="ui-icon" aria-hidden="true" />
               {item.label}
@@ -1305,7 +1472,7 @@ export function DockerToolPanel({
                 type="button"
                 aria-label="刷新 Docker 数据"
                 disabled={!connection || loadingContainers || loadingImages}
-                onClick={() => void refreshDocker()}
+                onClick={() => void refreshCurrentDockerView()}
               >
                 <RefreshCw
                   className={`ui-icon ${loadingContainers || loadingImages ? "spin" : ""}`}
@@ -1319,7 +1486,7 @@ export function DockerToolPanel({
             <button
               className={dockerView === "containers" ? "active" : ""}
               type="button"
-              onClick={() => setDockerView("containers")}
+              onClick={() => changeDockerView("containers")}
             >
               <Box className="ui-icon" aria-hidden="true" />
               容器
@@ -1327,7 +1494,7 @@ export function DockerToolPanel({
             <button
               className={dockerView === "images" ? "active" : ""}
               type="button"
-              onClick={() => setDockerView("images")}
+              onClick={() => changeDockerView("images")}
             >
               <ImageIcon className="ui-icon" aria-hidden="true" />
               镜像
@@ -1335,7 +1502,7 @@ export function DockerToolPanel({
             <button
               className={dockerView === "engine" ? "active" : ""}
               type="button"
-              onClick={() => setDockerView("engine")}
+              onClick={() => changeDockerView("engine")}
             >
               <DockerBrandIcon className="ui-icon" aria-hidden="true" />
               引擎
@@ -1399,7 +1566,7 @@ export function DockerToolPanel({
                   setEngineActionTarget(action);
                 }
               }}
-              onChangeConfig={setEngineConfigDraft}
+              onChangeConfig={changeEngineConfigDraft}
               onRefresh={refreshEngineStatus}
               onRefreshConfig={refreshEngineConfig}
               onSave={() => void saveEngineConfig(false)}
@@ -1845,6 +2012,50 @@ function ContainerList({
   onRemove: (container: DockerContainerSummary) => void;
   onRunAction: (container: DockerContainerSummary, action: DockerContainerAction) => void;
 }) {
+  const scrollportRef = useRef<HTMLDivElement | null>(null);
+  const [scrollTop, setScrollTop] = useState(0);
+  const [viewportHeight, setViewportHeight] = useState(640);
+
+  useLayoutEffect(() => {
+    const node = scrollportRef.current;
+    if (!node) {
+      return;
+    }
+
+    const syncViewport = () => {
+      const nextViewportHeight = node.clientHeight || 640;
+      setViewportHeight((current) => (current === nextViewportHeight ? current : nextViewportHeight));
+      setScrollTop((current) => {
+        const nextScrollTop = node.scrollTop;
+        return current === nextScrollTop ? current : nextScrollTop;
+      });
+    };
+
+    syncViewport();
+    if (typeof ResizeObserver === "undefined") {
+      return;
+    }
+
+    const observer = new ResizeObserver(() => syncViewport());
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, [containers.length, loading]);
+
+  const virtualWindow = useMemo(
+    () =>
+      calculateDockerVirtualWindow({
+        itemCount: containers.length,
+        scrollTop,
+        viewportHeight,
+      }),
+    [containers.length, scrollTop, viewportHeight],
+  );
+
+  const visibleContainers = useMemo(
+    () => containers.slice(virtualWindow.startIndex, virtualWindow.endIndexExclusive),
+    [containers, virtualWindow.endIndexExclusive, virtualWindow.startIndex],
+  );
+
   if (containers.length === 0) {
     return (
       <ToolboxEmptyState
@@ -1857,113 +2068,159 @@ function ContainerList({
 
   return (
     <div className="docker-list docker-list--containers" aria-label="Docker 容器">
-      {containers.map((container) => {
-        const running = isContainerRunning(container);
-        const state = normalizeState(container.state);
-        const detailLine = formatContainerDetailLine(container);
-        const detailTitle = formatContainerDetailTitle(container);
-        const portsText = formatContainerPorts(container.ports);
-        const cardMetaText = portsText || container.status || detailLine || "-";
-        const cardTimeText = formatContainerCardTime(container);
-        const contextActions: TabContextMenuAction[] = [
-          {
-            label: "查看详情",
-            onSelect: () => onInspect(container),
-          },
-          {
-            label: "进入终端",
-            disabled: !running || !onOpenTerminal,
-            onSelect: () => onOpenTerminal?.(container),
-          },
-          {
-            label: "复制名称",
-            onSelect: () => onCopy(container),
-          },
-          {
-            label: "删除容器",
-            danger: true,
-            separatorBefore: true,
-            disabled: Boolean(busyKey),
-            onSelect: () => onRemove(container),
-          },
-        ];
-        return (
-          <TabContextMenu actions={contextActions} key={container.id}>
-            <article
-              className={`docker-row docker-row--container docker-container-card ${running ? "is-running" : "is-stopped"}`}
-              tabIndex={0}
-            >
-              <div className="docker-container-card-main">
-                <div className="docker-container-card-head">
-                  <span className={`docker-container-state-dot ${state}`} aria-hidden="true" />
-                  <button
-                    className="docker-row-name-button"
-                    type="button"
-                    title="查看容器详情"
-                    onClick={() => onInspect(container)}
-                  >
-                    {container.name || shortDockerId(container.id)}
-                  </button>
-                </div>
-                <div className="docker-container-card-image">
-                  <code title={container.image}>{container.image}</code>
-                </div>
-                <div className="docker-container-card-foot" title={detailTitle}>
-                  <span className="docker-container-card-meta">{cardMetaText}</span>
-                </div>
-              </div>
-              <div className="docker-row-actions">
-                <Tooltip label={running ? "停止容器" : "启动容器"}>
-                  <button
-                    className="toolbox-icon-button"
-                    type="button"
-                    aria-label={running ? "停止容器" : "启动容器"}
-                    disabled={busyKey === `${running ? "stop" : "start"}:${container.id}`}
-                    onClick={() => onRunAction(container, running ? "stop" : "start")}
-                  >
-                    {running ? (
-                      <Square className="ui-icon" aria-hidden="true" />
-                    ) : (
-                      <Play className="ui-icon" aria-hidden="true" />
-                    )}
-                  </button>
-                </Tooltip>
-                <Tooltip label="重启容器">
-                  <button
-                    className="toolbox-icon-button"
-                    type="button"
-                    aria-label="重启容器"
-                    disabled={busyKey === `restart:${container.id}`}
-                    onClick={() => onRunAction(container, "restart")}
-                  >
-                    <RotateCw className="ui-icon" aria-hidden="true" />
-                  </button>
-                </Tooltip>
-                <Tooltip label="查看日志">
-                  <button
-                    className="toolbox-icon-button"
-                    type="button"
-                    aria-label="查看日志"
-                    onClick={() => onLogs(container)}
-                  >
-                    <ScrollText className="ui-icon" aria-hidden="true" />
-                  </button>
-                </Tooltip>
-              </div>
-              {cardTimeText ? (
-                <span className="docker-container-card-time" title={cardTimeText}>
-                  {cardTimeText}
-                </span>
-              ) : null}
-            </article>
-          </TabContextMenu>
-        );
-      })}
+      <div
+        ref={scrollportRef}
+        className="docker-container-scrollport"
+        onScroll={(event) => setScrollTop(event.currentTarget.scrollTop)}
+      >
+        <div
+          className="docker-container-window"
+          style={{
+            paddingTop: `${virtualWindow.topPadding.toString()}px`,
+            paddingBottom: `${virtualWindow.bottomPadding.toString()}px`,
+          }}
+        >
+          {visibleContainers.map((container) =>
+            renderContainerCard({
+              busyKey,
+              container,
+              onCopy,
+              onInspect,
+              onLogs,
+              onOpenTerminal,
+              onRemove,
+              onRunAction,
+            }),
+          )}
+        </div>
+      </div>
       <button className="toolbox-refresh-row" type="button" onClick={onRefresh}>
         <RefreshCw className={`ui-icon ${loading ? "spin" : ""}`} aria-hidden="true" />
         刷新容器
       </button>
     </div>
+  );
+}
+
+function renderContainerCard({
+  busyKey,
+  container,
+  onCopy,
+  onInspect,
+  onLogs,
+  onOpenTerminal,
+  onRemove,
+  onRunAction,
+}: {
+  busyKey: string | null;
+  container: DockerContainerSummary;
+  onCopy: (container: DockerContainerSummary) => void;
+  onInspect: (container: DockerContainerSummary) => void;
+  onLogs: (container: DockerContainerSummary) => void;
+  onOpenTerminal?: (container: DockerContainerSummary) => void;
+  onRemove: (container: DockerContainerSummary) => void;
+  onRunAction: (container: DockerContainerSummary, action: DockerContainerAction) => void;
+}) {
+  const running = isContainerRunning(container);
+  const state = normalizeState(container.state);
+  const detailLine = formatContainerDetailLine(container);
+  const detailTitle = formatContainerDetailTitle(container);
+  const portsText = formatContainerPorts(container.ports);
+  const cardMetaText = portsText || container.status || detailLine || "-";
+  const cardTimeText = formatContainerCardTime(container);
+  const contextActions: TabContextMenuAction[] = [
+    {
+      label: "查看详情",
+      onSelect: () => onInspect(container),
+    },
+    {
+      label: "进入终端",
+      disabled: !running || !onOpenTerminal,
+      onSelect: () => onOpenTerminal?.(container),
+    },
+    {
+      label: "复制名称",
+      onSelect: () => onCopy(container),
+    },
+    {
+      label: "删除容器",
+      danger: true,
+      separatorBefore: true,
+      disabled: Boolean(busyKey),
+      onSelect: () => onRemove(container),
+    },
+  ];
+
+  return (
+    <TabContextMenu actions={contextActions} key={container.id}>
+      <article
+        className={`docker-row docker-row--container docker-container-card ${running ? "is-running" : "is-stopped"}`}
+        tabIndex={0}
+      >
+        <div className="docker-container-card-main">
+          <div className="docker-container-card-head">
+            <span className={`docker-container-state-dot ${state}`} aria-hidden="true" />
+            <button
+              className="docker-row-name-button"
+              type="button"
+              title="查看容器详情"
+              onClick={() => onInspect(container)}
+            >
+              {container.name || shortDockerId(container.id)}
+            </button>
+          </div>
+          <div className="docker-container-card-image">
+            <code title={container.image}>{container.image}</code>
+          </div>
+          <div className="docker-container-card-foot" title={detailTitle}>
+            <span className="docker-container-card-meta">{cardMetaText}</span>
+          </div>
+        </div>
+        <div className="docker-row-actions">
+          <Tooltip label={running ? "停止容器" : "启动容器"}>
+            <button
+              className="toolbox-icon-button"
+              type="button"
+              aria-label={running ? "停止容器" : "启动容器"}
+              disabled={busyKey === `${running ? "stop" : "start"}:${container.id}`}
+              onClick={() => onRunAction(container, running ? "stop" : "start")}
+            >
+              {running ? (
+                <Square className="ui-icon" aria-hidden="true" />
+              ) : (
+                <Play className="ui-icon" aria-hidden="true" />
+              )}
+            </button>
+          </Tooltip>
+          <Tooltip label="重启容器">
+            <button
+              className="toolbox-icon-button"
+              type="button"
+              aria-label="重启容器"
+              disabled={busyKey === `restart:${container.id}`}
+              onClick={() => onRunAction(container, "restart")}
+            >
+              <RotateCw className="ui-icon" aria-hidden="true" />
+            </button>
+          </Tooltip>
+          <Tooltip label="查看日志">
+            <button
+              className="toolbox-icon-button"
+              type="button"
+              aria-label="查看日志"
+              onClick={() => onLogs(container)}
+            >
+              <ScrollText className="ui-icon" aria-hidden="true" />
+            </button>
+          </Tooltip>
+        </div>
+        {cardTimeText ? (
+          <span className="docker-container-card-time" title={cardTimeText}>
+            {cardTimeText}
+          </span>
+        ) : null}
+      </article>
+    </TabContextMenu>
   );
 }
 
