@@ -1,5 +1,6 @@
 import {
   Activity,
+  ArrowUp,
   Bot,
   ChevronDown,
   ChevronUp,
@@ -66,6 +67,7 @@ interface RemoteFilePanelProps {
   activeTool: RemoteFileTool;
   availableTools?: RemoteFileTool[];
   connection: ConnectionProfile | null;
+  locateRequest?: RemoteFileLocateRequest | null;
   refreshRequest?: RemoteFileRefreshRequest | null;
   transferPanel?: ReactNode;
   nativeDropTargetPath?: string | null;
@@ -93,6 +95,12 @@ interface RemoteFilePanelProps {
 }
 
 interface RemoteFileRefreshRequest {
+  connectionId: string;
+  id: number;
+  path: string;
+}
+
+interface RemoteFileLocateRequest {
   connectionId: string;
   id: number;
   path: string;
@@ -168,6 +176,7 @@ function RemoteFilePanelComponent({
   activeTool,
   availableTools,
   connection,
+  locateRequest,
   refreshRequest,
   transferPanel,
   nativeDropTargetPath = null,
@@ -332,6 +341,19 @@ function RemoteFilePanelComponent({
     }
     void loadDirectory(refreshRequest.path, true);
   }, [active, connectionId, refreshRequest?.connectionId, refreshRequest?.id, refreshRequest?.path]);
+
+  useEffect(() => {
+    if (!active || effectiveActiveTool !== "files") {
+      return;
+    }
+    if (!locateRequest || !connection || locateRequest.connectionId !== connection.id) {
+      return;
+    }
+
+    const path = normalizeRemotePath(locateRequest.path);
+    navigateToPath(path);
+    void loadDirectory(path);
+  }, [active, connectionId, effectiveActiveTool, locateRequest?.connectionId, locateRequest?.id, locateRequest?.path]);
 
   useEffect(
     () => () => {
@@ -1135,6 +1157,8 @@ function FilePanelShell({
     terminalPath && (terminalPath === "/" ? path === terminalPath : locatedDirectoryPath === terminalPath),
   );
   const terminalLocateLabel = locateTooltipLabel(terminalPath);
+  const parentPath = remotePathParent(path);
+  const canNavigateToParent = parentPath !== path;
 
   useEffect(() => {
     setPathInput(path);
@@ -1148,17 +1172,30 @@ function FilePanelShell({
   return (
     <>
       <div className="file-panel-toolbar">
-        <form className="path-form" onSubmit={submitPath}>
-          <input
-            className="path-input"
-            disabled={disabled}
-            spellCheck={false}
-            title={path}
-            value={pathInput}
-            aria-label="远程路径"
-            onChange={(event) => setPathInput(event.target.value)}
-          />
-        </form>
+        <div className="file-panel-path-row">
+          <Tooltip label={canNavigateToParent ? "上一级" : "已在根目录"}>
+            <button
+              className="mini-action"
+              type="button"
+              aria-label="打开上一级文件夹"
+              disabled={disabled || !canNavigateToParent}
+              onClick={() => onPathSubmit(parentPath)}
+            >
+              <ArrowUp className="ui-icon" aria-hidden="true" />
+            </button>
+          </Tooltip>
+          <form className="path-form" onSubmit={submitPath}>
+            <input
+              className="path-input"
+              disabled={disabled}
+              spellCheck={false}
+              title={path}
+              value={pathInput}
+              aria-label="远程路径"
+              onChange={(event) => setPathInput(event.target.value)}
+            />
+          </form>
+        </div>
         <div className="file-panel-actions" aria-label="文件工具栏">
           <div className="file-panel-action-group">
             <Tooltip label={terminalLocateLabel}>

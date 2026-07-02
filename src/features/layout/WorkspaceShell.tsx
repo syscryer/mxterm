@@ -435,6 +435,12 @@ interface RemoteFileRefreshRequest {
   path: string;
 }
 
+interface RemoteFileLocateRequest {
+  connectionId: string;
+  id: number;
+  path: string;
+}
+
 type RemoteFileTextAction =
   | { action: "create-directory"; connectionId: string; parentPath: string }
   | { action: "create-file"; connectionId: string; parentPath: string }
@@ -742,6 +748,8 @@ export function WorkspaceShell() {
   const [terminalDirectories, setTerminalDirectories] = useState<Record<string, string>>({});
   const [remoteFileTabs, setRemoteFileTabs] = useState<RemoteFileEditorTab[]>([]);
   const [activeRemoteFileTabId, setActiveRemoteFileTabId] = useState<string | null>(null);
+  const [remoteFileLocateRequest, setRemoteFileLocateRequest] =
+    useState<RemoteFileLocateRequest | null>(null);
   const [remoteFileRefreshRequest, setRemoteFileRefreshRequest] =
     useState<RemoteFileRefreshRequest | null>(null);
   const [pendingRemoteFileCloseId, setPendingRemoteFileCloseId] = useState<string | null>(null);
@@ -1815,6 +1823,14 @@ export function WorkspaceShell() {
     }));
   }
 
+  function triggerRemoteFileLocate(connectionId: string, path: string) {
+    setRemoteFileLocateRequest((request) => ({
+      connectionId,
+      id: (request?.id || 0) + 1,
+      path: normalizeRemotePath(path),
+    }));
+  }
+
   function applyRemoteTransferProgress(event: RemoteFileTransferProgressEvent) {
     setRemoteFileTransfers((items) =>
       items.map((item) => {
@@ -2322,6 +2338,18 @@ export function WorkspaceShell() {
     activateRemoteFileTab(tab);
 
     void loadRemoteFileTab(activeConnection, path, tab.id);
+  }
+
+  function locateRemoteFileFolder(tabId: string) {
+    const tab = remoteFileTabs.find((item) => item.id === tabId);
+    if (!tab) {
+      return;
+    }
+
+    activateRemoteFileTab(tab);
+    setRightTool("files");
+    setRightPaneCollapsed(false);
+    triggerRemoteFileLocate(tab.connectionId, remotePathParent(tab.path));
   }
 
   async function loadRemoteFileTab(connection: ConnectionProfile, path: string, tabId: string) {
@@ -6836,6 +6864,7 @@ export function WorkspaceShell() {
                           onChange={handleRemoteFileChange}
                           onClose={closeRemoteFileTab}
                           onDiscard={discardRemoteFileChanges}
+                          onLocateFolder={locateRemoteFileFolder}
                           onReload={reloadRemoteFile}
                           onSave={saveRemoteFile}
                         />
@@ -7794,6 +7823,7 @@ export function WorkspaceShell() {
                         availableTools={undefined}
                         connection={panelConnection}
                         key={panel.key}
+                        locateRequest={remoteFileLocateRequest}
                         refreshRequest={remoteFileRefreshRequest}
                         nativeDropTargetPath={nativeFileDropTargetPath}
                         stateKey={panel.key}
@@ -7858,6 +7888,7 @@ export function WorkspaceShell() {
                     activeTool={rightTool}
                     availableTools={undefined}
                     connection={remoteFileConnection}
+                    locateRequest={remoteFileLocateRequest}
                     refreshRequest={remoteFileRefreshRequest}
                     nativeDropTargetPath={nativeFileDropTargetPath}
                     aiPanel={aiAssistantPanelNode}
