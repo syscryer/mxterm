@@ -1,4 +1,4 @@
-import { AlertTriangle, Loader2, RefreshCw, RotateCcw, Save, Search, X } from "lucide-react";
+import { AlertTriangle, FolderOpen, Loader2, RefreshCw, RotateCcw, Save, Search, X } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import * as monaco from "monaco-editor";
 import CssWorker from "monaco-editor/esm/vs/language/css/css.worker?worker";
@@ -50,6 +50,7 @@ interface RemoteFileEditorProps {
   onChange: (tabId: string, content: string) => void;
   onClose: (tabId: string) => void;
   onDiscard: (tabId: string) => void;
+  onLocateFolder: (tabId: string) => void;
   onReload: (tabId: string) => void;
   onSave: (tabId: string) => void;
 }
@@ -62,6 +63,7 @@ export function RemoteFileEditor({
   onChange,
   onClose,
   onDiscard,
+  onLocateFolder,
   onReload,
   onSave,
   tab,
@@ -234,6 +236,16 @@ export function RemoteFileEditor({
           </span>
         </div>
         <div className="remote-file-editor-toolbar" aria-label="文件编辑器工具栏">
+          <Tooltip label="定位所在文件夹">
+            <button
+              className="mini-action"
+              type="button"
+              aria-label="定位所在文件夹"
+              onClick={() => onLocateFolder(tab.id)}
+            >
+              <FolderOpen className="ui-icon" aria-hidden="true" />
+            </button>
+          </Tooltip>
           <Tooltip label="保存">
             <button
               className="mini-action"
