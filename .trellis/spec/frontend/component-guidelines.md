@@ -218,8 +218,13 @@ Ant Design, Mantine, or similar libraries just to fix one modal or button.
   that can be reconstructed locally, such as a simple typed `cd /path` line.
   If the line contains Tab completion, history navigation, cursor editing, or
   other control/escape input, do not guess the final directory from the partial
-  bytes sent to the PTY. Keep the last trusted directory and wait for OSC7 or a
-  later complete `cd` line instead.
+  bytes sent to the PTY. Keep the last trusted directory and wait for OSC7, a
+  later complete `cd` line, or a locate-time snapshot of a high-confidence
+  shell prompt line such as `user@host:/path$` instead. Prompt parsing must
+  stay locate-on-demand and conservative: it may inspect a few already-rendered
+  xterm buffer lines when the user clicks locate, but it must not inject
+  probes, add per-output parsing work, hide output, or parse arbitrary command
+  output.
 - Remote file trees keep two directory concepts separate. The tree root path
   owns the top-level listing currently rendered and should stay on the full
   tree root for the session, while the active directory path owns the path

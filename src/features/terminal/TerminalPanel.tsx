@@ -28,6 +28,7 @@ import {
   createTerminalInputDirectoryState,
   inferRemoteHomeDirectory,
 } from "./terminalInputDirectory";
+import { promptSnapshotLinesToDirectory } from "./terminalPromptDirectory";
 import {
   createTerminalSemanticHighlighter,
   getTerminalSemanticHighlightPalette,
@@ -51,6 +52,8 @@ export interface TerminalSearchNavigationRequest {
   tabId: string;
 }
 
+export type TerminalPromptDirectorySnapshotReader = () => string | null;
+
 interface TerminalPanelProps {
   active: boolean;
   connection: ConnectionProfile | null;
@@ -73,6 +76,10 @@ interface TerminalPanelProps {
   title: string;
   windowsPty?: IWindowsPty;
   onCurrentDirectoryChange?: (tabId: string, path: string) => void;
+  onPromptDirectorySnapshotChange?: (
+    tabId: string,
+    reader: TerminalPromptDirectorySnapshotReader | null,
+  ) => void;
   onSearchCaseSensitiveToggle?: (tabId: string) => void;
   onSearchClose?: (tabId: string) => void;
   onSearchQueryChange?: (tabId: string, query: string) => void;
@@ -95,6 +102,7 @@ export function TerminalPanel({
   initialRequestId,
   initialSessionId,
   onCurrentDirectoryChange,
+  onPromptDirectorySnapshotChange,
   onRecentOutput,
   onSearchClose,
   onSearchCaseSensitiveToggle,
@@ -122,6 +130,7 @@ export function TerminalPanel({
   const osc7BufferRef = useRef("");
   const inputDirectoryStateRef = useRef(createTerminalInputDirectoryState());
   const inputHistoryStateRef = useRef(createTerminalInputHistoryState());
+  const homeDirectoryRef = useRef<string | null>(null);
   const initialOutputWrittenLengthRef = useRef(0);
   const startedRef = useRef(false);
   const decoderRef = useRef(new TextDecoder());
@@ -170,11 +179,24 @@ export function TerminalPanel({
   }, [onStatusChange, status, tabId]);
 
   useEffect(() => {
+    const homeDirectory = inferRemoteHomeDirectory(connection?.username);
+    homeDirectoryRef.current = homeDirectory;
     inputDirectoryStateRef.current = createTerminalInputDirectoryState({
       currentDirectory: null,
-      homeDirectory: inferRemoteHomeDirectory(connection?.username),
+      homeDirectory,
     });
   }, [connection?.id, connection?.username]);
+
+  useEffect(() => {
+    if (!onPromptDirectorySnapshotChange) {
+      return;
+    }
+
+    onPromptDirectorySnapshotChange(tabId, () =>
+      readPromptDirectorySnapshot(terminalRef.current, homeDirectoryRef.current),
+    );
+    return () => onPromptDirectorySnapshotChange(tabId, null);
+  }, [onPromptDirectorySnapshotChange, tabId]);
 
   useEffect(() => {
     if (!hostRef.current) {
@@ -997,6 +1019,21 @@ function formatSearchResultLabel(resultIndex: number, resultCount: number) {
     return `${resultCount.toString()} 项`;
   }
   return `${(resultIndex + 1).toString()} / ${resultCount.toString()}`;
+}
+
+function readPromptDirectorySnapshot(terminal: Terminal | null, homeDirectory: string | null) {
+  if (!terminal) {
+    return null;
+  }
+
+  const buffer = terminal.buffer.active;
+  const cursorRow = buffer.baseY + buffer.cursorY;
+  const firstRow = Math.max(0, cursorRow - 4);
+  const snapshotLines: string[] = [];
+  for (let row = cursorRow; row >= firstRow; row -= 1) {
+    snapshotLines.push(buffer.getLine(row)?.translateToString(true) || "");
+  }
+  return promptSnapshotLinesToDirectory(snapshotLines, homeDirectory);
 }
 
 function withTerminalChromeTheme(theme: ITheme): ITheme {
