@@ -221,10 +221,20 @@ Ant Design, Mantine, or similar libraries just to fix one modal or button.
   bytes sent to the PTY. Keep the last trusted directory and wait for OSC7, a
   later complete `cd` line, or a locate-time snapshot of a high-confidence
   shell prompt line such as `user@host:/path$` instead. Prompt parsing must
-  stay locate-on-demand and conservative: it may inspect a few already-rendered
-  xterm buffer lines when the user clicks locate, but it must not inject
-  probes, add per-output parsing work, hide output, or parse arbitrary command
-  output.
+  stay locate-on-demand and conservative: it may inspect a bounded set of
+  already-rendered xterm buffer lines when the user clicks locate, but it must
+  not inject probes, add per-output parsing work, hide output, or parse
+  arbitrary command output. The current locate strategy should use a 1000-row
+  fast snapshot and only expand to 2000 rows to find an older absolute-path
+  anchor for relative `cd` replay; it must not scan unbounded scrollback by
+  default. Prompt formats that expose only a basename, such as
+  `[root@host edgs]#`, must not be treated as an absolute path by themselves;
+  they are only usable when matched to an already-known current directory or a
+  nearby reconstructable `cd` command chain in the same locate-time snapshot.
+  The snapshot replay may use visible prompt labels such as `~` and already
+  rendered `cd` commands to resolve relative path changes, but it must not
+  return an older absolute/home prompt as the current directory when a newer
+  basename-only prompt cannot be proven.
 - Remote file trees keep two directory concepts separate. The tree root path
   owns the top-level listing currently rendered and should stay on the full
   tree root for the session, while the active directory path owns the path

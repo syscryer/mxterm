@@ -99,6 +99,14 @@ export function inferRemoteHomeDirectory(username: string | null | undefined) {
   return `/home/${normalizedUsername}`;
 }
 
+export function resolveTerminalInputDirectoryLine(
+  line: string,
+  currentDirectory: string | null,
+  homeDirectory: string | null,
+) {
+  return resolveCdCommand(line.trim(), currentDirectory, homeDirectory);
+}
+
 function resolveCdCommand(
   line: string,
   currentDirectory: string | null,

@@ -17,9 +17,21 @@ the user clicks the locate action.
 - Do not write probe commands to the terminal, modify remote shell startup, hide
   output, filter banner text, or otherwise change PTY semantics.
 - Do not subscribe extra prompt parsing work to the live terminal output path;
-  locating should inspect only a small xterm buffer snapshot on demand.
+  locating should inspect only a bounded xterm buffer snapshot on demand.
 - Keep parsing conservative: ignore non-absolute paths other than `~` and only
   accept prompt-like lines with a trailing prompt marker.
+- CentOS-style prompts such as `[root@host edgs]#` may show only a directory
+  basename. Treat those as usable only when the basename can be matched to an
+  already-known directory or a nearby reconstructable `cd` command chain in the
+  locate-time xterm snapshot.
+- Locate-time prompt parsing should first inspect the nearest 1000 xterm buffer
+  rows, then fall back to at most 2000 rows to find an older absolute path
+  anchor for relative `cd` replay.
+- Terminal context menus should keep ordinary terminal actions such as copy,
+  paste, and select all when AI handoff is present.
+- SSH terminal reconnect should run inside the current tab, update that tab's
+  runtime session id after success, and avoid letting stale events from the old
+  session mark the new session disconnected.
 
 ## Acceptance Criteria
 
@@ -33,8 +45,18 @@ the user clicks the locate action.
 - [x] Clicking the file-panel locate action may inspect a few already-rendered
       xterm rows for a prompt path, but idle terminal rendering does not gain a
       new prompt-output parsing pass.
+- [x] Locate-time parsing uses a 1000-row fast snapshot and a 2000-row anchor
+      fallback instead of scanning the full scrollback.
+- [x] A CentOS-style prompt like `[root@192 edgs]#` can locate `/opt/edgs` only
+      when it matches a known current directory or a nearby reconstructable
+      `cd` command chain in the snapshot.
+- [x] A CentOS-style relative chain such as `cd /opt/`, `cd edgs`, `cd jar`,
+      and `cd ../softwares/` can locate `/opt/edgs/softwares` from the
+      locate-time snapshot.
 - [x] The file-panel boundary check still proves the implementation does not
       inject current-directory probe commands.
+- [x] The terminal context menu includes copy, paste, select all, AI handoff,
+      and current-tab reconnect for SSH tabs without creating a new tab.
 
 ## Notes
 

@@ -207,6 +207,11 @@ type SerialTerminalOpenRequest = {
 - Serial port selection must call `serialListPorts()` through the typed wrapper. Business UI must use `AppSelect` and global token styles, not native `<select>`.
 - The same-connection "new terminal" action must only be visible after the active terminal has a connected `sessionId`. When used inside an already active session, it must create a terminal tab directly and call `terminalConnect` with the saved `connection_id`; it must not call `startConnectionStep(...)` or show the connection-preparation page. If this direct connect fails, keep the lightweight terminal tab in a failed state instead of routing the user back into the preparation flow.
 - `TerminalPanel` receives an already-created `initialSessionId`; it must not start a second SSH connection for that tab.
+- A terminal reconnect action must stay inside the current tab. It should call
+  `terminalConnect(...)` with a fresh `request_id`, update the owning terminal
+  tab's runtime `sessionId` and `requestId` after success, and keep event
+  matching scoped to the active session/request so stale close/output events
+  from the old PTY cannot mark the reconnected tab disconnected.
 - During terminal handoff, match terminal output/state events by `request_id` as well as by `session_id`; shell prompts can arrive before the frontend receives the returned session id.
 - Keep the terminal handoff warmup listener alive briefly after replacing the connecting tab, and make `TerminalPanel` consume appended `initialOutput` bytes. Otherwise the remote prompt can land between `terminalConnect` resolving and the xterm listener mounting, leaving a connected but visually blank terminal while remote file browsing works. While the startup buffer is active, `TerminalPanel` must ignore live output events whose `request_id` equals `initialRequestId`; stop warmup capture only after the startup buffer has flushed and the mounted output listener is ready, so one startup byte stream cannot be rendered through both paths.
 - `TerminalPanel` should buffer startup handoff output briefly and write it as one ordered batch with early live events. If the combined startup batch contains a duplicated leading shell prompt before a login banner / motd and the same prompt appears again at the end, remove only that leading duplicate before writing to xterm. If the prompt is joined to the first banner line, such as `root@host:~# Welcome to ...`, strip only the prompt prefix and keep the banner text. If warmup and live capture the same leading login banner block before the first prompt, keep one copy of that startup banner. If warmup and live capture produce adjacent duplicate prompts such as `[root@host ~]# [root@host ~]#`, collapse them to a single prompt before writing.
@@ -361,7 +366,7 @@ invoke<RemoteFileEntry[]>("remote_file_list", {
 | Remote list command fails | Show the user-facing error in the panel and keep the previous tree state when possible. |
 | Directory row is expanded and not cached | Lazily call `remoteFileList(connection.id, entry.path)`. |
 | Refresh is requested | Force reload the currently displayed path even if cached. |
-| `OSC 7` is absent | Track simple user-entered `cd` commands as the eager fallback. On manual locate, the active tab may inspect a few already-rendered prompt lines as a best-effort snapshot fallback. Keep showing the default/manual path until a path is recorded. Do not parse arbitrary command output and do not write current-directory probes into the interactive terminal. |
+| `OSC 7` is absent | Track simple user-entered `cd` commands as the eager fallback. On manual locate, the active tab may inspect already-rendered prompt lines as a best-effort snapshot fallback. Basename-only prompts such as `[root@host edgs]#` are usable only when matched to a known current directory or a nearby explicit `cd /absolute/path` command. Keep showing the default/manual path until a path is recorded. Do not parse arbitrary command output and do not write current-directory probes into the interactive terminal. |
 | File icon image fails to load | Render a local fallback icon or compact type badge. |
 
 ### 5. Good / Base / Bad Cases
@@ -1967,6 +1972,7 @@ type AiContextBlock = {
 - `AiAssistantPanel` must be lazy-loaded from `WorkspaceShell`; do not statically import the panel component or provider logic into `main.tsx`, `App.tsx`, or top-level workspace startup code.
 - The right-pane first-level tool id is `ai`. It lives beside `files`, `monitor`, `commands`, and `tools`; local terminal workspaces may expose `commands` and `ai`.
 - Terminal right-click selection handoff uses xterm's selection API. The menu action only opens the AI pane and appends a visible `terminal_selection` context block; it must not automatically submit a model request.
+- Adding the AI handoff action must not replace ordinary terminal context-menu actions. Keep copy, paste, select all, and terminal reconnect where available in the same terminal right-click menu, with copy using the raw xterm selection text and AI handoff using the trimmed selection for context.
 - Visible context blocks must show source and size metadata and be removable before send. Connection context must be redacted metadata only; do not include passwords, private keys, tokens, or full hidden connection config.
 - If a user-visible context block contains sensitive-looking text such as `Authorization: Bearer`, `api_key=`, `password=`, private-key headers, or `sk-` style keys, the AI panel must mark that context chip with a warning and keep the removable pre-send state. The warning does not silently redact or block user-selected content because complete visible context is persisted by design.
 - AI provider settings must use `AppSelect`, existing settings rows, project token styles, and the `api_key_touched` convention. Existing saved API keys are never prefilled during ordinary config loads, but the eye button may call `aiProviderConfigRevealApiKey(...)` on demand. Reveal-only values must keep `api_key_touched=false` until the user edits the field.
@@ -1986,6 +1992,7 @@ type AiContextBlock = {
 | Stream emits `error` | Keep partial assistant content, mark message error, and show the event error. |
 | User stops generation | Call `aiChatStreamStop(streamId)`, keep partial content, and show stopped status. |
 | Terminal selection is blank | Disable the context-menu action. |
+| Terminal context menu opens | Show ordinary copy/paste/select-all actions plus the AI handoff action; SSH terminal tabs should also expose current-tab reconnect. Do not leave AI as the only menu item. |
 | Context block contains sensitive-looking text | Keep the chip removable and show a visible sensitive-information warning before send. |
 | Dangerous command direct-send | Show `ConfirmDialog` before `terminalWrite`. |
 | Safe command direct-send | Send without confirmation. |
