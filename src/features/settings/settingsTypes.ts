@@ -49,11 +49,14 @@ export type UiFontPreset =
   | "microsoft-yahei"
   | "noto-sans-sc";
 
+export type RemoteFileOpenMode = "split" | "unified";
+
 export interface BasicSettings {
   autoCheckAppUpdate: boolean;
   filePanelFollowsActiveConnection: boolean;
   keepFailedTerminalTabs: boolean;
   reopenLastTerminal: boolean;
+  remoteFileOpenMode: RemoteFileOpenMode;
   restoreWorkspaceOnLaunch: boolean;
   recentConnectionLimit: 5 | 10 | 15 | 20 | 30 | 50;
 }
@@ -209,6 +212,7 @@ export const defaultSettings: MxtermSettings = {
     filePanelFollowsActiveConnection: true,
     keepFailedTerminalTabs: true,
     reopenLastTerminal: false,
+    remoteFileOpenMode: "split",
     restoreWorkspaceOnLaunch: true,
     recentConnectionLimit: 5,
   },
@@ -291,6 +295,11 @@ export function normalizeSettings(value: unknown): MxtermSettings {
       reopenLastTerminal: normalizeBoolean(
         basic.reopenLastTerminal,
         defaultSettings.basic.reopenLastTerminal,
+      ),
+      remoteFileOpenMode: normalizeOneOf(
+        basic.remoteFileOpenMode,
+        ["split", "unified"],
+        defaultSettings.basic.remoteFileOpenMode,
       ),
       restoreWorkspaceOnLaunch: normalizeBoolean(
         basic.restoreWorkspaceOnLaunch,

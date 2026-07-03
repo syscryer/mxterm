@@ -9408,12 +9408,95 @@ button {
   background: var(--mx-terminal);
 }
 
+.terminal-file-unified-stack[data-unified-active-kind="file"] {
+  background: var(--mx-panel);
+}
+
 .remote-editor-stack .remote-file-editor,
+.terminal-file-unified-stack .remote-file-editor,
 .remote-file-panel-stack .tool-pane,
 .terminal-stack .terminal-panel,
 .terminal-stack .terminal-direct-status {
   grid-area: 1 / 1;
   min-height: 0;
+}
+
+.terminal-file-unified-stack .remote-editor-loading {
+  grid-area: 1 / 1;
+}
+
+.workbench-draggable-tab {
+  cursor: default;
+}
+
+.workbench-draggable-tab:active,
+.session-workbench[data-workbench-tab-dragging="true"],
+.session-workbench[data-workbench-tab-dragging="true"] * {
+  cursor: default;
+}
+
+.session-workbench[data-workbench-tab-dragging="true"] {
+  user-select: none;
+}
+
+:where(.remote-editor-tabs, .terminal-subtabs)[data-workbench-tab-drop-active="true"] {
+  box-shadow:
+    inset 0 0 0 1px color-mix(in srgb, var(--mx-primary) 36%, transparent),
+    0 0 0 2px color-mix(in srgb, var(--mx-primary) 10%, transparent);
+}
+
+.workbench-split-drop-zones {
+  position: absolute;
+  inset: 0;
+  z-index: 45;
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 8px;
+  padding: 8px;
+  pointer-events: auto;
+}
+
+.workbench-split-drop-zone {
+  min-height: 0;
+  border: 1px dashed color-mix(in srgb, var(--mx-primary) 28%, var(--mx-line));
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--mx-primary) 6%, transparent);
+  opacity: 0.36;
+}
+
+.workbench-split-drop-zone[data-workbench-tab-drop-active="true"] {
+  border-color: color-mix(in srgb, var(--mx-primary) 58%, var(--mx-line));
+  background: color-mix(in srgb, var(--mx-primary) 13%, var(--mx-panel));
+  box-shadow:
+    inset 0 0 0 1px color-mix(in srgb, var(--mx-primary) 20%, transparent),
+    0 12px 28px rgb(15 23 42 / 12%);
+  opacity: 0.86;
+}
+
+.workbench-tab-drag-preview {
+  position: fixed;
+  z-index: 90;
+  min-height: 30px;
+  max-width: min(260px, calc(100vw - 24px));
+  border: 1px solid var(--mx-line);
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  padding: 0 10px;
+  color: var(--mx-text);
+  background: var(--mx-panel);
+  box-shadow: 0 14px 34px rgb(15 23 42 / 16%);
+  opacity: 0.95;
+  pointer-events: none;
+}
+
+.workbench-tab-drag-preview span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  font-weight: 500;
 }
 
 .tool-pane.is-hidden {

@@ -451,6 +451,12 @@ Ant Design, Mantine, or similar libraries just to fix one modal or button.
   (transparent or near-transparent), show only a subtle line on hover/focus or
   during dragging, and expose the split size through a CSS variable so terminal
   and editor instances remain mounted while resizing.
+- Terminal/file layout switching should use WorkspaceShell-owned mouse drag
+  state instead of native HTML `draggable` / `dataTransfer`. Tauri WebView can
+  show a disabled drop cursor or drop custom MIME types during in-app tab
+  drags. The tab drag should only switch between split and unified layouts, keep
+  terminals and editors mounted, preserve ordinary arrow cursor styling, and not
+  implement free tab sorting until a separate ordering model is designed.
 - Remote editor chrome should stay close to icon height. If the file name is
   already present in a tab, do not repeat it as a large title inside the editor;
   keep path, save state, and toolbar actions in a single compact row and let long
