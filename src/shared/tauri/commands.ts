@@ -31,6 +31,8 @@ import type {
   AiCommandAssessment,
   AiProviderConfig,
   AiProviderConfigInput,
+  AiProviderModelOption,
+  AiProviderConfigTestResult,
   RevealedAiProviderApiKey,
 } from "../../features/ai/aiTypes";
 import type {
@@ -286,6 +288,14 @@ export function aiProviderConfigRevealApiKey(id: string) {
       id,
     },
   });
+}
+
+export function aiProviderConfigTest(request: AiProviderConfigInput) {
+  return invoke<AiProviderConfigTestResult>("ai_provider_config_test", { request });
+}
+
+export function aiProviderModelsList(request: AiProviderConfigInput) {
+  return invoke<AiProviderModelOption[]>("ai_provider_models_list", { request });
 }
 
 export function aiChatSessionList() {

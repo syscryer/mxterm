@@ -43,6 +43,7 @@ import {
 } from "lucide-react";
 
 import { AppSelect } from "../../shared/ui/AppSelect";
+import { AppCombobox } from "../../shared/ui/AppCombobox";
 import { Tooltip } from "../../shared/ui/Tooltip";
 import { ConfirmDialog } from "../../shared/ui/ConfirmDialog";
 import { usernameInputAttributes } from "../../shared/ui/inputAttributes";
@@ -53,8 +54,10 @@ import {
 import {
   aiProviderConfigDelete,
   aiProviderConfigList,
+  aiProviderModelsList,
   aiProviderConfigRevealApiKey,
   aiProviderConfigSave,
+  aiProviderConfigTest,
   credentialRevealSecret,
   localTerminalListProfiles,
   mcpExecutablePath,
@@ -126,6 +129,7 @@ import type {
   AiProviderConfig,
   AiProviderConfigInput,
   AiProviderKind,
+  AiProviderModelOption,
 } from "../ai/aiTypes";
 
 interface SettingsViewProps {
@@ -356,8 +360,11 @@ function AiSettingsSection() {
   const [draft, setDraft] = useState<AiProviderDraft>(() => emptyAiProviderDraft());
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [testing, setTesting] = useState(false);
+  const [modelsLoading, setModelsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
+  const [modelOptions, setModelOptions] = useState<AiProviderModelOption[]>([]);
   const [showApiKey, setShowApiKey] = useState(false);
   const [apiKeyRevealBusy, setApiKeyRevealBusy] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<AiProviderConfig | null>(null);
@@ -376,10 +383,31 @@ function AiSettingsSection() {
   const formDescription = selectedConfig
     ? `${formatAiAccessModeLabel(draft.api_format)} · ${draft.model || "未设置模型"}`
     : "配置名称用于在 AI 面板中切换；接入模式决定请求协议。";
+  const modelSourceKey = [
+    draft.api_format,
+    draft.endpoint.trim(),
+    draft.id || selectedConfig?.id || "",
+    draft.api_key_touched ? draft.api_key.trim() : selectedConfig?.api_key_saved ? "__saved__" : "",
+  ].join("|");
+  const modelSourceKeyRef = useRef(modelSourceKey);
+  const modelSelectOptions = modelOptions.map((option) => ({
+    label: renderAiModelOption(option),
+    searchText: [option.id, option.display_name || "", option.subtitle || ""].join(" "),
+    value: option.id,
+  }));
 
   useEffect(() => {
     selectedIdRef.current = selectedId;
   }, [selectedId]);
+
+  useEffect(() => {
+    if (modelSourceKeyRef.current === modelSourceKey) {
+      return;
+    }
+    modelSourceKeyRef.current = modelSourceKey;
+    setModelOptions([]);
+    setModelsLoading(false);
+  }, [modelSourceKey]);
 
   useEffect(() => {
     let disposed = false;
@@ -391,6 +419,9 @@ function AiSettingsSection() {
       }
       setLoading(true);
       setError(null);
+      setTesting(false);
+      setModelsLoading(false);
+      setModelOptions([]);
       try {
         const next = await aiProviderConfigList();
         if (disposed) {
@@ -424,6 +455,9 @@ function AiSettingsSection() {
     setDraft(draftFromConfig(configs.find((config) => config.id === id) || null));
     setShowApiKey(false);
     setApiKeyRevealBusy(false);
+    setTesting(false);
+    setModelsLoading(false);
+    setModelOptions([]);
     setError(null);
     setMessage(null);
   }
@@ -433,6 +467,9 @@ function AiSettingsSection() {
     setDraft(emptyAiProviderDraft());
     setShowApiKey(false);
     setApiKeyRevealBusy(false);
+    setTesting(false);
+    setModelsLoading(false);
+    setModelOptions([]);
     setError(null);
     setMessage(null);
   }
@@ -441,6 +478,9 @@ function AiSettingsSection() {
     setDraft(draftFromConfig(selectedConfig));
     setShowApiKey(false);
     setApiKeyRevealBusy(false);
+    setTesting(false);
+    setModelsLoading(false);
+    setModelOptions([]);
     setError(null);
     setMessage(null);
   }
@@ -458,6 +498,9 @@ function AiSettingsSection() {
     }
     setShowApiKey(false);
     setApiKeyRevealBusy(false);
+    setTesting(false);
+    setModelsLoading(false);
+    setModelOptions([]);
   }
 
   async function submit(event: FormEvent<HTMLFormElement>) {
@@ -470,16 +513,7 @@ function AiSettingsSection() {
     setError(null);
     setMessage(null);
     try {
-      const input: AiProviderConfigInput = {
-        id: draft.id,
-        name: draft.name,
-        provider: draft.provider,
-        api_format: draft.api_format,
-        endpoint: draft.endpoint,
-        model: draft.model,
-        api_key: draft.api_key_touched ? draft.api_key : undefined,
-        api_key_touched: draft.api_key_touched,
-      };
+      const input = buildAiProviderConfigInput(draft);
       const saved = await aiProviderConfigSave(input);
       await reloadConfigs(saved.id);
       setMessage("AI 配置已保存。");
@@ -487,6 +521,53 @@ function AiSettingsSection() {
       setError(formatSettingsError(nextError, "AI 配置保存失败。"));
     } finally {
       setSaving(false);
+    }
+  }
+
+  async function testConfig() {
+    if (!desktopRuntime) {
+      setError("桌面端才能测试 AI 配置。");
+      return;
+    }
+    setTesting(true);
+    setError(null);
+    setMessage(null);
+    try {
+      const result = await aiProviderConfigTest(buildAiProviderConfigInput(draft));
+      setMessage(result.message);
+    } catch (nextError) {
+      setError(formatSettingsError(nextError, "AI 配置测试失败。"));
+    } finally {
+      setTesting(false);
+    }
+  }
+
+  async function fetchModels() {
+    if (!desktopRuntime) {
+      setError("桌面端才能获取模型列表。");
+      return;
+    }
+    setModelsLoading(true);
+    setError(null);
+    setMessage(null);
+    const requestSourceKey = modelSourceKeyRef.current;
+    try {
+      const models = await aiProviderModelsList(buildAiProviderConfigInput(draft));
+      if (modelSourceKeyRef.current !== requestSourceKey) {
+        return;
+      }
+      setModelOptions(models);
+      setMessage(`已获取 ${models.length.toString()} 个模型，可直接选择，也可以继续手填。`);
+    } catch (nextError) {
+      if (modelSourceKeyRef.current !== requestSourceKey) {
+        return;
+      }
+      setError(formatSettingsError(nextError, "模型列表获取失败。"));
+      setModelOptions([]);
+    } finally {
+      if (modelSourceKeyRef.current === requestSourceKey) {
+        setModelsLoading(false);
+      }
     }
   }
 
@@ -561,7 +642,7 @@ function AiSettingsSection() {
               className="repository-icon-button"
               type="button"
               aria-label="新增 AI 配置"
-              disabled={loading || saving}
+              disabled={loading || saving || testing || modelsLoading}
               onClick={newConfig}
             >
               <Plus className="ui-icon" aria-hidden="true" />
@@ -683,24 +764,6 @@ function AiSettingsSection() {
             </SettingsRow>
             <SettingsRow
               className="ai-provider-row-field"
-              icon={FileKey}
-              title="模型"
-              description="按接入方或网关要求填写模型 id。"
-            >
-              <input
-                value={draft.model}
-                placeholder="例如 gpt-4.1-mini / claude-sonnet-4 / MiniMax-M3"
-                spellCheck={false}
-                onChange={(event) => {
-                  const value = event.target?.value;
-                  if (value !== undefined) {
-                    setDraft((current) => ({ ...current, model: value }));
-                  }
-                }}
-              />
-            </SettingsRow>
-            <SettingsRow
-              className="ai-provider-row-field"
               icon={KeyRound}
               title="API Key"
               description={apiKeyStatus}
@@ -739,6 +802,43 @@ function AiSettingsSection() {
                 </button>
               </div>
             </SettingsRow>
+            <SettingsRow
+              className="ai-provider-row-field ai-model-row-field"
+              icon={FileKey}
+              title="模型"
+              description="可手工填写模型 id，也可通过接口自动获取后选择。"
+            >
+              <div className="ai-model-field">
+                <div className="ai-model-input-row">
+                  <AppCombobox
+                    ariaLabel="AI 模型"
+                    className="ai-model-combobox"
+                    disabled={loading || saving || testing || modelsLoading || !desktopRuntime}
+                    emptyText="没有匹配的已获取模型"
+                    menuMinWidth={420}
+                    options={modelSelectOptions}
+                    placeholder="例如 gpt-4.1-mini / claude-sonnet-4 / MiniMax-M3"
+                    value={draft.model}
+                    onChange={(value) => {
+                      setDraft((current) => ({ ...current, model: value }));
+                    }}
+                  />
+                  <button
+                    className="settings-action-button"
+                    type="button"
+                    disabled={loading || saving || testing || modelsLoading || !desktopRuntime}
+                    onClick={() => void fetchModels()}
+                  >
+                    {modelsLoading ? (
+                      <Loader2 className="ui-icon spin" aria-hidden="true" />
+                    ) : (
+                      <RefreshCw className="ui-icon" aria-hidden="true" />
+                    )}
+                    <span>{modelsLoading ? "获取中" : "获取模型"}</span>
+                  </button>
+                </div>
+              </div>
+            </SettingsRow>
           </div>
 
           {!desktopRuntime ? (
@@ -752,7 +852,7 @@ function AiSettingsSection() {
               {selectedConfig ? (
                 <button
                   className="danger-button ai-provider-danger-button"
-                  disabled={saving}
+                  disabled={saving || testing || modelsLoading}
                   type="button"
                   onClick={() => setDeleteTarget(selectedConfig)}
                 >
@@ -762,10 +862,30 @@ function AiSettingsSection() {
               ) : null}
             </div>
             <div>
-              <button disabled={saving || loading} type="button" onClick={resetDraft}>
+              <button
+                disabled={saving || loading || testing || modelsLoading}
+                type="button"
+                onClick={resetDraft}
+              >
                 {selectedConfig ? "重置" : "清空"}
               </button>
-              <button className="primary-button" type="submit" disabled={saving || loading || !desktopRuntime}>
+              <button
+                disabled={saving || loading || testing || modelsLoading || !desktopRuntime}
+                type="button"
+                onClick={() => void testConfig()}
+              >
+                {testing ? (
+                  <Loader2 className="ui-icon spin" aria-hidden="true" />
+                ) : (
+                  <RefreshCw className="ui-icon" aria-hidden="true" />
+                )}
+                <span>{testing ? "测试中" : "测试配置"}</span>
+              </button>
+              <button
+                className="primary-button"
+                type="submit"
+                disabled={saving || loading || testing || modelsLoading || !desktopRuntime}
+              >
                 <Save className="ui-icon" aria-hidden="true" />
                 <span>{saving ? "保存中" : "保存配置"}</span>
               </button>
@@ -2004,6 +2124,32 @@ function draftFromConfig(config: AiProviderConfig | null): AiProviderDraft {
     api_key: "",
     api_key_touched: false,
   };
+}
+
+function buildAiProviderConfigInput(draft: AiProviderDraft): AiProviderConfigInput {
+  return {
+    id: draft.id,
+    name: draft.name,
+    provider: draft.provider,
+    api_format: draft.api_format,
+    endpoint: draft.endpoint,
+    model: draft.model,
+    api_key: draft.api_key_touched ? draft.api_key : draft.api_key || undefined,
+    api_key_touched: draft.api_key_touched,
+  };
+}
+
+function renderAiModelOption(option: AiProviderModelOption) {
+  const title = option.display_name?.trim() || option.id;
+  const subtitle = option.display_name?.trim()
+    ? option.subtitle?.trim() || option.id
+    : option.subtitle?.trim() || null;
+  return (
+    <span className="ai-model-option">
+      <strong>{title}</strong>
+      {subtitle ? <small>{subtitle}</small> : null}
+    </span>
+  );
 }
 
 function providerFromAiApiFormat(apiFormat: AiApiFormat): AiProviderKind {

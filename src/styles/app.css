@@ -24,7 +24,7 @@ textarea {
   font: inherit;
 }
 
-:where(input, select, textarea, .app-select-trigger) {
+:where(input, select, textarea, .app-select-trigger, .app-combobox-field) {
   outline: none;
   transition:
     border-color 120ms ease,
@@ -1418,7 +1418,8 @@ button {
 
 .ai-settings-form-body {
   display: grid;
-  align-content: start;
+  grid-template-rows: repeat(4, auto) minmax(0, 1fr);
+  align-content: stretch;
 }
 
 .credential-form-body {
@@ -3340,6 +3341,94 @@ button {
 
 .app-select-trigger > .ui-icon {
   color: var(--mx-muted);
+}
+
+.app-combobox {
+  width: 100%;
+  min-width: 0;
+}
+
+.app-combobox-field {
+  width: 100%;
+  min-width: 0;
+  border: 1px solid var(--mx-line);
+  border-radius: 8px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 30px;
+  align-items: center;
+  overflow: hidden;
+  color: var(--mx-text);
+  background: color-mix(in srgb, var(--mx-panel) 92%, var(--mx-panel-soft));
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 54%);
+}
+
+.app-combobox-field:hover,
+.app-combobox[data-open] .app-combobox-field,
+.app-combobox-field:focus-within {
+  border-color: color-mix(in srgb, var(--mx-primary) 30%, var(--mx-line));
+  background: color-mix(in srgb, var(--mx-panel) 94%, var(--mx-primary) 6%);
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--mx-primary) 12%, transparent),
+    inset 0 1px 0 rgb(255 255 255 / 62%);
+}
+
+.app-combobox-field:focus-within {
+  box-shadow:
+    0 0 0 3px rgb(37 99 235 / 14%),
+    inset 0 1px 0 rgb(255 255 255 / 62%);
+}
+
+.app-combobox-field input {
+  min-width: 0;
+  width: 100%;
+  height: 32px;
+  border: 0;
+  border-radius: 0;
+  padding: 0 10px;
+  color: inherit;
+  background: transparent;
+  font: inherit;
+  font-size: 12.5px;
+  box-shadow: none;
+}
+
+.app-combobox-field input:focus {
+  box-shadow: none;
+}
+
+.app-combobox-toggle {
+  width: 30px;
+  height: 32px;
+  border: 0;
+  border-left: 1px solid var(--mx-line);
+  display: grid;
+  place-items: center;
+  color: var(--mx-muted);
+  background: transparent;
+}
+
+.app-combobox-toggle:hover:not(:disabled) {
+  color: var(--mx-text);
+  background: var(--mx-panel-soft);
+}
+
+.app-combobox-toggle:disabled {
+  color: var(--mx-subtle);
+  cursor: default;
+}
+
+.app-combobox-menu .app-select-item > span:last-child,
+.app-combobox-empty > span:last-child {
+  min-width: 0;
+}
+
+.app-combobox-empty {
+  display: grid;
+  grid-template-columns: 14px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  color: var(--mx-subtle);
+  cursor: default;
 }
 
 .app-select-menu {
@@ -12258,6 +12347,7 @@ body.vnc-runner-window-body {
 
 .ai-provider-row-field .settings-row-control {
   width: 100%;
+  align-self: center;
   justify-content: stretch;
 }
 
@@ -12277,6 +12367,72 @@ body.vnc-runner-window-body {
 
 .ai-settings-inline-select.app-select {
   width: min(320px, 100%);
+}
+
+.ai-model-row-field.settings-row {
+  align-items: center;
+}
+
+.ai-model-row-field .settings-row-label {
+  align-items: center;
+}
+
+.ai-model-row-field .settings-row-label > .ui-icon {
+  margin-top: 0;
+}
+
+.ai-model-row-field .settings-row-control {
+  align-self: center;
+}
+
+.ai-model-field {
+  width: 100%;
+  display: grid;
+  align-content: center;
+  gap: 8px;
+}
+
+.ai-model-input-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+}
+
+.ai-model-input-row .settings-action-button {
+  height: 32px;
+  min-width: 94px;
+}
+
+.ai-model-combobox {
+  width: 100%;
+}
+
+.ai-model-field > small,
+.ai-model-option small {
+  color: var(--mx-subtle);
+}
+
+.ai-provider-form .app-combobox-field input {
+  border: 0;
+  border-radius: 0;
+  padding: 0 10px;
+  background: transparent;
+  box-shadow: none;
+}
+
+.ai-provider-form .app-combobox-field input:focus {
+  box-shadow: none;
+}
+
+.ai-model-option {
+  display: grid;
+  gap: 2px;
+}
+
+.ai-model-option strong,
+.ai-model-option small {
+  line-height: 1.35;
 }
 
 .ai-api-key-field {

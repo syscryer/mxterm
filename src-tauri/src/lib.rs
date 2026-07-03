@@ -176,6 +176,8 @@ pub fn run() {
             ai_assistant::ai_provider_config_save,
             ai_assistant::ai_provider_config_delete,
             ai_assistant::ai_provider_config_reveal_api_key,
+            ai_assistant::ai_provider_config_test,
+            ai_assistant::ai_provider_models_list,
             ai_assistant::ai_chat_session_list,
             ai_assistant::ai_chat_session_get,
             ai_assistant::ai_chat_session_delete,

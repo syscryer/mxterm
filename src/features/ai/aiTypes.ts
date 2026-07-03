@@ -30,6 +30,16 @@ export interface RevealedAiProviderApiKey {
   api_key: string;
 }
 
+export interface AiProviderConfigTestResult {
+  message: string;
+}
+
+export interface AiProviderModelOption {
+  id: string;
+  display_name?: string | null;
+  subtitle?: string | null;
+}
+
 export interface AiContextBlock {
   id: string;
   kind: string;

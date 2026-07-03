@@ -11,6 +11,7 @@ use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter, State};
 use tokio::sync::Mutex as AsyncMutex;
 use tokio::task::JoinHandle;
+use tokio::time::{timeout, Duration};
 use uuid::Uuid;
 
 use crate::app_error::AppError;
@@ -80,6 +81,18 @@ pub struct AiProviderConfigIdRequest {
 #[derive(Clone, Debug, Serialize)]
 pub struct RevealedAiProviderApiKey {
     pub api_key: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct AiProviderConfigTestResult {
+    pub message: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct AiProviderModelOption {
+    pub id: String,
+    pub display_name: Option<String>,
+    pub subtitle: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -207,6 +220,15 @@ struct PreparedAiStream {
     api_key: String,
     messages: Vec<AiModelMessage>,
     response: AiChatStreamStartResponse,
+}
+
+struct ValidatedAiProviderConfigInput {
+    id: Option<String>,
+    name: Option<String>,
+    provider: AiProviderKind,
+    api_format: AiApiFormat,
+    endpoint: String,
+    model: Option<String>,
 }
 
 impl Default for AiChatStreamManager {
@@ -410,6 +432,65 @@ pub fn ai_provider_config_reveal_api_key(
 ) -> Result<RevealedAiProviderApiKey, AppError> {
     let repository = StorageRepository::open_app(&app)?;
     reveal_provider_config_api_key(&repository, request)
+}
+
+#[tauri::command]
+pub async fn ai_provider_config_test(
+    app: AppHandle,
+    request: AiProviderConfigInput,
+) -> Result<AiProviderConfigTestResult, AppError> {
+    let repository = StorageRepository::open_app(&app)?;
+    let validated = validate_provider_config_input(&request, false, true)?;
+    let api_key = resolve_request_api_key(&repository, &request)?;
+    let config = StoredAiProviderConfig {
+        id: validated
+            .id
+            .clone()
+            .unwrap_or_else(|| "ai-provider-test".to_string()),
+        name: validated
+            .name
+            .clone()
+            .unwrap_or_else(|| "测试配置".to_string()),
+        provider: validated.provider,
+        api_format: validated.api_format,
+        endpoint: validated.endpoint,
+        model: validated.model.unwrap_or_default(),
+        secret_slot_id: None,
+        created_at: String::new(),
+        updated_at: String::new(),
+    };
+    test_provider_config_connectivity(&config, &api_key).await?;
+    Ok(AiProviderConfigTestResult {
+        message: "AI 配置测试通过，可正常访问模型接口。".to_string(),
+    })
+}
+
+#[tauri::command]
+pub async fn ai_provider_models_list(
+    app: AppHandle,
+    request: AiProviderConfigInput,
+) -> Result<Vec<AiProviderModelOption>, AppError> {
+    let repository = StorageRepository::open_app(&app)?;
+    let validated = validate_provider_config_input(&request, false, false)?;
+    let api_key = resolve_request_api_key(&repository, &request)?;
+    let config = StoredAiProviderConfig {
+        id: validated
+            .id
+            .clone()
+            .unwrap_or_else(|| "ai-provider-models".to_string()),
+        name: validated
+            .name
+            .clone()
+            .unwrap_or_else(|| "模型列表".to_string()),
+        provider: validated.provider,
+        api_format: validated.api_format,
+        endpoint: validated.endpoint,
+        model: validated.model.unwrap_or_default(),
+        secret_slot_id: None,
+        created_at: String::new(),
+        updated_at: String::new(),
+    };
+    list_provider_models(&config, &api_key).await
 }
 
 #[tauri::command]
@@ -636,28 +717,13 @@ fn save_provider_config(
     request: AiProviderConfigInput,
     now: &str,
 ) -> Result<AiProviderConfig, AppError> {
-    let name = require_non_empty(
-        &request.name,
-        "ai_provider_name_missing",
-        "请输入配置名称。",
-    )?
-    .to_string();
-    let endpoint = require_non_empty(
-        &request.endpoint,
-        "ai_provider_endpoint_missing",
-        "请输入请求地址。",
-    )?
-    .to_string();
-    let model = require_non_empty(
-        &request.model,
-        "ai_provider_model_missing",
-        "请输入模型名称。",
-    )?
-    .to_string();
-    let _ = normalize_endpoint(&endpoint, request.api_format)?;
+    let validated = validate_provider_config_input(&request, true, true)?;
+    let name = validated.name.unwrap_or_default();
+    let endpoint = validated.endpoint;
+    let model = validated.model.unwrap_or_default();
 
     let mut configs = load_stored_provider_configs(repository)?;
-    let id = trim_optional(request.id).unwrap_or_else(|| Uuid::new_v4().to_string());
+    let id = validated.id.unwrap_or_else(|| Uuid::new_v4().to_string());
     let existing_index = configs.iter().position(|config| config.id == id);
     let existing = existing_index.and_then(|index| configs.get(index).cloned());
     let secret_slot_id = existing
@@ -667,8 +733,8 @@ fn save_provider_config(
     let stored = StoredAiProviderConfig {
         id: id.clone(),
         name,
-        provider: request.provider,
-        api_format: request.api_format,
+        provider: validated.provider,
+        api_format: validated.api_format,
         endpoint,
         model,
         secret_slot_id: Some(secret_slot_id.clone()),
@@ -742,6 +808,236 @@ fn reveal_provider_config_api_key(
     Ok(RevealedAiProviderApiKey {
         api_key: api_key_for_config(repository, &config)?,
     })
+}
+
+fn validate_provider_config_input(
+    request: &AiProviderConfigInput,
+    require_name: bool,
+    require_model: bool,
+) -> Result<ValidatedAiProviderConfigInput, AppError> {
+    let name = if require_name {
+        Some(
+            require_non_empty(
+                &request.name,
+                "ai_provider_name_missing",
+                "请输入配置名称。",
+            )?
+            .to_string(),
+        )
+    } else {
+        trim_optional(Some(request.name.clone()))
+    };
+    let endpoint = require_non_empty(
+        &request.endpoint,
+        "ai_provider_endpoint_missing",
+        "请输入请求地址。",
+    )?
+    .to_string();
+    let model = if require_model {
+        Some(
+            require_non_empty(
+                &request.model,
+                "ai_provider_model_missing",
+                "请输入模型名称。",
+            )?
+            .to_string(),
+        )
+    } else {
+        trim_optional(Some(request.model.clone()))
+    };
+    let _ = normalize_endpoint(&endpoint, request.api_format)?;
+    Ok(ValidatedAiProviderConfigInput {
+        id: trim_optional(request.id.clone()),
+        name,
+        provider: request.provider,
+        api_format: request.api_format,
+        endpoint,
+        model,
+    })
+}
+
+fn resolve_request_api_key(
+    repository: &StorageRepository,
+    request: &AiProviderConfigInput,
+) -> Result<String, AppError> {
+    if let Some(api_key) = trim_optional(request.api_key.clone()) {
+        return Ok(api_key);
+    }
+    let config_id = match trim_optional(request.id.clone()) {
+        Some(id) => id,
+        None => return Err(ai_api_key_missing()),
+    };
+    let config = load_stored_provider_config(repository, &config_id)?
+        .ok_or_else(ai_provider_config_missing)?;
+    api_key_for_config(repository, &config)
+}
+
+async fn test_provider_config_connectivity(
+    config: &StoredAiProviderConfig,
+    api_key: &str,
+) -> Result<(), AppError> {
+    let stopped = Arc::new(AtomicBool::new(false));
+    timeout(
+        Duration::from_secs(20),
+        run_provider_stream(
+            config,
+            api_key,
+            vec![AiModelMessage {
+                role: "user".to_string(),
+                content: "请仅回复 OK。".to_string(),
+            }],
+            stopped,
+            |_| {},
+        ),
+    )
+    .await
+    .map_err(|_| {
+        AppError::new(
+            "ai_provider_test_timeout",
+            "AI 配置测试超时。",
+            "provider test timed out",
+            true,
+        )
+    })??;
+    Ok(())
+}
+
+async fn list_provider_models(
+    config: &StoredAiProviderConfig,
+    api_key: &str,
+) -> Result<Vec<AiProviderModelOption>, AppError> {
+    let client = Client::new();
+    let models = timeout(Duration::from_secs(20), async {
+        match config.api_format {
+            AiApiFormat::OpenaiCompatible => list_openai_models(&client, config, api_key).await,
+            AiApiFormat::Anthropic => list_anthropic_models(&client, config, api_key).await,
+        }
+    })
+    .await
+    .map_err(|_| {
+        AppError::new(
+            "ai_provider_models_timeout",
+            "获取模型列表超时。",
+            "provider models request timed out",
+            true,
+        )
+    })??;
+
+    if models.is_empty() {
+        return Err(AppError::new(
+            "ai_provider_models_empty",
+            "接口没有返回可用模型。",
+            "provider models list is empty",
+            true,
+        ));
+    }
+    Ok(models)
+}
+
+async fn list_openai_models(
+    client: &Client,
+    config: &StoredAiProviderConfig,
+    api_key: &str,
+) -> Result<Vec<AiProviderModelOption>, AppError> {
+    let endpoint = normalize_models_endpoint(&config.endpoint, AiApiFormat::OpenaiCompatible)?;
+    let response = client
+        .get(endpoint)
+        .bearer_auth(api_key)
+        .send()
+        .await
+        .map_err(provider_request_error)?;
+    let response = ensure_provider_response(response).await?;
+    let value: Value = response.json().await.map_err(provider_request_error)?;
+    parse_openai_models_list(&value)
+}
+
+async fn list_anthropic_models(
+    client: &Client,
+    config: &StoredAiProviderConfig,
+    api_key: &str,
+) -> Result<Vec<AiProviderModelOption>, AppError> {
+    let endpoint = normalize_models_endpoint(&config.endpoint, AiApiFormat::Anthropic)?;
+    let response = client
+        .get(endpoint)
+        .header("x-api-key", api_key)
+        .header("anthropic-version", DEFAULT_ANTHROPIC_VERSION)
+        .send()
+        .await
+        .map_err(provider_request_error)?;
+    let response = ensure_provider_response(response).await?;
+    let value: Value = response.json().await.map_err(provider_request_error)?;
+    parse_anthropic_models_list(&value)
+}
+
+fn parse_openai_models_list(value: &Value) -> Result<Vec<AiProviderModelOption>, AppError> {
+    let data = value
+        .get("data")
+        .and_then(Value::as_array)
+        .ok_or_else(|| invalid_models_response_error("openai-compatible models list"))?;
+    let mut models = data
+        .iter()
+        .filter_map(|item| {
+            let id = item.get("id").and_then(Value::as_str)?.trim().to_string();
+            if id.is_empty() {
+                return None;
+            }
+            let owned_by = item.get("owned_by").and_then(Value::as_str).map(str::trim);
+            let subtitle = owned_by.filter(|value| !value.is_empty()).map(str::to_string);
+            Some(AiProviderModelOption {
+                id,
+                display_name: None,
+                subtitle,
+            })
+        })
+        .collect::<Vec<_>>();
+    sort_models(&mut models);
+    Ok(models)
+}
+
+fn parse_anthropic_models_list(value: &Value) -> Result<Vec<AiProviderModelOption>, AppError> {
+    let data = value
+        .get("data")
+        .and_then(Value::as_array)
+        .ok_or_else(|| invalid_models_response_error("anthropic models list"))?;
+    let mut models = data
+        .iter()
+        .filter_map(|item| {
+            let id = item.get("id").and_then(Value::as_str)?.trim().to_string();
+            if id.is_empty() {
+                return None;
+            }
+            let display_name = item
+                .get("display_name")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string);
+            let subtitle = item
+                .get("created_at")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string);
+            Some(AiProviderModelOption {
+                id,
+                display_name,
+                subtitle,
+            })
+        })
+        .collect::<Vec<_>>();
+    sort_models(&mut models);
+    Ok(models)
+}
+
+fn sort_models(models: &mut [AiProviderModelOption]) {
+    models.sort_by(|left, right| {
+        let left_name = left.display_name.as_deref().unwrap_or(&left.id);
+        let right_name = right.display_name.as_deref().unwrap_or(&right.id);
+        left_name
+            .to_ascii_lowercase()
+            .cmp(&right_name.to_ascii_lowercase())
+            .then_with(|| left.id.to_ascii_lowercase().cmp(&right.id.to_ascii_lowercase()))
+    });
 }
 
 fn load_stored_provider_configs(
@@ -1302,6 +1598,48 @@ fn normalize_endpoint(endpoint: &str, api_format: AiApiFormat) -> Result<String,
     Ok(url.to_string())
 }
 
+fn normalize_models_endpoint(endpoint: &str, api_format: AiApiFormat) -> Result<String, AppError> {
+    let mut url = Url::parse(endpoint.trim()).map_err(|error| {
+        AppError::new(
+            "ai_provider_endpoint_invalid",
+            "AI 请求地址不是合法 URL。",
+            error,
+            true,
+        )
+    })?;
+    let path = url.path().trim_end_matches('/').to_string();
+    let next = match api_format {
+        AiApiFormat::OpenaiCompatible => {
+            if path.ends_with("/models") {
+                path
+            } else if let Some(base) = path.strip_suffix("/chat/completions") {
+                format!("{base}/models")
+            } else if path.ends_with("/v1") {
+                format!("{path}/models")
+            } else if path.is_empty() || path == "/" {
+                "/v1/models".to_string()
+            } else {
+                format!("{path}/v1/models")
+            }
+        }
+        AiApiFormat::Anthropic => {
+            if path.ends_with("/models") {
+                path
+            } else if let Some(base) = path.strip_suffix("/messages") {
+                format!("{base}/models")
+            } else if path.ends_with("/v1") {
+                format!("{path}/models")
+            } else if path.is_empty() || path == "/" {
+                "/v1/models".to_string()
+            } else {
+                format!("{path}/v1/models")
+            }
+        }
+    };
+    url.set_path(&next);
+    Ok(url.to_string())
+}
+
 fn split_system_message(messages: Vec<AiModelMessage>) -> (String, Vec<AiModelMessage>) {
     let mut system_parts = vec![default_system_prompt().to_string()];
     let mut chat_messages = Vec::new();
@@ -1711,6 +2049,15 @@ fn provider_request_error(error: reqwest::Error) -> AppError {
     )
 }
 
+fn invalid_models_response_error(source: &str) -> AppError {
+    AppError::new(
+        "ai_provider_models_invalid",
+        "模型列表响应格式无法识别。",
+        format!("invalid {source} response"),
+        true,
+    )
+}
+
 fn sanitize_provider_error_body(body: &str) -> String {
     let lower = body.to_lowercase();
     let sensitive_markers = [
@@ -1897,6 +2244,64 @@ mod tests {
             .unwrap(),
             "https://api.example.com/v1/messages"
         );
+        assert_eq!(
+            normalize_models_endpoint("https://api.example.com/v1", AiApiFormat::OpenaiCompatible)
+                .unwrap(),
+            "https://api.example.com/v1/models"
+        );
+        assert_eq!(
+            normalize_models_endpoint(
+                "https://api.example.com/v1/chat/completions",
+                AiApiFormat::OpenaiCompatible
+            )
+            .unwrap(),
+            "https://api.example.com/v1/models"
+        );
+        assert_eq!(
+            normalize_models_endpoint("https://api.example.com/anthropic", AiApiFormat::Anthropic)
+                .unwrap(),
+            "https://api.example.com/anthropic/v1/models"
+        );
+        assert_eq!(
+            normalize_models_endpoint(
+                "https://api.example.com/v1/messages",
+                AiApiFormat::Anthropic
+            )
+            .unwrap(),
+            "https://api.example.com/v1/models"
+        );
+    }
+
+    #[test]
+    fn parses_provider_model_lists() {
+        let openai = serde_json::json!({
+            "object": "list",
+            "data": [
+                { "id": "gpt-4.1-mini", "owned_by": "openai" },
+                { "id": "gpt-4.1", "owned_by": "openai" }
+            ]
+        });
+        let anthropic = serde_json::json!({
+            "data": [
+                {
+                    "id": "claude-sonnet-4-20250514",
+                    "display_name": "Claude Sonnet 4",
+                    "created_at": "2025-05-14T00:00:00Z",
+                    "type": "model"
+                }
+            ]
+        });
+
+        let openai_models = parse_openai_models_list(&openai).unwrap();
+        assert_eq!(openai_models.len(), 2);
+        assert_eq!(openai_models[0].id, "gpt-4.1");
+
+        let anthropic_models = parse_anthropic_models_list(&anthropic).unwrap();
+        assert_eq!(anthropic_models.len(), 1);
+        assert_eq!(
+            anthropic_models[0].display_name.as_deref(),
+            Some("Claude Sonnet 4")
+        );
     }
 
     #[test]
@@ -2009,6 +2414,64 @@ mod tests {
             )
             .unwrap();
         assert!(!settings_json.contains("secret-reveal"));
+    }
+
+    #[test]
+    fn provider_config_test_uses_saved_key_when_field_untouched() {
+        let (repository, _secrets) = temp_repository("ai-provider-test-saved-key");
+        let saved = save_provider_config(
+            &repository,
+            AiProviderConfigInput {
+                id: Some("cfg-test-saved".to_string()),
+                name: "MiniMax".to_string(),
+                provider: AiProviderKind::Claude,
+                api_format: AiApiFormat::Anthropic,
+                endpoint: "https://api.example.com/anthropic".to_string(),
+                model: "MiniMax-M3".to_string(),
+                api_key: Some("secret-test-saved".to_string()),
+                api_key_touched: true,
+            },
+            "1000",
+        )
+        .unwrap();
+
+        let resolved = resolve_request_api_key(
+            &repository,
+            &AiProviderConfigInput {
+                id: Some(saved.id),
+                name: "".to_string(),
+                provider: AiProviderKind::Claude,
+                api_format: AiApiFormat::Anthropic,
+                endpoint: "https://api.example.com/anthropic".to_string(),
+                model: "MiniMax-M3".to_string(),
+                api_key: None,
+                api_key_touched: false,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(resolved, "secret-test-saved");
+    }
+
+    #[test]
+    fn provider_config_test_accepts_unsaved_draft_key() {
+        let (repository, _secrets) = temp_repository("ai-provider-test-draft-key");
+        let resolved = resolve_request_api_key(
+            &repository,
+            &AiProviderConfigInput {
+                id: None,
+                name: "".to_string(),
+                provider: AiProviderKind::Openai,
+                api_format: AiApiFormat::OpenaiCompatible,
+                endpoint: "https://api.example.com/v1".to_string(),
+                model: "gpt-test".to_string(),
+                api_key: Some("draft-secret".to_string()),
+                api_key_touched: true,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(resolved, "draft-secret");
     }
 
     #[test]
