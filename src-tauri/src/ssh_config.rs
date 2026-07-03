@@ -3,8 +3,8 @@ use tauri::AppHandle;
 
 use crate::app_error::AppError;
 use crate::connections::{
-    ConnectionAdvancedConfig, ConnectionAuthKind, ConnectionJumpConfig, ConnectionProfile,
-    ConnectionProfileInput, ConnectionProxyConfig,
+    validate_profile_input, ConnectionAdvancedConfig, ConnectionAuthKind, ConnectionJumpConfig,
+    ConnectionProfile, ConnectionProfileInput, ConnectionProxyConfig,
 };
 use crate::known_hosts::HostKeyInfo;
 use crate::storage_repository::StorageRepository;
@@ -62,6 +62,7 @@ pub fn resolve_transient_connection(
     app: &AppHandle,
     input: ConnectionProfileInput,
 ) -> Result<ResolvedSshConfig, AppError> {
+    validate_profile_input(&input)?;
     StorageRepository::open_app(app)?.resolve_transient_connection(input)
 }
 

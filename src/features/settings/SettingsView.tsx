@@ -2206,6 +2206,22 @@ function BasicSettingsSection({
           />
         </SettingsRow>
         <SettingsRow
+          icon={Rows3}
+          title="远程文件打开方式"
+          description="控制新会话中远程文件编辑器和终端的默认布局。"
+        >
+          <AppSelect
+            ariaLabel="远程文件打开方式"
+            menuMinWidth={150}
+            value={settings.remoteFileOpenMode}
+            options={[
+              { label: "上下分屏", value: "split" },
+              { label: "统一 tab", value: "unified" },
+            ]}
+            onChange={(remoteFileOpenMode) => onUpdate({ remoteFileOpenMode })}
+          />
+        </SettingsRow>
+        <SettingsRow
           icon={Clock3}
           title="左侧最近连接"
           description="限制左侧连接树“最近”分组展示数量。"

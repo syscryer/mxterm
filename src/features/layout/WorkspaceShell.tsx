@@ -10,6 +10,7 @@ import {
   type CSSProperties,
   type FormEvent,
   type KeyboardEvent as ReactKeyboardEvent,
+  type MouseEvent as ReactMouseEvent,
   type PointerEvent as ReactPointerEvent,
 } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
@@ -158,6 +159,7 @@ import {
   resolveSettingsStyle,
   resolveTerminalFontFamily,
   type FileTransferTimestampFormat,
+  type RemoteFileOpenMode,
   type SettingsSectionId,
   type WindowMaterialMode,
 } from "../settings/settingsTypes";
@@ -290,6 +292,30 @@ type SshConnectionProfile = ConnectionProfile & {
 };
 
 const VNC_RUNNER_HOST_WINDOW_LABEL = "vnc-runner-host";
+
+type WorkbenchTabKind = "terminal" | "file";
+type WorkbenchTabDropZone = WorkbenchTabKind | "split-file" | "split-terminal";
+
+interface UnifiedWorkbenchTab {
+  id: string;
+  kind: WorkbenchTabKind;
+}
+
+interface WorkbenchTabDragPayload extends UnifiedWorkbenchTab {
+  connectionId: string;
+}
+
+interface WorkbenchTabMouseDrag {
+  active: boolean;
+  currentX: number;
+  currentY: number;
+  grabOffsetX: number;
+  grabOffsetY: number;
+  payload: WorkbenchTabDragPayload;
+  previewWidth: number;
+  startX: number;
+  startY: number;
+}
 
 interface TerminalTab {
   connectionStep?: ConnectionStepState | null;
@@ -755,6 +781,14 @@ export function WorkspaceShell() {
   );
   const [remoteFileTabs, setRemoteFileTabs] = useState<RemoteFileEditorTab[]>([]);
   const [activeRemoteFileTabId, setActiveRemoteFileTabId] = useState<string | null>(null);
+  const [terminalFileLayoutByConnectionId, setTerminalFileLayoutByConnectionId] =
+    useState<Record<string, RemoteFileOpenMode>>({});
+  const [activeUnifiedTabByConnectionId, setActiveUnifiedTabByConnectionId] =
+    useState<Record<string, UnifiedWorkbenchTab>>({});
+  const [workbenchTabMouseDrag, setWorkbenchTabMouseDrag] =
+    useState<WorkbenchTabMouseDrag | null>(null);
+  const [workbenchTabDropZone, setWorkbenchTabDropZone] = useState<WorkbenchTabDropZone | null>(null);
+  const suppressNextWorkbenchTabClickRef = useRef(false);
   const [remoteFileLocateRequest, setRemoteFileLocateRequest] =
     useState<RemoteFileLocateRequest | null>(null);
   const [remoteFileRefreshRequest, setRemoteFileRefreshRequest] =
@@ -1298,6 +1332,129 @@ export function WorkspaceShell() {
     });
   }, [localTerminalTabs, terminalTabs]);
 
+  useEffect(() => {
+    setTerminalFileLayoutByConnectionId((layouts) => {
+      const liveConnectionIds = new Set([
+        ...terminalTabs.map((tab) => tab.connectionId),
+        ...remoteFileTabs.map((tab) => tab.connectionId),
+      ]);
+      const fileConnectionIds = new Set(remoteFileTabs.map((tab) => tab.connectionId));
+      let changed = false;
+      const nextLayouts: Record<string, RemoteFileOpenMode> = {};
+
+      Object.entries(layouts).forEach(([connectionId, mode]) => {
+        if (!liveConnectionIds.has(connectionId)) {
+          changed = true;
+          return;
+        }
+        nextLayouts[connectionId] = mode;
+      });
+
+      fileConnectionIds.forEach((connectionId) => {
+        if (!nextLayouts[connectionId]) {
+          nextLayouts[connectionId] = settings.basic.remoteFileOpenMode;
+          changed = true;
+        }
+      });
+
+      return changed ? nextLayouts : layouts;
+    });
+  }, [remoteFileTabs, settings.basic.remoteFileOpenMode, terminalTabs]);
+
+  useEffect(() => {
+    setActiveUnifiedTabByConnectionId((activeTabs) => {
+      let changed = false;
+      const nextActiveTabs: Record<string, UnifiedWorkbenchTab> = {};
+
+      Object.entries(activeTabs).forEach(([connectionId, activeTab]) => {
+        const terminalTab = terminalTabs.find(
+          (tab) => tab.connectionId === connectionId && tab.id === activeTab.id,
+        );
+        const fileTab = remoteFileTabs.find(
+          (tab) => tab.connectionId === connectionId && tab.id === activeTab.id,
+        );
+
+        if (
+          (activeTab.kind === "terminal" && terminalTab) ||
+          (activeTab.kind === "file" && fileTab)
+        ) {
+          nextActiveTabs[connectionId] = activeTab;
+          return;
+        }
+
+        const fallbackFileTab = remoteFileTabs.find((tab) => tab.connectionId === connectionId);
+        const fallbackTerminalTab = terminalTabs.find((tab) => tab.connectionId === connectionId);
+        if (fallbackFileTab) {
+          nextActiveTabs[connectionId] = { kind: "file", id: fallbackFileTab.id };
+        } else if (fallbackTerminalTab) {
+          nextActiveTabs[connectionId] = { kind: "terminal", id: fallbackTerminalTab.id };
+        }
+        changed = true;
+      });
+
+      return changed ? nextActiveTabs : activeTabs;
+    });
+  }, [remoteFileTabs, terminalTabs]);
+
+  useEffect(() => {
+    if (!workbenchTabMouseDrag) {
+      return;
+    }
+
+    const currentDrag = workbenchTabMouseDrag;
+
+    function handleMouseMove(event: MouseEvent) {
+      const active =
+        currentDrag.active || mouseDragDistance(currentDrag, event.clientX, event.clientY) > 6;
+
+      if (!active) {
+        return;
+      }
+
+      event.preventDefault();
+      setWorkbenchTabDropZone(getWorkbenchTabDropZoneFromPoint(event.clientX, event.clientY));
+      setWorkbenchTabMouseDrag((drag) =>
+        drag
+          ? {
+              ...drag,
+              active: true,
+              currentX: event.clientX,
+              currentY: event.clientY,
+            }
+          : drag,
+      );
+    }
+
+    function handleMouseUp(event: MouseEvent) {
+      const active =
+        currentDrag.active || mouseDragDistance(currentDrag, event.clientX, event.clientY) > 6;
+
+      if (active) {
+        event.preventDefault();
+        suppressNextWorkbenchTabClickRef.current = true;
+        window.setTimeout(() => {
+          suppressNextWorkbenchTabClickRef.current = false;
+        }, 0);
+
+        const dropZone = getWorkbenchTabDropZoneFromPoint(event.clientX, event.clientY);
+        if (dropZone) {
+          applyWorkbenchTabMouseDrop(currentDrag.payload, dropZone);
+          return;
+        }
+      }
+
+      finishWorkbenchTabMouseDrag();
+    }
+
+    window.addEventListener("mousemove", handleMouseMove, { passive: false });
+    window.addEventListener("mouseup", handleMouseUp);
+
+    return () => {
+      window.removeEventListener("mousemove", handleMouseMove);
+      window.removeEventListener("mouseup", handleMouseUp);
+    };
+  }, [workbenchTabMouseDrag]);
+
   const activeRemoteFileTabs = activeWorkspaceMode === "ssh" && activeConnectionId && activeConnectedTerminalTab
     ? remoteFileTabs.filter((tab) => tab.connectionId === activeConnectionId)
     : [];
@@ -1307,6 +1464,46 @@ export function WorkspaceShell() {
       : null) ||
     activeRemoteFileTabs[0] ||
     null;
+  const activeTerminalFileLayout = activeConnectionId
+    ? terminalFileLayoutByConnectionId[activeConnectionId] || settings.basic.remoteFileOpenMode
+    : settings.basic.remoteFileOpenMode;
+  const isActiveTerminalFileUnified =
+    activeTerminalFileLayout === "unified" && activeRemoteFileTabs.length > 0;
+  const requestedUnifiedTab = activeConnectionId
+    ? activeUnifiedTabByConnectionId[activeConnectionId] || null
+    : null;
+  const requestedUnifiedTerminalTab =
+    requestedUnifiedTab?.kind === "terminal"
+      ? activeConnectionTabs.find((tab) => tab.id === requestedUnifiedTab.id) || null
+      : null;
+  const requestedUnifiedFileTab =
+    requestedUnifiedTab?.kind === "file"
+      ? activeRemoteFileTabs.find((tab) => tab.id === requestedUnifiedTab.id) || null
+      : null;
+  const activeUnifiedTab: UnifiedWorkbenchTab | null = isActiveTerminalFileUnified
+    ? requestedUnifiedFileTab
+      ? { kind: "file", id: requestedUnifiedFileTab.id }
+      : requestedUnifiedTerminalTab
+        ? { kind: "terminal", id: requestedUnifiedTerminalTab.id }
+        : activeRemoteFileTab
+          ? { kind: "file", id: activeRemoteFileTab.id }
+          : activeConnectedTerminalTab
+            ? { kind: "terminal", id: activeConnectedTerminalTab.id }
+            : null
+    : null;
+  const activeUnifiedTabKind = activeUnifiedTab?.kind || null;
+  const activeWorkbenchSurface =
+    isActiveTerminalFileUnified && activeUnifiedTabKind === "file"
+      ? "panel"
+      : activeConnectedTerminalTab
+        ? "terminal"
+        : "panel";
+  const showUnifiedSplitDropZones = Boolean(
+    isActiveTerminalFileUnified &&
+      workbenchTabMouseDrag?.active &&
+      activeConnectionId &&
+      workbenchTabMouseDrag.payload.connectionId === activeConnectionId,
+  );
   const hasSessionWorkspace =
     terminalTabs.length > 0 ||
     remoteFileTabs.length > 0 ||
@@ -2316,6 +2513,9 @@ export function WorkspaceShell() {
     setActiveWorkspaceMode("ssh");
     setActiveConnectionId(tab.connectionId);
     setActiveRemoteFileTabId(tab.id);
+    if (isConnectionTerminalFileUnified(tab.connectionId)) {
+      rememberUnifiedActiveTab(tab.connectionId, { kind: "file", id: tab.id });
+    }
 
     const sameConnectionActiveTerminal = activeTabId
       ? terminalTabs.find((item) => item.id === activeTabId && item.connectionId === tab.connectionId)
@@ -3813,6 +4013,28 @@ export function WorkspaceShell() {
     );
   }
 
+  function setConnectionTerminalFileLayout(connectionId: string, mode: RemoteFileOpenMode) {
+    setTerminalFileLayoutByConnectionId((layouts) =>
+      layouts[connectionId] === mode ? layouts : { ...layouts, [connectionId]: mode },
+    );
+  }
+
+  function isConnectionTerminalFileUnified(connectionId: string) {
+    return (
+      (terminalFileLayoutByConnectionId[connectionId] || settings.basic.remoteFileOpenMode) ===
+      "unified"
+    );
+  }
+
+  function rememberUnifiedActiveTab(connectionId: string, tab: UnifiedWorkbenchTab) {
+    setActiveUnifiedTabByConnectionId((activeTabs) => {
+      const current = activeTabs[connectionId];
+      return current?.kind === tab.kind && current.id === tab.id
+        ? activeTabs
+        : { ...activeTabs, [connectionId]: tab };
+    });
+  }
+
   function forgetActiveConnectionTabs(connectionIds: string[]) {
     if (connectionIds.length === 0) {
       return;
@@ -3844,7 +4066,254 @@ export function WorkspaceShell() {
     setActiveConnectionId(tab.connectionId);
     setActiveTabId(tab.id);
     rememberActiveTab(tab);
+    if (isConnectionTerminalFileUnified(tab.connectionId)) {
+      rememberUnifiedActiveTab(tab.connectionId, { kind: "terminal", id: tab.id });
+    }
     syncCommandSenderTargetTab(tab.connectionId, tab.id);
+  }
+
+  function handleWorkbenchTabMouseDown(
+    event: ReactMouseEvent<HTMLElement>,
+    payload: WorkbenchTabDragPayload,
+  ) {
+    if (event.button !== 0) {
+      return;
+    }
+
+    const bounds = event.currentTarget.getBoundingClientRect();
+    setWorkbenchTabMouseDrag({
+      active: false,
+      currentX: event.clientX,
+      currentY: event.clientY,
+      grabOffsetX: event.clientX - bounds.left,
+      grabOffsetY: event.clientY - bounds.top,
+      payload,
+      previewWidth: bounds.width,
+      startX: event.clientX,
+      startY: event.clientY,
+    });
+  }
+
+  function handleTerminalSubtabClick(event: ReactMouseEvent<HTMLElement>, tab: TerminalTab) {
+    if (suppressNextWorkbenchTabClickRef.current) {
+      event.preventDefault();
+      return;
+    }
+    activateTerminalTab(tab);
+  }
+
+  function handleRemoteFileSubtabClick(
+    event: ReactMouseEvent<HTMLElement>,
+    tab: RemoteFileEditorTab,
+  ) {
+    if (suppressNextWorkbenchTabClickRef.current) {
+      event.preventDefault();
+      return;
+    }
+    activateRemoteFileTab(tab);
+  }
+
+  function finishWorkbenchTabMouseDrag() {
+    setWorkbenchTabMouseDrag(null);
+    setWorkbenchTabDropZone(null);
+  }
+
+  function applyWorkbenchTabMouseDrop(
+    payload: WorkbenchTabDragPayload,
+    dropZone: WorkbenchTabDropZone,
+  ) {
+    if (dropZone === "split-file" || dropZone === "split-terminal") {
+      restoreConnectionTerminalFileSplit(
+        payload.connectionId,
+        dropZone === "split-file" ? "file" : "terminal",
+        payload,
+      );
+    } else if (payload.kind === "file" && dropZone === "terminal") {
+      const tab = remoteFileTabs.find(
+        (item) => item.id === payload.id && item.connectionId === payload.connectionId,
+      );
+      if (tab) {
+        setConnectionTerminalFileLayout(tab.connectionId, "unified");
+        rememberUnifiedActiveTab(tab.connectionId, { kind: "file", id: tab.id });
+        activateRemoteFileTab(tab);
+      }
+    } else if (payload.kind === "terminal" && dropZone === "file") {
+      const tab = terminalTabs.find(
+        (item) => item.id === payload.id && item.connectionId === payload.connectionId,
+      );
+      if (tab) {
+        setConnectionTerminalFileLayout(tab.connectionId, "unified");
+        rememberUnifiedActiveTab(tab.connectionId, { kind: "terminal", id: tab.id });
+        activateTerminalTab(tab);
+      }
+    }
+
+    finishWorkbenchTabMouseDrag();
+  }
+
+  function restoreConnectionTerminalFileSplit(
+    connectionId: string,
+    preferredActiveKind?: WorkbenchTabKind,
+    payload?: WorkbenchTabDragPayload,
+  ) {
+    setConnectionTerminalFileLayout(connectionId, "split");
+
+    if (preferredActiveKind === "file") {
+      const fileTab =
+        payload?.kind === "file"
+          ? remoteFileTabs.find(
+              (item) => item.id === payload.id && item.connectionId === connectionId,
+            )
+          : null;
+      const fallbackFileTab =
+        fileTab ||
+        (activeRemoteFileTab?.connectionId === connectionId ? activeRemoteFileTab : null) ||
+        remoteFileTabs.find((item) => item.connectionId === connectionId) ||
+        null;
+      if (fallbackFileTab) {
+        activateRemoteFileTab(fallbackFileTab);
+      }
+      return;
+    }
+
+    if (preferredActiveKind === "terminal") {
+      const terminalTab =
+        payload?.kind === "terminal"
+          ? terminalTabs.find(
+              (item) => item.id === payload.id && item.connectionId === connectionId,
+            )
+          : null;
+      const fallbackTerminalTab = terminalTab || preferredTabForConnection(connectionId);
+      if (fallbackTerminalTab) {
+        activateTerminalTab(fallbackTerminalTab);
+      }
+    }
+  }
+
+  function getWorkbenchTabDragLabel(payload: WorkbenchTabDragPayload) {
+    if (payload.kind === "file") {
+      const tab = remoteFileTabs.find(
+        (item) => item.id === payload.id && item.connectionId === payload.connectionId,
+      );
+      return tab?.name || "远程文件";
+    }
+
+    const tab = terminalTabs.find(
+      (item) => item.id === payload.id && item.connectionId === payload.connectionId,
+    );
+    return tab?.title || "终端";
+  }
+
+  function isTerminalSubtabActive(tab: TerminalTab) {
+    return isActiveTerminalFileUnified
+      ? activeUnifiedTab?.kind === "terminal" && activeUnifiedTab.id === tab.id
+      : tab.id === activeTabId;
+  }
+
+  function isRemoteFileSubtabActive(tab: RemoteFileEditorTab) {
+    return isActiveTerminalFileUnified
+      ? activeUnifiedTab?.kind === "file" && activeUnifiedTab.id === tab.id
+      : tab.id === activeRemoteFileTab?.id;
+  }
+
+  function isTerminalPanelActive(tabId: string) {
+    if (isActiveTerminalFileUnified) {
+      return showSessionWorkspace && activeUnifiedTab?.kind === "terminal" && activeUnifiedTab.id === tabId;
+    }
+    return showSessionWorkspace && tabId === activeTabId;
+  }
+
+  function isRemoteFileEditorActive(tabId: string) {
+    if (isActiveTerminalFileUnified) {
+      return !showingHome && activeUnifiedTab?.kind === "file" && activeUnifiedTab.id === tabId;
+    }
+    return !showingHome && tabId === activeRemoteFileTab?.id;
+  }
+
+  function renderRemoteFileSubtab(tab: RemoteFileEditorTab, index: number) {
+    const savedTabs = activeRemoteFileTabs.filter(isClosableSavedRemoteFileTab);
+    return (
+      <TabContextMenu
+        key={tab.id}
+        actions={[
+          {
+            hint: "Ctrl+F4",
+            label: "关闭",
+            onSelect: () => closeRemoteFileTab(tab.id),
+          },
+          {
+            disabled: activeRemoteFileTabs.length <= 1,
+            label: "关闭其他",
+            onSelect: () => closeOtherRemoteFileTabs(tab.id),
+          },
+          {
+            disabled: index >= activeRemoteFileTabs.length - 1,
+            label: "关闭右侧标签页",
+            onSelect: () => closeRemoteFileTabsToRight(tab.id),
+          },
+          {
+            disabled: savedTabs.length === 0,
+            hint: "Ctrl+K U",
+            label: "关闭已保存",
+            onSelect: () => closeSavedRemoteFileTabsForConnection(tab.connectionId),
+          },
+          {
+            disabled: activeRemoteFileTabs.length === 0,
+            hint: "Ctrl+K W",
+            label: "全部关闭",
+            onSelect: () => closeAllRemoteFileTabsForConnection(tab.connectionId),
+          },
+          {
+            hint: "Shift+Alt+C",
+            label: "复制路径",
+            onSelect: () => copyRemotePath(tab.path),
+            separatorBefore: true,
+          },
+          ...(isConnectionTerminalFileUnified(tab.connectionId)
+            ? [
+                {
+                  label: "恢复上下分屏",
+                  onSelect: () =>
+                    restoreConnectionTerminalFileSplit(tab.connectionId, "file", {
+                      connectionId: tab.connectionId,
+                      id: tab.id,
+                      kind: "file",
+                    }),
+                },
+              ]
+            : []),
+        ]}
+      >
+        <div
+          className={`subtab-shell file-tab ${isRemoteFileSubtabActive(tab) ? "active" : ""}`}
+        >
+          <button
+            className="subtab workbench-draggable-tab"
+            type="button"
+            title={tab.path}
+            onClick={(event) => handleRemoteFileSubtabClick(event, tab)}
+            onMouseDown={(event) =>
+              handleWorkbenchTabMouseDown(event, {
+                connectionId: tab.connectionId,
+                id: tab.id,
+                kind: "file",
+              })
+            }
+          >
+            <span>{tab.name}</span>
+            {tab.dirty ? <span className="dirty-dot" aria-label="已修改" /> : null}
+          </button>
+          <button
+            className="subtab-close"
+            type="button"
+            aria-label={`关闭 ${tab.name}`}
+            onClick={() => closeRemoteFileTab(tab.id)}
+          >
+            <X className="ui-icon" aria-hidden="true" />
+          </button>
+        </div>
+      </TabContextMenu>
+    );
   }
 
   function toggleTerminalSearch(tabId: string | null | undefined) {
@@ -6853,85 +7322,29 @@ export function WorkspaceShell() {
           {hasSessionWorkspace ? (
             <section
               className={`session-workbench ${showingHome ? "is-hidden" : ""}`}
-              data-editor-open={activeRemoteFileTabs.length > 0 ? "true" : "false"}
+              data-editor-open={
+                activeRemoteFileTabs.length > 0 && !isActiveTerminalFileUnified ? "true" : "false"
+              }
+              data-workbench-tab-dragging={workbenchTabMouseDrag?.active ? "true" : undefined}
               aria-label="编辑器和终端"
               aria-hidden={showingHome}
             >
-              {activeRemoteFileTabs.length > 0 ? (
+              {activeRemoteFileTabs.length > 0 && !isActiveTerminalFileUnified ? (
                 <section className="remote-editor-pane" aria-label="远程文件编辑区">
-                  <nav className="remote-editor-tabs" aria-label="远程文件标签">
-                    {activeRemoteFileTabs.map((tab, index) => {
-                      const savedTabs = activeRemoteFileTabs.filter(isClosableSavedRemoteFileTab);
-                      return (
-                        <TabContextMenu
-                          key={tab.id}
-                          actions={[
-                            {
-                              hint: "Ctrl+F4",
-                              label: "关闭",
-                              onSelect: () => closeRemoteFileTab(tab.id),
-                            },
-                            {
-                              disabled: activeRemoteFileTabs.length <= 1,
-                              label: "关闭其他",
-                              onSelect: () => closeOtherRemoteFileTabs(tab.id),
-                            },
-                            {
-                              disabled: index >= activeRemoteFileTabs.length - 1,
-                              label: "关闭右侧标签页",
-                              onSelect: () => closeRemoteFileTabsToRight(tab.id),
-                            },
-                            {
-                              disabled: savedTabs.length === 0,
-                              hint: "Ctrl+K U",
-                              label: "关闭已保存",
-                              onSelect: () => closeSavedRemoteFileTabsForConnection(tab.connectionId),
-                            },
-                            {
-                              disabled: activeRemoteFileTabs.length === 0,
-                              hint: "Ctrl+K W",
-                              label: "全部关闭",
-                              onSelect: () => closeAllRemoteFileTabsForConnection(tab.connectionId),
-                            },
-                            {
-                              hint: "Shift+Alt+C",
-                              label: "复制路径",
-                              onSelect: () => copyRemotePath(tab.path),
-                              separatorBefore: true,
-                            },
-                          ]}
-                        >
-                          <div
-                            className={`subtab-shell file-tab ${tab.id === activeRemoteFileTab?.id ? "active" : ""}`}
-                          >
-                            <button
-                              className="subtab"
-                              type="button"
-                              title={tab.path}
-                              onClick={() => activateRemoteFileTab(tab)}
-                            >
-                              <span>{tab.name}</span>
-                              {tab.dirty ? <span className="dirty-dot" aria-label="已修改" /> : null}
-                            </button>
-                            <button
-                              className="subtab-close"
-                              type="button"
-                              aria-label={`关闭 ${tab.name}`}
-                              onClick={() => closeRemoteFileTab(tab.id)}
-                            >
-                              <X className="ui-icon" aria-hidden="true" />
-                            </button>
-                          </div>
-                        </TabContextMenu>
-                      );
-                    })}
+                  <nav
+                    className="remote-editor-tabs"
+                    aria-label="远程文件标签"
+                    data-workbench-tab-drop-zone="file"
+                    data-workbench-tab-drop-active={workbenchTabDropZone === "file" ? "true" : undefined}
+                  >
+                    {activeRemoteFileTabs.map(renderRemoteFileSubtab)}
                   </nav>
 
                   <section className="remote-editor-stack" aria-label="文件编辑器">
                     <Suspense fallback={<div className="remote-editor-loading">正在加载编辑器…</div>}>
                       {remoteFileTabs.map((tab) => (
                         <RemoteFileEditor
-                          active={!showingHome && tab.id === activeRemoteFileTab?.id}
+                          active={isRemoteFileEditorActive(tab.id)}
                           desktopPlatform={desktopPlatform}
                           fontFamily={terminalFontFamily}
                           fontSize={settings.appearance.terminalFontSize}
@@ -6951,7 +7364,7 @@ export function WorkspaceShell() {
                 </section>
               ) : null}
 
-              {activeRemoteFileTabs.length > 0 ? (
+              {activeRemoteFileTabs.length > 0 && !isActiveTerminalFileUnified ? (
                 <div
                   className="editor-terminal-resizer"
                   role="separator"
@@ -6971,12 +7384,17 @@ export function WorkspaceShell() {
                 className={`terminal-workbench-pane ${commandSenderOpen ? "command-sender-open" : ""} ${
                   showSessionWorkspace ? "" : "is-hidden"
                 }`}
-                data-workbench-surface={activeConnectedTerminalTab ? "terminal" : "panel"}
+                data-workbench-surface={activeWorkbenchSurface}
                 data-terminal-tone={terminalTone}
                 aria-label="终端区"
                 aria-hidden={!showSessionWorkspace}
               >
-                <nav className="terminal-subtabs" aria-label="当前连接终端标签">
+                <nav
+                  className={`terminal-subtabs ${isActiveTerminalFileUnified ? "unified-subtabs" : ""}`}
+                  aria-label={isActiveTerminalFileUnified ? "当前连接终端和文件标签" : "当前连接终端标签"}
+                  data-workbench-tab-drop-zone="terminal"
+                  data-workbench-tab-drop-active={workbenchTabDropZone === "terminal" ? "true" : undefined}
+                >
                   {activeConnectionTabs.map((tab, index) => (
                     <TabContextMenu
                       key={tab.id}
@@ -7002,15 +7420,36 @@ export function WorkspaceShell() {
                           label: "全部关闭",
                           onSelect: () => closeAllTerminalTabsForConnection(tab.connectionId),
                         },
+                        ...(isConnectionTerminalFileUnified(tab.connectionId)
+                          ? [
+                              {
+                                label: "恢复上下分屏",
+                                onSelect: () =>
+                                  restoreConnectionTerminalFileSplit(tab.connectionId, "terminal", {
+                                    connectionId: tab.connectionId,
+                                    id: tab.id,
+                                    kind: "terminal",
+                                  }),
+                                separatorBefore: true,
+                              },
+                            ]
+                          : []),
                       ]}
                     >
                       <div
-                        className={`subtab-shell ${tab.id === activeTabId ? "active" : ""}`}
+                        className={`subtab-shell ${isTerminalSubtabActive(tab) ? "active" : ""}`}
                       >
                         <button
-                          className="subtab"
+                          className="subtab workbench-draggable-tab"
                           type="button"
-                          onClick={() => activateTerminalTab(tab)}
+                          onClick={(event) => handleTerminalSubtabClick(event, tab)}
+                          onMouseDown={(event) =>
+                            handleWorkbenchTabMouseDown(event, {
+                              connectionId: tab.connectionId,
+                              id: tab.id,
+                              kind: "terminal",
+                            })
+                          }
                         >
                           <span>{tab.title}</span>
                         </button>
@@ -7025,6 +7464,7 @@ export function WorkspaceShell() {
                       </div>
                     </TabContextMenu>
                   ))}
+                  {isActiveTerminalFileUnified ? activeRemoteFileTabs.map(renderRemoteFileSubtab) : null}
                   {activeConnectedTerminalTab ? (
                     <Tooltip label="新建同连接终端">
                       <button
@@ -7084,14 +7524,39 @@ export function WorkspaceShell() {
                   </div>
                 </nav>
 
-                <section className="terminal-stack" aria-label="终端">
+                <section
+                  className={`terminal-stack ${isActiveTerminalFileUnified ? "terminal-file-unified-stack" : ""}`}
+                  data-unified-active-kind={activeUnifiedTabKind || undefined}
+                  aria-label={isActiveTerminalFileUnified ? "终端和文件编辑器" : "终端"}
+                >
+                  {isActiveTerminalFileUnified ? (
+                    <Suspense fallback={<div className="remote-editor-loading">正在加载编辑器…</div>}>
+                      {remoteFileTabs.map((tab) => (
+                        <RemoteFileEditor
+                          active={isRemoteFileEditorActive(tab.id)}
+                          desktopPlatform={desktopPlatform}
+                          fontFamily={terminalFontFamily}
+                          fontSize={settings.appearance.terminalFontSize}
+                          key={tab.id}
+                          tab={tab}
+                          themeMode={settings.appearance.themeMode}
+                          onChange={handleRemoteFileChange}
+                          onClose={closeRemoteFileTab}
+                          onDiscard={discardRemoteFileChanges}
+                          onLocateFolder={locateRemoteFileFolder}
+                          onReload={reloadRemoteFile}
+                          onSave={saveRemoteFile}
+                        />
+                      ))}
+                    </Suspense>
+                  ) : null}
                   {terminalTabs.map((tab) => {
                     const tabStep = tab.type === "connecting" ? tab.connectionStep : null;
                     return tabStep ? (
                       <ConnectionStepPanel
                         key={tab.id}
                         step={tabStep}
-                        active={showSessionWorkspace && tab.id === activeTabId}
+                        active={isTerminalPanelActive(tab.id)}
                         onCancel={() => closeTerminal(tab.id)}
                         onEdit={(connection) => {
                           editConnection(connection);
@@ -7127,7 +7592,7 @@ export function WorkspaceShell() {
                         key={tab.id}
                         fallback={
                           <DirectTerminalStatusPanel
-                            active={showSessionWorkspace && tab.id === activeTabId}
+                            active={isTerminalPanelActive(tab.id)}
                             connection={connectionById.get(tab.connectionId) || null}
                             error={null}
                             status="正在加载终端"
@@ -7136,7 +7601,7 @@ export function WorkspaceShell() {
                         }
                       >
                         <TerminalPanel
-                          active={showSessionWorkspace && tab.id === activeTabId}
+                          active={isTerminalPanelActive(tab.id)}
                           connection={connectionById.get(tab.connectionId) || null}
                           ctrlVPaste={settings.localTerminal.ctrlVPaste}
                           cursorBlink={settings.appearance.cursorBlink}
@@ -7172,7 +7637,7 @@ export function WorkspaceShell() {
                       </Suspense>
                     ) : tab.type === "terminal" ? (
                       <DirectTerminalStatusPanel
-                        active={showSessionWorkspace && tab.id === activeTabId}
+                        active={isTerminalPanelActive(tab.id)}
                         connection={connectionById.get(tab.connectionId) || null}
                         error={tab.error || null}
                         status={tab.status}
@@ -7180,6 +7645,24 @@ export function WorkspaceShell() {
                       />
                     ) : null;
                   })}
+                  {showUnifiedSplitDropZones ? (
+                    <div className="workbench-split-drop-zones" aria-hidden="true">
+                      <div
+                        className="workbench-split-drop-zone"
+                        data-workbench-tab-drop-zone="split-file"
+                        data-workbench-tab-drop-active={
+                          workbenchTabDropZone === "split-file" ? "true" : undefined
+                        }
+                      />
+                      <div
+                        className="workbench-split-drop-zone"
+                        data-workbench-tab-drop-zone="split-terminal"
+                        data-workbench-tab-drop-active={
+                          workbenchTabDropZone === "split-terminal" ? "true" : undefined
+                        }
+                      />
+                    </div>
+                  ) : null}
                 </section>
                 {commandSenderOpen ? (
                   <section className="command-sender-panel" aria-label="命令操作台">
@@ -7383,6 +7866,19 @@ export function WorkspaceShell() {
                   </section>
                 ) : null}
               </section>
+
+              {workbenchTabMouseDrag?.active ? (
+                <div
+                  className="workbench-tab-drag-preview"
+                  style={{
+                    left: `${Math.max(8, workbenchTabMouseDrag.currentX - workbenchTabMouseDrag.grabOffsetX)}px`,
+                    top: `${Math.max(8, workbenchTabMouseDrag.currentY - workbenchTabMouseDrag.grabOffsetY)}px`,
+                    width: `${Math.min(Math.max(workbenchTabMouseDrag.previewWidth, 96), 220)}px`,
+                  }}
+                >
+                  <span>{getWorkbenchTabDragLabel(workbenchTabMouseDrag.payload)}</span>
+                </div>
+              ) : null}
 
               <section
                 className={`terminal-workbench-pane rdp-workbench-pane ${
@@ -8716,7 +9212,7 @@ function RemoteFileTransferPanel({
   return (
     <section className={`transfer-panel ${expanded ? "open" : ""}`} aria-label="文件传输">
       <header className="transfer-panel-bar">
-        <div className="transfer-panel-summary">
+        <div className="transfer-panel-summary transfer-progress-summary">
           <strong>传输</strong>
           {activeCount > 0 ? <span className="transfer-chip running">{activeCount.toString()} 进行中</span> : null}
           {errorCount > 0 ? <span className="transfer-chip error">{errorCount.toString()} 失败</span> : null}
@@ -12049,6 +12545,23 @@ function stripTerminalControlText(value: string) {
   return value
     .replace(/\x1b\][^\x07]*(?:\x07|\x1b\\)/g, "")
     .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "");
+}
+
+function mouseDragDistance(drag: WorkbenchTabMouseDrag, currentX: number, currentY: number) {
+  return Math.hypot(currentX - drag.startX, currentY - drag.startY);
+}
+
+function getWorkbenchTabDropZoneFromPoint(x: number, y: number): WorkbenchTabDropZone | null {
+  const target = document
+    .elementFromPoint(x, y)
+    ?.closest<HTMLElement>("[data-workbench-tab-drop-zone]");
+  const zone = target?.dataset.workbenchTabDropZone;
+  return zone === "terminal" ||
+    zone === "file" ||
+    zone === "split-file" ||
+    zone === "split-terminal"
+    ? zone
+    : null;
 }
 
 function isCommandSenderRisky(command: string) {
