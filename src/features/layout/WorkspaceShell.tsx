@@ -794,6 +794,8 @@ export function WorkspaceShell() {
   const [remoteFileRefreshRequest, setRemoteFileRefreshRequest] =
     useState<RemoteFileRefreshRequest | null>(null);
   const [pendingRemoteFileCloseId, setPendingRemoteFileCloseId] = useState<string | null>(null);
+  const [pendingConnectionSessionCloseIds, setPendingConnectionSessionCloseIds] =
+    useState<string[] | null>(null);
   const [pendingRemoteFileConflictId, setPendingRemoteFileConflictId] = useState<string | null>(null);
   const [remoteFileDeleteTarget, setRemoteFileDeleteTarget] =
     useState<RemoteFileDeleteTarget | null>(null);
@@ -1492,8 +1494,17 @@ export function WorkspaceShell() {
             : null
     : null;
   const activeUnifiedTabKind = activeUnifiedTab?.kind || null;
+  const isUnifiedFileTabActive = isActiveTerminalFileUnified && activeUnifiedTabKind === "file";
+  const activeSshToolbarTerminalTab = isUnifiedFileTabActive ? null : activeConnectedTerminalTab;
+  const showSshTerminalScopedActions = Boolean(activeSshToolbarTerminalTab);
+  const showSshCommandSenderPanel = commandSenderOpen && showSshTerminalScopedActions;
+  useEffect(() => {
+    if (isUnifiedFileTabActive && commandSenderOpen) {
+      setCommandSenderOpen(false);
+    }
+  }, [commandSenderOpen, isUnifiedFileTabActive]);
   const activeWorkbenchSurface =
-    isActiveTerminalFileUnified && activeUnifiedTabKind === "file"
+    isUnifiedFileTabActive
       ? "panel"
       : activeConnectedTerminalTab
         ? "terminal"
@@ -1574,6 +1585,14 @@ export function WorkspaceShell() {
   const pendingRemoteFileCloseTab = pendingRemoteFileCloseId
     ? remoteFileTabs.find((tab) => tab.id === pendingRemoteFileCloseId) || null
     : null;
+  const pendingConnectionSessionCloseSet = pendingConnectionSessionCloseIds
+    ? new Set(pendingConnectionSessionCloseIds)
+    : null;
+  const pendingConnectionSessionDirtyTabs = pendingConnectionSessionCloseSet
+    ? remoteFileTabs.filter(
+        (tab) => pendingConnectionSessionCloseSet.has(tab.connectionId) && tab.dirty,
+      )
+    : [];
   const pendingRemoteFileConflictTab = pendingRemoteFileConflictId
     ? remoteFileTabs.find((tab) => tab.id === pendingRemoteFileConflictId) || null
     : null;
@@ -1598,6 +1617,7 @@ export function WorkspaceShell() {
     Boolean(pendingCommandHistoryDelete) ||
     commandHistoryClearOpen ||
     Boolean(pendingRemoteFileCloseTab) ||
+    Boolean(pendingConnectionSessionCloseSet) ||
     Boolean(remoteFileDeleteTarget) ||
     Boolean(pendingRemoteFileConflictTab) ||
     Boolean(remoteFileTextAction) ||
@@ -2758,6 +2778,50 @@ export function WorkspaceShell() {
     }));
   }
 
+  function clearRemoteFileSessionStateForConnections(closingConnectionIds: Set<string>) {
+    const nextRemoteFileTabs = remoteFileTabs.filter(
+      (tab) => !closingConnectionIds.has(tab.connectionId),
+    );
+
+    if (nextRemoteFileTabs.length !== remoteFileTabs.length) {
+      setRemoteFileTabs(nextRemoteFileTabs);
+    }
+    if (
+      activeRemoteFileTabId &&
+      !nextRemoteFileTabs.some((tab) => tab.id === activeRemoteFileTabId)
+    ) {
+      setActiveRemoteFileTabId(null);
+    }
+    setPendingRemoteFileCloseId((tabId) =>
+      tabId && nextRemoteFileTabs.some((tab) => tab.id === tabId) ? tabId : null,
+    );
+    setPendingRemoteFileConflictId((tabId) =>
+      tabId && nextRemoteFileTabs.some((tab) => tab.id === tabId) ? tabId : null,
+    );
+    setRemoteFileDeleteTarget((target) =>
+      target && closingConnectionIds.has(target.connectionId) ? null : target,
+    );
+    if (remoteFileTextAction && closingConnectionIds.has(remoteFileTextAction.connectionId)) {
+      setRemoteFileTextAction(null);
+      setRemoteFileTextValue("");
+      setRemoteFileTextError(null);
+    }
+    setRemoteFileLocateRequest((request) =>
+      request && closingConnectionIds.has(request.connectionId) ? null : request,
+    );
+    setRemoteFileRefreshRequest((request) =>
+      request && closingConnectionIds.has(request.connectionId) ? null : request,
+    );
+    setTerminalFileLayoutByConnectionId((layouts) =>
+      removeConnectionRecordEntries(layouts, closingConnectionIds),
+    );
+    setActiveUnifiedTabByConnectionId((activeTabs) =>
+      removeConnectionRecordEntries(activeTabs, closingConnectionIds),
+    );
+
+    return nextRemoteFileTabs;
+  }
+
   function closeRemoteFileTab(tabId: string) {
     const tab = remoteFileTabs.find((item) => item.id === tabId);
     if (tab?.dirty) {
@@ -3721,6 +3785,7 @@ export function WorkspaceShell() {
 
   async function deleteConnection(connection: ConnectionProfile) {
     await remove(connection.id);
+    const remainingRemoteFileTabs = clearRemoteFileSessionStateForConnections(new Set([connection.id]));
     closeRdpSessions(
       rdpSessionsRef.current
         .filter((session) => session.connectionId === connection.id)
@@ -3740,7 +3805,7 @@ export function WorkspaceShell() {
       terminalTabsRef.current = nextTabs;
       if (
         nextTabs.length === 0 &&
-        remoteFileTabs.length === 0 &&
+        remainingRemoteFileTabs.length === 0 &&
         localTerminalTabsRef.current.length === 0 &&
         !rdpSessionsRef.current.some((session) => session.connectionId !== connection.id) &&
         !vncSessionsRef.current.some((session) => session.connectionId !== connection.id)
@@ -3752,10 +3817,7 @@ export function WorkspaceShell() {
       }
       if (activeConnectionId === connection.id) {
         const nextActiveTab = nextTabs[0] || null;
-        const nextActiveFile =
-          remoteFileTabs.find((tab) => tab.connectionId !== connection.id) ||
-          remoteFileTabs[0] ||
-          null;
+        const nextActiveFile = remainingRemoteFileTabs[0] || null;
         setActiveTabId(nextActiveTab?.id || null);
         setActiveConnectionId(nextActiveTab?.connectionId || nextActiveFile?.connectionId || null);
         if (nextActiveFile && !nextActiveTab) {
@@ -6264,8 +6326,20 @@ export function WorkspaceShell() {
     closeConnectionSessions([connectionId]);
   }
 
-  function closeConnectionSessions(connectionIds: string[]) {
+  function closeConnectionSessions(
+    connectionIds: string[],
+    options: { discardDirtyRemoteFiles?: boolean } = {},
+  ) {
     const closingConnectionIds = new Set(connectionIds);
+    const dirtyRemoteFileTabs = remoteFileTabs.filter(
+      (tab) => closingConnectionIds.has(tab.connectionId) && tab.dirty,
+    );
+    if (dirtyRemoteFileTabs.length > 0 && !options.discardDirtyRemoteFiles) {
+      setPendingConnectionSessionCloseIds(connectionIds);
+      return;
+    }
+    setPendingConnectionSessionCloseIds(null);
+    const remainingRemoteFileTabs = clearRemoteFileSessionStateForConnections(closingConnectionIds);
     connectionIds.forEach((connectionId) => {
       invalidateDockerExecConnection(connectionId);
     });
@@ -6290,7 +6364,7 @@ export function WorkspaceShell() {
       terminalTabsRef.current = nextTabs;
       if (
         nextTabs.length === 0 &&
-        remoteFileTabs.length === 0 &&
+        remainingRemoteFileTabs.length === 0 &&
         localTerminalTabsRef.current.length === 0 &&
         !rdpSessionsRef.current.some((session) => !closingConnectionIds.has(session.connectionId)) &&
         !vncSessionsRef.current.some((session) => !closingConnectionIds.has(session.connectionId))
@@ -6304,8 +6378,8 @@ export function WorkspaceShell() {
       if (activeConnectionId && closingConnectionIds.has(activeConnectionId)) {
         const nextActiveTab = nextTabs[0] || null;
         const nextActiveFile =
-          remoteFileTabs.find((tab) => !closingConnectionIds.has(tab.connectionId)) ||
-          remoteFileTabs[0] ||
+          remainingRemoteFileTabs.find((tab) => !closingConnectionIds.has(tab.connectionId)) ||
+          remainingRemoteFileTabs[0] ||
           null;
         setActiveTabId(nextActiveTab?.id || null);
         setActiveConnectionId(nextActiveTab?.connectionId || nextActiveFile?.connectionId || null);
@@ -7341,7 +7415,7 @@ export function WorkspaceShell() {
                   </nav>
 
                   <section className="remote-editor-stack" aria-label="文件编辑器">
-                    <Suspense fallback={<div className="remote-editor-loading">正在加载编辑器…</div>}>
+                    <Suspense fallback={<RemoteEditorLoadingFallback />}>
                       {remoteFileTabs.map((tab) => (
                         <RemoteFileEditor
                           active={isRemoteFileEditorActive(tab.id)}
@@ -7381,7 +7455,7 @@ export function WorkspaceShell() {
               ) : null}
 
               <section
-                className={`terminal-workbench-pane ${commandSenderOpen ? "command-sender-open" : ""} ${
+                className={`terminal-workbench-pane ${showSshCommandSenderPanel ? "command-sender-open" : ""} ${
                   showSessionWorkspace ? "" : "is-hidden"
                 }`}
                 data-workbench-surface={activeWorkbenchSurface}
@@ -7478,7 +7552,7 @@ export function WorkspaceShell() {
                     </Tooltip>
                   ) : null}
                   <div className="terminal-subtab-actions">
-                    {activeConnectedTerminalTab ? (
+                    {activeSshToolbarTerminalTab ? (
                       <Tooltip label={activeTerminalSearch?.open ? "关闭终端搜索" : "搜索终端输出"}>
                         <button
                           className={`add-subtab terminal-search-toggle ${
@@ -7487,13 +7561,13 @@ export function WorkspaceShell() {
                           type="button"
                           aria-label="搜索终端输出"
                           aria-expanded={Boolean(activeTerminalSearch?.open)}
-                          onClick={() => toggleTerminalSearch(activeConnectedTerminalTab.id)}
+                          onClick={() => toggleTerminalSearch(activeSshToolbarTerminalTab.id)}
                         >
                           <Search className="ui-icon" aria-hidden="true" />
                         </button>
                       </Tooltip>
                     ) : null}
-                    {commandSenderTargets.length > 0 ? (
+                    {showSshTerminalScopedActions && commandSenderTargets.length > 0 ? (
                       <Tooltip label="Command Sender">
                         <button
                           className={`add-subtab command-sender-toggle ${commandSenderOpen ? "active" : ""}`}
@@ -7530,7 +7604,7 @@ export function WorkspaceShell() {
                   aria-label={isActiveTerminalFileUnified ? "终端和文件编辑器" : "终端"}
                 >
                   {isActiveTerminalFileUnified ? (
-                    <Suspense fallback={<div className="remote-editor-loading">正在加载编辑器…</div>}>
+                    <Suspense fallback={<RemoteEditorLoadingFallback />}>
                       {remoteFileTabs.map((tab) => (
                         <RemoteFileEditor
                           active={isRemoteFileEditorActive(tab.id)}
@@ -7664,7 +7738,7 @@ export function WorkspaceShell() {
                     </div>
                   ) : null}
                 </section>
-                {commandSenderOpen ? (
+                {showSshCommandSenderPanel ? (
                   <section className="command-sender-panel" aria-label="命令操作台">
                     <div className="command-sender-console">
                       <header className="command-sender-console-head">
@@ -8832,6 +8906,31 @@ export function WorkspaceShell() {
       />
 
       <ConfirmDialog
+        confirmLabel="放弃并关闭"
+        description={
+          pendingConnectionSessionDirtyTabs.length > 1
+            ? `关闭会话会丢弃 ${pendingConnectionSessionDirtyTabs.length.toString()} 个已修改文件。`
+            : pendingConnectionSessionDirtyTabs[0]
+              ? `关闭会话会丢弃“${pendingConnectionSessionDirtyTabs[0].name}”尚未保存的修改。`
+              : "关闭会话会丢弃尚未保存的文件修改。"
+        }
+        open={Boolean(pendingConnectionSessionCloseIds)}
+        title="关闭包含已修改文件的会话"
+        onConfirm={() => {
+          if (pendingConnectionSessionCloseIds) {
+            closeConnectionSessions(pendingConnectionSessionCloseIds, {
+              discardDirtyRemoteFiles: true,
+            });
+          }
+        }}
+        onOpenChange={(open) => {
+          if (!open) {
+            setPendingConnectionSessionCloseIds(null);
+          }
+        }}
+      />
+
+      <ConfirmDialog
         confirmLabel="删除"
         description={
           remoteFileDeleteTarget
@@ -9172,6 +9271,35 @@ function SettingsViewFallback({ hidden }: { hidden: boolean }) {
       </main>
     </section>
   );
+}
+
+function RemoteEditorLoadingFallback() {
+  return (
+    <div className="remote-editor-loading" aria-live="polite" aria-label="正在加载文件编辑器">
+      <div>
+        <Loader2 className="ui-icon spin" aria-hidden="true" />
+        <span>正在加载编辑器...</span>
+      </div>
+    </div>
+  );
+}
+
+function removeConnectionRecordEntries<T>(
+  records: Record<string, T>,
+  closingConnectionIds: Set<string>,
+) {
+  let changed = false;
+  const nextRecords: Record<string, T> = {};
+
+  Object.entries(records).forEach(([connectionId, value]) => {
+    if (closingConnectionIds.has(connectionId)) {
+      changed = true;
+      return;
+    }
+    nextRecords[connectionId] = value;
+  });
+
+  return changed ? nextRecords : records;
 }
 
 function RemoteFileTransferPanel({
