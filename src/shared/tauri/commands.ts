@@ -59,6 +59,11 @@ import type {
   NetworkDiagnosticResult,
 } from "../../features/tools/dockerTypes";
 import type {
+  ScheduledTaskActionResult,
+  ScheduledTaskInput,
+  ScheduledTaskSummary,
+} from "../../features/tools/scheduledTaskTypes";
+import type {
   LocalPathMetadataResult,
   LocalUploadTempResult,
   RemoteFileDeleteInput,
@@ -756,6 +761,55 @@ export function networkDiagnosticRun(
     request: {
       ...request,
       connection_id: connectionId,
+    },
+  });
+}
+
+export function scheduledTaskList(connectionId: string) {
+  return invoke<ScheduledTaskSummary[]>("scheduled_task_list", {
+    request: {
+      connection_id: connectionId,
+    },
+  });
+}
+
+export function scheduledTaskSave(connectionId: string, task: ScheduledTaskInput) {
+  return invoke<ScheduledTaskSummary>("scheduled_task_save", {
+    request: {
+      connection_id: connectionId,
+      task,
+    },
+  });
+}
+
+export function scheduledTaskDelete(connectionId: string, taskId: string) {
+  return invoke<ScheduledTaskActionResult>("scheduled_task_delete", {
+    request: {
+      connection_id: connectionId,
+      task_id: taskId,
+    },
+  });
+}
+
+export function scheduledTaskSetEnabled(
+  connectionId: string,
+  taskId: string,
+  enabled: boolean,
+) {
+  return invoke<ScheduledTaskSummary>("scheduled_task_set_enabled", {
+    request: {
+      connection_id: connectionId,
+      task_id: taskId,
+      enabled,
+    },
+  });
+}
+
+export function scheduledTaskRunNow(connectionId: string, taskId: string) {
+  return invoke<ScheduledTaskActionResult>("scheduled_task_run_now", {
+    request: {
+      connection_id: connectionId,
+      task_id: taskId,
     },
   });
 }

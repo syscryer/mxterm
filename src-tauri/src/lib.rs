@@ -13,6 +13,7 @@ mod rdp;
 mod remote_exec_pool;
 mod remote_files;
 mod remote_monitor;
+mod scheduled_tasks;
 mod ssh_config;
 mod storage;
 pub mod storage_migration;
@@ -132,6 +133,11 @@ pub fn run() {
             commands::remote_file_download_to_local,
             commands::remote_monitor_snapshot,
             commands::remote_monitor_process_signal,
+            commands::scheduled_task_list,
+            commands::scheduled_task_save,
+            commands::scheduled_task_delete,
+            commands::scheduled_task_set_enabled,
+            commands::scheduled_task_run_now,
             commands::docker_list_containers,
             commands::docker_list_images,
             commands::docker_container_action,

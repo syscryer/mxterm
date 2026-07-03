@@ -16,6 +16,7 @@ import {
   LoaderCircle,
   MemoryStick,
   Network,
+  Pencil,
   Play,
   Plus,
   Power,
@@ -67,6 +68,11 @@ import {
   dockerListImages,
   dockerListNetworks,
   networkDiagnosticRun,
+  scheduledTaskDelete,
+  scheduledTaskList,
+  scheduledTaskRunNow,
+  scheduledTaskSave,
+  scheduledTaskSetEnabled,
 } from "../../shared/tauri/commands";
 import { selectDockerLogSavePath } from "../../shared/tauri/dialog";
 import { hasTauriRuntime } from "../../shared/tauri/runtime";
@@ -99,6 +105,7 @@ import type {
   NetworkDiagnosticKind,
   NetworkDiagnosticResult,
 } from "./dockerTypes";
+import type { ScheduledTaskInput, ScheduledTaskSummary } from "./scheduledTaskTypes";
 
 type ToolboxView = "docker" | "tunnels" | "network" | "schedule";
 type DockerView = "containers" | "images" | "engine";
@@ -303,6 +310,14 @@ export function DockerToolPanel({
   const [diagnosticRunning, setDiagnosticRunning] = useState(false);
   const [diagnosticResult, setDiagnosticResult] = useState<NetworkDiagnosticResult | null>(null);
   const [diagnosticError, setDiagnosticError] = useState<string | null>(null);
+  const [scheduledTasks, setScheduledTasks] = useState<ScheduledTaskSummary[]>([]);
+  const [scheduledTasksLoading, setScheduledTasksLoading] = useState(false);
+  const [scheduledTaskError, setScheduledTaskError] = useState<string | null>(null);
+  const [scheduledTaskNotice, setScheduledTaskNotice] = useState<string | null>(null);
+  const [scheduledTaskBusyKey, setScheduledTaskBusyKey] = useState<string | null>(null);
+  const [scheduledTaskDraft, setScheduledTaskDraft] = useState<ScheduledTaskInput | null>(null);
+  const [scheduledTaskDeleteTarget, setScheduledTaskDeleteTarget] =
+    useState<ScheduledTaskSummary | null>(null);
   const [documentVisible, setDocumentVisible] = useState(
     () => document.visibilityState !== "hidden",
   );
@@ -322,6 +337,7 @@ export function DockerToolPanel({
     images: Boolean(initialCache?.lastImagesRefreshAt),
   });
   const engineInitialLoadRef = useRef(false);
+  const scheduledTasksInitialLoadRef = useRef(false);
   const runningCount = useMemo(
     () => containers.filter((container) => isContainerRunning(container)).length,
     [containers],
@@ -388,6 +404,13 @@ export function DockerToolPanel({
     setDiagnosticResult(null);
     setDiagnosticError(null);
     setDiagnosticRunning(false);
+    setScheduledTasks([]);
+    setScheduledTasksLoading(false);
+    setScheduledTaskError(null);
+    setScheduledTaskNotice(null);
+    setScheduledTaskBusyKey(null);
+    setScheduledTaskDraft(null);
+    setScheduledTaskDeleteTarget(null);
     setEngineActionTarget(null);
     setRestartAfterSave(false);
     dockerInitialLoadRef.current = {
@@ -395,6 +418,7 @@ export function DockerToolPanel({
       images: Boolean(cached?.lastImagesRefreshAt),
     };
     engineInitialLoadRef.current = false;
+    scheduledTasksInitialLoadRef.current = false;
     containersRefreshRef.current = createRefreshRunState();
     imagesRefreshRef.current = createRefreshRunState();
     engineRefreshRef.current = createRefreshRunState();
@@ -579,6 +603,19 @@ export function DockerToolPanel({
     }, engineAutoRefreshMs);
     return () => window.clearInterval(timer);
   }, [dockerAutoRefreshActive, dockerView, connectionId]);
+
+  useEffect(() => {
+    if (
+      !active ||
+      toolboxView !== "schedule" ||
+      !connectionId ||
+      scheduledTasksInitialLoadRef.current
+    ) {
+      return;
+    }
+    scheduledTasksInitialLoadRef.current = true;
+    void refreshScheduledTasks();
+  }, [active, toolboxView, connectionId]);
 
   if (!active) {
     return null;
@@ -1380,6 +1417,175 @@ export function DockerToolPanel({
     setDiagnosticError(null);
   }
 
+  async function refreshScheduledTasks() {
+    if (!connectionId) {
+      return;
+    }
+    setScheduledTasksLoading(true);
+    setScheduledTaskError(null);
+    try {
+      const nextTasks = hasTauriRuntime()
+        ? await scheduledTaskList(connectionId)
+        : previewScheduledTasks();
+      setScheduledTasks(nextTasks);
+    } catch (nextError) {
+      setScheduledTaskError(formatDockerError(nextError));
+    } finally {
+      setScheduledTasksLoading(false);
+    }
+  }
+
+  function openNewScheduledTask() {
+    setScheduledTaskDraft({
+      id: null,
+      name: "",
+      cron: "0 9 * * *",
+      command: "",
+      enabled: true,
+    });
+    setScheduledTaskError(null);
+    setScheduledTaskNotice(null);
+  }
+
+  function editScheduledTask(task: ScheduledTaskSummary) {
+    setScheduledTaskDraft({
+      id: task.id,
+      name: task.name,
+      cron: task.cron,
+      command: task.command,
+      enabled: task.enabled,
+    });
+    setScheduledTaskError(null);
+    setScheduledTaskNotice(null);
+  }
+
+  function changeScheduledTaskDraft(patch: Partial<ScheduledTaskInput>) {
+    setScheduledTaskDraft((current) => (current ? { ...current, ...patch } : current));
+  }
+
+  async function submitScheduledTask(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!connectionId || !scheduledTaskDraft) {
+      return;
+    }
+    const draft = {
+      ...scheduledTaskDraft,
+      name: scheduledTaskDraft.name.trim(),
+      cron: scheduledTaskDraft.cron.trim(),
+      command: scheduledTaskDraft.command.trim(),
+    };
+    if (!draft.name) {
+      setScheduledTaskError("请输入任务名称。");
+      return;
+    }
+    if (!draft.cron) {
+      setScheduledTaskError("请输入 cron 表达式。");
+      return;
+    }
+    if (!draft.command) {
+      setScheduledTaskError("请输入要执行的命令。");
+      return;
+    }
+
+    setScheduledTaskBusyKey("save");
+    setScheduledTaskError(null);
+    setScheduledTaskNotice(null);
+    try {
+      const saved = hasTauriRuntime()
+        ? await scheduledTaskSave(connectionId, draft)
+        : previewSaveScheduledTask(scheduledTasks, draft);
+      setScheduledTasks((items) => upsertScheduledTask(items, saved));
+      setScheduledTaskDraft(null);
+      setScheduledTaskNotice(draft.id ? "定时任务已更新。" : "定时任务已创建。");
+    } catch (nextError) {
+      setScheduledTaskError(formatDockerError(nextError));
+    } finally {
+      setScheduledTaskBusyKey(null);
+    }
+  }
+
+  async function toggleScheduledTask(task: ScheduledTaskSummary) {
+    if (!connectionId) {
+      return;
+    }
+    const enabled = !task.enabled;
+    setScheduledTaskBusyKey(`toggle:${task.id}`);
+    setScheduledTaskError(null);
+    setScheduledTaskNotice(null);
+    try {
+      const updated = hasTauriRuntime()
+        ? await scheduledTaskSetEnabled(connectionId, task.id, enabled)
+        : { ...task, enabled, updated_at: previewTimestamp() };
+      setScheduledTasks((items) => upsertScheduledTask(items, updated));
+      setScheduledTaskNotice(enabled ? "定时任务已启用。" : "定时任务已停用。");
+    } catch (nextError) {
+      setScheduledTaskError(formatDockerError(nextError));
+    } finally {
+      setScheduledTaskBusyKey(null);
+    }
+  }
+
+  async function runScheduledTaskNow(task: ScheduledTaskSummary) {
+    if (!connectionId) {
+      return;
+    }
+    setScheduledTaskBusyKey(`run:${task.id}`);
+    setScheduledTaskError(null);
+    setScheduledTaskNotice(null);
+    try {
+      const result = hasTauriRuntime()
+        ? await scheduledTaskRunNow(connectionId, task.id)
+        : previewRunScheduledTask(task);
+      setScheduledTaskNotice(result.message);
+      if (hasTauriRuntime()) {
+        await refreshScheduledTasks();
+      } else {
+        setScheduledTasks((items) =>
+          upsertScheduledTask(items, {
+            ...task,
+            last_run: {
+              started_at: new Date().toISOString(),
+              exit_code: result.ok ? 0 : 1,
+              status: result.ok ? "success" : "failed",
+              output_preview: result.output || "",
+            },
+          }),
+        );
+      }
+    } catch (nextError) {
+      setScheduledTaskError(formatDockerError(nextError));
+      await refreshScheduledTasks();
+    } finally {
+      setScheduledTaskBusyKey(null);
+    }
+  }
+
+  async function confirmDeleteScheduledTask() {
+    if (!connectionId || !scheduledTaskDeleteTarget) {
+      return;
+    }
+    const target = scheduledTaskDeleteTarget;
+    setScheduledTaskBusyKey(`delete:${target.id}`);
+    setScheduledTaskError(null);
+    setScheduledTaskNotice(null);
+    try {
+      const result = hasTauriRuntime()
+        ? await scheduledTaskDelete(connectionId, target.id)
+        : { ok: true, message: "定时任务已删除。", output: null };
+      setScheduledTasks((items) => items.filter((item) => item.id !== target.id));
+      if (scheduledTaskDraft?.id === target.id) {
+        setScheduledTaskDraft(null);
+      }
+      setScheduledTaskNotice(result.message);
+    } catch (nextError) {
+      setScheduledTaskError(formatDockerError(nextError));
+      await refreshScheduledTasks();
+    } finally {
+      setScheduledTaskBusyKey(null);
+      setScheduledTaskDeleteTarget(null);
+    }
+  }
+
   async function copyDiagnosticOutput() {
     const content = formatNetworkDiagnosticOutput(diagnosticResult);
     if (!content) {
@@ -1606,10 +1812,23 @@ export function DockerToolPanel({
           onRun={(event) => void runNetworkDiagnostic(event)}
         />
       ) : (
-        <ToolboxEmptyState
-          icon={Timer}
-          title="定时任务待接入"
-          description="后续会在这里维护轻量定时命令和执行记录。"
+        <ScheduledTasksView
+          busyKey={scheduledTaskBusyKey}
+          connection={connection}
+          draft={scheduledTaskDraft}
+          error={scheduledTaskError}
+          loading={scheduledTasksLoading}
+          notice={scheduledTaskNotice}
+          tasks={scheduledTasks}
+          onCancelEdit={() => setScheduledTaskDraft(null)}
+          onChangeDraft={changeScheduledTaskDraft}
+          onDelete={setScheduledTaskDeleteTarget}
+          onEdit={editScheduledTask}
+          onNew={openNewScheduledTask}
+          onRefresh={() => void refreshScheduledTasks()}
+          onRunNow={(task) => void runScheduledTaskNow(task)}
+          onSubmit={submitScheduledTask}
+          onToggle={(task) => void toggleScheduledTask(task)}
         />
       )}
 
@@ -1770,6 +1989,23 @@ export function DockerToolPanel({
         confirmLabel="保存并重启"
         onConfirm={() => saveEngineConfig(true)}
         onOpenChange={(open) => setRestartAfterSave(open)}
+      />
+
+      <ConfirmDialog
+        open={Boolean(scheduledTaskDeleteTarget)}
+        title="删除定时任务"
+        description={
+          scheduledTaskDeleteTarget
+            ? `确认删除定时任务“${scheduledTaskDeleteTarget.name}”吗？远端 crontab 中对应的 mXterm 管理项会被移除。`
+            : ""
+        }
+        confirmLabel="删除"
+        onConfirm={confirmDeleteScheduledTask}
+        onOpenChange={(open) => {
+          if (!open) {
+            setScheduledTaskDeleteTarget(null);
+          }
+        }}
       />
     </section>
   );
@@ -3242,6 +3478,329 @@ function DockerLogsDialog({
   );
 }
 
+function ScheduledTasksView({
+  busyKey,
+  connection,
+  draft,
+  error,
+  loading,
+  notice,
+  tasks,
+  onCancelEdit,
+  onChangeDraft,
+  onDelete,
+  onEdit,
+  onNew,
+  onRefresh,
+  onRunNow,
+  onSubmit,
+  onToggle,
+}: {
+  busyKey: string | null;
+  connection: ConnectionProfile | null;
+  draft: ScheduledTaskInput | null;
+  error: string | null;
+  loading: boolean;
+  notice: string | null;
+  tasks: ScheduledTaskSummary[];
+  onCancelEdit: () => void;
+  onChangeDraft: (patch: Partial<ScheduledTaskInput>) => void;
+  onDelete: (task: ScheduledTaskSummary) => void;
+  onEdit: (task: ScheduledTaskSummary) => void;
+  onNew: () => void;
+  onRefresh: () => void;
+  onRunNow: (task: ScheduledTaskSummary) => void;
+  onSubmit: (event: FormEvent<HTMLFormElement>) => void;
+  onToggle: (task: ScheduledTaskSummary) => void;
+}) {
+  const enabledCount = tasks.filter((task) => task.enabled).length;
+  const saving = busyKey === "save";
+
+  if (!connection) {
+    return (
+      <div className="scheduled-tasks">
+        <ToolboxEmptyState
+          icon={Timer}
+          title="暂无 SSH 会话"
+          description="打开或切换到一个 SSH 会话后，可以维护远端当前用户的定时任务。"
+        />
+      </div>
+    );
+  }
+
+  return (
+    <div className="scheduled-tasks">
+      <header className="docker-tool-summary scheduled-task-summary">
+        <div>
+          <strong>定时任务</strong>
+          <span>
+            {tasks.length > 0
+              ? `共 ${tasks.length.toString()} 个 · 启用 ${enabledCount.toString()} 个`
+              : "当前主机暂无 mXterm 定时任务"}
+          </span>
+        </div>
+        <div className="scheduled-task-summary-actions">
+          <Tooltip label="刷新定时任务">
+            <button
+              className="toolbox-icon-button"
+              type="button"
+              aria-label="刷新定时任务"
+              disabled={loading}
+              onClick={onRefresh}
+            >
+              <RefreshCw className={`ui-icon ${loading ? "spin" : ""}`} aria-hidden="true" />
+            </button>
+          </Tooltip>
+          <button
+            className="toolbox-mini-button primary"
+            type="button"
+            disabled={saving}
+            onClick={onNew}
+          >
+            <Plus className="ui-icon" aria-hidden="true" />
+            新增
+          </button>
+        </div>
+      </header>
+
+      {error ? <div className="docker-inline-error">{error}</div> : null}
+      {notice ? <div className="docker-inline-notice">{notice}</div> : null}
+
+      {draft ? (
+        <form className="scheduled-task-form" onSubmit={onSubmit}>
+          <header>
+            <strong>{draft.id ? "编辑任务" : "新增任务"}</strong>
+            <button
+              className="toolbox-icon-button"
+              type="button"
+              aria-label="取消编辑定时任务"
+              disabled={saving}
+              onClick={onCancelEdit}
+            >
+              <X className="ui-icon" aria-hidden="true" />
+            </button>
+          </header>
+          <div className="scheduled-task-form-grid">
+            <label>
+              <span>名称</span>
+              <input
+                value={draft.name}
+                onChange={(event) => onChangeDraft({ name: event.currentTarget.value })}
+                placeholder="每日巡检"
+                disabled={saving}
+              />
+            </label>
+            <label>
+              <span>Cron</span>
+              <input
+                value={draft.cron}
+                onChange={(event) => onChangeDraft({ cron: event.currentTarget.value })}
+                placeholder="0 9 * * *"
+                disabled={saving}
+                spellCheck={false}
+              />
+            </label>
+            <label className="scheduled-task-command-field">
+              <span>命令</span>
+              <textarea
+                value={draft.command}
+                onChange={(event) => onChangeDraft({ command: event.currentTarget.value })}
+                placeholder="df -h && uptime"
+                disabled={saving}
+                spellCheck={false}
+                rows={3}
+              />
+            </label>
+          </div>
+          <footer>
+            <label className="scheduled-task-enabled-check">
+              <input
+                type="checkbox"
+                checked={draft.enabled}
+                disabled={saving}
+                onChange={(event) => onChangeDraft({ enabled: event.currentTarget.checked })}
+              />
+              <span>启用任务</span>
+            </label>
+            <div className="scheduled-task-form-actions">
+              <button
+                className="toolbox-mini-button"
+                type="button"
+                disabled={saving}
+                onClick={onCancelEdit}
+              >
+                取消
+              </button>
+              <button className="toolbox-mini-button primary" type="submit" disabled={saving}>
+                {saving ? (
+                  <LoaderCircle className="ui-icon spin" aria-hidden="true" />
+                ) : (
+                  <Save className="ui-icon" aria-hidden="true" />
+                )}
+                保存
+              </button>
+            </div>
+          </footer>
+        </form>
+      ) : null}
+
+      <div className="scheduled-task-list">
+        {loading && tasks.length === 0 ? (
+          <ToolboxEmptyState
+            icon={LoaderCircle}
+            title="正在读取定时任务"
+            description="正在读取远端当前用户 crontab 中的 mXterm 管理项。"
+          />
+        ) : tasks.length === 0 ? (
+          <div className="scheduled-task-empty">
+            <ToolboxEmptyState
+              icon={Timer}
+              title="暂无定时任务"
+              description="创建后会写入远端当前用户 crontab，mXterm 关闭后仍会执行。"
+            />
+            <button className="toolbox-mini-button primary" type="button" onClick={onNew}>
+              <Plus className="ui-icon" aria-hidden="true" />
+              新增任务
+            </button>
+          </div>
+        ) : (
+          tasks.map((task) => (
+            <ScheduledTaskRow
+              busyKey={busyKey}
+              key={task.id}
+              task={task}
+              onDelete={onDelete}
+              onEdit={onEdit}
+              onRunNow={onRunNow}
+              onToggle={onToggle}
+            />
+          ))
+        )}
+      </div>
+    </div>
+  );
+}
+
+function ScheduledTaskRow({
+  busyKey,
+  task,
+  onDelete,
+  onEdit,
+  onRunNow,
+  onToggle,
+}: {
+  busyKey: string | null;
+  task: ScheduledTaskSummary;
+  onDelete: (task: ScheduledTaskSummary) => void;
+  onEdit: (task: ScheduledTaskSummary) => void;
+  onRunNow: (task: ScheduledTaskSummary) => void;
+  onToggle: (task: ScheduledTaskSummary) => void;
+}) {
+  const running = busyKey === `run:${task.id}`;
+  const toggling = busyKey === `toggle:${task.id}`;
+  const deleting = busyKey === `delete:${task.id}`;
+  const busy = Boolean(busyKey);
+  const lastRun = task.last_run || null;
+
+  return (
+    <article className={`scheduled-task-row ${task.enabled ? "enabled" : "disabled"}`}>
+      <div className="scheduled-task-main">
+        <div className="scheduled-task-title">
+          <span className={`scheduled-task-dot ${task.enabled ? "enabled" : "disabled"}`} />
+          <strong title={task.name}>{task.name}</strong>
+          <span className={`scheduled-task-state ${task.enabled ? "enabled" : "disabled"}`}>
+            {task.enabled ? "已启用" : "已停用"}
+          </span>
+        </div>
+        <div className="scheduled-task-meta">
+          <code title={task.cron}>{task.cron}</code>
+          <span title={formatScheduledTimestamp(task.updated_at)}>
+            更新 {formatScheduledTimestamp(task.updated_at)}
+          </span>
+        </div>
+        <code className="scheduled-task-command" title={task.command}>
+          {task.command}
+        </code>
+        <div className="scheduled-task-last-run">
+          {lastRun ? (
+            <>
+              <span className={`scheduled-task-run-state ${normalizeScheduledRunStatus(lastRun.status)}`}>
+                {formatScheduledRunStatus(lastRun.status)}
+              </span>
+              <span>{formatScheduledTimestamp(lastRun.started_at)}</span>
+              <code title={lastRun.output_preview || undefined}>
+                {lastRun.output_preview || "无输出"}
+              </code>
+            </>
+          ) : (
+            <span>暂无执行记录</span>
+          )}
+        </div>
+      </div>
+      <div className="scheduled-task-actions">
+        <Tooltip label="手动执行">
+          <button
+            className="toolbox-icon-button"
+            type="button"
+            aria-label={`手动执行 ${task.name}`}
+            disabled={busy}
+            onClick={() => onRunNow(task)}
+          >
+            {running ? (
+              <LoaderCircle className="ui-icon spin" aria-hidden="true" />
+            ) : (
+              <Play className="ui-icon" aria-hidden="true" />
+            )}
+          </button>
+        </Tooltip>
+        <Tooltip label={task.enabled ? "停用任务" : "启用任务"}>
+          <button
+            className="toolbox-icon-button"
+            type="button"
+            aria-label={`${task.enabled ? "停用" : "启用"} ${task.name}`}
+            disabled={busy}
+            onClick={() => onToggle(task)}
+          >
+            {toggling ? (
+              <LoaderCircle className="ui-icon spin" aria-hidden="true" />
+            ) : task.enabled ? (
+              <Pause className="ui-icon" aria-hidden="true" />
+            ) : (
+              <Power className="ui-icon" aria-hidden="true" />
+            )}
+          </button>
+        </Tooltip>
+        <Tooltip label="编辑任务">
+          <button
+            className="toolbox-icon-button"
+            type="button"
+            aria-label={`编辑 ${task.name}`}
+            disabled={busy}
+            onClick={() => onEdit(task)}
+          >
+            <Pencil className="ui-icon" aria-hidden="true" />
+          </button>
+        </Tooltip>
+        <Tooltip label="删除任务">
+          <button
+            className="toolbox-icon-button danger"
+            type="button"
+            aria-label={`删除 ${task.name}`}
+            disabled={busy}
+            onClick={() => onDelete(task)}
+          >
+            {deleting ? (
+              <LoaderCircle className="ui-icon spin" aria-hidden="true" />
+            ) : (
+              <Trash2 className="ui-icon" aria-hidden="true" />
+            )}
+          </button>
+        </Tooltip>
+      </div>
+    </article>
+  );
+}
+
 function ToolboxEmptyState({
   description,
   icon: Icon,
@@ -3863,6 +4422,59 @@ function formatDockerError(error: unknown) {
   return String(error);
 }
 
+function upsertScheduledTask(
+  tasks: ScheduledTaskSummary[],
+  task: ScheduledTaskSummary,
+): ScheduledTaskSummary[] {
+  const existingIndex = tasks.findIndex((item) => item.id === task.id);
+  if (existingIndex === -1) {
+    return [task, ...tasks];
+  }
+  return tasks.map((item, index) => (index === existingIndex ? task : item));
+}
+
+function normalizeScheduledRunStatus(
+  status: string | null | undefined,
+): "success" | "failed" | "running" | "unknown" {
+  const value = (status || "unknown").trim().toLowerCase();
+  if (value === "success" || value === "failed" || value === "running") {
+    return value;
+  }
+  return "unknown";
+}
+
+function formatScheduledRunStatus(status: string | null | undefined) {
+  const value = normalizeScheduledRunStatus(status);
+  const labels: Record<"success" | "failed" | "running" | "unknown", string> = {
+    failed: "失败",
+    running: "运行中",
+    success: "成功",
+    unknown: "未知",
+  };
+  return labels[value];
+}
+
+function formatScheduledTimestamp(value: string | null | undefined) {
+  if (!value) {
+    return "-";
+  }
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return "-";
+  }
+  if (/^\d+$/.test(trimmed)) {
+    const millis = Number(trimmed) * 1000;
+    if (Number.isFinite(millis)) {
+      return new Date(millis).toLocaleString();
+    }
+  }
+  const parsed = Date.parse(trimmed);
+  if (Number.isFinite(parsed)) {
+    return new Date(parsed).toLocaleString();
+  }
+  return trimmed;
+}
+
 function formatOptionalNumber(value: number | null | undefined) {
   return value === null || value === undefined ? "-" : value.toString();
 }
@@ -3901,6 +4513,65 @@ function formatBytePair(used: number | null | undefined, total: number | null | 
   const nextUsed = used / divisor;
   const digits = unitIndex === 0 || nextTotal >= 100 ? 0 : 2;
   return `${nextUsed.toFixed(digits)} / ${nextTotal.toFixed(digits)} ${units[unitIndex]}`;
+}
+
+function previewTimestamp() {
+  return Math.floor(Date.now() / 1000).toString();
+}
+
+function previewScheduledTasks(): ScheduledTaskSummary[] {
+  return [
+    {
+      id: "preview-health-check",
+      name: "每日巡检",
+      cron: "0 9 * * *",
+      command: "uptime && df -h /",
+      enabled: true,
+      updated_at: previewTimestamp(),
+      last_run: {
+        started_at: new Date(Date.now() - 36 * 60 * 60 * 1000).toISOString(),
+        exit_code: 0,
+        status: "success",
+        output_preview: "load average: 0.12, 0.08, 0.05\n/dev/sda1  41% /",
+      },
+    },
+    {
+      id: "preview-cleanup",
+      name: "清理临时目录",
+      cron: "@daily",
+      command: "find /tmp -maxdepth 1 -name 'mxterm-*' -mtime +3 -delete",
+      enabled: false,
+      updated_at: previewTimestamp(),
+      last_run: null,
+    },
+  ];
+}
+
+function previewSaveScheduledTask(
+  tasks: ScheduledTaskSummary[],
+  draft: ScheduledTaskInput,
+): ScheduledTaskSummary {
+  const id =
+    draft.id?.trim() ||
+    `preview-task-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+  const existing = tasks.find((task) => task.id === id);
+  return {
+    id,
+    name: draft.name,
+    cron: draft.cron,
+    command: draft.command,
+    enabled: draft.enabled,
+    updated_at: previewTimestamp(),
+    last_run: existing?.last_run || null,
+  };
+}
+
+function previewRunScheduledTask(task: ScheduledTaskSummary) {
+  return {
+    ok: true,
+    message: "定时任务已手动执行。",
+    output: `preview: ${task.command}`,
+  };
 }
 
 function previewDockerContainers(): DockerContainerSummary[] {
