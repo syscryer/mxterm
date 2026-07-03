@@ -40,6 +40,11 @@ use crate::rdp::{
     RdpRunnerProbeRequest, RdpRunnerProbeResult, RdpSessionCloseResult, RdpSessionManager,
     RdpSessionRequest, RdpSessionResizeResult, RdpSessionRevealResult,
 };
+use crate::scheduled_tasks::{
+    ScheduledTaskActionResult, ScheduledTaskConnectionRequest, ScheduledTaskExecSessionManager,
+    ScheduledTaskIdRequest, ScheduledTaskSaveRequest, ScheduledTaskSetEnabledRequest,
+    ScheduledTaskSummary,
+};
 use crate::remote_files::{
     RemoteFileArchiveUploadResult, RemoteFileEntry, RemoteFileEntryMetadata, RemoteFileManager,
     RemoteFileMetadata, RemoteFilePathCheckResult, RemoteFileReadResult, RemoteFileUploadResult,
@@ -676,6 +681,51 @@ pub async fn remote_monitor_process_signal(
     manager
         .signal_process(&app, config, request.pid, request.signal)
         .await
+}
+
+#[tauri::command]
+pub async fn scheduled_task_list(
+    app: AppHandle,
+    manager: State<'_, ScheduledTaskExecSessionManager>,
+    request: ScheduledTaskConnectionRequest,
+) -> Result<Vec<ScheduledTaskSummary>, AppError> {
+    crate::scheduled_tasks::list_tasks(&app, &manager, request).await
+}
+
+#[tauri::command]
+pub async fn scheduled_task_save(
+    app: AppHandle,
+    manager: State<'_, ScheduledTaskExecSessionManager>,
+    request: ScheduledTaskSaveRequest,
+) -> Result<ScheduledTaskSummary, AppError> {
+    crate::scheduled_tasks::save_task(&app, &manager, request).await
+}
+
+#[tauri::command]
+pub async fn scheduled_task_delete(
+    app: AppHandle,
+    manager: State<'_, ScheduledTaskExecSessionManager>,
+    request: ScheduledTaskIdRequest,
+) -> Result<ScheduledTaskActionResult, AppError> {
+    crate::scheduled_tasks::delete_task(&app, &manager, request).await
+}
+
+#[tauri::command]
+pub async fn scheduled_task_set_enabled(
+    app: AppHandle,
+    manager: State<'_, ScheduledTaskExecSessionManager>,
+    request: ScheduledTaskSetEnabledRequest,
+) -> Result<ScheduledTaskSummary, AppError> {
+    crate::scheduled_tasks::set_task_enabled(&app, &manager, request).await
+}
+
+#[tauri::command]
+pub async fn scheduled_task_run_now(
+    app: AppHandle,
+    manager: State<'_, ScheduledTaskExecSessionManager>,
+    request: ScheduledTaskIdRequest,
+) -> Result<ScheduledTaskActionResult, AppError> {
+    crate::scheduled_tasks::run_task_now(&app, &manager, request).await
 }
 
 #[tauri::command]

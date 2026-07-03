@@ -1919,6 +1919,126 @@ window.confirm("删除容器？") && removeContainerLocally(container.id);
 />
 ```
 
+## Scenario: Scheduled Task Toolbox UI and Tauri Wrappers
+
+### 1. Scope / Trigger
+
+- Trigger: frontend code adds or changes the right-pane scheduled task toolbox, scheduled task typed wrappers, payload types, or task row/form behavior.
+- Source files: `src/features/tools/DockerToolPanel.tsx`, `src/features/tools/scheduledTaskTypes.ts`, `src/shared/tauri/commands.ts`, and `src/styles/app.css`.
+- This is a cross-layer command contract because Rust owns saved SSH resolution, remote crontab parsing/writes, command wrapping, and log summaries while React owns list/form state and user-visible actions.
+
+### 2. Signatures
+
+Typed wrappers:
+
+```ts
+scheduledTaskList(connectionId: string): Promise<ScheduledTaskSummary[]>
+scheduledTaskSave(connectionId: string, task: ScheduledTaskInput): Promise<ScheduledTaskSummary>
+scheduledTaskDelete(connectionId: string, taskId: string): Promise<ScheduledTaskActionResult>
+scheduledTaskSetEnabled(connectionId: string, taskId: string, enabled: boolean): Promise<ScheduledTaskSummary>
+scheduledTaskRunNow(connectionId: string, taskId: string): Promise<ScheduledTaskActionResult>
+```
+
+Core payload fields:
+
+```ts
+type ScheduledTaskInput = {
+  id?: string | null
+  name: string
+  cron: string
+  command: string
+  enabled: boolean
+}
+
+type ScheduledTaskSummary = ScheduledTaskInput & {
+  id: string
+  updated_at: string
+  last_run?: ScheduledTaskLogEntry | null
+}
+
+type ScheduledTaskLogEntry = {
+  started_at?: string | null
+  exit_code?: number | null
+  status: "success" | "failed" | "running" | "unknown" | string
+  output_preview: string
+}
+```
+
+### 3. Contracts
+
+- Components must call scheduled task backend commands through `src/shared/tauri/commands.ts`; do not call raw `invoke("scheduled_task_*")` from feature components.
+- Wrapper request keys must match Rust exactly: `connection_id`, `task`, `task_id`, and `enabled`.
+- The UI sends only the saved `ConnectionProfile.id`. It must not send SSH host, username, password, private-key path, or passphrase for scheduled task operations.
+- The scheduled task view belongs under the existing tools tab value `schedule`; do not create another right-pane first-level tool just for this MVP.
+- Browser preview may render deterministic sample rows and local-only edits, but must not fake persistence when Tauri runtime is available.
+- Create/edit uses an inline compact panel inside the toolbox, visible labels, and token-driven form styles. Do not introduce native selects, `window.confirm`, feature-local modal shells, or a separate dashboard visual system.
+- Delete must use `ConfirmDialog`; do not optimistically remove the row until the delete command succeeds.
+- Manual run must wait for `scheduledTaskRunNow(...)`; if Tauri runtime is available, refresh the list afterward so `last_run` reflects the remote log summary.
+- Disabled tasks remain visible and editable. The UI should show enabled/disabled state with text plus visual state, not color alone.
+
+### 4. Validation & Error Matrix
+
+| Condition | Frontend behavior |
+| --- | --- |
+| No active SSH connection | Show a neutral unavailable state and do not call scheduled task commands. |
+| No Tauri runtime | Render deterministic preview rows and keep edits local to the preview. |
+| Blank task name, cron, or command before submit | Keep the inline form open and show a recoverable validation message near the task panel. |
+| Rust returns `scheduled_task_crontab_unavailable` | Keep the list/form state intact and show that remote crontab is unavailable. |
+| Rust returns `scheduled_task_crontab_invalid` | Do not retry or overwrite; show the error so the user can inspect the malformed managed block. |
+| Save succeeds | Upsert the returned `ScheduledTaskSummary`, close the inline form, and show a success notice. |
+| Toggle succeeds | Replace the row with the returned summary; do not hide disabled tasks. |
+| Manual run succeeds or command exits non-zero | Show the returned message and refresh the list; command non-zero is a task result, not a UI transport failure. |
+| Delete succeeds | Remove only the deleted row and close the confirmation dialog. |
+
+### 5. Good / Base / Bad Cases
+
+- Good: the schedule tab first loads `scheduledTaskList(connection.id)`, renders empty/loading/error states, and shows each task's name, enabled state, cron, command, update time, and last run summary.
+- Good: saving a task sends `{ connection_id, task }` through `scheduledTaskSave(...)`; Rust validates cron and writes the managed crontab block.
+- Good: manual run calls `scheduledTaskRunNow(connection.id, task.id)` and then refreshes the task list instead of fabricating a log entry.
+- Base: browser preview has no Tauri runtime; the view renders sample tasks and local-only edits for layout inspection.
+- Bad: a component calls `invoke("scheduled_task_save", ...)` directly, passes SSH credentials from React, removes a row before backend delete success, uses `window.confirm`, or hides disabled tasks as if they were deleted.
+
+### 6. Tests Required
+
+- Run `npm run check` after changing scheduled task types, wrappers, `DockerToolPanel` schedule UI, or schedule CSS.
+- Run `node scripts/check-startup-module-boundary-source.mjs` after touching toolbox imports or lazy feature boundaries.
+- Cross-check TypeScript request/response fields against Rust structs in `src-tauri/src/scheduled_tasks.rs`.
+- Manual desktop checks should cover no connection, no crontab/tool missing error, empty list, create, edit, enable/disable, delete confirmation, manual run success/failure, and dark theme contrast.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```tsx
+await invoke("scheduled_task_save", {
+  request: {
+    connection_id: connection.id,
+    task,
+  },
+});
+```
+
+#### Correct
+
+```tsx
+await scheduledTaskSave(connection.id, task);
+```
+
+#### Wrong
+
+```tsx
+setTasks((items) => items.filter((item) => item.id !== task.id));
+await scheduledTaskDelete(connection.id, task.id);
+```
+
+#### Correct
+
+```tsx
+const result = await scheduledTaskDelete(connection.id, task.id);
+setNotice(result.message);
+setTasks((items) => items.filter((item) => item.id !== task.id));
+```
+
 ## Scenario: AI Terminal Assistant UI and Tauri Wrappers
 
 ### 1. Scope / Trigger
