@@ -347,8 +347,8 @@ invoke<RemoteFileEntry[]>("remote_file_list", {
 - `path` is optional. Empty or missing path is allowed and is interpreted by Rust as the remote shell's default `.` path.
 - Response entries use the serialized `type` field, not Rust's internal `kind` field name.
 - Directories render before symlinks, files, and other entries. The frontend may sort defensively, but should not rely on receiving unsorted output.
-- `TerminalPanel` may report current directory via `onCurrentDirectoryChange(tabId, path)` when terminal output contains `OSC 7` or when the user enters a simple `cd` command that can be resolved locally. `WorkspaceShell` stores the last path per terminal tab and passes the active tab path into `RemoteFilePanel`.
-- The file panel must not automatically reload remote files on every terminal directory change. The toolbar locate action is manual: clicking it uses the active tab's stored path only. If no path has been recorded, the locate action must stay disabled or show an explanatory tooltip; it must not ask `TerminalPanel` to write any command.
+- `TerminalPanel` may report current directory via `onCurrentDirectoryChange(tabId, path)` when terminal output contains `OSC 7` or when the user enters a simple `cd` command that can be resolved locally. When the file-panel locate action needs a fallback and `OSC 7` is absent, `WorkspaceShell` may ask the active tab for a locate-time xterm snapshot and inspect a few already-rendered lines for a high-confidence shell prompt path such as `user@host:/path$`.
+- The file panel must not automatically reload remote files on every terminal directory change. The toolbar locate action is manual: clicking it uses the active tab's stored path first and may fall back to a locate-time prompt snapshot only for that click. If no path can be resolved, the locate action must stay disabled or show an explanatory tooltip; it must not ask `TerminalPanel` to write any command.
 - When no Tauri runtime exists, preview-only fallback entries are acceptable so browser layout checks remain inspectable.
 
 ### 4. Validation & Error Matrix
@@ -361,12 +361,12 @@ invoke<RemoteFileEntry[]>("remote_file_list", {
 | Remote list command fails | Show the user-facing error in the panel and keep the previous tree state when possible. |
 | Directory row is expanded and not cached | Lazily call `remoteFileList(connection.id, entry.path)`. |
 | Refresh is requested | Force reload the currently displayed path even if cached. |
-| `OSC 7` is absent | Track simple user-entered `cd` commands as a best-effort fallback. Keep showing the default/manual path until a path is recorded. Do not parse arbitrary shell prompts and do not write current-directory probes into the interactive terminal. |
+| `OSC 7` is absent | Track simple user-entered `cd` commands as the eager fallback. On manual locate, the active tab may inspect a few already-rendered prompt lines as a best-effort snapshot fallback. Keep showing the default/manual path until a path is recorded. Do not parse arbitrary command output and do not write current-directory probes into the interactive terminal. |
 | File icon image fails to load | Render a local fallback icon or compact type badge. |
 
 ### 5. Good / Base / Bad Cases
 
-- Good: `TerminalPanel` extracts `OSC 7` paths or resolves a user-entered `cd /path`, `WorkspaceShell` records the path per tab, and `RemoteFilePanel` reloads that directory only after the user clicks the locate action.
+- Good: `TerminalPanel` extracts `OSC 7` paths or resolves a user-entered `cd /path`; if those are absent, `WorkspaceShell` may inspect a few already-rendered xterm rows for a prompt like `root@host:/opt/app#` only when the user clicks locate, and `RemoteFilePanel` reloads that directory only after that manual action.
 - Base: A user expands `/var/log`; the panel loads only that directory's immediate children and caches them until refresh.
 - Bad: A component sends `{ host, username, password, path }` to a file-list command or stores remote tree state directly inside `WorkspaceShell`.
 
@@ -375,7 +375,7 @@ invoke<RemoteFileEntry[]>("remote_file_list", {
 - Run `pnpm check` after changing `remoteFileList`, `RemoteFileEntry`, `RemoteFilePanel`, `TerminalPanel`, or `WorkspaceShell` path handoff props.
 - Run `npm run build` after visible right-pane changes to catch bundling and CSS regressions.
 - Run `node scripts/check-terminal-cd-tracker.mjs` after changing terminal input directory tracking.
-- Add frontend unit tests once a test runner exists for path normalization, entry sorting, `OSC 7` parsing, and direct-wrapper payload shape.
+- Add frontend unit tests once a test runner exists for path normalization, entry sorting, `OSC 7` parsing, prompt-directory parsing, and direct-wrapper payload shape.
 - Cross-check frontend `RemoteFileEntry.type` values against Rust `RemoteFileKind` serde names in `src-tauri/src/remote_files.rs`.
 
 ### 7. Wrong vs Correct

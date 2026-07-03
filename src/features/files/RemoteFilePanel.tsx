@@ -69,6 +69,7 @@ interface RemoteFilePanelProps {
   connection: ConnectionProfile | null;
   locateRequest?: RemoteFileLocateRequest | null;
   refreshRequest?: RemoteFileRefreshRequest | null;
+  resolveTerminalPath?: () => string | null;
   transferPanel?: ReactNode;
   nativeDropTargetPath?: string | null;
   monitorPanel?: ReactNode;
@@ -178,6 +179,7 @@ function RemoteFilePanelComponent({
   connection,
   locateRequest,
   refreshRequest,
+  resolveTerminalPath,
   transferPanel,
   nativeDropTargetPath = null,
   monitorPanel,
@@ -437,7 +439,7 @@ function RemoteFilePanelComponent({
           showHidden={showHidden}
           terminalPath={terminalDirectory}
           locatedDirectoryPath={locatedDirectoryPath}
-          canLocateTerminalDirectory={Boolean(terminalDirectory)}
+          canLocateTerminalDirectory={Boolean(terminalDirectory || resolveTerminalPath)}
           uploadMenuOpen={uploadMenuOpen}
           onLocateTerminalDirectory={revealTerminalDirectory}
           onPathSubmit={navigateToPath}
@@ -517,11 +519,12 @@ function RemoteFilePanelComponent({
   }
 
   function revealTerminalDirectory() {
-    if (!terminalDirectory) {
+    const resolvedTerminalDirectory = resolveTerminalPath?.() || terminalDirectory;
+    if (!resolvedTerminalDirectory) {
       return;
     }
 
-    revealDirectoryPath(terminalDirectory, true);
+    revealDirectoryPath(resolvedTerminalDirectory, true);
   }
 
   function revealDirectoryPath(path: string, markLocated: boolean) {
@@ -1189,7 +1192,7 @@ function FilePanelShell({
   const isAtTerminalPath = Boolean(
     terminalPath && (terminalPath === "/" ? path === terminalPath : locatedDirectoryPath === terminalPath),
   );
-  const terminalLocateLabel = locateTooltipLabel(terminalPath);
+  const terminalLocateLabel = locateTooltipLabel(terminalPath, canLocateTerminalDirectory);
   const parentPath = remotePathParent(path);
   const canNavigateToParent = parentPath !== path;
 
@@ -1355,9 +1358,12 @@ function FilePanelShell({
   );
 }
 
-function locateTooltipLabel(terminalPath: string | null) {
+function locateTooltipLabel(terminalPath: string | null, canLocateTerminalDirectory: boolean) {
   if (terminalPath) {
     return `定位到: ${terminalPath}`;
+  }
+  if (canLocateTerminalDirectory) {
+    return "读取当前终端提示符并定位";
   }
   return "当前终端目录未记录";
 }

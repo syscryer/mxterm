@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 const files = [
   "src/features/terminal/TerminalPanel.tsx",
   "src/features/terminal/terminalInputDirectory.ts",
+  "src/features/terminal/terminalPromptDirectory.ts",
   "src/features/layout/WorkspaceShell.tsx",
   "src/features/files/RemoteFilePanel.tsx",
 ];
@@ -31,6 +32,10 @@ const forbiddenPatterns = [
   {
     pattern: /\$PWD/,
     reason: "Do not write shell probes into the interactive terminal.",
+  },
+  {
+    pattern: /\bapplyTerminalPromptDirectoryOutput\b/,
+    reason: "Prompt fallback must read an on-demand xterm snapshot, not parse every output chunk.",
   },
 ];
 

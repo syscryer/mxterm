@@ -179,7 +179,10 @@ import {
   parseHostKeyError,
   type HostKeyDecision,
 } from "../connections/hostKeyErrors";
-import type { TerminalSearchNavigationRequest } from "../terminal/TerminalPanel";
+import type {
+  TerminalPromptDirectorySnapshotReader,
+  TerminalSearchNavigationRequest,
+} from "../terminal/TerminalPanel";
 import {
   aiSendMessageShortcutActionId,
   resolveShortcutBindingById,
@@ -746,6 +749,10 @@ export function WorkspaceShell() {
   const [activeWorkspaceMode, setActiveWorkspaceMode] = useState<WorkspaceMode>("home");
   const [activeLocalTerminalTabId, setActiveLocalTerminalTabId] = useState<string | null>(null);
   const [terminalDirectories, setTerminalDirectories] = useState<Record<string, string>>({});
+  const terminalDirectoriesRef = useRef<Record<string, string>>({});
+  const terminalPromptDirectorySnapshotReadersRef = useRef(
+    new Map<string, TerminalPromptDirectorySnapshotReader>(),
+  );
   const [remoteFileTabs, setRemoteFileTabs] = useState<RemoteFileEditorTab[]>([]);
   const [activeRemoteFileTabId, setActiveRemoteFileTabId] = useState<string | null>(null);
   const [remoteFileLocateRequest, setRemoteFileLocateRequest] =
@@ -829,6 +836,10 @@ export function WorkspaceShell() {
   useEffect(() => {
     terminalTabsRef.current = terminalTabs;
   }, [terminalTabs]);
+
+  useEffect(() => {
+    terminalDirectoriesRef.current = terminalDirectories;
+  }, [terminalDirectories]);
 
   useEffect(() => {
     rdpSessionsRef.current = rdpSessions;
@@ -1789,10 +1800,37 @@ export function WorkspaceShell() {
   }, []);
 
   const updateTerminalDirectory = useCallback((tabId: string, path: string) => {
-    setTerminalDirectories((directories) =>
-      directories[tabId] === path ? directories : { ...directories, [tabId]: path },
-    );
+    setTerminalDirectories((directories) => {
+      if (directories[tabId] === path) {
+        terminalDirectoriesRef.current = directories;
+        return directories;
+      }
+      const nextDirectories = { ...directories, [tabId]: path };
+      terminalDirectoriesRef.current = nextDirectories;
+      return nextDirectories;
+    });
   }, []);
+
+  const updateTerminalPromptDirectorySnapshotReader = useCallback((
+    tabId: string,
+    reader: TerminalPromptDirectorySnapshotReader | null,
+  ) => {
+    if (reader) {
+      terminalPromptDirectorySnapshotReadersRef.current.set(tabId, reader);
+    } else {
+      terminalPromptDirectorySnapshotReadersRef.current.delete(tabId);
+    }
+  }, []);
+
+  const resolveTerminalLocatePath = useCallback((tabId: string) => {
+    const snapshotPath = terminalPromptDirectorySnapshotReadersRef.current.get(tabId)?.() || null;
+    if (snapshotPath) {
+      const normalizedPath = normalizeRemotePath(snapshotPath);
+      updateTerminalDirectory(tabId, normalizedPath);
+      return normalizedPath;
+    }
+    return terminalDirectoriesRef.current[tabId] || null;
+  }, [updateTerminalDirectory]);
 
   const appendTerminalRecentOutput = useCallback((tabId: string, output: string) => {
     if (!output) {
@@ -7070,6 +7108,7 @@ export function WorkspaceShell() {
                           initialOutput={tab.warmupOutput}
                           initialRequestId={tab.requestId}
                           onCurrentDirectoryChange={updateTerminalDirectory}
+                          onPromptDirectorySnapshotChange={updateTerminalPromptDirectorySnapshotReader}
                           onRecentOutput={appendTerminalRecentOutput}
                           onSearchClose={closeTerminalSearch}
                           onSearchCaseSensitiveToggle={toggleTerminalSearchCaseSensitive}
@@ -7878,6 +7917,7 @@ export function WorkspaceShell() {
                         onUploadDirectory={uploadRemoteDirectory}
                         onUploadFile={uploadRemoteFile}
                         onUploadItems={uploadRemoteItems}
+                        resolveTerminalPath={() => resolveTerminalLocatePath(panel.tabId)}
                         terminalPath={panelTerminalPath}
                       />
                     );
@@ -7893,6 +7933,12 @@ export function WorkspaceShell() {
                     nativeDropTargetPath={nativeFileDropTargetPath}
                     aiPanel={aiAssistantPanelNode}
                     onToolChange={setRightTool}
+                    resolveTerminalPath={
+                      activeConnectedTerminalTab
+                        ? () => resolveTerminalLocatePath(activeConnectedTerminalTab.id)
+                        : undefined
+                    }
+                    terminalPath={activeTerminalDirectory}
                   />
                 )}
               </div>
