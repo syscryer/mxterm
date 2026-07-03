@@ -50,6 +50,17 @@ for (const file of files) {
   }
 }
 
+const terminalPanelSource = readFileSync("src/features/terminal/TerminalPanel.tsx", "utf8");
+if (!/PROMPT_DIRECTORY_FAST_SNAPSHOT_LOOKBACK_ROWS\s*=\s*1000\b/.test(terminalPanelSource)) {
+  failures.push("TerminalPanel should inspect 1000 recent rows for the fast prompt snapshot.");
+}
+if (!/PROMPT_DIRECTORY_ANCHOR_SNAPSHOT_LOOKBACK_ROWS\s*=\s*2000\b/.test(terminalPanelSource)) {
+  failures.push("TerminalPanel should inspect up to 2000 rows for the prompt anchor fallback.");
+}
+if (!/readPromptDirectorySnapshotLines/.test(terminalPanelSource)) {
+  failures.push("TerminalPanel should keep prompt snapshot row collection isolated to locate-time reads.");
+}
+
 if (failures.length > 0) {
   console.error("File-panel terminal boundary check failed:");
   failures.forEach((failure) => console.error(`- ${failure}`));

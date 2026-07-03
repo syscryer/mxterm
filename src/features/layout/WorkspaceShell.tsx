@@ -1793,6 +1793,45 @@ export function WorkspaceShell() {
     );
   }, []);
 
+  const updateTerminalRuntimeSession = useCallback((
+    tabId: string,
+    sessionId: string,
+    requestId?: string,
+  ) => {
+    setTerminalTabs((tabs) => {
+      let changed = false;
+      const nextTabs = tabs.map((tab) => {
+        if (tab.id !== tabId || tab.type !== "terminal") {
+          return tab;
+        }
+        const nextRequestId = requestId || tab.requestId;
+        if (
+          tab.sessionId === sessionId &&
+          tab.requestId === nextRequestId &&
+          tab.status === "已连接" &&
+          tab.error === null &&
+          tab.warmupOutput.length === 0
+        ) {
+          return tab;
+        }
+        changed = true;
+        return {
+          ...tab,
+          error: null,
+          requestId: nextRequestId,
+          sessionId,
+          status: "已连接",
+          warmupOutput: [],
+        };
+      });
+      if (!changed) {
+        return tabs;
+      }
+      terminalTabsRef.current = nextTabs;
+      return nextTabs;
+    });
+  }, []);
+
   const updateLocalTerminalTabStatus = useCallback((tabId: string, status: string) => {
     setLocalTerminalTabs((tabs) =>
       tabs.map((tab) => (tab.id === tabId && tab.status !== status ? { ...tab, status } : tab)),
@@ -7114,6 +7153,7 @@ export function WorkspaceShell() {
                           onSearchCaseSensitiveToggle={toggleTerminalSearchCaseSensitive}
                           onSearchQueryChange={updateTerminalSearchQuery}
                           onSendSelectionToAi={sendTerminalSelectionToAi}
+                          onSessionIdChange={updateTerminalRuntimeSession}
                           onStatusChange={updateTabStatus}
                           onTerminalInputCommand={
                             settings.command.recordTerminalInputHistory

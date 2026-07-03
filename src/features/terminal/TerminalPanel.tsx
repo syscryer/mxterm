@@ -4,7 +4,18 @@ import { Unicode11Addon } from "@xterm/addon-unicode11";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import { Terminal, type ITheme, type IWindowsPty } from "@xterm/xterm";
 import * as ContextMenu from "@radix-ui/react-context-menu";
-import { Bot, CaseSensitive, ChevronDown, ChevronUp, Search, X } from "lucide-react";
+import {
+  Bot,
+  CaseSensitive,
+  ChevronDown,
+  ChevronUp,
+  ClipboardPaste,
+  Copy,
+  RefreshCw,
+  ScanText,
+  Search,
+  X,
+} from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import "@xterm/xterm/css/xterm.css";
 
@@ -41,6 +52,8 @@ import type { TerminalCursorStyle } from "../settings/settingsTypes";
 const TERMINAL_SCROLLBAR_WIDTH = 6;
 const STARTUP_OUTPUT_BUFFER_MS = 250;
 const TERMINAL_OUTPUT_BATCH_MAX_WAIT_MS = 16;
+const PROMPT_DIRECTORY_FAST_SNAPSHOT_LOOKBACK_ROWS = 1000;
+const PROMPT_DIRECTORY_ANCHOR_SNAPSHOT_LOOKBACK_ROWS = 2000;
 // Debounce window for fit() + backend PTY sync during drag. Both must share one
 // beat: fitting xterm immediately while deferring the PTY resize leaves a window
 // where xterm and the shell disagree on cols/rows and output reflows wrongly.
@@ -85,6 +98,7 @@ interface TerminalPanelProps {
   onSearchQueryChange?: (tabId: string, query: string) => void;
   onRecentOutput?: (tabId: string, output: string) => void;
   onSendSelectionToAi?: (tabId: string, selectedText: string) => void;
+  onSessionIdChange?: (tabId: string, sessionId: string, requestId?: string) => void;
   onStatusChange: (tabId: string, status: string) => void;
   onTerminalInputCommand?: (tabId: string, command: string) => void;
 }
@@ -108,6 +122,7 @@ export function TerminalPanel({
   onSearchCaseSensitiveToggle,
   onSearchQueryChange,
   onSendSelectionToAi,
+  onSessionIdChange,
   onStatusChange,
   onTerminalInputCommand,
   onWarmupCaptureReady,
@@ -127,6 +142,7 @@ export function TerminalPanel({
   const searchAddonRef = useRef<SearchAddon | null>(null);
   const semanticHighlighterRef = useRef<TerminalSemanticHighlighter | null>(null);
   const sessionIdRef = useRef<string | null>(null);
+  const activeRequestIdRef = useRef<string | null>(initialRequestId || tabId);
   const osc7BufferRef = useRef("");
   const inputDirectoryStateRef = useRef(createTerminalInputDirectoryState());
   const inputHistoryStateRef = useRef(createTerminalInputHistoryState());
@@ -135,7 +151,10 @@ export function TerminalPanel({
   const startedRef = useRef(false);
   const decoderRef = useRef(new TextDecoder());
   const onWarmupCaptureReadyRef = useRef(onWarmupCaptureReady);
+  const onSessionIdChangeRef = useRef(onSessionIdChange);
   const onTerminalInputCommandRef = useRef(onTerminalInputCommand);
+  const reconnectingPreviousSessionIdRef = useRef<string | null>(null);
+  const reconnectingRef = useRef(false);
   const startupOutputBufferRef = useRef("");
   const startupOutputBufferingRef = useRef(false);
   const startupOutputFlushTimerRef = useRef<number | null>(null);
@@ -155,12 +174,17 @@ export function TerminalPanel({
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [listenersReady, setListenersReady] = useState(!hasTauriRuntime());
   const [contextMenuSelection, setContextMenuSelection] = useState("");
+  const [reconnecting, setReconnecting] = useState(false);
   const [searchResultLabel, setSearchResultLabel] = useState("");
   const [status, setStatus] = useState(connection ? "待连接" : "空闲");
 
   useEffect(() => {
     onWarmupCaptureReadyRef.current = onWarmupCaptureReady;
   }, [onWarmupCaptureReady]);
+
+  useEffect(() => {
+    onSessionIdChangeRef.current = onSessionIdChange;
+  }, [onSessionIdChange]);
 
   useEffect(() => {
     onTerminalInputCommandRef.current = onTerminalInputCommand;
@@ -193,7 +217,11 @@ export function TerminalPanel({
     }
 
     onPromptDirectorySnapshotChange(tabId, () =>
-      readPromptDirectorySnapshot(terminalRef.current, homeDirectoryRef.current),
+      readPromptDirectorySnapshot(
+        terminalRef.current,
+        homeDirectoryRef.current,
+        inputDirectoryStateRef.current.directory,
+      ),
     );
     return () => onPromptDirectorySnapshotChange(tabId, null);
   }, [onPromptDirectorySnapshotChange, tabId]);
@@ -202,6 +230,8 @@ export function TerminalPanel({
     if (!hostRef.current) {
       return;
     }
+
+    activeRequestIdRef.current = initialRequestId || tabId;
 
     const terminal = new Terminal({
       allowProposedApi: true,
@@ -463,7 +493,7 @@ export function TerminalPanel({
         if (startupOutputBufferingRef.current && event.request_id === initialRequestId) {
           return;
         }
-        if (!matchesTerminalEvent(event, tabId, sessionIdRef.current, initialRequestId)) {
+        if (!matchesTerminalEvent(event, sessionIdRef.current, activeRequestIdRef.current)) {
           return;
         }
         const decoded = decoderRef.current.decode(Uint8Array.from(event.data), { stream: true });
@@ -471,7 +501,7 @@ export function TerminalPanel({
       });
 
       const stateListener = listenTerminalStateChanged((event) => {
-        if (!matchesTerminalEvent(event, tabId, sessionIdRef.current, initialRequestId)) {
+        if (!matchesTerminalEvent(event, sessionIdRef.current, activeRequestIdRef.current)) {
           return;
         }
         setSessionId(null);
@@ -482,7 +512,7 @@ export function TerminalPanel({
       });
 
       const progressListener = listenTerminalConnectProgress((event) => {
-        if (event.request_id !== tabId) {
+        if (event.request_id !== activeRequestIdRef.current) {
           return;
         }
         terminal.writeln(`\r\n${event.message}`);
@@ -520,6 +550,11 @@ export function TerminalPanel({
       if (activeSessionId) {
         void terminalClose(activeSessionId).catch(() => {});
       }
+      const reconnectingPreviousSessionId = reconnectingPreviousSessionIdRef.current;
+      if (reconnectingPreviousSessionId && reconnectingPreviousSessionId !== activeSessionId) {
+        void terminalClose(reconnectingPreviousSessionId).catch(() => {});
+      }
+      reconnectingPreviousSessionIdRef.current = null;
       stopOutputListener?.();
       stopStateListener?.();
       stopProgressListener?.();
@@ -548,7 +583,7 @@ export function TerminalPanel({
       searchAddonRef.current = null;
       semanticHighlighterRef.current = null;
     };
-  }, [initialRequestId, initialSessionId, tabId]);
+  }, [tabId]);
 
   useEffect(() => {
     const terminal = terminalRef.current;
@@ -710,6 +745,8 @@ export function TerminalPanel({
       return;
     }
 
+    const connectRequestId = tabId;
+    activeRequestIdRef.current = connectRequestId;
     fitAndSyncTerminalSize(terminal, fitAddon, sessionIdRef.current, lastSyncedSizeRef);
     terminal.clear();
     terminal.writeln(`连接 ${connection.username}@${connection.host}:${connection.port} ...`);
@@ -723,13 +760,14 @@ export function TerminalPanel({
       port: connection.port,
       private_key_path: connection.private_key_path || undefined,
       private_key_passphrase: connection.private_key_passphrase || undefined,
-      request_id: tabId,
+      request_id: connectRequestId,
       rows: terminal.rows,
       username: connection.username,
     })
       .then((nextSessionId) => {
         sessionIdRef.current = nextSessionId;
         setSessionId(nextSessionId);
+        onSessionIdChangeRef.current?.(tabId, nextSessionId, connectRequestId);
         setStatus("已连接");
         terminal.focus();
       })
@@ -752,6 +790,126 @@ export function TerminalPanel({
       clearPendingTerminalResizeSync(pendingResizeTimerRef);
     }
   }, [active]);
+
+  const hasContextMenuSelection = contextMenuSelection.trim().length > 0;
+  const canPasteFromMenu = Boolean(sessionId);
+  const canReconnectFromMenu = Boolean(connection) && hasTauriRuntime() && listenersReady && !reconnecting;
+
+  function copyContextMenuSelection() {
+    if (!contextMenuSelection) {
+      return;
+    }
+    void copyTextToClipboard(contextMenuSelection).catch(() => {});
+  }
+
+  function pasteFromContextMenu() {
+    if (!sessionId) {
+      return;
+    }
+    void readTextFromClipboard()
+      .then((text) => {
+        if (text) {
+          terminalRef.current?.paste(text);
+        }
+      })
+      .catch(() => {});
+  }
+
+  function selectAllFromContextMenu() {
+    terminalRef.current?.selectAll();
+  }
+
+  function sendContextMenuSelectionToAi() {
+    const selectedText = contextMenuSelection.trim();
+    if (selectedText) {
+      onSendSelectionToAi?.(tabId, selectedText);
+    }
+  }
+
+  async function reconnectCurrentTerminal() {
+    const terminal = terminalRef.current;
+    const fitAddon = fitAddonRef.current;
+    if (!terminal || !fitAddon || !connection || !hasTauriRuntime() || reconnectingRef.current) {
+      return;
+    }
+
+    reconnectingRef.current = true;
+    setReconnecting(true);
+
+    const previousSessionId = sessionIdRef.current;
+    const previousRequestId = activeRequestIdRef.current;
+    const reconnectRequestId = `${tabId}-reconnect-${Date.now().toString()}`;
+    const homeDirectory = inferRemoteHomeDirectory(connection.username);
+
+    reconnectingPreviousSessionIdRef.current = previousSessionId;
+    activeRequestIdRef.current = reconnectRequestId;
+    sessionIdRef.current = null;
+    setSessionId(null);
+    setStatus("重新连接中");
+    clearPendingTerminalOutputSchedule(pendingOutputFrameRef, pendingOutputTimerRef);
+    clearPendingTerminalResizeSync(pendingResizeTimerRef);
+    pendingOutputBufferRef.current = "";
+    startupOutputBufferRef.current = "";
+    startupOutputBufferingRef.current = false;
+    osc7BufferRef.current = "";
+    inputDirectoryStateRef.current = createTerminalInputDirectoryState({
+      currentDirectory: null,
+      homeDirectory,
+    });
+    inputHistoryStateRef.current = createTerminalInputHistoryState();
+    homeDirectoryRef.current = homeDirectory;
+    lastSyncedSizeRef.current = null;
+
+    fitAndSyncTerminalSize(terminal, fitAddon, null, lastSyncedSizeRef);
+    terminal.writeln(`\r\n[重新连接 ${connection.username}@${connection.host}:${connection.port} ...]`);
+
+    try {
+      const nextSessionId = await terminalConnect({
+        cols: terminal.cols,
+        connection_id: connection.id,
+        host: connection.host,
+        password: connection.password || undefined,
+        port: connection.port,
+        private_key_path: connection.private_key_path || undefined,
+        private_key_passphrase: connection.private_key_passphrase || undefined,
+        request_id: reconnectRequestId,
+        rows: terminal.rows,
+        username: connection.username,
+      });
+
+      if (terminalRef.current !== terminal) {
+        await terminalClose(nextSessionId).catch(() => {});
+        return;
+      }
+
+      reconnectingPreviousSessionIdRef.current = null;
+      sessionIdRef.current = nextSessionId;
+      setSessionId(nextSessionId);
+      onSessionIdChangeRef.current?.(tabId, nextSessionId, reconnectRequestId);
+      setStatus("已连接");
+      fitAndSyncTerminalSize(terminal, fitAddon, nextSessionId, lastSyncedSizeRef);
+      terminal.focus();
+
+      if (previousSessionId && previousSessionId !== nextSessionId) {
+        void terminalClose(previousSessionId).catch(() => {});
+      }
+    } catch (error) {
+      if (terminalRef.current !== terminal) {
+        return;
+      }
+      reconnectingPreviousSessionIdRef.current = null;
+      activeRequestIdRef.current = previousRequestId;
+      sessionIdRef.current = previousSessionId;
+      setSessionId(previousSessionId);
+      setStatus("重新连接失败");
+      terminal.writeln(`\r\n[重新连接失败: ${formatError(error)}]`);
+    } finally {
+      reconnectingRef.current = false;
+      if (terminalRef.current === terminal) {
+        setReconnecting(false);
+      }
+    }
+  }
 
   return (
     <section
@@ -858,7 +1016,7 @@ export function TerminalPanel({
       <ContextMenu.Root
         onOpenChange={(open) => {
           if (open) {
-            setContextMenuSelection(terminalRef.current?.getSelection().trim() || "");
+            setContextMenuSelection(terminalRef.current?.getSelection() || "");
           }
         }}
       >
@@ -869,12 +1027,45 @@ export function TerminalPanel({
           <ContextMenu.Content className="context-menu-content">
             <ContextMenu.Item
               className="context-menu-item"
-              disabled={!contextMenuSelection}
-              onSelect={() => {
-                if (contextMenuSelection) {
-                  onSendSelectionToAi?.(tabId, contextMenuSelection);
-                }
-              }}
+              disabled={!hasContextMenuSelection}
+              onSelect={copyContextMenuSelection}
+            >
+              <Copy className="ui-icon" aria-hidden="true" />
+              <span>复制</span>
+            </ContextMenu.Item>
+            <ContextMenu.Item
+              className="context-menu-item"
+              disabled={!canPasteFromMenu}
+              onSelect={pasteFromContextMenu}
+            >
+              <ClipboardPaste className="ui-icon" aria-hidden="true" />
+              <span>粘贴</span>
+            </ContextMenu.Item>
+            <ContextMenu.Item
+              className="context-menu-item"
+              onSelect={selectAllFromContextMenu}
+            >
+              <ScanText className="ui-icon" aria-hidden="true" />
+              <span>全选</span>
+            </ContextMenu.Item>
+            {connection ? (
+              <>
+                <ContextMenu.Separator className="context-menu-separator" />
+                <ContextMenu.Item
+                  className="context-menu-item"
+                  disabled={!canReconnectFromMenu}
+                  onSelect={() => void reconnectCurrentTerminal()}
+                >
+                  <RefreshCw className={`ui-icon ${reconnecting ? "spin" : ""}`} aria-hidden="true" />
+                  <span>重新连接</span>
+                </ContextMenu.Item>
+              </>
+            ) : null}
+            <ContextMenu.Separator className="context-menu-separator" />
+            <ContextMenu.Item
+              className="context-menu-item"
+              disabled={!hasContextMenuSelection || !onSendSelectionToAi}
+              onSelect={sendContextMenuSelectionToAi}
             >
               <Bot className="ui-icon" aria-hidden="true" />
               <span>发送到 AI 对话</span>
@@ -1021,19 +1212,44 @@ function formatSearchResultLabel(resultIndex: number, resultCount: number) {
   return `${(resultIndex + 1).toString()} / ${resultCount.toString()}`;
 }
 
-function readPromptDirectorySnapshot(terminal: Terminal | null, homeDirectory: string | null) {
+function readPromptDirectorySnapshot(
+  terminal: Terminal | null,
+  homeDirectory: string | null,
+  currentDirectory: string | null,
+) {
   if (!terminal) {
     return null;
   }
 
+  const fastSnapshotLines = readPromptDirectorySnapshotLines(
+    terminal,
+    PROMPT_DIRECTORY_FAST_SNAPSHOT_LOOKBACK_ROWS,
+  );
+  const fastPath = promptSnapshotLinesToDirectory(
+    fastSnapshotLines,
+    homeDirectory,
+    currentDirectory,
+  );
+  if (fastPath) {
+    return fastPath;
+  }
+
+  const anchorSnapshotLines = readPromptDirectorySnapshotLines(
+    terminal,
+    PROMPT_DIRECTORY_ANCHOR_SNAPSHOT_LOOKBACK_ROWS,
+  );
+  return promptSnapshotLinesToDirectory(anchorSnapshotLines, homeDirectory, currentDirectory);
+}
+
+function readPromptDirectorySnapshotLines(terminal: Terminal, lookbackRows: number) {
   const buffer = terminal.buffer.active;
   const cursorRow = buffer.baseY + buffer.cursorY;
-  const firstRow = Math.max(0, cursorRow - 4);
+  const firstRow = Math.max(0, cursorRow - lookbackRows);
   const snapshotLines: string[] = [];
   for (let row = cursorRow; row >= firstRow; row -= 1) {
     snapshotLines.push(buffer.getLine(row)?.translateToString(true) || "");
   }
-  return promptSnapshotLinesToDirectory(snapshotLines, homeDirectory);
+  return snapshotLines;
 }
 
 function withTerminalChromeTheme(theme: ITheme): ITheme {
@@ -1095,6 +1311,20 @@ function scheduleFitAndSyncTerminalSize(
     }
     syncTerminalSize(terminal, activeSessionId, terminal.cols, terminal.rows, lastSyncedSizeRef);
   }, TERMINAL_RESIZE_SYNC_DEBOUNCE_MS);
+}
+
+function clearPendingTerminalOutputSchedule(
+  pendingOutputFrameRef: { current: number | null },
+  pendingOutputTimerRef: { current: number | null },
+) {
+  if (pendingOutputFrameRef.current !== null) {
+    window.cancelAnimationFrame(pendingOutputFrameRef.current);
+    pendingOutputFrameRef.current = null;
+  }
+  if (pendingOutputTimerRef.current !== null) {
+    window.clearTimeout(pendingOutputTimerRef.current);
+    pendingOutputTimerRef.current = null;
+  }
 }
 
 function syncTerminalSize(
@@ -1208,13 +1438,11 @@ function isTerminalPasteShortcut(event: KeyboardEvent) {
 
 function matchesTerminalEvent(
   event: { request_id: string | null; session_id: string },
-  tabId: string,
   sessionId: string | null,
-  initialRequestId?: string,
+  activeRequestId: string | null,
 ) {
   return (
-    event.session_id === sessionId ||
-    event.request_id === tabId ||
-    (Boolean(initialRequestId) && event.request_id === initialRequestId)
+    (Boolean(sessionId) && event.session_id === sessionId) ||
+    (Boolean(activeRequestId) && event.request_id === activeRequestId)
   );
 }
