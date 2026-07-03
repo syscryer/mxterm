@@ -208,7 +208,7 @@ function RemoteFilePanelComponent({
     stateKey ? remoteFilePanelStateCache.get(stateKey) || null : null,
   );
   const initialState = initialStateRef.current;
-  const [currentPath, setCurrentPath] = useState(initialState?.currentPath || defaultRemotePath);
+  const [currentPath, setCurrentPath] = useState(defaultRemotePath);
   const [activeDirectoryPath, setActiveDirectoryPath] = useState(
     initialState?.activeDirectoryPath || defaultRemotePath,
   );
@@ -227,9 +227,12 @@ function RemoteFilePanelComponent({
   const [loadingPath, setLoadingPath] = useState<string | null>(null);
   const [visibleLoadingPath, setVisibleLoadingPath] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [pendingRevealScrollPath, setPendingRevealScrollPath] = useState<string | null>(null);
   const [selectedEntriesByPath, setSelectedEntriesByPath] = useState<Record<string, RemoteFileEntry>>({});
   const [selectionAnchorPath, setSelectionAnchorPath] = useState<string | null>(null);
   const loadingIndicatorTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const fileListRef = useRef<HTMLDivElement | null>(null);
+  const remoteFileRowRefs = useRef(new Map<string, HTMLButtonElement>());
   const connectionLoadScopeRef = useRef(0);
   const directoryLoadRequestRef = useRef(0);
   const directoryEntriesRef = useRef<Record<string, RemoteFileEntry[]>>(initialState?.directoryEntries || {});
@@ -277,6 +280,7 @@ function RemoteFilePanelComponent({
     setActiveDirectoryPath(defaultRemotePath);
     setLoadingPath(null);
     setVisibleLoadingPath(null);
+    setPendingRevealScrollPath(null);
     setError(null);
     clearLoadingIndicatorTimer();
   }, [connectionId]);
@@ -324,6 +328,30 @@ function RemoteFilePanelComponent({
     return () => cancelAnimationFrame(frameId);
   }, [active, connectionId, effectiveActiveTool, filePanelRenderKey]);
 
+  useLayoutEffect(() => {
+    if (!fileTreeReady || !pendingRevealScrollPath) {
+      return;
+    }
+
+    const targetPath = pendingRevealScrollPath;
+    if (targetPath === defaultRemotePath) {
+      fileListRef.current?.scrollTo({ top: 0, left: 0, behavior: "smooth" });
+      setPendingRevealScrollPath(null);
+      return;
+    }
+
+    const targetRow = remoteFileRowRefs.current.get(targetPath);
+    if (!targetRow) {
+      return;
+    }
+
+    const frameId = requestAnimationFrame(() => {
+      targetRow.scrollIntoView({ block: "center", inline: "nearest", behavior: "smooth" });
+      setPendingRevealScrollPath(null);
+    });
+    return () => cancelAnimationFrame(frameId);
+  }, [fileTreeReady, pendingRevealScrollPath, visibleRows]);
+
   useEffect(() => {
     // 隐藏的常驻面板不发起远程请求；切回后复用已缓存的路径和展开状态。
     if (!active) {
@@ -352,7 +380,6 @@ function RemoteFilePanelComponent({
 
     const path = normalizeRemotePath(locateRequest.path);
     navigateToPath(path);
-    void loadDirectory(path);
   }, [active, connectionId, effectiveActiveTool, locateRequest?.connectionId, locateRequest?.id, locateRequest?.path]);
 
   useEffect(
@@ -442,6 +469,7 @@ function RemoteFilePanelComponent({
                 <ContextMenu.Root>
                   <ContextMenu.Trigger asChild>
                     <div
+                      ref={fileListRef}
                       className={`file-list ${effectiveDropTargetPath === activeDirectoryPath ? "is-drop-target" : ""}`}
                       data-remote-file-drop-target={activeDirectoryPath}
                       onDragEnter={(event) => handleLocalDragEnter(event, activeDirectoryPath)}
@@ -485,14 +513,7 @@ function RemoteFilePanelComponent({
 
   function navigateToPath(path: string) {
     const normalizedPath = normalizeRemotePath(path);
-    setCurrentPath(normalizedPath);
-    setActiveDirectoryPath(normalizedPath);
-    setLocatedDirectoryPath(null);
-    clearSelection();
-    setUploadMenuOpen(false);
-    if (directoryEntries[normalizedPath]) {
-      setError(null);
-    }
+    revealDirectoryPath(normalizedPath, false);
   }
 
   function revealTerminalDirectory() {
@@ -500,32 +521,36 @@ function RemoteFilePanelComponent({
       return;
     }
 
-    const revealRootPath = isRemotePathStrictDescendant(terminalDirectory, currentPath)
-      ? currentPath
-      : defaultRemotePath;
-    const ancestorPaths = remotePathAncestors(terminalDirectory);
-    const expandableAncestorPaths = ancestorPaths.filter(
-      (path) => path !== "/" && path !== revealRootPath && isRemotePathStrictDescendant(path, revealRootPath),
+    revealDirectoryPath(terminalDirectory, true);
+  }
+
+  function revealDirectoryPath(path: string, markLocated: boolean) {
+    const normalizedPath = normalizeRemotePath(path);
+    const ancestorPaths = remotePathAncestors(normalizedPath);
+    const expandablePaths = [...ancestorPaths, normalizedPath].filter(
+      (path) => path !== defaultRemotePath && isRemotePathStrictDescendant(path, defaultRemotePath),
     );
 
-    setCurrentPath(revealRootPath);
-    setActiveDirectoryPath(terminalDirectory);
-    setLocatedDirectoryPath(terminalDirectory);
+    setCurrentPath(defaultRemotePath);
+    setActiveDirectoryPath(normalizedPath);
+    setLocatedDirectoryPath(markLocated ? normalizedPath : null);
+    setPendingRevealScrollPath(normalizedPath);
     clearSelection();
     setUploadMenuOpen(false);
     setExpandedDirectories((current) => {
       const next = { ...current };
-      for (const path of expandableAncestorPaths) {
+      for (const path of expandablePaths) {
         next[path] = true;
       }
       return next;
     });
 
-    void loadRevealPath([revealRootPath, ...expandableAncestorPaths]);
+    void loadRevealPath([defaultRemotePath, ...expandablePaths]);
   }
 
   function collapseExpandedDirectories() {
     if (hasExpandedDirectories) {
+      setPendingRevealScrollPath(null);
       setExpandedDirectories({});
       setActiveDirectoryPath(currentPath);
     }
@@ -603,6 +628,7 @@ function RemoteFilePanelComponent({
   }
 
   function toggleDirectory(entry: RemoteFileEntry) {
+    setPendingRevealScrollPath(null);
     setActiveDirectoryPath(entry.path);
     setLocatedDirectoryPath(null);
     setExpandedDirectories((current) => ({
@@ -725,6 +751,13 @@ function RemoteFilePanelComponent({
               }`}
               data-remote-file-drop-target={isDirectory ? entry.path : undefined}
               draggable
+              ref={(element) => {
+                if (element) {
+                  remoteFileRowRefs.current.set(entry.path, element);
+                } else {
+                  remoteFileRowRefs.current.delete(entry.path);
+                }
+              }}
               style={{
                 paddingLeft: `${8 + depth * 16}px`,
                 ...(isLocatedDirectory ? { background: "var(--mx-active)", color: "var(--mx-text)" } : {}),

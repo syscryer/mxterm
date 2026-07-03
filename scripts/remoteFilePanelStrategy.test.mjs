@@ -174,6 +174,7 @@ test("constructs SSH auxiliary right-pane tools only for the visible tool tab", 
 
   assert.match(workspaceShellSource, /monitorPanel=\{\s*panel\.active && rightTool === "monitor" \? \(/s);
   assert.match(workspaceShellSource, /commandPanel=\{panel\.active && rightTool === "commands" \? renderCommandLibraryPanel\(\) : null\}/);
-  assert.match(workspaceShellSource, /tunnelPanel=\{\s*panel\.active && rightTool === "tunnels" \? \(/s);
+  assert.match(workspaceShellSource, /toolsPanel=\{\s*panel\.renderDockerTools \? \(/s);
+  assert.match(workspaceShellSource, /active=\{panel\.active && rightTool === "tools"\}/);
   assert.match(workspaceShellSource, /transferPanel=\{\s*panel\.active && rightTool === "files" \? \(/s);
 });

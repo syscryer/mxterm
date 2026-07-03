@@ -221,10 +221,15 @@ Ant Design, Mantine, or similar libraries just to fix one modal or button.
   bytes sent to the PTY. Keep the last trusted directory and wait for OSC7 or a
   later complete `cd` line instead.
 - Remote file trees keep two directory concepts separate. The tree root path
-  owns the top-level listing currently rendered, while the active directory path
-  owns the path input, toolbar actions, blank-area context menu, and blank-area
-  drag/drop upload target. Expanding or locating a directory should update the
-  active directory without forcing the tree root to navigate into that child.
+  owns the top-level listing currently rendered and should stay on the full
+  tree root for the session, while the active directory path owns the path
+  input, toolbar actions, blank-area context menu, and blank-area drag/drop
+  upload target. Typing a path, locating a folder, or locating the terminal
+  directory should expand the tree down to that path and update the active
+  directory, not replace the visible tree with only that child directory's
+  listing. These explicit reveal actions should also scroll the rendered target
+  folder row into view after async ancestor loads complete; ordinary manual tree
+  expand/collapse should not auto-scroll or replay an earlier pending reveal.
 - Remote file selection should stay compatible with the tree's directory
   navigation model. Plain directory-row clicks expand/collapse and update the
   active directory; selection uses Explorer-style modifiers (`Ctrl` / `Meta` to
