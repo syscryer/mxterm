@@ -17,8 +17,29 @@ try {
     throw new Error("Locate should reveal the terminal directory in the tree, not navigate into it");
   }
 
+  if (panelSource.includes("setCurrentPath(normalizedPath)")) {
+    throw new Error("Path input should reveal/expand a path in the full tree, not make that path the tree root");
+  }
+
   if (panelSource.includes("path === terminalPath || locatedDirectoryPath === terminalPath")) {
     throw new Error("Locate action should not look active just because the panel navigated into the terminal directory");
+  }
+
+  if (!panelSource.includes("revealDirectoryPath")) {
+    throw new Error("RemoteFilePanel should use one reveal path for typed paths and locate actions");
+  }
+
+  if (!panelSource.includes("pendingRevealScrollPath")) {
+    throw new Error("Path input and locate actions should remember the path to scroll into view after reveal");
+  }
+
+  if (!panelSource.includes("scrollIntoView({ block: \"center\", inline: \"nearest\", behavior: \"smooth\" })")) {
+    throw new Error("Remote file reveal should scroll the rendered target row into view");
+  }
+
+  const toggleDirectoryBody = panelSource.match(/function toggleDirectory\(entry: RemoteFileEntry\) \{[\s\S]*?\n  \}/)?.[0] || "";
+  if (!toggleDirectoryBody.includes("setPendingRevealScrollPath(null)")) {
+    throw new Error("Plain directory toggles should cancel pending reveal scrolling instead of jumping later");
   }
 
   if (!panelSource.includes("revealTerminalDirectory")) {
