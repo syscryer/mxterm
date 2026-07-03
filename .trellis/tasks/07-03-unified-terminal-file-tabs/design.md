@@ -6,6 +6,8 @@
 
 “当前会话”在实现中定义为当前 SSH connectionId 下的工作区布局状态。布局状态是运行时内存状态：用户通过拖拽切换后影响当前连接；重新打开会话时按设置默认值决定初始布局。
 
+关闭 SSH 会话或删除连接时，WorkspaceShell 需要同步清理该 connectionId 下的远程文件 tab、active 文件 id、统一布局记录、active unified tab 和文件侧 pending 状态。清理发生在会话关闭源头，避免已关闭会话的文件 tab 继续参与后续 connectionId 的布局恢复；未保存文件需要先走确认放弃流程。
+
 ## 设置模型
 
 在 `BasicSettings` 中新增远程文件打开方式：
@@ -51,7 +53,9 @@ unified 模式渲染单个顶部 tab 栏：
 - 文件 tab 保留 dirty dot、关闭、复制路径等菜单动作。
 - 终端 tab 保留关闭、关闭其他、关闭右侧、全部关闭等菜单动作。
 - “新建同连接终端”、终端搜索、Command Sender、右侧面板开关仍在统一 tab 栏右侧 actions 区。
+- 当统一 tab 当前激活文件编辑器时，隐藏终端搜索和 Command Sender 这类终端级动作，并收起已打开的命令操作台；右侧面板开关和新建同连接终端仍可保留。
 - 内容区同时挂载终端 stack 和编辑器 stack，按 active unified item 控制可见性，避免卸载 xterm 或 Monaco 实例。
+- `RemoteFileEditor` 的 lazy fallback 使用编辑器区域内的紧凑 loading 状态，图标和文案居中显示，样式复用全局 token，避免首次加载时出现无样式裸文本。
 
 ## 拖拽切换
 

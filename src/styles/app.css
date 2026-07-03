@@ -9421,8 +9421,48 @@ button {
   min-height: 0;
 }
 
+.remote-editor-stack .remote-editor-loading,
 .terminal-file-unified-stack .remote-editor-loading {
   grid-area: 1 / 1;
+}
+
+.remote-editor-loading {
+  position: relative;
+  z-index: 3;
+  min-width: 0;
+  min-height: 0;
+  display: grid;
+  place-items: center;
+  padding: 18px;
+  color: var(--mx-muted);
+  background:
+    radial-gradient(
+      circle at 50% 14%,
+      color-mix(in srgb, var(--mx-primary) 5%, transparent),
+      transparent 34%
+    ),
+    var(--mx-panel);
+}
+
+.remote-editor-loading > div {
+  min-width: 0;
+  border: 1px solid var(--mx-line-soft);
+  border-radius: 8px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 12px;
+  color: var(--mx-muted);
+  background: color-mix(in srgb, var(--mx-panel) 86%, var(--mx-panel-soft));
+  box-shadow: 0 1px 2px color-mix(in srgb, var(--mx-text) 5%, transparent);
+  font-size: 12px;
+  line-height: 1;
+}
+
+.remote-editor-loading .ui-icon {
+  width: 14px;
+  height: 14px;
+  color: var(--mx-primary);
 }
 
 .workbench-draggable-tab {

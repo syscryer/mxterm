@@ -10,6 +10,7 @@
    - 增加按 connectionId 记录的 split/unified 状态。
    - 增加统一 tab active 状态和清理 effect。
    - 调整 `activateRemoteFileTab`、`activateTerminalTab`、`openRemoteFile`，让 unified 模式下 active 类型正确切换。
+   - 关闭 SSH 会话或删除连接时清理对应远程文件 tab、统一布局状态和文件 pending 状态；有未保存文件时先确认。
 
 3. 拖拽切换
    - 给远程文件 tab 和终端 tab 添加 WorkspaceShell 内部鼠标拖拽 payload。
@@ -21,6 +22,8 @@
    - split 模式保留现有编辑器/终端分屏。
    - unified 模式渲染同一个顶部 tab 栏和下方统一内容区。
    - 终端 stack 和编辑器 stack 都保持挂载，仅按 active 状态隐藏。
+   - 文件 tab 激活时隐藏终端搜索 / Command Sender，并收起已打开的命令操作台。
+   - 编辑器 lazy 加载 fallback 使用居中的紧凑 loading 状态，不显示裸文本。
 
 5. 样式
    - 在 `app.css` 扩展统一 tab/workbench 所需类，复用现有 token、subtab、remote editor、terminal stack 样式。
