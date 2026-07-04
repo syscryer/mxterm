@@ -1,0 +1,5 @@
+{"file": ".trellis/spec/backend/tauri-command-contracts.md", "reason": "MCP sidecar, settings persistence, service lifecycle, and Tauri commands are backend command contracts."}
+{"file": ".trellis/spec/frontend/tauri-command-contracts.md", "reason": "Frontend MCP settings and wrappers must stay aligned with Rust command payloads."}
+{"file": ".trellis/spec/frontend/component-guidelines.md", "reason": "Settings UI must reuse existing desktop panel controls, tokens, and accessibility patterns."}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "The change spans sidecar transport, stored settings, Tauri commands, and React UI."}
+{"file": ".trellis/spec/guides/code-reuse-thinking-guide.md", "reason": "Reuse existing MCP dispatch and settings UI patterns instead of duplicating contracts."}

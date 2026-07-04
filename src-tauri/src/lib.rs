@@ -27,7 +27,6 @@ mod vnc;
 mod webdav;
 mod webdav_sync;
 use storage_vault::VaultState;
-#[cfg(target_os = "macos")]
 use tauri::Manager;
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -48,12 +47,18 @@ pub fn run() {
         .manage(vnc::VncSessionManager::default())
         .manage(tunnels::TunnelManager::default())
         .manage(webdav_sync::WebDavSyncManager::default())
+        .manage(mcp::McpRemoteServiceManager::default())
         .manage(VaultState::default())
         .setup(|app| {
             #[cfg(windows)]
             {
                 let app_handle = app.handle().clone();
                 let _ = commands::set_window_material(app_handle, 2);
+            }
+            {
+                let app_handle = app.handle().clone();
+                let manager = app.state::<mcp::McpRemoteServiceManager>();
+                let _ = mcp::start_remote_service_from_settings(&app_handle, &manager);
             }
             #[cfg(target_os = "macos")]
             if let Some(main_window) = app.get_webview_window("main") {
@@ -100,8 +105,14 @@ pub fn run() {
             commands::serial_list_ports,
             commands::serial_terminal_open,
             mcp::mcp_executable_path,
+            mcp::mcp_local_network_info,
             mcp::mcp_settings_get,
             mcp::mcp_settings_save,
+            mcp::mcp_remote_service_status,
+            mcp::mcp_remote_service_start,
+            mcp::mcp_remote_service_stop,
+            mcp::mcp_remote_service_restart,
+            mcp::mcp_remote_token_rotate,
             commands::get_app_runtime_info,
             commands::get_windows_pty_info,
             commands::terminal_connect,

@@ -118,7 +118,11 @@ import type {
   WebDavTestResult,
   WebDavUploadRequest,
 } from "../../features/settings/webdavSyncTypes";
-import type { McpSettings } from "../../features/settings/mcpSettingsTypes";
+import type {
+  McpLocalNetworkInfo,
+  McpRemoteServiceStatus,
+  McpSettings,
+} from "../../features/settings/mcpSettingsTypes";
 
 export interface SecretVaultStatus {
   initialized: boolean;
@@ -1167,4 +1171,28 @@ export function mcpSettingsSave(request: McpSettings) {
 
 export function mcpExecutablePath() {
   return invoke<string>("mcp_executable_path");
+}
+
+export function mcpLocalNetworkInfo() {
+  return invoke<McpLocalNetworkInfo>("mcp_local_network_info");
+}
+
+export function mcpRemoteServiceStatus() {
+  return invoke<McpRemoteServiceStatus>("mcp_remote_service_status");
+}
+
+export function mcpRemoteServiceStart() {
+  return invoke<McpRemoteServiceStatus>("mcp_remote_service_start");
+}
+
+export function mcpRemoteServiceStop() {
+  return invoke<McpRemoteServiceStatus>("mcp_remote_service_stop");
+}
+
+export function mcpRemoteServiceRestart() {
+  return invoke<McpRemoteServiceStatus>("mcp_remote_service_restart");
+}
+
+export function mcpRemoteTokenRotate() {
+  return invoke<McpSettings>("mcp_remote_token_rotate");
 }
