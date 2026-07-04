@@ -49,6 +49,7 @@ interface ConnectionPaneProps {
   onOpen: (connection: ConnectionProfile) => void;
   onOpenSearch: () => void;
   onOpenSettings: () => void;
+  onPreloadCreate?: () => void;
   onRefresh: () => void;
   onSelect: (connection: ConnectionProfile) => void;
   onToggleFavorite: (connection: ConnectionProfile) => void | Promise<void>;
@@ -114,6 +115,7 @@ export function ConnectionPane({
   onOpen,
   onOpenSearch,
   onOpenSettings,
+  onPreloadCreate,
   onRefresh,
   onSelect,
   onToggleFavorite,
@@ -306,7 +308,10 @@ export function ConnectionPane({
                   className="mini-action"
                   type="button"
                   aria-label="新增连接"
+                  onFocus={onPreloadCreate}
                   onClick={() => onCreate()}
+                  onPointerDown={onPreloadCreate}
+                  onPointerEnter={onPreloadCreate}
                 >
                   <Plus className="ui-icon" aria-hidden="true" />
                 </button>
