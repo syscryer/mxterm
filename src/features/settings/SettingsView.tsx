@@ -176,8 +176,8 @@ const settingsSections: Array<{
   { id: "security", label: "安全", description: "安全密码与本机保护", icon: ShieldCheck },
   { id: "sync", label: "同步", description: "WebDAV 手动同步", icon: Cloud },
   { id: "shortcuts", label: "快捷键", description: "应用内键盘操作与冲突管理", icon: Keyboard },
-  { id: "appearance", label: "外观", description: "字号、密度与强调色", icon: Palette },
-  { id: "localTerminal", label: "本地终端", description: "默认 Shell 与 profile 管理", icon: HardDrive },
+  { id: "appearance", label: "外观", description: "主题、密度与强调色", icon: Palette },
+  { id: "localTerminal", label: "终端设置", description: "终端行为与 profile 管理", icon: HardDrive },
   { id: "terminalTheme", label: "终端配色", description: "终端 ANSI 主题方案", icon: Terminal },
 ];
 
@@ -270,11 +270,9 @@ export function SettingsView({
         {activeSection === "basic" ? (
           <BasicSettingsSection
             appUpdate={appUpdate}
-            commandSettings={settings.command}
             fileTransferSettings={settings.fileTransfer}
             settings={settings.basic}
             onUpdate={onUpdateBasic}
-            onUpdateCommand={onUpdateCommand}
             onUpdateFileTransfer={onUpdateFileTransfer}
           />
         ) : null}
@@ -291,7 +289,13 @@ export function SettingsView({
         ) : null}
         {activeSection === "localTerminal" ? (
           <LocalTerminalSettingsSection
+            appearanceSettings={settings.appearance}
+            basicSettings={settings.basic}
+            commandSettings={settings.command}
             settings={settings.localTerminal}
+            onUpdateAppearance={onUpdateAppearance}
+            onUpdateBasic={onUpdateBasic}
+            onUpdateCommand={onUpdateCommand}
             onUpdate={onUpdateLocalTerminal}
           />
         ) : null}
@@ -2200,18 +2204,14 @@ async function openExternalUrl(url: string) {
 function BasicSettingsSection({
   appUpdate,
   fileTransferSettings,
-  commandSettings,
   settings,
   onUpdate,
-  onUpdateCommand,
   onUpdateFileTransfer,
 }: {
   appUpdate: UseAppUpdateResult;
-  commandSettings: CommandSettings;
   fileTransferSettings: FileTransferSettings;
   settings: BasicSettings;
   onUpdate: (update: Partial<BasicSettings>) => void;
-  onUpdateCommand: (update: Partial<CommandSettings>) => void;
   onUpdateFileTransfer: (update: Partial<FileTransferSettings>) => void;
 }) {
   const [downloadRootError, setDownloadRootError] = useState<string | null>(null);
@@ -2317,17 +2317,6 @@ function BasicSettingsSection({
           />
         </SettingsRow>
         <SettingsRow
-          icon={Terminal}
-          title="自动打开上次终端"
-          description="启动时回到上次活动连接和终端标签。"
-        >
-          <SettingsToggle
-            checked={settings.reopenLastTerminal}
-            label="自动打开上次终端"
-            onChange={(reopenLastTerminal) => onUpdate({ reopenLastTerminal })}
-          />
-        </SettingsRow>
-        <SettingsRow
           icon={Server}
           title="保留失败页"
           description="连接失败时保留当前会话页，方便查看原因、重试或编辑连接。"
@@ -2376,22 +2365,6 @@ function BasicSettingsSection({
             value={settings.recentConnectionLimit}
             values={[5, 10, 15, 20, 30, 50] as const}
             onChange={(recentConnectionLimit) => onUpdate({ recentConnectionLimit })}
-          />
-        </SettingsRow>
-      </div>
-
-      <div className="settings-panel">
-        <SettingsRow
-          icon={Terminal}
-          title="记录终端输入"
-          description="开启后，将普通回车命令保存到历史；控制序列、Tab 和疑似敏感输入会丢弃。"
-        >
-          <SettingsToggle
-            checked={commandSettings.recordTerminalInputHistory}
-            label="记录终端输入"
-            onChange={(recordTerminalInputHistory) =>
-              onUpdateCommand({ recordTerminalInputHistory })
-            }
           />
         </SettingsRow>
       </div>
@@ -2577,7 +2550,7 @@ function AppearanceSettingsSection({
     <section className="settings-page-section">
       <header className="settings-section-head">
         <h1>外观</h1>
-        <p>调整 MXterm 的工具密度、强调色、字号和面板细节。</p>
+        <p>调整 MXterm 的主题、窗口材质、界面字体、密度和面板细节。</p>
       </header>
 
       <div className="appearance-preview" aria-hidden="true">
@@ -2750,26 +2723,6 @@ function AppearanceSettingsSection({
           />
         </SettingsRow>
 
-        <SettingsRow icon={Terminal} title="光标样式" description="控制终端光标外观，已打开会话会即时更新。">
-          <SegmentedControl<TerminalCursorStyle>
-            value={settings.cursorStyle}
-            options={[
-              { value: "block", label: "块" },
-              { value: "bar", label: "竖线" },
-              { value: "underline", label: "下划线" },
-            ]}
-            onChange={(cursorStyle) => onUpdate({ cursorStyle })}
-          />
-        </SettingsRow>
-
-        <SettingsRow icon={Terminal} title="光标闪烁" description="关闭后使用静态光标，适合长时间阅读或录屏。">
-          <SettingsToggle
-            checked={settings.cursorBlink}
-            label="启用光标闪烁"
-            onChange={(cursorBlink) => onUpdate({ cursorBlink })}
-          />
-        </SettingsRow>
-
         <SettingsRow icon={PanelLeft} title="图标大小" description="影响连接树、文件树和工具按钮图标。">
           <SegmentedControl
             value={settings.iconSize}
@@ -2790,7 +2743,7 @@ function AppearanceSettingsSection({
           />
         </SettingsRow>
 
-        <SettingsRow icon={RotateCcw} title="恢复默认外观" description="恢复字号、字体、密度、强调色和终端配色默认值。">
+        <SettingsRow icon={RotateCcw} title="恢复默认外观" description="恢复外观、终端显示和终端配色默认值。">
           <button className="settings-action-button" type="button" onClick={onReset}>
             <RotateCcw className="ui-icon" aria-hidden="true" />
             <span>重置</span>
@@ -2868,11 +2821,23 @@ function FontFamilyControl<TPreset extends string>({
 }
 
 function LocalTerminalSettingsSection({
+  appearanceSettings,
+  basicSettings,
+  commandSettings,
   settings,
   onUpdate,
+  onUpdateAppearance,
+  onUpdateBasic,
+  onUpdateCommand,
 }: {
+  appearanceSettings: AppearanceSettings;
+  basicSettings: BasicSettings;
+  commandSettings: CommandSettings;
   settings: LocalTerminalSettings;
   onUpdate: (update: Partial<LocalTerminalSettings>) => void;
+  onUpdateAppearance: (update: Partial<AppearanceSettings>) => void;
+  onUpdateBasic: (update: Partial<BasicSettings>) => void;
+  onUpdateCommand: (update: Partial<CommandSettings>) => void;
 }) {
   const [detectedProfiles, setDetectedProfiles] = useState<LocalTerminalProfile[]>([]);
   const [loading, setLoading] = useState(false);
@@ -2982,12 +2947,12 @@ function LocalTerminalSettingsSection({
     <section className="settings-page-section">
       <header className="settings-section-head settings-section-head-row">
         <span>
-          <h1>本地终端</h1>
-          <p>管理默认本地 Shell、探测结果显示和自定义 profile。</p>
+          <h1>终端设置</h1>
+          <p>统一管理终端粘贴行为、光标、默认本地 Shell 和 profile。</p>
         </span>
         <button className="repository-primary-button" type="button" onClick={resetForm}>
           <Plus className="ui-icon" aria-hidden="true" />
-          <span>新增自定义终端</span>
+          <span>新增终端 profile</span>
         </button>
       </header>
 
@@ -2999,7 +2964,7 @@ function LocalTerminalSettingsSection({
         >
           <div className="settings-local-terminal-default">
             <AppSelect
-              ariaLabel="默认本地终端"
+              ariaLabel="默认终端"
               className="settings-select"
               options={profileOptions.map((profile) => ({
                 label: (
@@ -3015,6 +2980,17 @@ function LocalTerminalSettingsSection({
               onChange={(defaultProfileId) => onUpdate({ defaultProfileId })}
             />
           </div>
+        </SettingsRow>
+        <SettingsRow
+          icon={Terminal}
+          title="自动打开上次终端"
+          description="启动时回到上次活动连接和终端标签。"
+        >
+          <SettingsToggle
+            checked={basicSettings.reopenLastTerminal}
+            label="自动打开上次终端"
+            onChange={(reopenLastTerminal) => onUpdateBasic({ reopenLastTerminal })}
+          />
         </SettingsRow>
         <SettingsRow
           icon={RotateCcw}
@@ -3036,6 +3012,40 @@ function LocalTerminalSettingsSection({
             checked={settings.ctrlVPaste}
             label="Ctrl+V 粘贴到终端"
             onChange={(ctrlVPaste) => onUpdate({ ctrlVPaste })}
+          />
+        </SettingsRow>
+        <SettingsRow
+          icon={Terminal}
+          title="记录终端输入"
+          description="开启后，将普通回车命令保存到历史；控制序列、Tab 和疑似敏感输入会丢弃。"
+        >
+          <SettingsToggle
+            checked={commandSettings.recordTerminalInputHistory}
+            label="记录终端输入"
+            onChange={(recordTerminalInputHistory) =>
+              onUpdateCommand({ recordTerminalInputHistory })
+            }
+          />
+        </SettingsRow>
+      </div>
+
+      <div className="settings-panel">
+        <SettingsRow icon={Terminal} title="光标样式" description="控制终端光标外观，已打开会话会即时更新。">
+          <SegmentedControl<TerminalCursorStyle>
+            value={appearanceSettings.cursorStyle}
+            options={[
+              { value: "block", label: "块" },
+              { value: "bar", label: "竖线" },
+              { value: "underline", label: "下划线" },
+            ]}
+            onChange={(cursorStyle) => onUpdateAppearance({ cursorStyle })}
+          />
+        </SettingsRow>
+        <SettingsRow icon={Terminal} title="光标闪烁" description="关闭后使用静态光标，适合长时间阅读或录屏。">
+          <SettingsToggle
+            checked={appearanceSettings.cursorBlink}
+            label="启用光标闪烁"
+            onChange={(cursorBlink) => onUpdateAppearance({ cursorBlink })}
           />
         </SettingsRow>
       </div>
