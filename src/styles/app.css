@@ -4862,6 +4862,45 @@ button {
   font-size: 11px;
 }
 
+.connection-name-link {
+  min-width: 0;
+  min-height: 44px;
+  display: grid;
+  align-content: center;
+  gap: 3px;
+  width: 100%;
+  margin: -4px -6px;
+  padding: 4px 6px;
+  border: 0;
+  border-radius: 6px;
+  color: inherit;
+  background: transparent;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition:
+    background-color 150ms ease,
+    color 150ms ease;
+}
+
+.connection-name-link:hover {
+  background: color-mix(in srgb, var(--mx-primary) 8%, transparent);
+}
+
+.connection-name-link:hover .connection-name,
+.connection-name-link:focus-visible .connection-name {
+  color: var(--mx-primary);
+}
+
+.connection-name-link:active {
+  background: color-mix(in srgb, var(--mx-primary) 13%, transparent);
+}
+
+.connection-name-link:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--mx-primary) 62%, transparent);
+  outline-offset: 2px;
+}
+
 .remark-cell,
 .last-cell,
 .name-cell,

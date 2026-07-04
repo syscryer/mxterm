@@ -10946,8 +10946,16 @@ function ConnectionHome({
                     <LatencyIndicator state={latencyState} />
                   </span>
                   <span className="name-cell">
-                    <span className="connection-name">{connection.name}</span>
-                    <span className="connection-user">{connection.username}@{connection.host}:{connection.port.toString()}</span>
+                    <button
+                      className="connection-name-link"
+                      type="button"
+                      aria-label={`打开连接 ${connection.name}`}
+                      title={`打开连接 ${connection.name}`}
+                      onClick={() => onConnect(connection)}
+                    >
+                      <span className="connection-name">{connection.name}</span>
+                      <span className="connection-user">{connection.username}@{connection.host}:{connection.port.toString()}</span>
+                    </button>
                   </span>
                   <span className="remark-cell">
                     <span className="remark-main">{primaryNote(connection)}</span>
