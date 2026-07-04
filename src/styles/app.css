@@ -530,6 +530,28 @@ button {
   border-top: 1px solid var(--mx-line-soft);
 }
 
+.mcp-config-tabs {
+  grid-column: 1 / -1;
+  justify-self: start;
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+.mcp-config-block > .mcp-config-tabs {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.mcp-config-tabs button {
+  min-width: 0;
+}
+
+.mcp-config-tabs span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .mcp-config-block > div {
   min-width: 0;
   display: grid;
@@ -562,6 +584,93 @@ button {
   font-size: 12px;
   line-height: 1.55;
   white-space: pre;
+}
+
+.mcp-remote-service-block {
+  display: grid;
+  gap: 10px;
+  border-top: 1px solid var(--mx-line-soft);
+  padding: 14px;
+}
+
+.mcp-remote-token-line {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+}
+
+.mcp-remote-token-field {
+  min-width: 0;
+  display: grid;
+  gap: 6px;
+}
+
+.mcp-remote-token-field > span,
+.mcp-remote-field span {
+  color: var(--mx-text);
+  font-size: 13px;
+  font-weight: 620;
+}
+
+.mcp-remote-token-field small {
+  color: var(--mx-muted);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.mcp-remote-status {
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 2px;
+  color: var(--mx-muted);
+  font-size: 12px;
+  font-weight: 520;
+  white-space: nowrap;
+}
+
+.mcp-remote-status::before {
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: currentColor;
+  content: "";
+  opacity: 0.58;
+}
+
+.mcp-remote-status.is-running {
+  color: var(--mx-success);
+}
+
+.mcp-remote-status.is-warn {
+  color: var(--mx-warning);
+}
+
+.mcp-remote-fields {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 120px;
+  gap: 10px;
+}
+
+.mcp-remote-field {
+  min-width: 0;
+  display: grid;
+  gap: 6px;
+}
+
+.mcp-remote-actions,
+.mcp-remote-token-line > div {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.mcp-remote-actions {
+  justify-content: flex-start;
 }
 
 .mcp-connection-exposure-panel {

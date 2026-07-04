@@ -2609,9 +2609,15 @@ let cron_line = format!("{} {}", record.cron, escape_crontab_percent(&run_comman
 
 ### 2. Signatures
 
-- `mcp_settings_get(app: AppHandle) -> Result<McpSettings, AppError>`
-- `mcp_settings_save(app: AppHandle, request: McpSettingsInput) -> Result<McpSettings, AppError>`
+- `mcp_settings_get(app: AppHandle, manager: State<McpRemoteServiceManager>) -> Result<McpSettingsOutput, AppError>`
+- `mcp_settings_save(app: AppHandle, manager: State<McpRemoteServiceManager>, request: McpSettingsInput) -> Result<McpSettingsOutput, AppError>`
 - `mcp_executable_path() -> Result<String, AppError>`
+- `mcp_local_network_info() -> McpLocalNetworkInfo`
+- `mcp_remote_service_status(app: AppHandle, manager: State<McpRemoteServiceManager>) -> Result<McpRemoteServiceStatus, AppError>`
+- `mcp_remote_service_start(app: AppHandle, manager: State<McpRemoteServiceManager>) -> Result<McpRemoteServiceStatus, AppError>`
+- `mcp_remote_service_stop(app: AppHandle, manager: State<McpRemoteServiceManager>) -> Result<McpRemoteServiceStatus, AppError>`
+- `mcp_remote_service_restart(app: AppHandle, manager: State<McpRemoteServiceManager>) -> Result<McpRemoteServiceStatus, AppError>`
+- `mcp_remote_token_rotate(app: AppHandle, manager: State<McpRemoteServiceManager>) -> Result<McpSettingsOutput, AppError>`
 
 `McpSettings` / `McpSettingsInput` fields:
 
@@ -2620,8 +2626,29 @@ enabled: bool
 expose_connections: bool
 ssh_operations_enabled: bool
 allow_dangerous_commands: bool
+remote_enabled: bool
+remote_host: String // default "0.0.0.0"
+remote_port: u16 // default 8765
+remote_token: Option<String>
 connection_exposure_mode: McpConnectionExposureMode // "all" | "custom"
 exposed_connection_ids: Vec<String>
+```
+
+Stored `McpSettings` also owns:
+
+```rust
+remote_token: Option<String>
+remote_token_hash: Option<String>
+remote_token_preview: Option<String>
+```
+
+`McpSettingsOutput` returned to React must not include `remote_token_hash`. It may include `remote_token`, `remote_token_saved`, `remote_token_preview`, `generated_remote_token` when a token was created or rotated in that command, and `remote_status`.
+
+`McpLocalNetworkInfo` fields:
+
+```rust
+primary_ip: Option<String>
+ip_addresses: Vec<String>
 ```
 
 `mxterm-mcp` stdio tool surface:
@@ -2643,20 +2670,31 @@ Sidecar startup:
 
 ```text
 mxterm-mcp [--data-dir <path>]
+mxterm-mcp serve --host <host> --port <port> --token-sha256 <sha256> [--data-dir <path>]
 ```
 
 ### 3. Contracts
 
 - `src-tauri/Cargo.toml` must register `mxterm-mcp` as a standalone binary and keep `default-run = "m-xterm"` so `tauri dev` still launches the desktop app without an explicit `--bin`.
 - `mxterm-mcp` speaks JSON-RPC/MCP over stdio as newline-delimited JSON: one JSON-RPC message per line, no `Content-Length` header. It must work while the mXterm desktop app is not running.
+- Remote MCP is served by the same sidecar in `serve` mode. The desktop app manages the child process through `McpRemoteServiceManager`; stdio mode remains independent.
+- The remote HTTP transport exposes Streamable HTTP at `/mcp`: `POST /mcp` handles one JSON-RPC message per request and `GET /mcp` returns `text/event-stream`.
+- The remote HTTP transport keeps legacy SSE compatibility with `GET /sse` returning an endpoint event and `POST /messages?session_id=...` delivering JSON-RPC responses to that SSE session.
+- Remote HTTP requests must authenticate with `Authorization: Bearer <token>` or `X-MXterm-MCP-Token`. The sidecar receives and compares only the SHA-256 token hash passed as `--token-sha256`; do not pass token plaintext in process arguments.
+- Enabling remote service with no saved token must generate a high-entropy token, persist the token for reusable client snippets, and also persist a hash plus a short preview for sidecar validation/status display.
+- Saving a non-empty `remote_token` from settings must replace the stored token, recompute `remote_token_hash`, refresh `remote_token_preview`, and let `McpRemoteServiceManager` restart/reconcile the sidecar because the auth signature changed.
+- `mcp_remote_token_rotate` must replace the saved token and token hash, return the new plaintext token, and restart the managed sidecar so old tokens stop working.
+- Remote service startup failures such as port conflicts should be exposed through `McpRemoteServiceStatus.error` without logging or returning token material.
+- `mcp_local_network_info` may infer the primary LAN-facing IP by connecting an unbound UDP socket to well-known external IPv4 targets and reading the local socket address. It must filter loopback, unspecified, broadcast, and IPv4 link-local addresses before returning values for client snippets.
 - Metadata-only MCP reads must open `StorageRepository::open_root(...)` with the in-memory secret store. Read-only MCP listing must not unlock the local vault or reveal secrets.
 - SSH-capable MCP tools must resolve saved connections through the normal vault-backed repository path and must not accept dynamic plaintext credential fields.
 - MCP exec-capable tools (`test_connection`, `execute_command`, and `server_monitor`) use a process-local `RemoteExecSessionPool` keyed by saved connection id and `ResolvedSshConfig::signature()`. A command timeout must invalidate the cached connection before returning `mcp_command_timeout`. SFTP transfer tools intentionally keep one operation-scoped `ReusableSftpSession` per transfer until a dedicated SFTP pooling contract exists.
 - MCP upload/download tools write to `.mxterm-mcp-transfer-*` temporary files next to the final target and only rename after the copy and flush complete. Failed transfers must clean the temporary file when cleanup is possible; partial final files should not replace an existing target.
 - MCP transfer responses include `bytes_transferred` and `duration_ms` for files and directories. Directory values are the sum of transferred child file bytes for that operation.
 - `reject_plaintext_credential_args(...)` must reject argument keys such as `host`, `user`, `username`, `password`, `passphrase`, `private_key`, and `private_key_content` before tool dispatch.
-- `McpConnectionExposureMode::All` means every saved connection is exposed.
-- `McpConnectionExposureMode::Custom` means only `exposed_connection_ids` are exposed.
+- MCP connection exposure is SSH-only. RDP, VNC, Telnet, and Serial profiles must not appear in MCP list/search/get results, even when their ids are saved in `exposed_connection_ids`.
+- `McpConnectionExposureMode::All` means every saved SSH connection is exposed.
+- `McpConnectionExposureMode::Custom` means only SSH ids from `exposed_connection_ids` are exposed.
 - `normalize_connection_ids(...)` must trim ids, drop blanks, and deduplicate before persisting them.
 - The sidecar must apply connection exposure filtering to:
   - `list_connections`
@@ -2676,29 +2714,44 @@ mxterm-mcp [--data-dir <path>]
 | `mcp.expose_connections` is false | connection list/search/get tools return disabled error payloads and status summary is `null` | true |
 | `mcp.ssh_operations_enabled` is false | SSH-capable tools are omitted from `tools/list` and runtime calls fail with disabled error payloads | true |
 | `connection_exposure_mode = custom` and id not in `exposed_connection_ids` | `mcp_connection_not_exposed` | true |
+| Connection profile protocol is not `ssh` | Hide it from MCP metadata list/search/get results | true |
 | MCP tool args include plaintext credential fields | `mcp_plaintext_credential_arguments_forbidden` | true |
 | Unknown tool name | `mcp_tool_unknown` | false |
 | `--data-dir` flag is provided without a value | `mcp_data_dir_missing` | true |
+| `serve` mode is missing `--token-sha256` | `mcp_remote_token_missing` | true |
+| Saved `remote_token` is blank | `mcp_remote_token_missing` | true |
+| Remote port is `0` or cannot parse | `mcp_remote_port_invalid` | true |
+| Remote HTTP request has missing or invalid token | HTTP 401 | true |
 | Dangerous command without required allow/confirm state | command returns recoverable dangerous-command rejection | true |
 
 ### 5. Good / Base / Bad Cases
 
 - Good: `mxterm-mcp --data-dir <temp-root>` starts without the desktop app, returns only `get_mxterm_mcp_status` by default, and exposes connection tools only after persisted MCP settings enable them.
+- Good: enabling remote MCP starts the managed sidecar on `0.0.0.0:8765` by default, returns a token once, and accepts remote clients only when they send that token.
+- Good: `POST /mcp` initialize returns a JSON-RPC response and an MCP session id header, while legacy `/sse` clients can receive responses through `/messages`.
 - Good: when `connection_exposure_mode = "custom"` and `exposed_connection_ids = ["conn-prod"]`, list/search/get and SSH tools behave as if only `conn-prod` exists.
+- Good: when saved RDP/VNC/Telnet/Serial profiles exist, MCP connection metadata still returns only SSH profiles.
 - Good: transfer tools copy into a sibling temporary file, flush it, rename it to the final target, and return transferred bytes plus elapsed milliseconds.
-- Base: `connection_exposure_mode = "all"` with an empty id list still exposes every saved connection.
+- Base: `connection_exposure_mode = "all"` with an empty id list still exposes every saved SSH connection.
 - Bad: metadata reads unlock the local secret store, hidden connection ids remain callable through SSH tools, the sidecar accepts raw `password`/`private_key` arguments, or `tools/list` advertises disabled tools that runtime will always reject.
+- Bad: remote token hash is returned to React, token plaintext is logged or embedded in process arguments, or client snippets keep showing placeholders when a saved token is available.
 - Bad: a transfer tool writes directly to the final target, leaving a truncated target file after copy failure, or reports success without the byte/duration fields.
 
 ### 6. Tests Required
 
 - Run `cargo check --manifest-path src-tauri/Cargo.toml` after changing `src-tauri/src/mcp.rs`, sidecar dispatch, command registration, or MCP settings structs.
 - Run `cargo test --manifest-path src-tauri/Cargo.toml mcp --lib` after changing MCP redaction, tool gating, dangerous command checks, or settings normalization.
+- Run `cargo test --manifest-path src-tauri/Cargo.toml --bin mxterm-mcp` after changing stdio dispatch, HTTP transport, token auth, or SSE compatibility.
 - Add/update tests that assert:
   - default settings expose only status
   - enabled settings expose the expected tool list
   - redacted connection serialization excludes secret material
   - plaintext credential arguments are rejected
+  - remote token hashes verify without passing plaintext to the sidecar
+  - enabling remote service generates and persists a token only when needed
+  - custom remote token replaces hash and preview
+  - local IP filtering rejects loopback, unspecified, and link-local addresses
+  - HTTP auth accepts bearer/custom token headers and rejects missing or wrong tokens
   - custom exposure mode filters connection list/search/get and blocks SSH actions by hidden id
   - transfer temporary paths stay beside the target and transfer result serialization includes `bytes_transferred` and `duration_ms`
 - When sidecar dispatch changes, run a stdio end-to-end check against a temp `--data-dir` repository that verifies disabled gating and custom exposure filtering without launching the desktop app.

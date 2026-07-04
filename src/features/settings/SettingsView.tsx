@@ -6,6 +6,7 @@ import {
   Check,
   Clock3,
   Cloud,
+  Copy,
   Download,
   ExternalLink,
   Eye,
@@ -13,6 +14,7 @@ import {
   FileKey,
   Folder,
   FolderOpen,
+  Globe2,
   HardDrive,
   Keyboard,
   KeyRound,
@@ -24,6 +26,7 @@ import {
   Palette,
   PanelLeft,
   Plus,
+  Power,
   RefreshCw,
   RotateCcw,
   Rows3,
@@ -61,6 +64,10 @@ import {
   credentialRevealSecret,
   localTerminalListProfiles,
   mcpExecutablePath,
+  mcpLocalNetworkInfo,
+  mcpRemoteServiceRestart,
+  mcpRemoteServiceStatus,
+  mcpRemoteTokenRotate,
   mcpSettingsGet,
   mcpSettingsSave,
 } from "../../shared/tauri/commands";
@@ -122,7 +129,11 @@ import type {
 import { LocalTerminalIcon } from "../terminal/LocalTerminalIcons";
 import { WebDavSyncSettingsSection } from "./WebDavSyncSettingsSection";
 import { ShortcutSettingsSection } from "./ShortcutSettingsSection";
-import { defaultMcpSettings, type McpSettings } from "./mcpSettingsTypes";
+import {
+  defaultMcpSettings,
+  type McpLocalNetworkInfo,
+  type McpSettings,
+} from "./mcpSettingsTypes";
 import type { UseAppUpdateResult } from "./useAppUpdate";
 import type {
   AiApiFormat,
@@ -914,27 +925,46 @@ function AiSettingsSection() {
   );
 }
 
+type McpClientConfigTab = "stdio" | "remote-http" | "legacy-sse";
+
+function isSshConnection(connection: ConnectionProfile) {
+  return (connection.protocol || "ssh") === "ssh";
+}
+
 function McpSettingsSection({ connections }: { connections: ConnectionProfile[] }) {
   const [settings, setSettings] = useState<McpSettings>(defaultMcpSettings);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [activeConfigTab, setActiveConfigTab] = useState<McpClientConfigTab>("stdio");
   const [copied, setCopied] = useState(false);
+  const [remoteConfigCopied, setRemoteConfigCopied] = useState(false);
+  const [legacySseConfigCopied, setLegacySseConfigCopied] = useState(false);
+  const [tokenCopied, setTokenCopied] = useState(false);
+  const [remoteActionBusy, setRemoteActionBusy] = useState<string | null>(null);
+  const [remoteHostDraft, setRemoteHostDraft] = useState(defaultMcpSettings.remote_host);
+  const [remotePortDraft, setRemotePortDraft] = useState(defaultMcpSettings.remote_port.toString());
+  const [remoteTokenDraft, setRemoteTokenDraft] = useState("");
+  const [localNetworkInfo, setLocalNetworkInfo] = useState<McpLocalNetworkInfo | null>(null);
   const desktopRuntime = hasTauriRuntime();
   const [executablePath, setExecutablePath] = useState("mxterm-mcp.exe");
   const [connectionExposureQuery, setConnectionExposureQuery] = useState("");
   const connectionExposureSearchQuery = connectionExposureQuery.trim();
   const connectionExposureSearchActive = connectionExposureSearchQuery.length > 0;
-  const connectionIds = useMemo(
-    () => connections.map((connection) => connection.id),
+  const sshConnections = useMemo(
+    () => connections.filter(isSshConnection),
     [connections],
+  );
+  const connectionIds = useMemo(
+    () => sshConnections.map((connection) => connection.id),
+    [sshConnections],
   );
   const filteredConnections = useMemo(() => {
     const query = connectionExposureSearchQuery.toLowerCase();
     if (!query) {
-      return connections;
+      return sshConnections;
     }
-    return connections.filter((connection) =>
+    return sshConnections.filter((connection) =>
       [
         connection.name,
         connection.group,
@@ -945,7 +975,7 @@ function McpSettingsSection({ connections }: { connections: ConnectionProfile[] 
         .filter(Boolean)
         .some((value) => String(value).toLowerCase().includes(query)),
     );
-  }, [connectionExposureSearchQuery, connections]);
+  }, [connectionExposureSearchQuery, sshConnections]);
   const filteredConnectionIds = useMemo(
     () => filteredConnections.map((connection) => connection.id),
     [filteredConnections],
@@ -965,6 +995,16 @@ function McpSettingsSection({ connections }: { connections: ConnectionProfile[] 
     loading || saving || !desktopRuntime || !settings.enabled || !settings.expose_connections;
   const connectionExposureBatchDisabled =
     connectionExposureDisabled || filteredConnectionIds.length === 0;
+  const remoteStatus = settings.remote_status;
+  const suggestedRemoteHost = localNetworkInfo?.primary_ip || null;
+  const remoteDisplayHost =
+    settings.remote_host === "0.0.0.0"
+      ? suggestedRemoteHost || "<本机局域网 IP>"
+      : settings.remote_host;
+  const remoteMcpUrl = `http://${remoteDisplayHost}:${settings.remote_port.toString()}/mcp`;
+  const remoteSseUrl = `http://${remoteDisplayHost}:${settings.remote_port.toString()}/sse`;
+  const remoteToken = settings.remote_token || settings.generated_remote_token || null;
+  const remoteTokenForSnippet = remoteToken || "<你的 token>";
   const configSnippet = useMemo(
     () =>
       JSON.stringify(
@@ -981,6 +1021,83 @@ function McpSettingsSection({ connections }: { connections: ConnectionProfile[] 
       ),
     [executablePath],
   );
+  const remoteConfigSnippet = useMemo(
+    () =>
+      JSON.stringify(
+        {
+          mcpServers: {
+            mxterm: {
+              type: "streamable-http",
+              url: remoteMcpUrl,
+              headers: {
+                Authorization: `Bearer ${remoteTokenForSnippet}`,
+              },
+            },
+          },
+        },
+        null,
+        2,
+      ),
+    [remoteMcpUrl, remoteTokenForSnippet],
+  );
+  const legacySseConfigSnippet = useMemo(
+    () =>
+      JSON.stringify(
+        {
+          mcpServers: {
+            mxterm: {
+              type: "sse",
+              url: remoteSseUrl,
+              headers: {
+                Authorization: `Bearer ${remoteTokenForSnippet}`,
+              },
+            },
+          },
+        },
+        null,
+        2,
+      ),
+    [remoteSseUrl, remoteTokenForSnippet],
+  );
+  const configTabs = [
+    {
+      id: "stdio" as const,
+      label: "stdio client",
+      title: "stdio client 配置",
+      description: "发布包中 sidecar 会随 MXterm 一起提供；开发期可替换为本地绝对路径。",
+      snippet: configSnippet,
+      copied,
+      setCopied,
+    },
+    {
+      id: "remote-http" as const,
+      label: "远程 HTTP client",
+      title: "远程 HTTP client 配置",
+      description:
+        settings.remote_host === "0.0.0.0" && suggestedRemoteHost
+          ? "主入口使用 Streamable HTTP；已自动填入当前本机 IP。"
+          : "主入口使用 Streamable HTTP；监听 0.0.0.0 时会优先填入本机 IP。",
+      snippet: remoteConfigSnippet,
+      copied: remoteConfigCopied,
+      setCopied: setRemoteConfigCopied,
+    },
+    {
+      id: "legacy-sse" as const,
+      label: "旧版 SSE 兼容",
+      title: "旧版 SSE 兼容配置",
+      description: "少数旧客户端仍使用 `/sse` 和 `/messages` 双端点。",
+      snippet: legacySseConfigSnippet,
+      copied: legacySseConfigCopied,
+      setCopied: setLegacySseConfigCopied,
+    },
+  ];
+  const activeConfig = configTabs.find((tab) => tab.id === activeConfigTab) ?? configTabs[0];
+
+  useEffect(() => {
+    setRemoteHostDraft(settings.remote_host);
+    setRemotePortDraft(settings.remote_port.toString());
+    setRemoteTokenDraft(remoteToken || "");
+  }, [remoteToken, settings.remote_host, settings.remote_port]);
 
   useEffect(() => {
     let cancelled = false;
@@ -994,9 +1111,11 @@ function McpSettingsSection({ connections }: { connections: ConnectionProfile[] 
         setLoading(true);
         const next = await mcpSettingsGet();
         const nextExecutablePath = await mcpExecutablePath().catch(() => executablePath);
+        const nextLocalNetworkInfo = await mcpLocalNetworkInfo().catch(() => null);
         if (!cancelled) {
           setSettings(next);
           setExecutablePath(nextExecutablePath);
+          setLocalNetworkInfo(nextLocalNetworkInfo);
           setError(null);
         }
       } catch (error) {
@@ -1026,7 +1145,8 @@ function McpSettingsSection({ connections }: { connections: ConnectionProfile[] 
     setSaving(true);
     setError(null);
     try {
-      setSettings(await mcpSettingsSave(next));
+      const saved = await mcpSettingsSave(next);
+      setSettings(saved);
     } catch (error) {
       setSettings(previous);
       setError(error instanceof Error ? error.message : "MCP 设置保存失败。");
@@ -1078,13 +1198,105 @@ function McpSettingsSection({ connections }: { connections: ConnectionProfile[] 
     });
   }
 
-  async function copyConfig() {
+  async function copyText(text: string, onCopied: (copied: boolean) => void) {
     try {
-      await navigator.clipboard.writeText(configSnippet);
-      setCopied(true);
-      window.setTimeout(() => setCopied(false), 1600);
+      await navigator.clipboard.writeText(text);
+      onCopied(true);
+      window.setTimeout(() => onCopied(false), 1600);
     } catch {
       setError("无法写入剪贴板，可手动复制下方配置。");
+    }
+  }
+
+  async function saveRemoteEndpoint() {
+    const remote_host = remoteHostDraft.trim();
+    const remote_port = Number(remotePortDraft);
+    if (!remote_host) {
+      setError("请输入远程 MCP 监听地址。");
+      return;
+    }
+    if (!Number.isInteger(remote_port) || remote_port < 1 || remote_port > 65535) {
+      setError("远程 MCP 端口必须在 1 到 65535 之间。");
+      return;
+    }
+    if (remote_host === settings.remote_host && remote_port === settings.remote_port) {
+      return;
+    }
+    await saveUpdate({ remote_host, remote_port });
+  }
+
+  async function saveRemoteToken() {
+    const remote_token = remoteTokenDraft.trim();
+    if (!remote_token) {
+      if (settings.remote_token_saved) {
+        setRemoteTokenDraft(remoteToken || "");
+      } else {
+        setError("请输入远程 MCP token。");
+      }
+      return;
+    }
+    if (remote_token === remoteToken) {
+      return;
+    }
+    await saveUpdate({ remote_token });
+  }
+
+  async function refreshRemoteStatus() {
+    if (!desktopRuntime) {
+      return;
+    }
+    setRemoteActionBusy("status");
+    setError(null);
+    try {
+      const status = await mcpRemoteServiceStatus();
+      setSettings((current) => ({
+        ...current,
+        remote_status: status,
+        remote_token_saved: status.token_saved,
+        remote_token_preview: status.token_preview,
+      }));
+    } catch (error) {
+      setError(error instanceof Error ? error.message : "远程 MCP 服务状态读取失败。");
+    } finally {
+      setRemoteActionBusy(null);
+    }
+  }
+
+  async function restartRemoteService() {
+    if (!desktopRuntime) {
+      return;
+    }
+    setRemoteActionBusy("restart");
+    setError(null);
+    try {
+      const status = await mcpRemoteServiceRestart();
+      setSettings((current) => ({
+        ...current,
+        remote_status: status,
+        remote_token_saved: status.token_saved,
+        remote_token_preview: status.token_preview,
+      }));
+    } catch (error) {
+      setError(error instanceof Error ? error.message : "远程 MCP 服务重启失败。");
+    } finally {
+      setRemoteActionBusy(null);
+    }
+  }
+
+  async function rotateRemoteToken() {
+    if (!desktopRuntime) {
+      return;
+    }
+    setRemoteActionBusy("token");
+    setError(null);
+    try {
+      const next = await mcpRemoteTokenRotate();
+      setSettings(next);
+      setTokenCopied(false);
+    } catch (error) {
+      setError(error instanceof Error ? error.message : "远程 MCP token 重置失败。");
+    } finally {
+      setRemoteActionBusy(null);
     }
   }
 
@@ -1156,21 +1368,210 @@ function McpSettingsSection({ connections }: { connections: ConnectionProfile[] 
           />
         </SettingsRow>
 
+        <SettingsRow
+          icon={Globe2}
+          title="远程 MCP 服务"
+          description="开启后监听局域网地址，供其它机器上的 Agent 通过 HTTP/SSE 调用。"
+        >
+          <SettingsToggle
+            checked={settings.remote_enabled}
+            disabled={loading || saving || !desktopRuntime || !settings.enabled}
+            label="远程 MCP 服务"
+            onChange={(remote_enabled) => void saveUpdate({ remote_enabled })}
+          />
+        </SettingsRow>
+
+        <div className="mcp-remote-service-block">
+          <div className="mcp-remote-fields">
+            <label className="mcp-remote-field">
+              <span>监听地址</span>
+              <input
+                className="settings-input"
+                value={remoteHostDraft}
+                disabled={loading || saving || !desktopRuntime}
+                onBlur={() => void saveRemoteEndpoint()}
+                onChange={(event) => setRemoteHostDraft(event.currentTarget.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") {
+                    event.currentTarget.blur();
+                  }
+                }}
+              />
+            </label>
+            <label className="mcp-remote-field">
+              <span>端口</span>
+              <input
+                className="settings-input"
+                type="number"
+                min={1}
+                max={65535}
+                value={remotePortDraft}
+                disabled={loading || saving || !desktopRuntime}
+                onBlur={() => void saveRemoteEndpoint()}
+                onChange={(event) => setRemotePortDraft(event.currentTarget.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") {
+                    event.currentTarget.blur();
+                  }
+                }}
+              />
+            </label>
+          </div>
+
+          {settings.remote_host === "0.0.0.0" ? (
+            <p className="settings-note">
+              {suggestedRemoteHost
+                ? `客户端配置已使用本机 IP ${suggestedRemoteHost}；监听地址仍保持 0.0.0.0 以允许局域网访问。`
+                : "暂未检测到可用于局域网访问的本机 IP，客户端配置中仍会显示占位符。"}
+            </p>
+          ) : null}
+
+          <div className="mcp-remote-actions">
+            <span
+              className={`mcp-remote-status ${
+                remoteStatus?.running ? "is-running" : settings.remote_enabled ? "is-warn" : ""
+              }`}
+              title={remoteStatus?.pid ? `PID ${remoteStatus.pid.toString()}` : undefined}
+            >
+              {remoteStatus?.running
+                ? remoteStatus.pid
+                  ? `服务运行中 · ${remoteStatus.pid.toString()}`
+                  : "服务运行中"
+                : settings.remote_enabled
+                ? "服务未运行"
+                : "服务已关闭"}
+            </span>
+            <button
+              className="settings-action-button"
+              type="button"
+              disabled={!desktopRuntime || remoteActionBusy === "status"}
+              onClick={() => void refreshRemoteStatus()}
+            >
+              {remoteActionBusy === "status" ? (
+                <Loader2 className="ui-icon spin" aria-hidden="true" />
+              ) : (
+                <RefreshCw className="ui-icon" aria-hidden="true" />
+              )}
+              <span>刷新状态</span>
+            </button>
+            <button
+              className="settings-action-button"
+              type="button"
+              disabled={
+                !desktopRuntime ||
+                !settings.remote_enabled ||
+                !settings.remote_token_saved ||
+                remoteActionBusy === "restart"
+              }
+              onClick={() => void restartRemoteService()}
+            >
+              {remoteActionBusy === "restart" ? (
+                <Loader2 className="ui-icon spin" aria-hidden="true" />
+              ) : (
+                <Power className="ui-icon" aria-hidden="true" />
+              )}
+              <span>重启服务</span>
+            </button>
+          </div>
+
+          <div className="mcp-remote-token-line">
+            <label className="mcp-remote-token-field">
+              <span>访问 token</span>
+              <input
+                className="settings-input"
+                value={remoteTokenDraft}
+                placeholder={settings.remote_token_saved ? "重置后可显示明文" : "自动生成或输入自定义 token"}
+                disabled={loading || saving || !desktopRuntime}
+                onBlur={() => void saveRemoteToken()}
+                onChange={(event) => setRemoteTokenDraft(event.currentTarget.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") {
+                    event.currentTarget.blur();
+                  }
+                }}
+              />
+              <small>
+                {remoteToken
+                  ? `已保存${settings.remote_token_preview ? `（${settings.remote_token_preview}）` : ""}，配置 JSON 已自动填充`
+                  : settings.remote_token_saved
+                  ? "旧 token 未保存明文，重置后会自动填充配置 JSON"
+                  : "开启远程服务时自动生成并填充配置 JSON"}
+              </small>
+            </label>
+            <div>
+              <button
+                className="settings-action-button"
+                type="button"
+                disabled={!desktopRuntime || remoteActionBusy === "token"}
+                onClick={() => void rotateRemoteToken()}
+              >
+                {remoteActionBusy === "token" ? (
+                  <Loader2 className="ui-icon spin" aria-hidden="true" />
+                ) : (
+                  <KeyRound className="ui-icon" aria-hidden="true" />
+                )}
+                <span>重置 token</span>
+              </button>
+              <button
+                className="settings-action-button"
+                type="button"
+                disabled={!remoteToken}
+                onClick={() => void copyText(remoteToken || "", setTokenCopied)}
+              >
+                <Copy className="ui-icon" aria-hidden="true" />
+                <span>{tokenCopied ? "已复制" : "复制 token"}</span>
+              </button>
+            </div>
+          </div>
+
+          {remoteStatus?.error ? (
+            <p className="settings-path-error" role="alert">
+              {remoteStatus.error}
+            </p>
+          ) : null}
+        </div>
+
         <div className="mcp-config-block">
+          <div
+            className="settings-segmented mcp-config-tabs"
+            role="tablist"
+            aria-label="MCP client 配置"
+          >
+            {configTabs.map((tab) => (
+              <button
+                className={tab.id === activeConfigTab ? "active" : ""}
+                id={`mcp-config-tab-${tab.id}`}
+                key={tab.id}
+                type="button"
+                role="tab"
+                aria-controls={`mcp-config-panel-${tab.id}`}
+                aria-selected={tab.id === activeConfigTab}
+                onClick={() => setActiveConfigTab(tab.id)}
+              >
+                <span>{tab.label}</span>
+              </button>
+            ))}
+          </div>
           <div>
-            <strong>stdio client 配置</strong>
-            <small>发布包中 sidecar 会随 MXterm 一起提供；开发期可替换为本地绝对路径。</small>
+            <strong>{activeConfig.title}</strong>
+            <small>{activeConfig.description}</small>
           </div>
           <button
             className="settings-action-button"
             type="button"
             disabled={!desktopRuntime}
-            onClick={() => void copyConfig()}
+            onClick={() => void copyText(activeConfig.snippet, activeConfig.setCopied)}
           >
             <Check className="ui-icon" aria-hidden="true" />
-            <span>{copied ? "已复制" : "复制配置"}</span>
+            <span>{activeConfig.copied ? "已复制" : "复制配置"}</span>
           </button>
-          <pre>{configSnippet}</pre>
+          <pre
+            id={`mcp-config-panel-${activeConfig.id}`}
+            role="tabpanel"
+            aria-labelledby={`mcp-config-tab-${activeConfig.id}`}
+          >
+            {activeConfig.snippet}
+          </pre>
         </div>
 
         {!desktopRuntime ? (
@@ -1189,10 +1590,10 @@ function McpSettingsSection({ connections }: { connections: ConnectionProfile[] 
             <strong>MCP 可用连接</strong>
             <small>
               {connectionExposureSearchActive
-                ? `匹配 ${filteredConnections.length.toString()} / ${connections.length.toString()}，已开放 ${exposedConnectionIds.length.toString()} 个连接`
+                ? `匹配 ${filteredConnections.length.toString()} / ${sshConnections.length.toString()}，已开放 ${exposedConnectionIds.length.toString()} 个 SSH 连接`
                 : settings.connection_exposure_mode === "all"
-                ? `默认开放全部 ${connections.length.toString()} 个连接`
-                : `已开放 ${exposedConnectionIds.length.toString()} / ${connections.length.toString()} 个连接`}
+                ? `默认开放全部 ${sshConnections.length.toString()} 个 SSH 连接`
+                : `已开放 ${exposedConnectionIds.length.toString()} / ${sshConnections.length.toString()} 个 SSH 连接`}
             </small>
           </span>
           <div>
@@ -1227,8 +1628,8 @@ function McpSettingsSection({ connections }: { connections: ConnectionProfile[] 
           </label>
         </div>
         <div className="mcp-connection-exposure-list">
-          {connections.length === 0 ? (
-            <p className="settings-note">还没有保存连接。</p>
+          {sshConnections.length === 0 ? (
+            <p className="settings-note">还没有可供 MCP 使用的 SSH 连接。</p>
           ) : filteredConnections.length === 0 ? (
             <p className="settings-note">没有匹配的连接。</p>
           ) : (

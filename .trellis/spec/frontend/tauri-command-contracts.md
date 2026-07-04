@@ -1542,24 +1542,63 @@ type McpSettings = {
   expose_connections: boolean
   ssh_operations_enabled: boolean
   allow_dangerous_commands: boolean
+  remote_enabled: boolean
+  remote_host: string
+  remote_port: number
+  remote_token?: string | null
+  remote_token_saved: boolean
+  remote_token_preview?: string | null
+  generated_remote_token?: string | null
+  remote_status?: McpRemoteServiceStatus | null
   connection_exposure_mode: McpConnectionExposureMode
   exposed_connection_ids: string[]
+}
+
+type McpRemoteServiceStatus = {
+  enabled: boolean
+  running: boolean
+  host: string
+  port: number
+  url: string
+  sse_url: string
+  pid?: number | null
+  token_saved: boolean
+  token_preview?: string | null
+  error?: string | null
+}
+
+type McpLocalNetworkInfo = {
+  primary_ip?: string | null
+  ip_addresses: string[]
 }
 
 mcpSettingsGet(): Promise<McpSettings>
 mcpSettingsSave(request: McpSettings): Promise<McpSettings>
 mcpExecutablePath(): Promise<string>
+mcpLocalNetworkInfo(): Promise<McpLocalNetworkInfo>
+mcpRemoteServiceStatus(): Promise<McpRemoteServiceStatus>
+mcpRemoteServiceStart(): Promise<McpRemoteServiceStatus>
+mcpRemoteServiceStop(): Promise<McpRemoteServiceStatus>
+mcpRemoteServiceRestart(): Promise<McpRemoteServiceStatus>
+mcpRemoteTokenRotate(): Promise<McpSettings>
 ```
 
 ### 3. Contracts
 
-- Components must call the typed wrappers in `src/shared/tauri/commands.ts`; do not call `invoke("mcp_settings_*")` or `invoke("mcp_executable_path")` directly from `SettingsView`.
+- Components must call the typed wrappers in `src/shared/tauri/commands.ts`; do not call `invoke("mcp_settings_*")`, `invoke("mcp_remote_*")`, or `invoke("mcp_executable_path")` directly from `SettingsView`.
 - `WorkspaceShell` must pass the saved `ConnectionProfile[]` list into `SettingsView` so the MCP page can render connection exposure toggles without reloading connection state through a second feature-local hook.
-- `McpSettings.connection_exposure_mode = "all"` means every saved connection is exposed and `exposed_connection_ids` may be empty.
-- `McpSettings.connection_exposure_mode = "custom"` means only `exposed_connection_ids` are exposed. The frontend must preserve id order from the current connection list when saving derived custom selections.
-- The MCP settings page owns three distinct surfaces:
+- MCP connection exposure is SSH-only. The settings panel must filter `ConnectionProfile.protocol || "ssh"` to `ssh` before rendering rows, search results, counts, and bulk actions.
+- `McpSettings.connection_exposure_mode = "all"` means every saved SSH connection is exposed and `exposed_connection_ids` may be empty.
+- `McpSettings.connection_exposure_mode = "custom"` means only SSH ids from `exposed_connection_ids` are exposed. The frontend must preserve id order from the current SSH connection list when saving derived custom selections.
+- Remote MCP defaults are `remote_host = "0.0.0.0"` and `remote_port = 8765`. When showing a client URL for other machines, the UI must make clear that `0.0.0.0` should be replaced by the machine's LAN IP.
+- Settings UI should call `mcpLocalNetworkInfo()` and use `primary_ip` for remote client snippets when `remote_host = "0.0.0.0"`. If no IP is available, keep a visible placeholder instead of inventing an address.
+- Frontend must never receive or display `remote_token_hash`. It may receive `remote_token` and should fill HTTP/SSE snippets with it when available.
+- The MCP settings UI should render `remote_token` as an editable input. Saving a changed token goes through `mcpSettingsSave(...)`; empty edits should be rejected or restored locally instead of clearing the active token by accident.
+- Remote HTTP snippets should prefer Streamable HTTP `/mcp` and may show legacy `/sse` compatibility. Snippets should use a token placeholder only when no saved token plaintext is available.
+- The MCP settings page owns four distinct surfaces:
   - master capability switches
-  - copyable stdio config block
+  - remote HTTP service status/config/token controls
+  - a copyable MCP client config tab group with `stdio client`, `远程 HTTP client`, and `旧版 SSE 兼容`, rendering one snippet at a time
   - a separate `MCP 可用连接` settings panel for per-connection exposure
 - The connection exposure panel must not collapse exposure state into local filtered state. Search only affects visible rows; checked state must still derive from the full persisted `McpSettings`.
 - When no search query is active:
@@ -1579,22 +1618,33 @@ mcpExecutablePath(): Promise<string>
 | `mcpSettingsGet` fails | Keep the MCP page visible and show the Rust error message in the section error area. |
 | `mcpSettingsSave` fails | Revert optimistic local state to the previous `McpSettings` value and show the Rust error message. |
 | `mcpExecutablePath` fails | Keep the page usable and fall back to `mxterm-mcp.exe` in the generated stdio snippet. |
+| `mcpLocalNetworkInfo` fails or returns no primary IP | Keep remote settings usable and show the LAN IP placeholder in snippets. |
+| Remote service status/restart fails | Keep saved settings visible and show the Rust error message without clearing one-time token state. |
+| Remote service starts with a generated token | Show the saved token state and fill the client JSON with the token. |
+| User loses the remote token | Use `mcpRemoteTokenRotate()` and update external Agent configs. |
+| Token input is cleared then blurred | Restore the previous token when one exists, or show a validation message when no token exists yet. |
 | MCP master switch is off | Disable subordinate switches and connection exposure controls. |
 | Connection exposure switch is off | Disable connection exposure search, row toggles, and bulk buttons. |
+| Saved connections include non-SSH protocols | Hide non-SSH rows from `MCP 可用连接` and keep counts/bulk actions scoped to SSH only. |
 | Search returns no matches | Keep the exposure panel visible and show a neutral `没有匹配的连接。` message. |
 
 ### 5. Good / Base / Bad Cases
 
-- Good: `SettingsView` receives `connections` from `WorkspaceShell`, derives row checked state from the persisted `McpSettings`, and keeps that state stable while filtering the list by search text.
-- Good: search-mode bulk actions convert the setting to `custom` and only add or remove ids from the currently filtered rows.
+- Good: `SettingsView` receives `connections` from `WorkspaceShell`, filters the MCP exposure panel to SSH profiles, derives row checked state from the persisted `McpSettings`, and keeps that state stable while filtering the list by search text.
+- Good: enabling remote MCP saves settings, shows service status, keeps the token copyable, and renders a Streamable HTTP snippet using `Authorization: Bearer <token>` inside the MCP client config tabs.
+- Good: editing the token input persists the new token, updates the JSON snippet, and causes the backend manager to reconcile the running service.
+- Good: when listening on `0.0.0.0`, the HTTP snippet uses detected `primary_ip` so another machine can copy it directly.
+- Good: refreshing or restarting remote service updates only `remote_status`, `remote_token_saved`, and preview fields without fabricating token plaintext.
+- Good: search-mode bulk actions convert the setting to `custom` and only add or remove SSH ids from the currently filtered rows.
 - Base: browser preview shows the MCP section and connection exposure panel with disabled persistence actions.
-- Bad: the page stores exposure selection only in local filtered state, drops hidden selections during search, calls Tauri commands directly from JSX handlers, or embeds the connection exposure rows inside the main capability panel instead of a separate settings group.
+- Bad: the page stores exposure selection only in local filtered state, drops hidden selections during search, calls Tauri commands directly from JSX handlers, exposes `remote_token_hash`, or embeds the connection exposure rows inside the main capability panel instead of a separate settings group.
 
 ### 6. Tests Required
 
 - Run `pnpm check` after changing `McpSettings`, MCP wrappers, `SettingsView`, `WorkspaceShell`, or MCP settings CSS.
 - Cross-check `McpSettings` field names against Rust `McpSettings` / `McpSettingsInput` in `src-tauri/src/mcp.rs`.
-- Verify that search-mode bulk toggles preserve non-matching ids in the saved request payload.
+- Verify remote token plaintext fills client snippets when available, while `remote_token_hash` is never exposed to React.
+- Verify that search-mode bulk toggles preserve non-matching SSH ids in the saved request payload and never add non-SSH ids.
 - Browser/desktop visual checks should cover:
   - disabled-by-default state
   - separate `MCP 可用连接` panel rendering

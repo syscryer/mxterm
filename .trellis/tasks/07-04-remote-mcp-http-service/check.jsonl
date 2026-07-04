@@ -1,0 +1,4 @@
+{"file": ".trellis/spec/backend/tauri-command-contracts.md", "reason": "Verify MCP backend command and sidecar transport behavior against the contract."}
+{"file": ".trellis/spec/frontend/tauri-command-contracts.md", "reason": "Verify TypeScript wrappers and settings payload fields match Rust."}
+{"file": ".trellis/spec/frontend/component-guidelines.md", "reason": "Verify Settings UI follows shared component and token styling rules."}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "Verify end-to-end data flow and boundary validation."}

@@ -1,13 +1,17 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::fs;
+use std::net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, OnceLock};
+use std::process::{Child, Command, Stdio};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use base64::engine::{general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use tauri::AppHandle;
+use sha2::{Digest, Sha256};
+use tauri::{AppHandle, Manager, State};
 use tokio::io::AsyncWriteExt;
 
 use crate::app_error::AppError;
@@ -28,11 +32,18 @@ use crate::terminal::session::{ReusableSftpSession, SshConnectionContext};
 use crate::terminal::telnet::{TelnetBackspaceMode, TelnetEnterMode};
 use crate::webdav_sync::WebDavSyncService;
 
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
+
 pub const MCP_SETTINGS_KEY: &str = "mcp.default";
+pub const DEFAULT_REMOTE_HOST: &str = "0.0.0.0";
+pub const DEFAULT_REMOTE_PORT: u16 = 8765;
 const DEFAULT_TIMEOUT_SECONDS: u64 = 30;
 const MAX_TIMEOUT_SECONDS: u64 = 300;
 const DEFAULT_OUTPUT_BYTES: usize = 64 * 1024;
 const MAX_OUTPUT_BYTES: usize = 1024 * 1024;
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x08000000;
 
 static MCP_EXEC_SESSION_POOL: OnceLock<RemoteExecSessionPool> = OnceLock::new();
 
@@ -42,6 +53,18 @@ pub struct McpSettings {
     pub expose_connections: bool,
     pub ssh_operations_enabled: bool,
     pub allow_dangerous_commands: bool,
+    #[serde(default)]
+    pub remote_enabled: bool,
+    #[serde(default = "default_remote_host")]
+    pub remote_host: String,
+    #[serde(default = "default_remote_port")]
+    pub remote_port: u16,
+    #[serde(default)]
+    pub remote_token: Option<String>,
+    #[serde(default)]
+    pub remote_token_hash: Option<String>,
+    #[serde(default)]
+    pub remote_token_preview: Option<String>,
     #[serde(default = "default_connection_exposure_mode")]
     pub connection_exposure_mode: McpConnectionExposureMode,
     #[serde(default)]
@@ -55,6 +78,12 @@ impl Default for McpSettings {
             expose_connections: false,
             ssh_operations_enabled: false,
             allow_dangerous_commands: false,
+            remote_enabled: false,
+            remote_host: DEFAULT_REMOTE_HOST.to_string(),
+            remote_port: DEFAULT_REMOTE_PORT,
+            remote_token: None,
+            remote_token_hash: None,
+            remote_token_preview: None,
             connection_exposure_mode: McpConnectionExposureMode::All,
             exposed_connection_ids: Vec::new(),
         }
@@ -67,6 +96,14 @@ pub struct McpSettingsInput {
     pub expose_connections: bool,
     pub ssh_operations_enabled: bool,
     pub allow_dangerous_commands: bool,
+    #[serde(default)]
+    pub remote_enabled: bool,
+    #[serde(default = "default_remote_host")]
+    pub remote_host: String,
+    #[serde(default = "default_remote_port")]
+    pub remote_port: u16,
+    #[serde(default)]
+    pub remote_token: Option<String>,
     #[serde(default = "default_connection_exposure_mode")]
     pub connection_exposure_mode: McpConnectionExposureMode,
     #[serde(default)]
@@ -87,7 +124,48 @@ pub struct McpStatus {
     pub ssh_operations_enabled: bool,
     pub allow_dangerous_commands: bool,
     pub stdio_only: bool,
+    pub remote_enabled: bool,
+    pub remote_host: String,
+    pub remote_port: u16,
     pub tools: Vec<&'static str>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct McpRemoteServiceStatus {
+    pub enabled: bool,
+    pub running: bool,
+    pub host: String,
+    pub port: u16,
+    pub url: String,
+    pub sse_url: String,
+    pub pid: Option<u32>,
+    pub token_saved: bool,
+    pub token_preview: Option<String>,
+    pub error: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct McpSettingsOutput {
+    pub enabled: bool,
+    pub expose_connections: bool,
+    pub ssh_operations_enabled: bool,
+    pub allow_dangerous_commands: bool,
+    pub remote_enabled: bool,
+    pub remote_host: String,
+    pub remote_port: u16,
+    pub remote_token: Option<String>,
+    pub remote_token_saved: bool,
+    pub remote_token_preview: Option<String>,
+    pub generated_remote_token: Option<String>,
+    pub remote_status: McpRemoteServiceStatus,
+    pub connection_exposure_mode: McpConnectionExposureMode,
+    pub exposed_connection_ids: Vec<String>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct McpLocalNetworkInfo {
+    pub primary_ip: Option<String>,
+    pub ip_addresses: Vec<String>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -225,21 +303,196 @@ pub fn save_settings(
     repository: &StorageRepository,
     input: McpSettingsInput,
     now: &str,
-) -> Result<McpSettings, AppError> {
+) -> Result<(McpSettings, Option<String>), AppError> {
+    let existing = load_settings(repository).unwrap_or_default();
+    let remote_host = normalize_remote_host(input.remote_host)?;
+    let remote_port = validate_remote_port(input.remote_port)?;
+    let (remote_token, remote_token_hash, remote_token_preview, generated_token) =
+        next_remote_token_state(&existing, input.remote_enabled, input.remote_token)?;
     let settings = McpSettings {
         enabled: input.enabled,
         expose_connections: input.expose_connections,
         ssh_operations_enabled: input.ssh_operations_enabled,
         allow_dangerous_commands: input.allow_dangerous_commands,
+        remote_enabled: input.remote_enabled,
+        remote_host,
+        remote_port,
+        remote_token,
+        remote_token_hash,
+        remote_token_preview,
         connection_exposure_mode: input.connection_exposure_mode,
         exposed_connection_ids: normalize_connection_ids(input.exposed_connection_ids),
     };
     repository.app_setting_set(MCP_SETTINGS_KEY, &settings, now)?;
-    Ok(settings)
+    Ok((settings, generated_token))
 }
 
 fn default_connection_exposure_mode() -> McpConnectionExposureMode {
     McpConnectionExposureMode::All
+}
+
+fn default_remote_host() -> String {
+    DEFAULT_REMOTE_HOST.to_string()
+}
+
+fn default_remote_port() -> u16 {
+    DEFAULT_REMOTE_PORT
+}
+
+fn normalize_remote_host(host: String) -> Result<String, AppError> {
+    let trimmed = host.trim();
+    if trimmed.is_empty() {
+        return Err(AppError::new(
+            "mcp_remote_host_missing",
+            "请输入远程 MCP 监听地址。",
+            "remote_host is empty",
+            true,
+        ));
+    }
+    Ok(trimmed.to_string())
+}
+
+fn validate_remote_port(port: u16) -> Result<u16, AppError> {
+    if port == 0 {
+        return Err(AppError::new(
+            "mcp_remote_port_invalid",
+            "远程 MCP 端口必须在 1 到 65535 之间。",
+            "remote_port is 0",
+            true,
+        ));
+    }
+    Ok(port)
+}
+
+fn next_remote_token_state(
+    existing: &McpSettings,
+    remote_enabled: bool,
+    input_token: Option<String>,
+) -> Result<
+    (
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+    ),
+    AppError,
+> {
+    if let Some(token) = input_token.map(|value| value.trim().to_string()) {
+        if token.is_empty() {
+            return Err(AppError::new(
+                "mcp_remote_token_missing",
+                "请输入远程 MCP token。",
+                "remote_token is empty",
+                true,
+            ));
+        }
+        return Ok((
+            Some(token.clone()),
+            Some(hash_remote_token(&token)),
+            Some(remote_token_preview(&token)),
+            None,
+        ));
+    }
+
+    if !remote_enabled || existing.remote_token_hash.is_some() {
+        return Ok((
+            existing.remote_token.clone(),
+            existing.remote_token_hash.clone(),
+            existing.remote_token_preview.clone(),
+            None,
+        ));
+    }
+    let token = generate_remote_token()?;
+    Ok((
+        Some(token.clone()),
+        Some(hash_remote_token(&token)),
+        Some(remote_token_preview(&token)),
+        Some(token),
+    ))
+}
+
+pub fn generate_remote_token() -> Result<String, AppError> {
+    let mut bytes = [0_u8; 32];
+    getrandom::fill(&mut bytes).map_err(|error| {
+        AppError::new(
+            "mcp_remote_token_generate_failed",
+            "远程 MCP token 生成失败。",
+            error,
+            true,
+        )
+    })?;
+    Ok(URL_SAFE_NO_PAD.encode(bytes))
+}
+
+pub fn hash_remote_token(token: &str) -> String {
+    let digest = Sha256::digest(token.as_bytes());
+    digest
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>()
+}
+
+fn remote_token_preview(token: &str) -> String {
+    let suffix = token
+        .chars()
+        .rev()
+        .take(6)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect::<String>();
+    format!("...{suffix}")
+}
+
+pub fn verify_remote_token(token: &str, expected_hash: &str) -> bool {
+    let actual = hash_remote_token(token.trim());
+    constant_time_eq(actual.as_bytes(), expected_hash.trim().as_bytes())
+}
+
+fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
+    if left.len() != right.len() {
+        return false;
+    }
+    left.iter()
+        .zip(right.iter())
+        .fold(0_u8, |acc, (a, b)| acc | (a ^ b))
+        == 0
+}
+
+pub fn local_network_info() -> McpLocalNetworkInfo {
+    let mut addresses = BTreeSet::new();
+    for target in [
+        SocketAddr::from((Ipv4Addr::new(8, 8, 8, 8), 80)),
+        SocketAddr::from((Ipv4Addr::new(1, 1, 1, 1), 80)),
+    ] {
+        if let Some(ip) = local_ip_for_target(target) {
+            addresses.insert(ip.to_string());
+        }
+    }
+    let ip_addresses = addresses.into_iter().collect::<Vec<_>>();
+    McpLocalNetworkInfo {
+        primary_ip: ip_addresses.first().cloned(),
+        ip_addresses,
+    }
+}
+
+fn local_ip_for_target(target: SocketAddr) -> Option<IpAddr> {
+    let socket = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0)).ok()?;
+    socket.connect(target).ok()?;
+    let local = socket.local_addr().ok()?.ip();
+    is_remote_usable_ip(&local).then_some(local)
+}
+
+fn is_remote_usable_ip(ip: &IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(value) => {
+            !value.is_loopback()
+                && !value.is_unspecified()
+                && !value.is_broadcast()
+                && !value.is_link_local()
+        }
+        IpAddr::V6(value) => !value.is_loopback() && !value.is_unspecified(),
+    }
 }
 
 fn normalize_connection_ids(ids: Vec<String>) -> Vec<String> {
@@ -274,6 +527,9 @@ pub fn status(settings: &McpSettings) -> McpStatus {
         ssh_operations_enabled: settings.ssh_operations_enabled,
         allow_dangerous_commands: settings.allow_dangerous_commands,
         stdio_only: true,
+        remote_enabled: settings.remote_enabled,
+        remote_host: settings.remote_host.clone(),
+        remote_port: settings.remote_port,
         tools,
     }
 }
@@ -405,12 +661,17 @@ pub fn connection_is_exposed(settings: &McpSettings, connection_id: &str) -> boo
     }
 }
 
+pub fn connection_is_supported(connection: &ConnectionProfile) -> bool {
+    connection.protocol == ConnectionProtocol::Ssh
+}
+
 pub fn exposed_connections(
     settings: &McpSettings,
     connections: Vec<ConnectionProfile>,
 ) -> Vec<ConnectionProfile> {
     connections
         .into_iter()
+        .filter(connection_is_supported)
         .filter(|connection| connection_is_exposed(settings, &connection.id))
         .collect()
 }
@@ -1348,23 +1609,312 @@ pub fn connection_summary(
     }))
 }
 
+#[derive(Default)]
+pub struct McpRemoteServiceManager {
+    state: Mutex<McpRemoteServiceRuntime>,
+}
+
+#[derive(Default)]
+struct McpRemoteServiceRuntime {
+    child: Option<Child>,
+    signature: Option<String>,
+    last_error: Option<String>,
+}
+
+impl McpRemoteServiceManager {
+    pub fn reconcile(&self, app: &AppHandle, settings: &McpSettings) -> McpRemoteServiceStatus {
+        let mut runtime = self.lock_runtime();
+        refresh_remote_child(settings, &mut runtime);
+        if !settings.remote_enabled {
+            stop_remote_child(&mut runtime);
+            runtime.last_error = None;
+            return remote_service_status(settings, &runtime);
+        }
+
+        let Some(token_hash) = settings.remote_token_hash.as_deref() else {
+            stop_remote_child(&mut runtime);
+            runtime.last_error = Some("远程 MCP token 尚未生成。".to_string());
+            return remote_service_status(settings, &runtime);
+        };
+        let signature = remote_service_signature(app, settings, token_hash);
+        if runtime.child.is_some() && runtime.signature.as_deref() == Some(signature.as_str()) {
+            return remote_service_status(settings, &runtime);
+        }
+
+        stop_remote_child(&mut runtime);
+        match spawn_remote_child(app, settings, token_hash) {
+            Ok(child) => {
+                runtime.child = Some(child);
+                runtime.signature = Some(signature);
+                runtime.last_error = None;
+            }
+            Err(error) => {
+                runtime.last_error = Some(error.message);
+            }
+        }
+        remote_service_status(settings, &runtime)
+    }
+
+    pub fn status(&self, settings: &McpSettings) -> McpRemoteServiceStatus {
+        let mut runtime = self.lock_runtime();
+        refresh_remote_child(settings, &mut runtime);
+        remote_service_status(settings, &runtime)
+    }
+
+    pub fn stop(&self, settings: &McpSettings) -> McpRemoteServiceStatus {
+        let mut runtime = self.lock_runtime();
+        stop_remote_child(&mut runtime);
+        runtime.last_error = None;
+        remote_service_status(settings, &runtime)
+    }
+
+    pub fn restart(&self, app: &AppHandle, settings: &McpSettings) -> McpRemoteServiceStatus {
+        {
+            let mut runtime = self.lock_runtime();
+            stop_remote_child(&mut runtime);
+            runtime.last_error = None;
+        }
+        self.reconcile(app, settings)
+    }
+
+    fn lock_runtime(&self) -> std::sync::MutexGuard<'_, McpRemoteServiceRuntime> {
+        self.state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+}
+
+impl Drop for McpRemoteServiceManager {
+    fn drop(&mut self) {
+        if let Ok(runtime) = self.state.get_mut() {
+            stop_remote_child(runtime);
+        }
+    }
+}
+
+fn remote_service_signature(app: &AppHandle, settings: &McpSettings, token_hash: &str) -> String {
+    let data_dir = app_data_dir(app)
+        .map(|path| path.to_string_lossy().to_string())
+        .unwrap_or_default();
+    format!(
+        "{}:{}:{}:{}",
+        settings.remote_host, settings.remote_port, token_hash, data_dir
+    )
+}
+
+fn spawn_remote_child(
+    app: &AppHandle,
+    settings: &McpSettings,
+    token_hash: &str,
+) -> Result<Child, AppError> {
+    let executable = sidecar_executable_path()?;
+    let data_dir = app_data_dir(app)?;
+    let mut command = Command::new(&executable);
+    command
+        .arg("serve")
+        .arg("--host")
+        .arg(&settings.remote_host)
+        .arg("--port")
+        .arg(settings.remote_port.to_string())
+        .arg("--token-sha256")
+        .arg(token_hash)
+        .arg("--data-dir")
+        .arg(data_dir)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    #[cfg(windows)]
+    command.creation_flags(CREATE_NO_WINDOW);
+    command.spawn().map_err(|error| {
+        AppError::new(
+            "mcp_remote_service_start_failed",
+            "远程 MCP 服务启动失败。",
+            format!("{}: {error}", executable.display()),
+            true,
+        )
+    })
+}
+
+fn refresh_remote_child(settings: &McpSettings, runtime: &mut McpRemoteServiceRuntime) {
+    let Some(child) = runtime.child.as_mut() else {
+        return;
+    };
+    match child.try_wait() {
+        Ok(Some(status)) => {
+            runtime.child = None;
+            runtime.signature = None;
+            if settings.remote_enabled {
+                runtime.last_error = Some(format!("远程 MCP 服务已退出：{status}"));
+            }
+        }
+        Ok(None) => {}
+        Err(error) => {
+            runtime.child = None;
+            runtime.signature = None;
+            runtime.last_error = Some(format!("远程 MCP 服务状态读取失败：{error}"));
+        }
+    }
+}
+
+fn stop_remote_child(runtime: &mut McpRemoteServiceRuntime) {
+    if let Some(mut child) = runtime.child.take() {
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+    runtime.signature = None;
+}
+
+fn remote_service_status(
+    settings: &McpSettings,
+    runtime: &McpRemoteServiceRuntime,
+) -> McpRemoteServiceStatus {
+    let running = runtime.child.is_some();
+    let host = settings.remote_host.clone();
+    let port = settings.remote_port;
+    let base = format!("http://{host}:{port}");
+    McpRemoteServiceStatus {
+        enabled: settings.remote_enabled,
+        running,
+        host,
+        port,
+        url: format!("{base}/mcp"),
+        sse_url: format!("{base}/sse"),
+        pid: runtime.child.as_ref().map(Child::id),
+        token_saved: settings.remote_token_hash.is_some(),
+        token_preview: settings.remote_token_preview.clone(),
+        error: runtime.last_error.clone(),
+    }
+}
+
+pub fn mcp_settings_output(
+    settings: McpSettings,
+    generated_remote_token: Option<String>,
+    remote_status: McpRemoteServiceStatus,
+) -> McpSettingsOutput {
+    McpSettingsOutput {
+        enabled: settings.enabled,
+        expose_connections: settings.expose_connections,
+        ssh_operations_enabled: settings.ssh_operations_enabled,
+        allow_dangerous_commands: settings.allow_dangerous_commands,
+        remote_enabled: settings.remote_enabled,
+        remote_host: settings.remote_host,
+        remote_port: settings.remote_port,
+        remote_token: settings.remote_token,
+        remote_token_saved: settings.remote_token_hash.is_some(),
+        remote_token_preview: settings.remote_token_preview,
+        generated_remote_token,
+        remote_status,
+        connection_exposure_mode: settings.connection_exposure_mode,
+        exposed_connection_ids: settings.exposed_connection_ids,
+    }
+}
+
+fn app_data_dir(app: &AppHandle) -> Result<PathBuf, AppError> {
+    app.path().app_data_dir().map_err(|error| {
+        AppError::new(
+            "mcp_data_dir_missing",
+            "无法定位 MXterm 数据目录。",
+            error,
+            true,
+        )
+    })
+}
+
+fn settings_repository_for_app(app: &AppHandle) -> Result<StorageRepository, AppError> {
+    repository_for_metadata(&app_data_dir(app)?)
+}
+
+pub fn start_remote_service_from_settings(
+    app: &AppHandle,
+    manager: &McpRemoteServiceManager,
+) -> Result<McpRemoteServiceStatus, AppError> {
+    let repository = settings_repository_for_app(app)?;
+    let settings = load_settings(&repository)?;
+    Ok(manager.reconcile(app, &settings))
+}
+
 #[tauri::command]
-pub fn mcp_settings_get(app: AppHandle) -> Result<McpSettings, AppError> {
-    load_settings(&StorageRepository::open_app(&app)?)
+pub fn mcp_settings_get(
+    app: AppHandle,
+    manager: State<'_, McpRemoteServiceManager>,
+) -> Result<McpSettingsOutput, AppError> {
+    let settings = load_settings(&settings_repository_for_app(&app)?)?;
+    let status = manager.status(&settings);
+    Ok(mcp_settings_output(settings, None, status))
 }
 
 #[tauri::command]
 pub fn mcp_settings_save(
     app: AppHandle,
+    manager: State<'_, McpRemoteServiceManager>,
     request: McpSettingsInput,
-) -> Result<McpSettings, AppError> {
-    let repository = StorageRepository::open_app(&app)?;
-    save_settings(&repository, request, &now_timestamp()?)
+) -> Result<McpSettingsOutput, AppError> {
+    let repository = settings_repository_for_app(&app)?;
+    let (settings, generated_token) = save_settings(&repository, request, &now_timestamp()?)?;
+    let status = manager.reconcile(&app, &settings);
+    Ok(mcp_settings_output(settings, generated_token, status))
 }
 
 #[tauri::command]
 pub fn mcp_executable_path() -> Result<String, AppError> {
     Ok(sidecar_executable_path()?.to_string_lossy().to_string())
+}
+
+#[tauri::command]
+pub fn mcp_local_network_info() -> McpLocalNetworkInfo {
+    local_network_info()
+}
+
+#[tauri::command]
+pub fn mcp_remote_service_status(
+    app: AppHandle,
+    manager: State<'_, McpRemoteServiceManager>,
+) -> Result<McpRemoteServiceStatus, AppError> {
+    let settings = load_settings(&settings_repository_for_app(&app)?)?;
+    Ok(manager.status(&settings))
+}
+
+#[tauri::command]
+pub fn mcp_remote_service_start(
+    app: AppHandle,
+    manager: State<'_, McpRemoteServiceManager>,
+) -> Result<McpRemoteServiceStatus, AppError> {
+    let settings = load_settings(&settings_repository_for_app(&app)?)?;
+    Ok(manager.reconcile(&app, &settings))
+}
+
+#[tauri::command]
+pub fn mcp_remote_service_stop(
+    app: AppHandle,
+    manager: State<'_, McpRemoteServiceManager>,
+) -> Result<McpRemoteServiceStatus, AppError> {
+    let settings = load_settings(&settings_repository_for_app(&app)?)?;
+    Ok(manager.stop(&settings))
+}
+
+#[tauri::command]
+pub fn mcp_remote_service_restart(
+    app: AppHandle,
+    manager: State<'_, McpRemoteServiceManager>,
+) -> Result<McpRemoteServiceStatus, AppError> {
+    let settings = load_settings(&settings_repository_for_app(&app)?)?;
+    Ok(manager.restart(&app, &settings))
+}
+
+#[tauri::command]
+pub fn mcp_remote_token_rotate(
+    app: AppHandle,
+    manager: State<'_, McpRemoteServiceManager>,
+) -> Result<McpSettingsOutput, AppError> {
+    let repository = settings_repository_for_app(&app)?;
+    let mut settings = load_settings(&repository)?;
+    let token = generate_remote_token()?;
+    settings.remote_token = Some(token.clone());
+    settings.remote_token_hash = Some(hash_remote_token(&token));
+    settings.remote_token_preview = Some(remote_token_preview(&token));
+    repository.app_setting_set(MCP_SETTINGS_KEY, &settings, &now_timestamp()?)?;
+    let status = manager.restart(&app, &settings);
+    Ok(mcp_settings_output(settings, Some(token), status))
 }
 
 pub fn tool_schemas() -> Vec<Value> {
@@ -1485,13 +2035,17 @@ pub fn settings_as_map(settings: &McpSettings) -> BTreeMap<&'static str, bool> {
             "allow_dangerous_commands",
             settings.allow_dangerous_commands,
         ),
+        ("remote_enabled", settings.remote_enabled),
     ])
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::connections::{ConnectionAdvancedConfig, ConnectionProxyConfig};
+    use crate::connections::{
+        ConnectionAdvancedConfig, ConnectionJumpConfig, ConnectionProxyConfig,
+    };
+    use crate::storage_vault::InMemorySecretStore;
 
     #[test]
     fn default_settings_only_expose_status_tool() {
@@ -1534,6 +2088,28 @@ mod tests {
         assert!(tool_names.contains(&"execute_command".to_string()));
         assert!(tool_names.contains(&"upload_directory".to_string()));
         assert_eq!(tool_names.len(), status(&settings).tools.len());
+    }
+
+    #[test]
+    fn exposed_connections_only_include_ssh_profiles() {
+        let settings = McpSettings {
+            enabled: true,
+            expose_connections: true,
+            connection_exposure_mode: McpConnectionExposureMode::All,
+            ..Default::default()
+        };
+
+        let connections = exposed_connections(
+            &settings,
+            vec![
+                test_connection_profile("ssh-1", ConnectionProtocol::Ssh),
+                test_connection_profile("rdp-1", ConnectionProtocol::Rdp),
+                test_connection_profile("vnc-1", ConnectionProtocol::Vnc),
+            ],
+        );
+
+        assert_eq!(connections.len(), 1);
+        assert_eq!(connections[0].id, "ssh-1");
     }
 
     #[test]
@@ -1586,6 +2162,99 @@ mod tests {
             Some("recursive delete from root")
         );
         assert!(detect_dangerous_command("uptime && df -h").is_none());
+    }
+
+    #[test]
+    fn remote_token_hash_verifies_without_plaintext_sidecar_arg() {
+        let token = "mx_test_token";
+        let hash = hash_remote_token(token);
+
+        assert!(verify_remote_token(token, &hash));
+        assert!(!verify_remote_token("wrong-token", &hash));
+        assert!(!hash.contains(token));
+    }
+
+    #[test]
+    fn remote_ip_filter_rejects_local_only_addresses() {
+        assert!(!is_remote_usable_ip(&IpAddr::V4(Ipv4Addr::LOCALHOST)));
+        assert!(!is_remote_usable_ip(&IpAddr::V4(Ipv4Addr::UNSPECIFIED)));
+        assert!(!is_remote_usable_ip(&IpAddr::V4(Ipv4Addr::new(
+            169, 254, 1, 1
+        ))));
+        assert!(is_remote_usable_ip(&IpAddr::V4(Ipv4Addr::new(
+            192, 168, 1, 20
+        ))));
+    }
+
+    #[test]
+    fn enabling_remote_service_generates_token_once() {
+        let root =
+            std::env::temp_dir().join(format!("mxterm-mcp-settings-{}", uuid::Uuid::new_v4()));
+        let repository =
+            StorageRepository::open_root(&root, Arc::new(InMemorySecretStore::default())).unwrap();
+        let request = McpSettingsInput {
+            enabled: true,
+            expose_connections: false,
+            ssh_operations_enabled: false,
+            allow_dangerous_commands: false,
+            remote_enabled: true,
+            remote_host: "0.0.0.0".to_string(),
+            remote_port: 8765,
+            remote_token: None,
+            connection_exposure_mode: McpConnectionExposureMode::All,
+            exposed_connection_ids: Vec::new(),
+        };
+
+        let (settings, generated) = save_settings(&repository, request.clone(), "1").unwrap();
+        let token = generated.expect("remote token should be returned once");
+        assert_eq!(settings.remote_token.as_deref(), Some(token.as_str()));
+        assert!(settings.remote_token_hash.is_some());
+        assert!(settings.remote_token_preview.is_some());
+        assert!(verify_remote_token(
+            &token,
+            settings.remote_token_hash.as_deref().unwrap()
+        ));
+
+        let (settings_again, generated_again) = save_settings(&repository, request, "2").unwrap();
+        assert!(generated_again.is_none());
+        assert_eq!(settings_again.remote_token, settings.remote_token);
+        assert_eq!(settings_again.remote_token_hash, settings.remote_token_hash);
+
+        drop(repository);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn custom_remote_token_replaces_hash_and_preview() {
+        let root =
+            std::env::temp_dir().join(format!("mxterm-mcp-custom-token-{}", uuid::Uuid::new_v4()));
+        let repository =
+            StorageRepository::open_root(&root, Arc::new(InMemorySecretStore::default())).unwrap();
+        let request = McpSettingsInput {
+            enabled: true,
+            expose_connections: false,
+            ssh_operations_enabled: false,
+            allow_dangerous_commands: false,
+            remote_enabled: true,
+            remote_host: "0.0.0.0".to_string(),
+            remote_port: 8765,
+            remote_token: Some("custom-token-value".to_string()),
+            connection_exposure_mode: McpConnectionExposureMode::All,
+            exposed_connection_ids: Vec::new(),
+        };
+
+        let (settings, generated) = save_settings(&repository, request, "1").unwrap();
+
+        assert!(generated.is_none());
+        assert_eq!(settings.remote_token.as_deref(), Some("custom-token-value"));
+        assert!(verify_remote_token(
+            "custom-token-value",
+            settings.remote_token_hash.as_deref().unwrap()
+        ));
+        assert_eq!(settings.remote_token_preview.as_deref(), Some("...-value"));
+
+        drop(repository);
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
@@ -1651,5 +2320,43 @@ mod tests {
         assert!(serialized.contains("\"redacted\":true"));
         assert!(serialized.contains("\"private_key_path_saved\":true"));
         assert!(serialized.contains("\"password_saved\":true"));
+    }
+
+    fn test_connection_profile(id: &str, protocol: ConnectionProtocol) -> ConnectionProfile {
+        ConnectionProfile {
+            id: id.to_string(),
+            name: id.to_string(),
+            protocol,
+            group: None,
+            host: "127.0.0.1".to_string(),
+            port: 22,
+            username: "root".to_string(),
+            credential_mode: ConnectionCredentialMode::Prompt,
+            credential_id: None,
+            inline_auth_kind: None,
+            inline_password: None,
+            inline_private_key_path: None,
+            inline_private_key_passphrase: None,
+            prompt_auth_kind: None,
+            proxy: ConnectionProxyConfig::default(),
+            jump: ConnectionJumpConfig::default(),
+            advanced: ConnectionAdvancedConfig::default(),
+            rdp: None,
+            vnc: None,
+            telnet: None,
+            serial: None,
+            notes: None,
+            is_favorite: false,
+            last_connected_at: None,
+            remote_os_id: None,
+            remote_os_name: None,
+            remote_os_version: None,
+            created_at: "2026-01-01T00:00:00Z".to_string(),
+            updated_at: "2026-01-01T00:00:00Z".to_string(),
+            auth_kind: None,
+            password: None,
+            private_key_path: None,
+            private_key_passphrase: None,
+        }
     }
 }
