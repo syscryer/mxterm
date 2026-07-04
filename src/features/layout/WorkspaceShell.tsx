@@ -84,50 +84,111 @@ import { connectionInfoFromVncProfile } from "../connections/vncConnectionInfo";
 // RemoteFileEditor 内部静态 import 了 monaco-editor（主体约 4MB）及其 5 个 worker
 // （合计约 10MB）。用 React.lazy 延迟到真正打开远程文件编辑标签时才加载，
 // 避免在应用启动时解析 monaco 导致 release 构建下首屏卡顿和全局卡顿。
+const loadRemoteFileEditor = () => import("../editor/RemoteFileEditor");
+const loadConnectionDialog = () => import("../connections/ConnectionDialog");
+const loadConnectionSearchDialog = () => import("../connections/ConnectionSearchDialog");
+const loadRemoteFilePanel = () => import("../files/RemoteFilePanel");
+const loadMonitorPanel = () => import("../monitor/MonitorPanel");
+const loadSettingsView = () => import("../settings/SettingsView");
+const loadDockerToolPanel = () => import("../tools/DockerToolPanel");
+const loadCommandLibraryPanel = () => import("../commands/CommandLibraryPanel");
+const loadAiAssistantPanel = () => import("../ai/AiAssistantPanel");
+const loadVncViewerSurface = () => import("./VncViewerSurface");
+const loadTerminalPanel = () => import("../terminal/TerminalPanel");
+
+type ConnectionDialogModule = typeof import("../connections/ConnectionDialog");
+type LoadedConnectionDialogComponent = ConnectionDialogModule["ConnectionDialog"];
+
+let connectionDialogModulePromise: Promise<ConnectionDialogModule> | null = null;
+let loadedConnectionDialogComponent: LoadedConnectionDialogComponent | null = null;
+
+function preloadConnectionDialogModule() {
+  connectionDialogModulePromise ??= loadConnectionDialog();
+  return connectionDialogModulePromise;
+}
+
+async function preloadConnectionDialogComponent() {
+  if (loadedConnectionDialogComponent) {
+    return loadedConnectionDialogComponent;
+  }
+  const module = await preloadConnectionDialogModule();
+  loadedConnectionDialogComponent = module.ConnectionDialog;
+  return loadedConnectionDialogComponent;
+}
+
 const RemoteFileEditor = lazy(async () => {
-  const module = await import("../editor/RemoteFileEditor");
+  const module = await loadRemoteFileEditor();
   return { default: module.RemoteFileEditor };
 });
 const ConnectionDialog = lazy(async () => {
-  const module = await import("../connections/ConnectionDialog");
+  const module = await preloadConnectionDialogModule();
   return { default: module.ConnectionDialog };
 });
 const ConnectionSearchDialog = lazy(async () => {
-  const module = await import("../connections/ConnectionSearchDialog");
+  const module = await loadConnectionSearchDialog();
   return { default: module.ConnectionSearchDialog };
 });
 const RemoteFilePanel = lazy(async () => {
-  const module = await import("../files/RemoteFilePanel");
+  const module = await loadRemoteFilePanel();
   return { default: module.RemoteFilePanel };
 });
 const MonitorPanel = lazy(async () => {
-  const module = await import("../monitor/MonitorPanel");
+  const module = await loadMonitorPanel();
   return { default: module.MonitorPanel };
 });
 const SettingsView = lazy(async () => {
-  const module = await import("../settings/SettingsView");
+  const module = await loadSettingsView();
   return { default: module.SettingsView };
 });
 const DockerToolPanel = lazy(async () => {
-  const module = await import("../tools/DockerToolPanel");
+  const module = await loadDockerToolPanel();
   return { default: module.DockerToolPanel };
 });
 const CommandLibraryPanel = lazy(async () => {
-  const module = await import("../commands/CommandLibraryPanel");
+  const module = await loadCommandLibraryPanel();
   return { default: module.CommandLibraryPanel };
 });
 const AiAssistantPanel = lazy(async () => {
-  const module = await import("../ai/AiAssistantPanel");
+  const module = await loadAiAssistantPanel();
   return { default: module.AiAssistantPanel };
 });
 const VncViewerSurface = lazy(async () => {
-  const module = await import("./VncViewerSurface");
+  const module = await loadVncViewerSurface();
   return { default: module.VncViewerSurface };
 });
 const TerminalPanel = lazy(async () => {
-  const module = await import("../terminal/TerminalPanel");
+  const module = await loadTerminalPanel();
   return { default: module.TerminalPanel };
 });
+
+type LazyModuleLoader = () => Promise<unknown>;
+
+const WORKSPACE_IDLE_PREWARM_BATCHES: Array<{
+  timeoutMs: number;
+  loaders: LazyModuleLoader[];
+}> = [
+  {
+    timeoutMs: 350,
+    loaders: [preloadConnectionDialogComponent],
+  },
+  {
+    timeoutMs: 1500,
+    loaders: [
+      loadSettingsView,
+      loadConnectionSearchDialog,
+      loadRemoteFilePanel,
+    ],
+  },
+  {
+    timeoutMs: 5000,
+    loaders: [
+      loadCommandLibraryPanel,
+      loadAiAssistantPanel,
+      loadMonitorPanel,
+      loadDockerToolPanel,
+    ],
+  },
+];
 import type { RemoteFileEditorTab } from "../editor/remoteFileEditorTypes";
 import type { RemoteFileTool, RemoteFileUploadItem } from "../files/RemoteFilePanel";
 import type { AiContextBlock } from "../ai/aiTypes";
@@ -669,6 +730,8 @@ export function WorkspaceShell() {
     useState<SettingsSectionId | undefined>();
   const [settingsSectionRequestKey, setSettingsSectionRequestKey] = useState(0);
   const [dialogOpen, setDialogOpen] = useState(false);
+  const [LoadedConnectionDialog, setLoadedConnectionDialog] =
+    useState<LoadedConnectionDialogComponent | null>(null);
   const [connectionSearchOpen, setConnectionSearchOpen] = useState(false);
   const [connectionSearchQuery, setConnectionSearchQuery] = useState("");
   const [editingConnection, setEditingConnection] = useState<ConnectionProfile | null>(null);
@@ -893,6 +956,33 @@ export function WorkspaceShell() {
 
   useEffect(() => initializeWindowStatePersistence(), []);
 
+  const ensureConnectionDialogLoaded = useCallback(async () => {
+    if (LoadedConnectionDialog) {
+      return LoadedConnectionDialog;
+    }
+    const DialogComponent = await preloadConnectionDialogComponent();
+    setLoadedConnectionDialog(() => DialogComponent);
+    return DialogComponent;
+  }, [LoadedConnectionDialog]);
+
+  const preloadCreateConnectionDialog = useCallback(() => {
+    void ensureConnectionDialogLoaded();
+  }, [ensureConnectionDialogLoaded]);
+
+  useEffect(() => {
+    let active = true;
+    void preloadConnectionDialogComponent()
+      .then((DialogComponent) => {
+        if (active) {
+          setLoadedConnectionDialog(() => DialogComponent);
+        }
+      })
+      .catch(() => undefined);
+    return () => {
+      active = false;
+    };
+  }, []);
+
   // 配色方案数据（约 280KB / 531 项）被拆成独立 chunk。启动阶段只注册就绪
   // 监听，并把预热放到浏览器空闲时段，避免 release 首屏后马上解析大数组。
   const [terminalColorSchemesReady, setTerminalColorSchemesReady] = useState(false);
@@ -912,6 +1002,8 @@ export function WorkspaceShell() {
       unsubscribe();
     };
   }, []);
+
+  useEffect(() => scheduleWorkspaceModulePrewarm(), []);
 
   useEffect(() => {
     if (!hasTauriRuntime() || !storageReady) {
@@ -3753,10 +3845,11 @@ export function WorkspaceShell() {
     void copyText(path);
   }
 
-  function createConnection(groupName?: string) {
+  async function createConnection(groupName?: string) {
     setLeftPaneCollapsed(false);
     setPendingConnectionGroupName(groupName || null);
     setEditingConnection(null);
+    await ensureConnectionDialogLoaded();
     setDialogOpen(true);
   }
 
@@ -3767,9 +3860,10 @@ export function WorkspaceShell() {
     setHomeActive(true);
   }
 
-  function editConnection(connection: ConnectionProfile) {
+  async function editConnection(connection: ConnectionProfile) {
     setPendingConnectionGroupName(null);
     setEditingConnection(connection);
+    await ensureConnectionDialogLoaded();
     setDialogOpen(true);
   }
 
@@ -7356,6 +7450,7 @@ export function WorkspaceShell() {
           onOpen={openTerminal}
           onOpenSearch={() => setConnectionSearchOpen(true)}
           onOpenSettings={() => openSettingsSection()}
+          onPreloadCreate={preloadCreateConnectionDialog}
           onRefresh={reload}
           onSelect={selectConnection}
           onToggleFavorite={toggleConnectionFavorite}
@@ -7389,6 +7484,7 @@ export function WorkspaceShell() {
             onCreateConnection={() => createConnection()}
             onDelete={deleteConnection}
             onEdit={editConnection}
+            onPreloadCreateConnection={preloadCreateConnectionDialog}
             onRefresh={reload}
             hidden={!showingHome}
           />
@@ -8556,8 +8652,24 @@ export function WorkspaceShell() {
           </Suspense>
         ) : null}
 
-        {dialogOpen ? (
-          <Suspense fallback={<ConnectionDialogFallback />}>
+        {dialogOpen && LoadedConnectionDialog ? (
+          <LoadedConnectionDialog
+            allowPasswordReveal={effectiveAllowPasswordReveal}
+            connection={editingConnection}
+            connections={connections}
+            credentials={credentials}
+            defaultGroup={pendingConnectionGroupName}
+            groups={connectionGroupCatalog.groups}
+            onClose={closeConnectionDialog}
+            onDelete={deleteConnection}
+            onManageCredentials={openCredentialSettings}
+            onSave={saveConnectionFromDialog}
+            onTest={testConnectionFromDialog}
+            onTrustHostKey={knownHostTrust}
+            open={dialogOpen}
+          />
+        ) : dialogOpen ? (
+          <Suspense fallback={null}>
             <ConnectionDialog
               allowPasswordReveal={effectiveAllowPasswordReveal}
               connection={editingConnection}
@@ -9220,27 +9332,6 @@ export function WorkspaceShell() {
     setDialogOpen(false);
     setPendingConnectionGroupName(null);
   }
-}
-
-function ConnectionDialogFallback() {
-  return (
-    <Dialog.Root open>
-      <Dialog.Portal>
-        <Dialog.Overlay className="dialog-backdrop" />
-        <Dialog.Content className="confirm-dialog" aria-label="加载连接配置">
-          <div className="confirm-dialog-icon" aria-hidden="true">
-            <Loader2 className="ui-icon spin" />
-          </div>
-          <div className="confirm-dialog-copy">
-            <Dialog.Title className="confirm-dialog-title">正在加载连接配置</Dialog.Title>
-            <Dialog.Description className="confirm-dialog-description">
-              首次打开需要加载表单模块。
-            </Dialog.Description>
-          </div>
-        </Dialog.Content>
-      </Dialog.Portal>
-    </Dialog.Root>
-  );
 }
 
 function ConnectionSearchDialogFallback() {
@@ -10736,6 +10827,7 @@ function ConnectionHome({
   onCreateConnection,
   onDelete,
   onEdit,
+  onPreloadCreateConnection,
   onRefresh,
 }: {
   connections: ConnectionProfile[];
@@ -10747,6 +10839,7 @@ function ConnectionHome({
   onCreateConnection: () => void;
   onDelete: (connection: ConnectionProfile) => void | Promise<void>;
   onEdit: (connection: ConnectionProfile) => void;
+  onPreloadCreateConnection?: () => void;
   onRefresh: () => void | Promise<void>;
 }) {
   const [filter, setFilter] = useState<ConnectionFilter>("recent");
@@ -10898,7 +10991,14 @@ function ConnectionHome({
               <RefreshCw className={`ui-icon ${loading || isProbingLatency ? "spin" : ""}`} aria-hidden="true" />
             </button>
           </Tooltip>
-          <button className="repository-primary-button" type="button" onClick={onCreateConnection}>
+          <button
+            className="repository-primary-button"
+            type="button"
+            onFocus={onPreloadCreateConnection}
+            onClick={onCreateConnection}
+            onPointerDown={onPreloadCreateConnection}
+            onPointerEnter={onPreloadCreateConnection}
+          >
             <Plus className="ui-icon" aria-hidden="true" />
             <span>新建连接</span>
           </button>
@@ -13200,6 +13300,35 @@ function scheduleIdleTask(callback: () => void, timeoutMs: number): () => void {
 
   const timer = window.setTimeout(callback, timeoutMs);
   return () => window.clearTimeout(timer);
+}
+
+function scheduleWorkspaceModulePrewarm(): () => void {
+  let canceled = false;
+  const cancelBatchTasks = WORKSPACE_IDLE_PREWARM_BATCHES.map((batch) =>
+    scheduleIdleTask(() => {
+      void prewarmLazyModuleBatch(batch.loaders, () => canceled);
+    }, batch.timeoutMs),
+  );
+
+  return () => {
+    canceled = true;
+    for (const cancelBatchTask of cancelBatchTasks) {
+      cancelBatchTask();
+    }
+  };
+}
+
+async function prewarmLazyModuleBatch(
+  loaders: LazyModuleLoader[],
+  isCanceled: () => boolean,
+) {
+  for (const loader of loaders) {
+    if (isCanceled()) {
+      return;
+    }
+    await loader().catch(() => undefined);
+    await yieldToBrowser();
+  }
 }
 
 function clampTransferProgress(progress: number) {
