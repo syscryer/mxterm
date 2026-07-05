@@ -1918,9 +1918,7 @@ fn rdp_host_window_state_path(app: &AppHandle) -> Result<PathBuf, AppError> {
 }
 
 #[cfg(windows)]
-fn load_persisted_rdp_host_window_state(
-    app: &AppHandle,
-) -> Option<PersistedRdpHostWindowState> {
+fn load_persisted_rdp_host_window_state(app: &AppHandle) -> Option<PersistedRdpHostWindowState> {
     let path = rdp_host_window_state_path(app).ok()?;
     let content = fs::read_to_string(path).ok()?;
     serde_json::from_str::<PersistedRdpHostWindowState>(&content).ok()
@@ -1931,9 +1929,7 @@ fn persist_rdp_host_window_state(
     app: &AppHandle,
     hwnd: windows::Win32::Foundation::HWND,
 ) -> Result<(), AppError> {
-    use windows::Win32::UI::WindowsAndMessaging::{
-        GetWindowPlacement, WINDOWPLACEMENT,
-    };
+    use windows::Win32::UI::WindowsAndMessaging::{GetWindowPlacement, WINDOWPLACEMENT};
 
     let mut placement = WINDOWPLACEMENT::default();
     placement.length = std::mem::size_of::<WINDOWPLACEMENT>() as u32;
@@ -2396,8 +2392,8 @@ fn run_activex_host(
     use windows::Win32::System::LibraryLoader::GetModuleHandleW;
     use windows::Win32::UI::WindowsAndMessaging::{
         CreateWindowExW, DestroyWindow, DispatchMessageW, GetMessageW, PostMessageW,
-        RegisterClassW, SetWindowLongPtrW, TranslateMessage, WNDCLASSW,
-        WS_CLIPCHILDREN, WS_CLIPSIBLINGS, WS_EX_APPWINDOW, WS_OVERLAPPEDWINDOW, WS_VISIBLE,
+        RegisterClassW, SetWindowLongPtrW, TranslateMessage, WNDCLASSW, WS_CLIPCHILDREN,
+        WS_CLIPSIBLINGS, WS_EX_APPWINDOW, WS_OVERLAPPEDWINDOW, WS_VISIBLE,
     };
 
     let _owner = HWND(owner_hwnd as *mut std::ffi::c_void);
@@ -2462,10 +2458,8 @@ fn run_activex_host(
         // 生命周期与「带系统标题栏的普通窗口」完全一致（该配置下 MSTSC ActiveX 恢复不冻结）。
         // 系统标题栏由 WM_NCCALCSIZE 视觉隐藏，
         // 而非从 style 砍掉 caption，避免破坏 DWM 非客户区/恢复序列。
-        let host_window_style = WS_OVERLAPPEDWINDOW
-            | WS_VISIBLE
-            | WS_CLIPCHILDREN
-            | WS_CLIPSIBLINGS;
+        let host_window_style =
+            WS_OVERLAPPEDWINDOW | WS_VISIBLE | WS_CLIPCHILDREN | WS_CLIPSIBLINGS;
         let hwnd = unsafe {
             CreateWindowExW(
                 WS_EX_APPWINDOW,
@@ -2491,7 +2485,10 @@ fn run_activex_host(
             )
         })?;
         configure_native_host_frame(hwnd);
-        if persisted_state.as_ref().is_some_and(|state| state.maximized) {
+        if persisted_state
+            .as_ref()
+            .is_some_and(|state| state.maximized)
+        {
             toggle_native_host_maximize(hwnd);
         }
         config.desktop_scale_factor = desktop_scale_factor_for_window(hwnd);
@@ -2580,8 +2577,8 @@ unsafe extern "system" fn rdp_activex_host_wndproc(
         DefWindowProcW, GetWindowLongPtrW, KillTimer, PostQuitMessage, SetWindowLongPtrW,
         GWLP_USERDATA, HTCAPTION, SC_RESTORE, SIZE_MINIMIZED, WM_ACTIVATE, WM_CAPTURECHANGED,
         WM_DPICHANGED, WM_ERASEBKGND, WM_GETMINMAXINFO, WM_LBUTTONDBLCLK, WM_LBUTTONDOWN,
-        WM_LBUTTONUP, WM_MOUSEMOVE, WM_NCCALCSIZE, WM_NCDESTROY, WM_NCHITTEST,
-        WM_NCLBUTTONDBLCLK, WM_PAINT, WM_SHOWWINDOW, WM_SIZE, WM_SYSCOMMAND, WM_TIMER,
+        WM_LBUTTONUP, WM_MOUSEMOVE, WM_NCCALCSIZE, WM_NCDESTROY, WM_NCHITTEST, WM_NCLBUTTONDBLCLK,
+        WM_PAINT, WM_SHOWWINDOW, WM_SIZE, WM_SYSCOMMAND, WM_TIMER,
     };
 
     if message == MX_RDP_HOST_PROCESS_COMMANDS {
@@ -3906,8 +3903,8 @@ fn wake_activex_sessions_after_restore(
 ) {
     use windows::Win32::Graphics::Gdi::{InvalidateRect, UpdateWindow};
     use windows::Win32::UI::WindowsAndMessaging::{
-        SetWindowPos, ShowWindow, HWND_TOP, SET_WINDOW_POS_FLAGS, SWP_FRAMECHANGED,
-        SWP_NOMOVE, SWP_NOSIZE, SW_HIDE, SW_SHOW,
+        SetWindowPos, ShowWindow, HWND_TOP, SET_WINDOW_POS_FLAGS, SWP_FRAMECHANGED, SWP_NOMOVE,
+        SWP_NOSIZE, SW_HIDE, SW_SHOW,
     };
 
     let active_index = state.active_index;

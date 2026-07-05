@@ -489,7 +489,10 @@ fn parse_crontab(text: &str) -> Result<CrontabDocument, AppError> {
         }
 
         if !closed {
-            return Err(invalid_block_error(index + 1, "missing MXTERM-SCHEDULE-END"));
+            return Err(invalid_block_error(
+                index + 1,
+                "missing MXTERM-SCHEDULE-END",
+            ));
         }
         document
             .segments
@@ -502,10 +505,7 @@ fn parse_crontab(text: &str) -> Result<CrontabDocument, AppError> {
     Ok(document)
 }
 
-fn parse_task_block(
-    block: &[String],
-    start_line: usize,
-) -> Result<ScheduledTaskRecord, AppError> {
+fn parse_task_block(block: &[String], start_line: usize) -> Result<ScheduledTaskRecord, AppError> {
     let mut id = None;
     let mut name = None;
     let mut cron = None;
@@ -531,12 +531,14 @@ fn parse_task_block(
             "command" => command = Some(decode_metadata(value.trim(), start_line, "command")?),
             "enabled" => enabled = Some(parse_enabled(value.trim(), start_line)?),
             "updated_at" => {
-                updated_at = Some(require_value(
-                    value,
-                    "scheduled_task_crontab_invalid",
-                    "定时任务管理块格式无效。",
-                )?
-                .to_string())
+                updated_at = Some(
+                    require_value(
+                        value,
+                        "scheduled_task_crontab_invalid",
+                        "定时任务管理块格式无效。",
+                    )?
+                    .to_string(),
+                )
             }
             _ => {}
         }
@@ -548,14 +550,20 @@ fn parse_task_block(
         cron: require_decoded_value(cron, start_line, "cron")?,
         command: require_decoded_value(command, start_line, "command")?,
         enabled: enabled.ok_or_else(|| invalid_block_error(start_line, "missing enabled"))?,
-        updated_at: updated_at.ok_or_else(|| invalid_block_error(start_line, "missing updated_at"))?,
+        updated_at: updated_at
+            .ok_or_else(|| invalid_block_error(start_line, "missing updated_at"))?,
     };
     validate_command(&record.command)?;
     Ok(record)
 }
 
 fn normalize_task_input(input: ScheduledTaskInput) -> Result<ScheduledTaskRecord, AppError> {
-    let id = match input.id.as_deref().map(str::trim).filter(|value| !value.is_empty()) {
+    let id = match input
+        .id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
         Some(value) => normalize_task_id(value)?,
         None => uuid::Uuid::new_v4().to_string(),
     };
@@ -584,11 +592,7 @@ fn normalize_task_input(input: ScheduledTaskInput) -> Result<ScheduledTaskRecord
 }
 
 fn validate_cron(value: &str) -> Result<&str, AppError> {
-    let value = require_value(
-        value,
-        "scheduled_task_cron_missing",
-        "请输入 cron 表达式。",
-    )?;
+    let value = require_value(value, "scheduled_task_cron_missing", "请输入 cron 表达式。")?;
     if value.contains('\n') || value.contains('\r') || value.contains('\0') {
         return Err(AppError::new(
             "scheduled_task_cron_invalid",
@@ -633,11 +637,7 @@ fn validate_command(value: &str) -> Result<(), AppError> {
 }
 
 fn normalize_task_id(value: &str) -> Result<String, AppError> {
-    let value = require_value(
-        value,
-        "scheduled_task_id_missing",
-        "定时任务标识缺失。",
-    )?;
+    let value = require_value(value, "scheduled_task_id_missing", "定时任务标识缺失。")?;
     if value.len() > 96
         || !value
             .chars()
@@ -929,7 +929,12 @@ fn now_timestamp() -> Result<String, AppError> {
     let duration = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_err(|error| {
-            AppError::new("scheduled_task_clock_invalid", "系统时间异常。", error, false)
+            AppError::new(
+                "scheduled_task_clock_invalid",
+                "系统时间异常。",
+                error,
+                false,
+            )
         })?;
     Ok(duration.as_secs().to_string())
 }
@@ -941,8 +946,8 @@ fn default_enabled() -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_run_command, escape_crontab_percent, parse_crontab, parse_log_tail,
-        validate_cron, CrontabSegment, ScheduledTaskRecord, CRONTAB_BEGIN, CRONTAB_END,
+        build_run_command, escape_crontab_percent, parse_crontab, parse_log_tail, validate_cron,
+        CrontabSegment, ScheduledTaskRecord, CRONTAB_BEGIN, CRONTAB_END,
     };
 
     fn sample_record(id: &str) -> ScheduledTaskRecord {
@@ -975,8 +980,14 @@ mod tests {
 
         assert_eq!(document.task_records().len(), 1);
         assert_eq!(document.task_records()[0].name, "备份任务");
-        assert_eq!(document.task_records()[0].command, "echo 'hello'\nprintf done");
-        assert!(matches!(document.segments.first(), Some(CrontabSegment::Raw(_))));
+        assert_eq!(
+            document.task_records()[0].command,
+            "echo 'hello'\nprintf done"
+        );
+        assert!(matches!(
+            document.segments.first(),
+            Some(CrontabSegment::Raw(_))
+        ));
         let rendered = document.render();
         assert!(rendered.contains("SHELL=/bin/sh"));
         assert!(rendered.contains("0 1 * * * echo user"));
@@ -1002,7 +1013,9 @@ mod tests {
 
         assert!(block.contains("# enabled=false"));
         assert!(block.contains("# disabled: */5 * * * *"));
-        assert!(!block.lines().any(|line| line.starts_with("*/5 * * * * MXTERM_TASK_ID=")));
+        assert!(!block
+            .lines()
+            .any(|line| line.starts_with("*/5 * * * * MXTERM_TASK_ID=")));
     }
 
     #[test]

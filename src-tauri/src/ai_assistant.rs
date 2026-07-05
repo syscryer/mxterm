@@ -982,7 +982,9 @@ fn parse_openai_models_list(value: &Value) -> Result<Vec<AiProviderModelOption>,
                 return None;
             }
             let owned_by = item.get("owned_by").and_then(Value::as_str).map(str::trim);
-            let subtitle = owned_by.filter(|value| !value.is_empty()).map(str::to_string);
+            let subtitle = owned_by
+                .filter(|value| !value.is_empty())
+                .map(str::to_string);
             Some(AiProviderModelOption {
                 id,
                 display_name: None,
@@ -1036,7 +1038,11 @@ fn sort_models(models: &mut [AiProviderModelOption]) {
         left_name
             .to_ascii_lowercase()
             .cmp(&right_name.to_ascii_lowercase())
-            .then_with(|| left.id.to_ascii_lowercase().cmp(&right.id.to_ascii_lowercase()))
+            .then_with(|| {
+                left.id
+                    .to_ascii_lowercase()
+                    .cmp(&right.id.to_ascii_lowercase())
+            })
     });
 }
 
