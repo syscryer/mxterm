@@ -649,6 +649,8 @@ interface DownloadTransferRunOptions {
   transferId?: string;
 }
 
+type RemoteFileTransferTask = () => Promise<void>;
+
 const defaultLeftPaneWidth = 336;
 const minLeftPaneWidth = 248;
 const maxLeftPaneWidth = 520;
@@ -869,6 +871,11 @@ export function WorkspaceShell() {
   const [aiAssistantPanelLoaded, setAiAssistantPanelLoaded] = useState(false);
   const [settingsViewLoaded, setSettingsViewLoaded] = useState(false);
   const [remoteFileTransfers, setRemoteFileTransfers] = useState<RemoteFileTransferItem[]>([]);
+  const remoteFileTransfersRef = useRef<RemoteFileTransferItem[]>([]);
+  const transferConcurrencyRef = useRef(settings.fileTransfer.concurrentTransfers);
+  const transferQueueRef = useRef<string[]>([]);
+  const runningTransferIdsRef = useRef<Set<string>>(new Set());
+  const transferTasksRef = useRef<Map<string, RemoteFileTransferTask>>(new Map());
   const [nativeFileDropTargetPath, setNativeFileDropTargetPath] = useState<string | null>(null);
   const [remoteFileProperties, setRemoteFileProperties] =
     useState<RemoteFilePropertiesState | null>(null);
@@ -898,6 +905,16 @@ export function WorkspaceShell() {
     () => platformCapabilities.windowMaterials,
   );
   const workspaceShellRef = useRef<HTMLElement | null>(null);
+
+  useEffect(() => {
+    remoteFileTransfersRef.current = remoteFileTransfers;
+  }, [remoteFileTransfers]);
+
+  useEffect(() => {
+    transferConcurrencyRef.current = settings.fileTransfer.concurrentTransfers;
+    drainTransferQueue();
+  }, [settings.fileTransfer.concurrentTransfers]);
+
   const loadCommandLibrary = useCallback(async () => {
     if (!storageReady || !hasTauriRuntime()) {
       setCommandSnippets([]);
@@ -2218,8 +2235,8 @@ export function WorkspaceShell() {
   }
 
   function applyRemoteTransferProgress(event: RemoteFileTransferProgressEvent) {
-    setRemoteFileTransfers((items) =>
-      items.map((item) => {
+    setRemoteFileTransfers((items) => {
+      const nextItems = items.map((item) => {
         if (item.id !== event.transfer_id || item.status !== "running") {
           return item;
         }
@@ -2228,12 +2245,16 @@ export function WorkspaceShell() {
         const totalBytes = event.total_bytes ?? 0;
         const progress =
           totalBytes > 0 ? transferProgressPercent(event.loaded_bytes, totalBytes) : item.progress;
+        const displayProgress =
+          event.direction === "upload" && progress >= 100 ? 99 : progress;
         const stage =
-          item.kind === "directory" && event.direction === "download" && !hasKnownTotal
-            ? "压缩中"
-            : event.direction === "upload"
-              ? "上传中"
-              : "下载中";
+          event.direction === "upload" && progress >= 100
+            ? "等待远端确认"
+            : item.kind === "directory" && event.direction === "download" && !hasKnownTotal
+              ? "压缩中"
+              : event.direction === "upload"
+                ? "上传中"
+                : "下载中";
         const progressDetail =
           item.kind === "directory" && event.direction === "download" && !hasKnownTotal
             ? `压缩包 ${formatFileSize(event.loaded_bytes)}`
@@ -2241,7 +2262,7 @@ export function WorkspaceShell() {
 
         return {
           ...item,
-          progress: clampTransferProgress(progress),
+          progress: clampTransferProgress(displayProgress),
           progressDetail,
           progressIndeterminate: totalBytes <= 0,
           speedText: formatTransferSpeed(
@@ -2249,8 +2270,10 @@ export function WorkspaceShell() {
           ),
           stage,
         };
-      }),
-    );
+      });
+      remoteFileTransfersRef.current = nextItems;
+      return nextItems;
+    });
   }
 
   function addRemoteFileTransfer(input: {
@@ -2284,7 +2307,11 @@ export function WorkspaceShell() {
       startedAt: Date.now(),
       status: "queued",
     };
-    setRemoteFileTransfers((items) => [item, ...items]);
+    setRemoteFileTransfers((items) => {
+      const nextItems = [item, ...items];
+      remoteFileTransfersRef.current = nextItems;
+      return nextItems;
+    });
     return id;
   }
 
@@ -2292,8 +2319,8 @@ export function WorkspaceShell() {
     transferId: string,
     update: Partial<Omit<RemoteFileTransferItem, "id" | "createdAt">>,
   ) {
-    setRemoteFileTransfers((items) =>
-      items.map((item) => {
+    setRemoteFileTransfers((items) => {
+      const nextItems = items.map((item) => {
         if (item.id !== transferId) {
           return item;
         }
@@ -2302,8 +2329,10 @@ export function WorkspaceShell() {
           next.progressDetail = item.progressDetail;
         }
         return next;
-      }),
-    );
+      });
+      remoteFileTransfersRef.current = nextItems;
+      return nextItems;
+    });
   }
 
   function setTransferProgress(
@@ -2360,7 +2389,66 @@ export function WorkspaceShell() {
     return () => window.clearInterval(timer);
   }
 
+  function enqueueRemoteFileTransfer(transferId: string, task: RemoteFileTransferTask) {
+    transferTasksRef.current.set(transferId, task);
+    if (
+      !transferQueueRef.current.includes(transferId) &&
+      !runningTransferIdsRef.current.has(transferId)
+    ) {
+      transferQueueRef.current.push(transferId);
+    }
+    drainTransferQueue();
+  }
+
+  function drainTransferQueue() {
+    const maxConcurrentTransfers = transferConcurrencyRef.current;
+
+    while (
+      runningTransferIdsRef.current.size < maxConcurrentTransfers &&
+      transferQueueRef.current.length > 0
+    ) {
+      const transferId = transferQueueRef.current.shift();
+      if (!transferId) {
+        continue;
+      }
+
+      const task = transferTasksRef.current.get(transferId);
+      const item = remoteFileTransfersRef.current.find((transfer) => transfer.id === transferId);
+      if (!task || (item && item.status !== "queued")) {
+        transferTasksRef.current.delete(transferId);
+        continue;
+      }
+
+      runningTransferIdsRef.current.add(transferId);
+      updateRemoteFileTransfer(transferId, {
+        startedAt: Date.now(),
+        status: "running",
+      });
+
+      void task()
+        .catch((error) => {
+          failTransfer(transferId, "传输失败", error);
+        })
+        .finally(() => {
+          runningTransferIdsRef.current.delete(transferId);
+          transferTasksRef.current.delete(transferId);
+          drainTransferQueue();
+        });
+    }
+  }
+
+  function dropQueuedTransfer(transferId: string) {
+    transferQueueRef.current = transferQueueRef.current.filter((id) => id !== transferId);
+    transferTasksRef.current.delete(transferId);
+  }
+
+  function isTransferNoLongerActive(transferId: string) {
+    const item = remoteFileTransfersRef.current.find((transfer) => transfer.id === transferId);
+    return Boolean(item && (item.status === "canceled" || item.status === "error"));
+  }
+
   function cancelQueuedTransfer(transferId: string) {
+    dropQueuedTransfer(transferId);
     updateRemoteFileTransfer(transferId, {
       error: null,
       progress: 0,
@@ -2373,13 +2461,20 @@ export function WorkspaceShell() {
   }
 
   function clearFinishedTransfers() {
-    setRemoteFileTransfers((items) =>
-      items.filter((item) => item.status === "queued" || item.status === "running"),
-    );
+    setRemoteFileTransfers((items) => {
+      const nextItems = items.filter((item) => item.status === "queued" || item.status === "running");
+      remoteFileTransfersRef.current = nextItems;
+      return nextItems;
+    });
   }
 
   function removeRemoteFileTransfer(transferId: string) {
-    setRemoteFileTransfers((items) => items.filter((item) => item.id !== transferId));
+    dropQueuedTransfer(transferId);
+    setRemoteFileTransfers((items) => {
+      const nextItems = items.filter((item) => item.id !== transferId);
+      remoteFileTransfersRef.current = nextItems;
+      return nextItems;
+    });
   }
 
   function cancelTransfer(transferId: string) {
@@ -3348,41 +3443,46 @@ export function WorkspaceShell() {
       prepareTransferRetry(transferId, "准备重试");
     }
 
-    try {
-      const conflictPolicy = options.conflictPolicy ?? await resolveUploadConflictPolicy(connection, uploadPath, transferId);
-      if (conflictPolicy === "failed") {
-        return;
-      }
-      if (!conflictPolicy) {
-        cancelTransfer(transferId);
-        return;
-      }
+    enqueueRemoteFileTransfer(transferId, async () => {
+      try {
+        const conflictPolicy = options.conflictPolicy ?? await resolveUploadConflictPolicy(connection, uploadPath, transferId);
+        if (conflictPolicy === "failed") {
+          return;
+        }
+        if (!conflictPolicy) {
+          cancelTransfer(transferId);
+          return;
+        }
+        if (isTransferNoLongerActive(transferId)) {
+          return;
+        }
 
-      updateRemoteFileTransfer(transferId, {
-        retry: {
-          action: "local-file-upload",
+        updateRemoteFileTransfer(transferId, {
+          retry: {
+            action: "local-file-upload",
+            connectionId: connection.id,
+            conflictPolicy,
+            localPath,
+            parentPath: normalizedParentPath,
+          },
+        });
+        setTransferProgress(transferId, {
+          indeterminate: true,
+          progress: 4,
+          stage: "上传中",
+        });
+        const result = await remoteFileUploadLocalFile({
           connectionId: connection.id,
           conflictPolicy,
           localPath,
-          parentPath: normalizedParentPath,
-        },
-      });
-      setTransferProgress(transferId, {
-        indeterminate: true,
-        progress: 4,
-        stage: "上传中",
-      });
-      const result = await remoteFileUploadLocalFile({
-        connectionId: connection.id,
-        conflictPolicy,
-        localPath,
-        path: uploadPath,
-        transferId,
-      });
-      finishUploadTransfer(transferId, connection.id, result);
-    } catch (error) {
-      failTransfer(transferId, "上传失败", error);
-    }
+          path: uploadPath,
+          transferId,
+        });
+        finishUploadTransfer(transferId, connection.id, result);
+      } catch (error) {
+        failTransfer(transferId, "上传失败", error);
+      }
+    });
   }
 
   async function runLocalDirectoryUpload(
@@ -3412,48 +3512,53 @@ export function WorkspaceShell() {
       prepareTransferRetry(transferId, "准备重试");
     }
 
-    try {
-      const conflictPolicy = options.conflictPolicy ?? await resolveUploadConflictPolicy(connection, remotePath, transferId);
-      if (conflictPolicy === "failed") {
-        return;
-      }
-      if (!conflictPolicy) {
-        cancelTransfer(transferId);
-        return;
-      }
+    enqueueRemoteFileTransfer(transferId, async () => {
+      try {
+        const conflictPolicy = options.conflictPolicy ?? await resolveUploadConflictPolicy(connection, remotePath, transferId);
+        if (conflictPolicy === "failed") {
+          return;
+        }
+        if (!conflictPolicy) {
+          cancelTransfer(transferId);
+          return;
+        }
+        if (isTransferNoLongerActive(transferId)) {
+          return;
+        }
 
-      const compress = options.compress ?? settings.fileTransfer.compressDirectories;
-      const keepArchive = options.keepArchive ?? settings.fileTransfer.keepArchives;
-      updateRemoteFileTransfer(transferId, {
-        retry: {
-          action: "local-directory-upload",
+        const compress = options.compress ?? settings.fileTransfer.compressDirectories;
+        const keepArchive = options.keepArchive ?? settings.fileTransfer.keepArchives;
+        updateRemoteFileTransfer(transferId, {
+          retry: {
+            action: "local-directory-upload",
+            compress,
+            connectionId: connection.id,
+            conflictPolicy,
+            keepArchive,
+            localPath,
+            parentPath: normalizedParentPath,
+          },
+        });
+        setTransferProgress(transferId, {
+          indeterminate: true,
+          progress: 4,
+          stage: compress ? "打包并上传目录" : "扫描目录",
+        });
+        const result = await remoteFileUploadLocalArchive({
           compress,
           connectionId: connection.id,
           conflictPolicy,
           keepArchive,
           localPath,
-          parentPath: normalizedParentPath,
-        },
-      });
-      setTransferProgress(transferId, {
-        indeterminate: true,
-        progress: 4,
-        stage: compress ? "打包并上传目录" : "扫描目录",
-      });
-      const result = await remoteFileUploadLocalArchive({
-        compress,
-        connectionId: connection.id,
-        conflictPolicy,
-        keepArchive,
-        localPath,
-        rootName,
-        targetDir: normalizedParentPath,
-        transferId,
-      });
-      finishArchiveUploadTransfer(transferId, connection.id, result);
-    } catch (error) {
-      failTransfer(transferId, "目录上传失败", error);
-    }
+          rootName,
+          targetDir: normalizedParentPath,
+          transferId,
+        });
+        finishArchiveUploadTransfer(transferId, connection.id, result);
+      } catch (error) {
+        failTransfer(transferId, "目录上传失败", error);
+      }
+    });
   }
 
   async function runSingleFileUpload(
@@ -3482,78 +3587,83 @@ export function WorkspaceShell() {
       prepareTransferRetry(transferId, "准备重试");
     }
 
-    if (!hasTauriRuntime()) {
-      const stopPulse = startTransferProgressPulse(transferId, {
-        cap: 92,
-        detail: formatTransferProgressBytes(0, item.file.size),
-        start: 8,
-        stage: "上传中",
-      });
-      const result = await wait(240).then(() => {
-        stopPulse();
-        return previewRemoteFileUploadResult(uploadPath, item.file.size);
-      });
-      finishUploadTransfer(transferId, connection.id, result);
-      return;
-    }
-
-    let localPath: string | null = null;
-    try {
-      const conflictPolicy = options.conflictPolicy ?? await resolveUploadConflictPolicy(connection, uploadPath, transferId);
-      if (conflictPolicy === "failed") {
-        return;
-      }
-      if (!conflictPolicy) {
-        cancelTransfer(transferId);
+    enqueueRemoteFileTransfer(transferId, async () => {
+      if (!hasTauriRuntime()) {
+        const stopPulse = startTransferProgressPulse(transferId, {
+          cap: 92,
+          detail: formatTransferProgressBytes(0, item.file.size),
+          start: 8,
+          stage: "上传中",
+        });
+        const result = await wait(240).then(() => {
+          stopPulse();
+          return previewRemoteFileUploadResult(uploadPath, item.file.size);
+        });
+        finishUploadTransfer(transferId, connection.id, result);
         return;
       }
 
-      updateRemoteFileTransfer(transferId, {
-        retry: {
-          action: "browser-file-upload",
-          connectionId: connection.id,
-          conflictPolicy,
-          item,
-          parentPath: normalizedParentPath,
-        },
-      });
-      setTransferProgress(transferId, {
-        detail: formatTransferProgressBytes(0, item.file.size),
-        progress: 4,
-        stage: "写入本地上传缓存",
-      });
-      const temp = await remoteFilePrepareUploadTemp(item.file.name);
-      localPath = temp.local_path;
-      const localSpeed = createTransferSpeedTracker();
-      await writeFileToUploadTemp(localPath, item.file, (loaded, total) => {
+      let localPath: string | null = null;
+      try {
+        const conflictPolicy = options.conflictPolicy ?? await resolveUploadConflictPolicy(connection, uploadPath, transferId);
+        if (conflictPolicy === "failed") {
+          return;
+        }
+        if (!conflictPolicy) {
+          cancelTransfer(transferId);
+          return;
+        }
+        if (isTransferNoLongerActive(transferId)) {
+          return;
+        }
+
+        updateRemoteFileTransfer(transferId, {
+          retry: {
+            action: "browser-file-upload",
+            connectionId: connection.id,
+            conflictPolicy,
+            item,
+            parentPath: normalizedParentPath,
+          },
+        });
         setTransferProgress(transferId, {
-          detail: formatTransferProgressBytes(loaded, total),
-          progress: interpolateTransferProgress(4, 34, loaded, total),
-          speedText: localSpeed.sample(loaded),
+          detail: formatTransferProgressBytes(0, item.file.size),
+          progress: 4,
           stage: "写入本地上传缓存",
         });
-      });
-      setTransferProgress(transferId, {
-        detail: formatTransferProgressBytes(0, item.file.size),
-        indeterminate: false,
-        progress: 36,
-        stage: "上传中",
-      });
-      const result = await remoteFileUploadLocalFile({
-        connectionId: connection.id,
-        conflictPolicy,
-        localPath,
-        path: uploadPath,
-        transferId,
-      });
-      finishUploadTransfer(transferId, connection.id, result);
-    } catch (error) {
-      failTransfer(transferId, "上传失败", error);
-    } finally {
-      if (localPath) {
-        void remoteFileDeleteUploadTemp(localPath).catch(() => undefined);
+        const temp = await remoteFilePrepareUploadTemp(item.file.name);
+        localPath = temp.local_path;
+        const localSpeed = createTransferSpeedTracker();
+        await writeFileToUploadTemp(localPath, item.file, (loaded, total) => {
+          setTransferProgress(transferId, {
+            detail: formatTransferProgressBytes(loaded, total),
+            progress: interpolateTransferProgress(4, 34, loaded, total),
+            speedText: localSpeed.sample(loaded),
+            stage: "写入本地上传缓存",
+          });
+        });
+        setTransferProgress(transferId, {
+          detail: formatTransferProgressBytes(0, item.file.size),
+          indeterminate: false,
+          progress: 36,
+          stage: "上传中",
+        });
+        const result = await remoteFileUploadLocalFile({
+          connectionId: connection.id,
+          conflictPolicy,
+          localPath,
+          path: uploadPath,
+          transferId,
+        });
+        finishUploadTransfer(transferId, connection.id, result);
+      } catch (error) {
+        failTransfer(transferId, "上传失败", error);
+      } finally {
+        if (localPath) {
+          void remoteFileDeleteUploadTemp(localPath).catch(() => undefined);
+        }
       }
-    }
+    });
   }
 
   async function runDirectoryUpload(
@@ -3583,93 +3693,98 @@ export function WorkspaceShell() {
       prepareTransferRetry(transferId, "准备重试");
     }
 
-    if (!hasTauriRuntime()) {
-      const stopPulse = startTransferProgressPulse(transferId, {
-        cap: 92,
-        detail: formatTransferProgressBytes(0, totalUploadBytes(items)),
-        start: 8,
-        stage: "上传归档并远程解压",
-      });
-      const result = await wait(320).then(() => {
-        stopPulse();
-        return previewRemoteFileArchiveUploadResult(remotePath);
-      });
-      finishArchiveUploadTransfer(transferId, connection.id, result);
-      return;
-    }
-
-    let localPath: string | null = null;
-    try {
-      const conflictPolicy = options.conflictPolicy ?? await resolveUploadConflictPolicy(connection, remotePath, transferId);
-      if (conflictPolicy === "failed") {
-        return;
-      }
-      if (!conflictPolicy) {
-        cancelTransfer(transferId);
+    enqueueRemoteFileTransfer(transferId, async () => {
+      if (!hasTauriRuntime()) {
+        const stopPulse = startTransferProgressPulse(transferId, {
+          cap: 92,
+          detail: formatTransferProgressBytes(0, totalUploadBytes(items)),
+          start: 8,
+          stage: "上传归档并远程解压",
+        });
+        const result = await wait(320).then(() => {
+          stopPulse();
+          return previewRemoteFileArchiveUploadResult(remotePath);
+        });
+        finishArchiveUploadTransfer(transferId, connection.id, result);
         return;
       }
 
-      const keepArchive = options.keepArchive ?? settings.fileTransfer.keepArchives;
-      updateRemoteFileTransfer(transferId, {
-        retry: {
-          action: "browser-directory-upload",
+      let localPath: string | null = null;
+      try {
+        const conflictPolicy = options.conflictPolicy ?? await resolveUploadConflictPolicy(connection, remotePath, transferId);
+        if (conflictPolicy === "failed") {
+          return;
+        }
+        if (!conflictPolicy) {
+          cancelTransfer(transferId);
+          return;
+        }
+        if (isTransferNoLongerActive(transferId)) {
+          return;
+        }
+
+        const keepArchive = options.keepArchive ?? settings.fileTransfer.keepArchives;
+        updateRemoteFileTransfer(transferId, {
+          retry: {
+            action: "browser-directory-upload",
+            connectionId: connection.id,
+            conflictPolicy,
+            items,
+            keepArchive,
+            parentPath: normalizedParentPath,
+            rootName,
+          },
+        });
+        const totalBytes = totalUploadBytes(items);
+        const archiveSpeed = createTransferSpeedTracker();
+        setTransferProgress(transferId, {
+          detail: formatTransferProgressBytes(0, totalBytes),
+          progress: 3,
+          stage: "本地打包 tar.gz",
+        });
+        const temp = await remoteFilePrepareUploadTemp(`${rootName}.tar.gz`);
+        localPath = temp.local_path;
+        const archiveSize = await buildTarGzArchiveToTemp(localPath, items, (progress) => {
+          const detail =
+            progress.phase === "compress"
+              ? `压缩包 ${formatFileSize(progress.archiveBytes)}`
+              : formatTransferProgressBytes(progress.loadedBytes, progress.totalBytes);
+          const speedBytes = progress.phase === "compress" ? progress.archiveBytes : progress.loadedBytes;
+          setTransferProgress(transferId, {
+            detail,
+            progress:
+              progress.phase === "compress"
+                ? 34
+                : interpolateTransferProgress(3, 32, progress.loadedBytes, progress.totalBytes),
+            speedText: archiveSpeed.sample(speedBytes),
+            stage: progress.phase === "compress" ? "压缩 tar.gz" : "本地打包 tar.gz",
+          });
+        });
+        const stopPulse = startTransferProgressPulse(transferId, {
+          cap: 92,
+          detail: `压缩包 ${formatFileSize(archiveSize)}`,
+          start: 38,
+          stage: "上传归档并远程解压",
+        });
+        const result = await remoteFileUploadLocalArchive({
+          compress: true,
           connectionId: connection.id,
           conflictPolicy,
-          items,
           keepArchive,
-          parentPath: normalizedParentPath,
+          localPath,
           rootName,
-        },
-      });
-      const totalBytes = totalUploadBytes(items);
-      const archiveSpeed = createTransferSpeedTracker();
-      setTransferProgress(transferId, {
-        detail: formatTransferProgressBytes(0, totalBytes),
-        progress: 3,
-        stage: "本地打包 tar.gz",
-      });
-      const temp = await remoteFilePrepareUploadTemp(`${rootName}.tar.gz`);
-      localPath = temp.local_path;
-      const archiveSize = await buildTarGzArchiveToTemp(localPath, items, (progress) => {
-        const detail =
-          progress.phase === "compress"
-            ? `压缩包 ${formatFileSize(progress.archiveBytes)}`
-            : formatTransferProgressBytes(progress.loadedBytes, progress.totalBytes);
-        const speedBytes = progress.phase === "compress" ? progress.archiveBytes : progress.loadedBytes;
-        setTransferProgress(transferId, {
-          detail,
-          progress:
-            progress.phase === "compress"
-              ? 34
-              : interpolateTransferProgress(3, 32, progress.loadedBytes, progress.totalBytes),
-          speedText: archiveSpeed.sample(speedBytes),
-          stage: progress.phase === "compress" ? "压缩 tar.gz" : "本地打包 tar.gz",
-        });
-      });
-      const stopPulse = startTransferProgressPulse(transferId, {
-        cap: 92,
-        detail: `压缩包 ${formatFileSize(archiveSize)}`,
-        start: 38,
-        stage: "上传归档并远程解压",
-      });
-      const result = await remoteFileUploadLocalArchive({
-        compress: true,
-        connectionId: connection.id,
-        conflictPolicy,
-        keepArchive,
-        localPath,
-        rootName,
-        targetDir: normalizedParentPath,
-        transferId,
-      }).finally(stopPulse);
-      finishArchiveUploadTransfer(transferId, connection.id, result);
-    } catch (error) {
-      failTransfer(transferId, "目录上传失败", error);
-    } finally {
-      if (localPath) {
-        void remoteFileDeleteUploadTemp(localPath).catch(() => undefined);
+          targetDir: normalizedParentPath,
+          transferId,
+        }).finally(stopPulse);
+        finishArchiveUploadTransfer(transferId, connection.id, result);
+      } catch (error) {
+        failTransfer(transferId, "目录上传失败", error);
+      } finally {
+        if (localPath) {
+          void remoteFileDeleteUploadTemp(localPath).catch(() => undefined);
+        }
       }
-    }
+    });
   }
 
   function finishUploadTransfer(
@@ -3751,64 +3866,69 @@ export function WorkspaceShell() {
       prepareTransferRetry(transferId, "准备重试");
     }
 
-    let stopPulse: (() => void) | null = null;
-    try {
-      const downloadOptions = options.input ?? downloadTargetOptions(connection, entry);
-      const conflictPolicy = options.input?.conflictPolicy ?? await resolveDownloadConflictPolicy(downloadOptions, transferId);
-      if (conflictPolicy === "failed") {
-        return;
-      }
-      if (!conflictPolicy) {
-        cancelTransfer(transferId);
-        return;
-      }
+    enqueueRemoteFileTransfer(transferId, async () => {
+      let stopPulse: (() => void) | null = null;
+      try {
+        const downloadOptions = options.input ?? downloadTargetOptions(connection, entry);
+        const conflictPolicy = options.input?.conflictPolicy ?? await resolveDownloadConflictPolicy(downloadOptions, transferId);
+        if (conflictPolicy === "failed") {
+          return;
+        }
+        if (!conflictPolicy) {
+          cancelTransfer(transferId);
+          return;
+        }
+        if (isTransferNoLongerActive(transferId)) {
+          return;
+        }
 
-      const request: Omit<RemoteFileDownloadToLocalInput, "transferId"> = options.input ?? {
-        ...downloadOptions,
-        compress: settings.fileTransfer.compressDirectories,
-        conflictPolicy,
-        keepArchives: settings.fileTransfer.keepArchives,
-      };
-      updateRemoteFileTransfer(transferId, {
-        retry: {
-          action: "download",
-          entry,
-          input: request,
-        },
-      });
+        const request: Omit<RemoteFileDownloadToLocalInput, "transferId"> = options.input ?? {
+          ...downloadOptions,
+          compress: settings.fileTransfer.compressDirectories,
+          conflictPolicy,
+          keepArchives: settings.fileTransfer.keepArchives,
+        };
+        updateRemoteFileTransfer(transferId, {
+          retry: {
+            action: "download",
+            entry,
+            input: request,
+          },
+        });
 
-      let result: RemoteFileDownloadToLocalResult;
-      if (hasTauriRuntime()) {
-        setTransferProgress(transferId, {
-          indeterminate: true,
-          progress: 4,
-          stage: isDirectory
-            ? request.compress
-              ? "压缩中"
-              : "扫描目录"
-            : "准备下载",
-        });
-        result = await remoteFileDownloadToLocal({
-          ...request,
-          transferId,
-        });
-      } else {
-        stopPulse = startTransferProgressPulse(transferId, {
-          cap: 92,
-          detail: null,
-          start: 8,
-          stage: isDirectory ? "模拟目录下载" : "下载到本地",
-        });
-        result = await wait(300).then(() =>
-          previewRemoteFileDownloadToLocalResult(entry, isDirectory),
-        );
+        let result: RemoteFileDownloadToLocalResult;
+        if (hasTauriRuntime()) {
+          setTransferProgress(transferId, {
+            indeterminate: true,
+            progress: 4,
+            stage: isDirectory
+              ? request.compress
+                ? "压缩中"
+                : "扫描目录"
+              : "准备下载",
+          });
+          result = await remoteFileDownloadToLocal({
+            ...request,
+            transferId,
+          });
+        } else {
+          stopPulse = startTransferProgressPulse(transferId, {
+            cap: 92,
+            detail: null,
+            start: 8,
+            stage: isDirectory ? "模拟目录下载" : "下载到本地",
+          });
+          result = await wait(300).then(() =>
+            previewRemoteFileDownloadToLocalResult(entry, isDirectory),
+          );
+          stopPulse?.();
+        }
+        finishDownloadTransfer(transferId, result);
+      } catch (error) {
         stopPulse?.();
+        failTransfer(transferId, "下载失败", error);
       }
-      finishDownloadTransfer(transferId, result);
-    } catch (error) {
-      stopPulse?.();
-      failTransfer(transferId, "下载失败", error);
-    }
+    });
   }
 
   function finishDownloadTransfer(transferId: string, result: RemoteFileDownloadToLocalResult) {
@@ -9413,7 +9533,8 @@ function RemoteFileTransferPanel({
   onRevealLocalPath: (path: string) => void;
 }) {
   const [expanded, setExpanded] = useState(false);
-  const activeCount = transfers.filter((item) => ["queued", "running"].includes(item.status)).length;
+  const runningCount = transfers.filter((item) => item.status === "running").length;
+  const queuedCount = transfers.filter((item) => item.status === "queued").length;
   const errorCount = transfers.filter((item) => item.status === "error").length;
   const finishedCount = transfers.filter((item) =>
     ["success", "skipped", "canceled"].includes(item.status),
@@ -9433,7 +9554,8 @@ function RemoteFileTransferPanel({
       <header className="transfer-panel-bar">
         <div className="transfer-panel-summary transfer-progress-summary">
           <strong>传输</strong>
-          {activeCount > 0 ? <span className="transfer-chip running">{activeCount.toString()} 进行中</span> : null}
+          {runningCount > 0 ? <span className="transfer-chip running">{runningCount.toString()} 进行中</span> : null}
+          {queuedCount > 0 ? <span className="transfer-chip">{queuedCount.toString()} 排队</span> : null}
           {errorCount > 0 ? <span className="transfer-chip error">{errorCount.toString()} 失败</span> : null}
           {transfers.length === 0 ? <span className="transfer-chip">无任务</span> : null}
         </div>
@@ -9515,6 +9637,11 @@ function RemoteFileTransferPanel({
                       {item.speedText ? <span className="transfer-speed-text">{item.speedText}</span> : null}
                       <span className="transfer-status">{statusText}</span>
                     </div>
+                    {item.status === "error" && item.error ? (
+                      <p className="transfer-item-error" title={item.error}>
+                        {transferInlineErrorText(item.error)}
+                      </p>
+                    ) : null}
                   </div>
 
                   <div className="transfer-item-actions">
@@ -11435,6 +11562,12 @@ function extractTransferErrorCode(error: unknown): string | null {
 }
 
 function transferErrorStage(code: string): string | null {
+  if (code === "remote_file_upload_confirm_timeout") {
+    return "远程写入确认超时";
+  }
+  if (code === "remote_file_upload_confirm_failed") {
+    return "远程写入确认失败";
+  }
   if (
     code === "remote_sftp_subsystem_failed" ||
     code === "remote_sftp_subsystem_timeout"
@@ -11461,6 +11594,12 @@ function transferErrorStage(code: string): string | null {
 }
 
 function transferErrorSuggestion(code: string): string | null {
+  if (code === "remote_file_upload_confirm_timeout") {
+    return "远端写入响应或关闭确认超时，临时 .mxpart 文件会保留用于重试。请检查网络、远端 SFTP 服务或目录负载后重试。";
+  }
+  if (code === "remote_file_upload_confirm_failed") {
+    return "远端写入确认失败，临时 .mxpart 文件可能保留在目标目录；请检查目录权限、磁盘空间和远端文件系统状态。";
+  }
   if (
     code === "remote_sftp_subsystem_failed" ||
     code === "remote_sftp_subsystem_timeout"
@@ -13590,6 +13729,14 @@ function transferStatusLabel(status: TransferStatus) {
     success: "完成",
   };
   return labels[status];
+}
+
+function transferInlineErrorText(error: string) {
+  return error
+    .split(/\r?\n/)
+    .map((line) => normalizeErrorText(line))
+    .filter(Boolean)
+    .join("；");
 }
 
 function transferDisplayStatusLabel(item: RemoteFileTransferItem) {

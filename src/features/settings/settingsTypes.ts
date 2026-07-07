@@ -35,6 +35,7 @@ export type FileTransferTimestampFormat =
   | "yyyyMMddHHmm"
   | "yyyyMMdd-HHmm"
   | "yyyy-MM-dd-HHmm";
+export type FileTransferConcurrency = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10;
 export type TerminalFontPreset =
   | "cascadia-code"
   | "jetbrains-mono"
@@ -93,6 +94,7 @@ export interface TerminalThemeSettings {
 
 export interface FileTransferSettings {
   compressDirectories: boolean;
+  concurrentTransfers: FileTransferConcurrency;
   conflictPolicyDefault: FileTransferConflictPolicy;
   downloadRoot: string;
   groupBySession: boolean;
@@ -218,6 +220,7 @@ export const defaultSettings: MxtermSettings = {
   },
   fileTransfer: {
     conflictPolicyDefault: "ask",
+    concurrentTransfers: 3,
     downloadRoot: "",
     groupBySession: true,
     keepArchives: false,
@@ -316,6 +319,11 @@ export function normalizeSettings(value: unknown): MxtermSettings {
         fileTransfer.conflictPolicyDefault,
         ["ask", "overwrite", "skip", "rename"],
         defaultSettings.fileTransfer.conflictPolicyDefault,
+      ),
+      concurrentTransfers: normalizeNumber(
+        fileTransfer.concurrentTransfers,
+        [1, 2, 3, 4, 5, 6, 7, 8, 9, 10] as const,
+        defaultSettings.fileTransfer.concurrentTransfers,
       ),
       downloadRoot: normalizePathInput(
         fileTransfer.downloadRoot,
