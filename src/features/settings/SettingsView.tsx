@@ -91,6 +91,7 @@ import {
 import {
   accentColorPresets,
   defaultSettings,
+  type FileTransferConcurrency,
   type FileTransferConflictPolicy,
   type FileTransferSettings,
   type FileTransferTimestampFormat,
@@ -2819,6 +2820,19 @@ function BasicSettingsSection({
             </div>
             {downloadRootError ? <small className="settings-path-error">{downloadRootError}</small> : null}
           </div>
+        </SettingsRow>
+        <SettingsRow
+          icon={Waypoints}
+          title="文件传输并发数"
+          description="同时执行的上传和下载任务数；超过后进入传输队列等待。"
+        >
+          <Stepper<FileTransferConcurrency>
+            value={fileTransferSettings.concurrentTransfers}
+            values={[1, 2, 3, 4, 5, 6, 7, 8, 9, 10] as const}
+            onChange={(concurrentTransfers) =>
+              onUpdateFileTransfer({ concurrentTransfers })
+            }
+          />
         </SettingsRow>
         <SettingsRow
           icon={Folder}

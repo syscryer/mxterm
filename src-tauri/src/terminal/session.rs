@@ -7,7 +7,7 @@ use encoding_rs::{CoderResult, Decoder, Encoding};
 use russh::client;
 use russh::keys::{load_secret_key, PrivateKeyWithHashAlg};
 use russh::{Channel, ChannelMsg, ChannelReadHalf, ChannelStream, ChannelWriteHalf, Disconnect};
-use russh_sftp::client::SftpSession;
+use russh_sftp::client::{Config as SftpConfig, SftpSession};
 use std::future::Future;
 use tauri::{AppHandle, Manager};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -29,6 +29,7 @@ use crate::storage_repository::StorageRepository;
 use crate::storage_vault::{SecretStore, VaultState};
 
 const REMOTE_EXEC_TRANSFER_CHUNK_BYTES: usize = 256 * 1024;
+const SFTP_REQUEST_TIMEOUT_SECS: u64 = 60;
 
 type SshHandle = client::Handle<KnownHostClient>;
 type ChannelWriter = ChannelWriteHalf<client::Msg>;
@@ -1070,16 +1071,22 @@ impl ReusableSftpSession {
             )
         })?;
 
-        let sftp = SftpSession::new(channel.into_stream())
-            .await
-            .map_err(|error| {
-                AppError::new(
-                    "remote_sftp_init_failed",
-                    "SFTP 会话初始化失败。",
-                    error,
-                    true,
-                )
-            })?;
+        let sftp = SftpSession::new_with_config(
+            channel.into_stream(),
+            SftpConfig {
+                request_timeout_secs: SFTP_REQUEST_TIMEOUT_SECS,
+                ..SftpConfig::default()
+            },
+        )
+        .await
+        .map_err(|error| {
+            AppError::new(
+                "remote_sftp_init_failed",
+                "SFTP 会话初始化失败。",
+                error,
+                true,
+            )
+        })?;
 
         Ok(Self {
             client,

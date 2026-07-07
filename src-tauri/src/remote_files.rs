@@ -1991,15 +1991,10 @@ async fn upload_sftp_file(
         loaded += read as u64;
         progress(base_loaded + loaded, Some(base_loaded + total_bytes));
     }
-    remote_file.flush().await.map_err(|error| {
-        AppError::new(
-            "remote_file_upload_failed",
-            "远程文件上传刷新失败。",
-            error,
-            true,
-        )
-    })?;
-    let _ = remote_file.shutdown().await;
+    remote_file
+        .shutdown()
+        .await
+        .map_err(remote_file_upload_confirm_error)?;
 
     ignore_sftp_not_found(sftp.remove_file(final_remote_path.to_string()).await)?;
     sftp.rename(part_path, final_remote_path.to_string())
@@ -2351,6 +2346,24 @@ fn sftp_app_error(code: &'static str, message: &'static str, error: SftpError) -
     AppError::new(code, message, error, true)
 }
 
+fn remote_file_upload_confirm_error(error: std::io::Error) -> AppError {
+    let raw_message = error.to_string();
+    if raw_message.eq_ignore_ascii_case("timeout") {
+        return AppError::new(
+            "remote_file_upload_confirm_timeout",
+            "远程写入确认超时。",
+            raw_message,
+            true,
+        );
+    }
+    AppError::new(
+        "remote_file_upload_confirm_failed",
+        "远程文件上传确认失败。",
+        raw_message,
+        true,
+    )
+}
+
 fn remote_parent_path(path: &str) -> String {
     let trimmed = path.trim_end_matches('/');
     match trimmed.rsplit_once('/') {
@@ -2477,8 +2490,9 @@ mod tests {
         join_remote_relative_path, local_download_part_path, local_relative_path,
         local_upload_relative_path, looks_like_binary, next_transfer_read_len,
         parse_remote_file_metadata, parse_remote_list_output, parse_remote_path_check_output,
-        quote_posix_shell, remote_parent_path, remote_transfer_part_path,
-        resume_offset_for_partial, split_remote_name, REMOTE_FILE_EDIT_LIMIT_BYTES,
+        quote_posix_shell, remote_file_upload_confirm_error, remote_parent_path,
+        remote_transfer_part_path, resume_offset_for_partial, split_remote_name,
+        REMOTE_FILE_EDIT_LIMIT_BYTES,
     };
     use std::path::Path;
 
@@ -2634,6 +2648,14 @@ mod tests {
         assert_eq!(next_transfer_read_len(10, 10, 64), 0);
         assert_eq!(next_transfer_read_len(12, 10, 64), 0);
         assert_eq!(next_transfer_read_len(0, 128, 32), 32);
+    }
+
+    #[test]
+    fn upload_confirm_timeout_uses_specific_error_code() {
+        let error = remote_file_upload_confirm_error(std::io::Error::other("Timeout"));
+        assert_eq!(error.code, "remote_file_upload_confirm_timeout");
+        assert_eq!(error.message, "远程写入确认超时。");
+        assert_eq!(error.raw_message, "Timeout");
     }
 
     #[test]

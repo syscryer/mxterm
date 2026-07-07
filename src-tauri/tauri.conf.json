@@ -5,7 +5,7 @@
   "identifier": "com.mxterm.app",
   "build": {
     "beforeDevCommand": "pnpm dev",
-    "devUrl": "http://localhost:5420",
+    "devUrl": "http://localhost:5520",
     "beforeBuildCommand": "pnpm build && pnpm build:mcp-sidecar",
     "frontendDist": "../dist"
   },

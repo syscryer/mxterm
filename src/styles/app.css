@@ -12017,6 +12017,17 @@ body.vnc-runner-window-body {
   text-overflow: ellipsis;
 }
 
+.transfer-item-error {
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  color: var(--mx-danger);
+  font-size: 11px;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .transfer-size-text {
   flex: 1 1 auto;
   font-family: var(--font-mono);
