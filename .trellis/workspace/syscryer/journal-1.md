@@ -18,7 +18,11 @@
 
 ### Main Changes
 
-(Add details)
+- Created a dedicated remote file transfer store/controller/panel so progress events no longer update `WorkspaceShell` state.
+- Added batched transfer progress handling, bounded finished/error history, and cleanup for pending progress timers and queued/running task references.
+- Preserved upload/download retry, cancel, refresh, local reveal/open, and "waiting for remote confirmation" semantics.
+- Switched transfer progress bars to transform-based animation and fixed the transfer file-type icon vertical alignment.
+- Added source guard coverage for the transfer state boundary and documented the new frontend performance contract.
 
 ### Git Commits
 
@@ -26,7 +30,9 @@
 
 ### Testing
 
-- [OK] (Add test results)
+- [OK] `npm run check`
+- [OK] `node scripts/check-startup-module-boundary-source.mjs`
+- [OK] `node scripts/check-remote-file-editor-source.mjs`
 
 ### Status
 
@@ -966,6 +972,39 @@ Implemented remote file tree multi-selection, context-menu-only bulk download/de
 | Hash | Message |
 |------|---------|
 | `b99505e` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
+
+
+## Session 30: 远程文件传输性能隔离
+
+**Date**: 2026-07-08
+**Task**: 远程文件传输性能隔离
+**Branch**: `master`
+
+### Summary
+
+抽离远程文件传输状态和队列到独立 store/controller，限制进度更新重渲染与历史残留，并修正传输进度 UI 对齐。
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `5457b37` | (see git log) |
 
 ### Testing
 

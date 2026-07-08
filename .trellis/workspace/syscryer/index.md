@@ -8,8 +8,8 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 29
-- **Last Active**: 2026-06-22
+- **Total Sessions**: 30
+- **Last Active**: 2026-07-08
 <!-- @@@/auto:current-status -->
 
 ---
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~980 | Active |
+| `journal-1.md` | ~1013 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 30 | 2026-07-08 | 远程文件传输性能隔离 | `5457b37` | `master` |
 | 29 | 2026-06-22 | Remote file multi-select bulk actions | `b99505e` | `master` |
 | 28 | 2026-06-21 | Sync Snapshot Foundation | `a1b7678`, `5082aaf` | `master` |
 | 27 | 2026-06-20 | Fix empty connections after storage migration | `225f01b` | `master` |
