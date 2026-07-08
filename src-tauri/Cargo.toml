@@ -1,6 +1,6 @@
 [package]
 name = "m-xterm"
-version = "0.1.11"
+version = "0.1.12"
 description = "Personal desktop SSH/SFTP client"
 authors = ["MNL"]
 edition = "2021"
