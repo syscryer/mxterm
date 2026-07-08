@@ -20,7 +20,6 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import type { IWindowsPty } from "@xterm/xterm";
 import {
   AlertTriangle,
-  Archive,
   ChevronDown,
   ChevronLeft,
   Clock3,
@@ -31,8 +30,6 @@ import {
   KeyRound,
   ExternalLink,
   FileText,
-  Folder,
-  FolderOpen,
   List,
   Loader2,
   LockKeyhole,
@@ -191,6 +188,22 @@ const WORKSPACE_IDLE_PREWARM_BATCHES: Array<{
 ];
 import type { RemoteFileEditorTab } from "../editor/remoteFileEditorTypes";
 import type { RemoteFileTool, RemoteFileUploadItem } from "../files/RemoteFilePanel";
+import { RemoteFileTransferPanel } from "../files/RemoteFileTransferPanel";
+import {
+  addRemoteFileTransfer,
+  getRemoteFileTransfer,
+  markTransferCanceled,
+  prepareTransferRetry,
+  setTransferProgress,
+  updateRemoteFileTransfer,
+} from "../files/remoteFileTransferStore";
+import { useRemoteFileTransferController } from "../files/useRemoteFileTransferController";
+import {
+  createTransferSpeedTracker,
+  formatFileSize,
+  formatTransferProgressBytes,
+  interpolateTransferProgress,
+} from "../files/remoteFileTransferUtils";
 import type { AiContextBlock } from "../ai/aiTypes";
 import {
   isRemotePathStrictDescendant,
@@ -206,7 +219,6 @@ import type {
   RemoteFileMetadata,
   RemoteFileReadResult,
   RemoteFileTransferConflictPolicy,
-  RemoteFileTransferProgressEvent,
   RemoteFileUploadResult,
 } from "../files/remoteFileTypes";
 import type { DockerContainerSummary } from "../tools/dockerTypes";
@@ -274,7 +286,6 @@ import {
   localTerminalOpen,
   remoteFileCheckPath,
   localPathMetadata,
-  remoteFileCancelTransfer,
   remoteFileCheckDownloadTarget,
   remoteFileCreateDirectory,
   remoteFileCreateFile,
@@ -309,7 +320,6 @@ import { selectLocalUploadDirectories, selectLocalUploadFiles } from "../../shar
 import {
   emitVncRunnerWindowCloseRequest,
   emitVncRunnerWindowPayload,
-  listenRemoteFileTransferProgress,
   listenRdpSessionClosed,
   listenTerminalOutput,
   listenVncRunnerWindowClosed,
@@ -549,68 +559,7 @@ type LatencyProbeState =
   | { status: "failed" };
 type ResizablePaneSide = "left" | "right";
 type ResizingPane = ResizablePaneSide | "editor-terminal";
-type TransferDirection = "upload" | "download";
-type TransferKind = "file" | "directory";
-type TransferStatus = "queued" | "running" | "success" | "error" | "skipped" | "canceled";
 type WorkspaceMode = "home" | "ssh" | "local" | "rdp" | "vnc";
-
-type RemoteFileTransferRetry =
-  | {
-      action: "local-file-upload";
-      connectionId: string;
-      conflictPolicy: RemoteFileTransferConflictPolicy;
-      localPath: string;
-      parentPath: string;
-    }
-  | {
-      action: "local-directory-upload";
-      compress: boolean;
-      connectionId: string;
-      conflictPolicy: RemoteFileTransferConflictPolicy;
-      keepArchive: boolean;
-      localPath: string;
-      parentPath: string;
-    }
-  | {
-      action: "browser-file-upload";
-      connectionId: string;
-      conflictPolicy: RemoteFileTransferConflictPolicy;
-      item: RemoteFileUploadItem;
-      parentPath: string;
-    }
-  | {
-      action: "browser-directory-upload";
-      connectionId: string;
-      conflictPolicy: RemoteFileTransferConflictPolicy;
-      items: RemoteFileUploadItem[];
-      keepArchive: boolean;
-      parentPath: string;
-      rootName: string;
-    }
-  | {
-      action: "download";
-      entry: RemoteFileEntry;
-      input: Omit<RemoteFileDownloadToLocalInput, "transferId">;
-    };
-
-interface RemoteFileTransferItem {
-  id: string;
-  createdAt: number;
-  direction: TransferDirection;
-  error?: string | null;
-  kind: TransferKind;
-  localPath?: string | null;
-  name: string;
-  progress: number;
-  progressDetail?: string | null;
-  progressIndeterminate?: boolean;
-  retry?: RemoteFileTransferRetry | null;
-  remotePath: string;
-  speedText?: string | null;
-  stage: string;
-  startedAt: number;
-  status: TransferStatus;
-}
 
 interface RemoteFilePropertiesState {
   entry: RemoteFileEntry;
@@ -648,8 +597,6 @@ interface DownloadTransferRunOptions {
   input?: Omit<RemoteFileDownloadToLocalInput, "transferId">;
   transferId?: string;
 }
-
-type RemoteFileTransferTask = () => Promise<void>;
 
 const defaultLeftPaneWidth = 336;
 const minLeftPaneWidth = 248;
@@ -870,15 +817,21 @@ export function WorkspaceShell() {
   const [rightTool, setRightTool] = useState<RemoteFileTool>("files");
   const [aiAssistantPanelLoaded, setAiAssistantPanelLoaded] = useState(false);
   const [settingsViewLoaded, setSettingsViewLoaded] = useState(false);
-  const [remoteFileTransfers, setRemoteFileTransfers] = useState<RemoteFileTransferItem[]>([]);
-  const remoteFileTransfersRef = useRef<RemoteFileTransferItem[]>([]);
-  const transferConcurrencyRef = useRef(settings.fileTransfer.concurrentTransfers);
-  const transferQueueRef = useRef<string[]>([]);
-  const runningTransferIdsRef = useRef<Set<string>>(new Set());
-  const transferTasksRef = useRef<Map<string, RemoteFileTransferTask>>(new Map());
   const [nativeFileDropTargetPath, setNativeFileDropTargetPath] = useState<string | null>(null);
   const [remoteFileProperties, setRemoteFileProperties] =
     useState<RemoteFilePropertiesState | null>(null);
+  const handleTransferTaskError = useCallback((transferId: string, error: unknown) => {
+    failTransfer(transferId, "传输失败", error);
+  }, []);
+  const {
+    enqueueRemoteFileTransfer,
+    isTransferNoLongerActive,
+    removeTransfer: removeRemoteFileTransfer,
+    requestCancelTransfer,
+  } = useRemoteFileTransferController({
+    concurrentTransfers: settings.fileTransfer.concurrentTransfers,
+    onTaskError: handleTransferTaskError,
+  });
   const [transferConflictPrompt, setTransferConflictPrompt] =
     useState<TransferConflictPromptState | null>(null);
   const [homeActive, setHomeActive] = useState(true);
@@ -905,15 +858,6 @@ export function WorkspaceShell() {
     () => platformCapabilities.windowMaterials,
   );
   const workspaceShellRef = useRef<HTMLElement | null>(null);
-
-  useEffect(() => {
-    remoteFileTransfersRef.current = remoteFileTransfers;
-  }, [remoteFileTransfers]);
-
-  useEffect(() => {
-    transferConcurrencyRef.current = settings.fileTransfer.concurrentTransfers;
-    drainTransferQueue();
-  }, [settings.fileTransfer.concurrentTransfers]);
 
   const loadCommandLibrary = useCallback(async () => {
     if (!storageReady || !hasTauriRuntime()) {
@@ -1956,31 +1900,6 @@ export function WorkspaceShell() {
 
     let disposed = false;
     let unlisten: (() => void) | null = null;
-    void listenRemoteFileTransferProgress((event) => {
-      if (!disposed) {
-        applyRemoteTransferProgress(event);
-      }
-    }).then((cleanup) => {
-      if (disposed) {
-        cleanup();
-      } else {
-        unlisten = cleanup;
-      }
-    });
-
-    return () => {
-      disposed = true;
-      unlisten?.();
-    };
-  }, []);
-
-  useEffect(() => {
-    if (!hasTauriRuntime()) {
-      return;
-    }
-
-    let disposed = false;
-    let unlisten: (() => void) | null = null;
     void listenRdpSessionClosed((event) => {
       if (disposed) {
         return;
@@ -2234,128 +2153,6 @@ export function WorkspaceShell() {
     }));
   }
 
-  function applyRemoteTransferProgress(event: RemoteFileTransferProgressEvent) {
-    setRemoteFileTransfers((items) => {
-      const nextItems = items.map((item) => {
-        if (item.id !== event.transfer_id || item.status !== "running") {
-          return item;
-        }
-
-        const hasKnownTotal = event.total_bytes !== null && event.total_bytes !== undefined;
-        const totalBytes = event.total_bytes ?? 0;
-        const progress =
-          totalBytes > 0 ? transferProgressPercent(event.loaded_bytes, totalBytes) : item.progress;
-        const displayProgress =
-          event.direction === "upload" && progress >= 100 ? 99 : progress;
-        const stage =
-          event.direction === "upload" && progress >= 100
-            ? "等待远端确认"
-            : item.kind === "directory" && event.direction === "download" && !hasKnownTotal
-              ? "压缩中"
-              : event.direction === "upload"
-                ? "上传中"
-                : "下载中";
-        const progressDetail =
-          item.kind === "directory" && event.direction === "download" && !hasKnownTotal
-            ? `压缩包 ${formatFileSize(event.loaded_bytes)}`
-            : formatTransferProgressBytes(event.loaded_bytes, totalBytes);
-
-        return {
-          ...item,
-          progress: clampTransferProgress(displayProgress),
-          progressDetail,
-          progressIndeterminate: totalBytes <= 0,
-          speedText: formatTransferSpeed(
-            calculateTransferAverageSpeed(event.loaded_bytes, item.startedAt),
-          ),
-          stage,
-        };
-      });
-      remoteFileTransfersRef.current = nextItems;
-      return nextItems;
-    });
-  }
-
-  function addRemoteFileTransfer(input: {
-    direction: TransferDirection;
-    kind: TransferKind;
-    name: string;
-    progress?: number;
-    progressDetail?: string | null;
-    progressIndeterminate?: boolean;
-    remotePath: string;
-    retry?: RemoteFileTransferRetry | null;
-    speedText?: string | null;
-    stage: string;
-  }) {
-    const id = `transfer-${Date.now().toString()}-${Math.random().toString(36).slice(2, 8)}`;
-    const item: RemoteFileTransferItem = {
-      createdAt: Date.now(),
-      direction: input.direction,
-      error: null,
-      id,
-      kind: input.kind,
-      localPath: null,
-      name: input.name,
-      progress: input.progress ?? 0,
-      progressDetail: input.progressDetail ?? null,
-      progressIndeterminate: input.progressIndeterminate ?? false,
-      remotePath: normalizeRemotePath(input.remotePath),
-      retry: input.retry ?? null,
-      speedText: input.speedText ?? null,
-      stage: input.stage,
-      startedAt: Date.now(),
-      status: "queued",
-    };
-    setRemoteFileTransfers((items) => {
-      const nextItems = [item, ...items];
-      remoteFileTransfersRef.current = nextItems;
-      return nextItems;
-    });
-    return id;
-  }
-
-  function updateRemoteFileTransfer(
-    transferId: string,
-    update: Partial<Omit<RemoteFileTransferItem, "id" | "createdAt">>,
-  ) {
-    setRemoteFileTransfers((items) => {
-      const nextItems = items.map((item) => {
-        if (item.id !== transferId) {
-          return item;
-        }
-        const next = { ...item, ...update };
-        if (update.progressDetail === "100%" && item.progressDetail?.includes(" / ")) {
-          next.progressDetail = item.progressDetail;
-        }
-        return next;
-      });
-      remoteFileTransfersRef.current = nextItems;
-      return nextItems;
-    });
-  }
-
-  function setTransferProgress(
-    transferId: string,
-    input: {
-      detail?: string | null;
-      indeterminate?: boolean;
-      progress: number;
-      speedText?: string | null;
-      stage: string;
-      status?: TransferStatus;
-    },
-  ) {
-    updateRemoteFileTransfer(transferId, {
-      progress: clampTransferProgress(input.progress),
-      progressDetail: input.detail ?? null,
-      progressIndeterminate: input.indeterminate ?? false,
-      speedText: input.speedText ?? null,
-      stage: input.stage,
-      status: input.status ?? "running",
-    });
-  }
-
   function startTransferProgressPulse(
     transferId: string,
     input: {
@@ -2389,140 +2186,12 @@ export function WorkspaceShell() {
     return () => window.clearInterval(timer);
   }
 
-  function enqueueRemoteFileTransfer(transferId: string, task: RemoteFileTransferTask) {
-    transferTasksRef.current.set(transferId, task);
-    if (
-      !transferQueueRef.current.includes(transferId) &&
-      !runningTransferIdsRef.current.has(transferId)
-    ) {
-      transferQueueRef.current.push(transferId);
-    }
-    drainTransferQueue();
-  }
-
-  function drainTransferQueue() {
-    const maxConcurrentTransfers = transferConcurrencyRef.current;
-
-    while (
-      runningTransferIdsRef.current.size < maxConcurrentTransfers &&
-      transferQueueRef.current.length > 0
-    ) {
-      const transferId = transferQueueRef.current.shift();
-      if (!transferId) {
-        continue;
-      }
-
-      const task = transferTasksRef.current.get(transferId);
-      const item = remoteFileTransfersRef.current.find((transfer) => transfer.id === transferId);
-      if (!task || (item && item.status !== "queued")) {
-        transferTasksRef.current.delete(transferId);
-        continue;
-      }
-
-      runningTransferIdsRef.current.add(transferId);
-      updateRemoteFileTransfer(transferId, {
-        startedAt: Date.now(),
-        status: "running",
-      });
-
-      void task()
-        .catch((error) => {
-          failTransfer(transferId, "传输失败", error);
-        })
-        .finally(() => {
-          runningTransferIdsRef.current.delete(transferId);
-          transferTasksRef.current.delete(transferId);
-          drainTransferQueue();
-        });
-    }
-  }
-
-  function dropQueuedTransfer(transferId: string) {
-    transferQueueRef.current = transferQueueRef.current.filter((id) => id !== transferId);
-    transferTasksRef.current.delete(transferId);
-  }
-
-  function isTransferNoLongerActive(transferId: string) {
-    const item = remoteFileTransfersRef.current.find((transfer) => transfer.id === transferId);
-    return Boolean(item && (item.status === "canceled" || item.status === "error"));
-  }
-
-  function cancelQueuedTransfer(transferId: string) {
-    dropQueuedTransfer(transferId);
-    updateRemoteFileTransfer(transferId, {
-      error: null,
-      progress: 0,
-      progressDetail: null,
-      progressIndeterminate: false,
-      speedText: null,
-      stage: "已取消",
-      status: "canceled",
-    });
-  }
-
-  function clearFinishedTransfers() {
-    setRemoteFileTransfers((items) => {
-      const nextItems = items.filter((item) => item.status === "queued" || item.status === "running");
-      remoteFileTransfersRef.current = nextItems;
-      return nextItems;
-    });
-  }
-
-  function removeRemoteFileTransfer(transferId: string) {
-    dropQueuedTransfer(transferId);
-    setRemoteFileTransfers((items) => {
-      const nextItems = items.filter((item) => item.id !== transferId);
-      remoteFileTransfersRef.current = nextItems;
-      return nextItems;
-    });
-  }
-
-  function cancelTransfer(transferId: string) {
-    updateRemoteFileTransfer(transferId, {
-      progress: 0,
-      progressDetail: null,
-      progressIndeterminate: false,
-      speedText: null,
-      status: "canceled",
-      stage: "已取消",
-    });
-  }
-
-  function requestCancelTransfer(transferId: string) {
-    const item = remoteFileTransfers.find((transfer) => transfer.id === transferId);
-    if (!item || item.status === "queued") {
-      cancelQueuedTransfer(transferId);
-      return;
-    }
-    if (item.status !== "running") {
-      return;
-    }
-    cancelTransfer(transferId);
-    if (hasTauriRuntime()) {
-      void remoteFileCancelTransfer(transferId).catch(() => undefined);
-    }
-  }
-
-  function prepareTransferRetry(transferId: string, stage: string) {
-    updateRemoteFileTransfer(transferId, {
-      error: null,
-      localPath: null,
-      progress: 0,
-      progressDetail: null,
-      progressIndeterminate: false,
-      speedText: null,
-      stage,
-      startedAt: Date.now(),
-      status: "queued",
-    });
-  }
-
   function connectionForTransfer(connectionId: string) {
     return connectionById.get(connectionId) || null;
   }
 
   function retryRemoteFileTransfer(transferId: string) {
-    const item = remoteFileTransfers.find((transfer) => transfer.id === transferId);
+    const item = getRemoteFileTransfer(transferId);
     if (!item || item.status !== "error" || !item.retry) {
       return;
     }
@@ -2575,8 +2244,12 @@ export function WorkspaceShell() {
   }
 
   function failTransfer(transferId: string, stage: string, error: unknown) {
+    const currentTransfer = getRemoteFileTransfer(transferId);
+    if (currentTransfer?.status === "canceled") {
+      return;
+    }
     if (isTransferCanceledError(error)) {
-      cancelTransfer(transferId);
+      markTransferCanceled(transferId);
       return;
     }
     const code = extractTransferErrorCode(error);
@@ -3450,7 +3123,7 @@ export function WorkspaceShell() {
           return;
         }
         if (!conflictPolicy) {
-          cancelTransfer(transferId);
+          markTransferCanceled(transferId);
           return;
         }
         if (isTransferNoLongerActive(transferId)) {
@@ -3519,7 +3192,7 @@ export function WorkspaceShell() {
           return;
         }
         if (!conflictPolicy) {
-          cancelTransfer(transferId);
+          markTransferCanceled(transferId);
           return;
         }
         if (isTransferNoLongerActive(transferId)) {
@@ -3610,7 +3283,7 @@ export function WorkspaceShell() {
           return;
         }
         if (!conflictPolicy) {
-          cancelTransfer(transferId);
+          markTransferCanceled(transferId);
           return;
         }
         if (isTransferNoLongerActive(transferId)) {
@@ -3716,7 +3389,7 @@ export function WorkspaceShell() {
           return;
         }
         if (!conflictPolicy) {
-          cancelTransfer(transferId);
+          markTransferCanceled(transferId);
           return;
         }
         if (isTransferNoLongerActive(transferId)) {
@@ -3792,6 +3465,9 @@ export function WorkspaceShell() {
     connectionId: string,
     result: RemoteFileUploadResult,
   ) {
+    if (isTransferNoLongerActive(transferId)) {
+      return;
+    }
     updateRemoteFileTransfer(transferId, {
       name: result.name,
       progress: 100,
@@ -3810,6 +3486,9 @@ export function WorkspaceShell() {
     connectionId: string,
     result: RemoteFileArchiveUploadResult,
   ) {
+    if (isTransferNoLongerActive(transferId)) {
+      return;
+    }
     updateRemoteFileTransfer(transferId, {
       name: result.name,
       progress: 100,
@@ -3875,7 +3554,7 @@ export function WorkspaceShell() {
           return;
         }
         if (!conflictPolicy) {
-          cancelTransfer(transferId);
+          markTransferCanceled(transferId);
           return;
         }
         if (isTransferNoLongerActive(transferId)) {
@@ -3932,6 +3611,9 @@ export function WorkspaceShell() {
   }
 
   function finishDownloadTransfer(transferId: string, result: RemoteFileDownloadToLocalResult) {
+    if (isTransferNoLongerActive(transferId)) {
+      return;
+    }
     updateRemoteFileTransfer(transferId, {
       localPath: result.local_path,
       name: result.name,
@@ -8718,9 +8400,7 @@ export function WorkspaceShell() {
                         transferPanel={
                           panel.active && rightTool === "files" ? (
                             <RemoteFileTransferPanel
-                              transfers={remoteFileTransfers}
                               onCancel={requestCancelTransfer}
-                              onClearFinished={clearFinishedTransfers}
                               onCopyPath={copyRemotePath}
                               onRemove={removeRemoteFileTransfer}
                               onRetry={retryRemoteFileTransfer}
@@ -9511,219 +9191,6 @@ function removeConnectionRecordEntries<T>(
   });
 
   return changed ? nextRecords : records;
-}
-
-function RemoteFileTransferPanel({
-  transfers,
-  onCancel,
-  onClearFinished,
-  onCopyPath,
-  onRemove,
-  onRetry,
-  onOpenLocalPath,
-  onRevealLocalPath,
-}: {
-  transfers: RemoteFileTransferItem[];
-  onCancel: (transferId: string) => void;
-  onClearFinished: () => void;
-  onCopyPath: (path: string) => void;
-  onRemove: (transferId: string) => void;
-  onRetry: (transferId: string) => void;
-  onOpenLocalPath: (path: string) => void;
-  onRevealLocalPath: (path: string) => void;
-}) {
-  const [expanded, setExpanded] = useState(false);
-  const runningCount = transfers.filter((item) => item.status === "running").length;
-  const queuedCount = transfers.filter((item) => item.status === "queued").length;
-  const errorCount = transfers.filter((item) => item.status === "error").length;
-  const finishedCount = transfers.filter((item) =>
-    ["success", "skipped", "canceled"].includes(item.status),
-  ).length;
-  const summaryTransfer =
-    transfers.find((item) => ["running", "queued"].includes(item.status)) ||
-    transfers.find((item) => item.status === "error") ||
-    transfers[0] ||
-    null;
-  const summaryProgress = summaryTransfer ? clampTransferProgress(summaryTransfer.progress) : 0;
-  const summaryProgressText = summaryTransfer
-    ? `${Math.round(summaryProgress).toString()}%`
-    : "空闲";
-
-  return (
-    <section className={`transfer-panel ${expanded ? "open" : ""}`} aria-label="文件传输">
-      <header className="transfer-panel-bar">
-        <div className="transfer-panel-summary transfer-progress-summary">
-          <strong>传输</strong>
-          {runningCount > 0 ? <span className="transfer-chip running">{runningCount.toString()} 进行中</span> : null}
-          {queuedCount > 0 ? <span className="transfer-chip">{queuedCount.toString()} 排队</span> : null}
-          {errorCount > 0 ? <span className="transfer-chip error">{errorCount.toString()} 失败</span> : null}
-          {transfers.length === 0 ? <span className="transfer-chip">无任务</span> : null}
-        </div>
-        <div className="transfer-progress-mini" aria-hidden="true">
-          <span style={{ width: `${summaryProgress.toString()}%` }} />
-        </div>
-        <span className="transfer-panel-percent">{summaryProgressText}</span>
-        <button
-          className="transfer-panel-toggle"
-          type="button"
-          aria-expanded={expanded}
-          onClick={() => setExpanded((open) => !open)}
-        >
-          {expanded ? "收起" : "展开"}
-          <ChevronDown className="ui-icon" aria-hidden="true" />
-        </button>
-      </header>
-
-      <div className="transfer-drawer">
-        <div className="transfer-drawer-head">
-          <strong>传输队列</strong>
-          <button type="button" disabled={finishedCount === 0} onClick={onClearFinished}>
-            清理完成项
-          </button>
-        </div>
-
-        <div className="transfer-list">
-          {transfers.length === 0 ? (
-            <p className="file-panel-empty">上传和下载任务会显示在这里。</p>
-          ) : (
-            transfers.map((item) => {
-              const progressValue = clampTransferProgress(item.progress);
-              const progressLabel = `${Math.round(progressValue).toString()}%`;
-              const canRemove = item.status !== "queued" && item.status !== "running";
-              const typeLabel = transferFileTypeLabel(item);
-              const sizeText = transferItemSizeText(item);
-              const statusText = transferDisplayStatusLabel(item);
-              const detailText = [
-                `状态：${statusText}`,
-                `阶段：${item.stage}`,
-                `方向：${transferDirectionLabel(item.direction)}`,
-                `类型：${transferKindLabel(item.kind)}`,
-                `进度：${progressLabel}`,
-                `大小：${sizeText}`,
-                item.speedText ? `速度：${item.speedText}` : null,
-                `创建时间：${formatTransferDetailTime(item.createdAt)}`,
-                item.error ? `错误：${item.error}` : null,
-                `来源：${transferSourcePath(item)}`,
-                `目标：${transferTargetPath(item)}`,
-              ].filter(Boolean).join("\n");
-
-              return (
-                <article className={`transfer-item ${item.status}`} key={item.id}>
-                  <Tooltip label={detailText}>
-                    <div className={`transfer-type-icon ${transferFileTypeClass(item)}`}>
-                      {item.kind === "directory" ? (
-                        <Folder className="ui-icon" aria-hidden="true" />
-                      ) : transferFileTypeClass(item) === "archive" ? (
-                        <Archive className="ui-icon" aria-hidden="true" />
-                      ) : (
-                        <FileText className="ui-icon" aria-hidden="true" />
-                      )}
-                      {typeLabel ? <span>{typeLabel}</span> : null}
-                    </div>
-                  </Tooltip>
-
-                  <div className="transfer-item-main">
-                    <div className="transfer-item-title">
-                      <strong title={item.name}>{item.name}</strong>
-                    </div>
-                    <div className="transfer-item-meta">
-                      <span className="transfer-tag direction">
-                        {item.direction === "upload" ? "上传" : "下载"}
-                      </span>
-                      <span className={`transfer-status-dot ${item.status}`} aria-hidden="true" />
-                      <span className="transfer-size-text" title={sizeText}>
-                        {sizeText}
-                      </span>
-                      {item.speedText ? <span className="transfer-speed-text">{item.speedText}</span> : null}
-                      <span className="transfer-status">{statusText}</span>
-                    </div>
-                    {item.status === "error" && item.error ? (
-                      <p className="transfer-item-error" title={item.error}>
-                        {transferInlineErrorText(item.error)}
-                      </p>
-                    ) : null}
-                  </div>
-
-                  <div className="transfer-item-actions">
-                    <Tooltip label="复制路径">
-                      <button
-                        type="button"
-                        aria-label={`复制 ${item.name} 路径`}
-                        onClick={() => onCopyPath(item.localPath || item.remotePath)}
-                      >
-                        <Clipboard className="ui-icon" aria-hidden="true" />
-                      </button>
-                    </Tooltip>
-                    {item.localPath && item.kind !== "directory" ? (
-                      <Tooltip label="打开">
-                        <button
-                          type="button"
-                          aria-label={`打开 ${item.name}`}
-                          onClick={() => onOpenLocalPath(item.localPath || "")}
-                        >
-                          <ExternalLink className="ui-icon" aria-hidden="true" />
-                        </button>
-                      </Tooltip>
-                    ) : null}
-                    {item.localPath ? (
-                      <Tooltip label="定位">
-                        <button
-                          type="button"
-                          aria-label={`定位 ${item.name}`}
-                          onClick={() => onRevealLocalPath(item.localPath || "")}
-                        >
-                          <FolderOpen className="ui-icon" aria-hidden="true" />
-                        </button>
-                      </Tooltip>
-                    ) : null}
-                    {item.status === "error" && item.retry ? (
-                      <Tooltip label="重试">
-                        <button type="button" aria-label={`重试 ${item.name}`} onClick={() => onRetry(item.id)}>
-                          <RefreshCw className="ui-icon" aria-hidden="true" />
-                        </button>
-                      </Tooltip>
-                    ) : null}
-                    {item.status === "queued" || item.status === "running" ? (
-                      <Tooltip label="取消">
-                        <button type="button" aria-label={`取消 ${item.name}`} onClick={() => onCancel(item.id)}>
-                          <X className="ui-icon" aria-hidden="true" />
-                        </button>
-                      </Tooltip>
-                    ) : null}
-                    {canRemove ? (
-                      <Tooltip label="移除任务">
-                        <button
-                          type="button"
-                          aria-label={`删除任务 ${item.name}`}
-                          onClick={() => onRemove(item.id)}
-                        >
-                          <Trash2 className="ui-icon" aria-hidden="true" />
-                        </button>
-                      </Tooltip>
-                    ) : null}
-                  </div>
-
-                  <div className="transfer-progress-line">
-                    <div
-                      className={`transfer-progress ${item.progressIndeterminate ? "indeterminate" : ""}`}
-                      role="progressbar"
-                      aria-label={`${item.name} ${item.stage}`}
-                      aria-valuemax={100}
-                      aria-valuemin={0}
-                      aria-valuenow={Math.round(progressValue)}
-                    >
-                      <span style={{ width: `${progressValue.toString()}%` }} />
-                    </div>
-                    <span className="transfer-progress-text">{progressLabel}</span>
-                  </div>
-                </article>
-              );
-            })
-          )}
-        </div>
-      </div>
-    </section>
-  );
 }
 
 function RdpSessionStatusPanel({
@@ -13470,82 +12937,6 @@ async function prewarmLazyModuleBatch(
   }
 }
 
-function clampTransferProgress(progress: number) {
-  if (!Number.isFinite(progress)) {
-    return 0;
-  }
-  return Math.max(0, Math.min(100, progress));
-}
-
-function transferProgressPercent(loadedBytes: number, totalBytes: number) {
-  if (totalBytes <= 0) {
-    return 0;
-  }
-  return (Math.max(0, loadedBytes) / totalBytes) * 100;
-}
-
-function interpolateTransferProgress(
-  start: number,
-  end: number,
-  loadedBytes: number,
-  totalBytes: number,
-) {
-  if (totalBytes <= 0) {
-    return end;
-  }
-  const ratio = Math.max(0, Math.min(1, loadedBytes / totalBytes));
-  return start + (end - start) * ratio;
-}
-
-function formatTransferProgressBytes(loadedBytes: number, totalBytes: number) {
-  if (totalBytes <= 0) {
-    return formatFileSize(loadedBytes);
-  }
-  return `${formatFileSize(loadedBytes)} / ${formatFileSize(totalBytes)}`;
-}
-
-function createTransferSpeedTracker() {
-  const startedAt = performance.now();
-  let lastSampleAt = startedAt;
-  let lastLoadedBytes = 0;
-  let lastSpeedBytesPerSecond: number | null = null;
-
-  return {
-    sample(loadedBytes: number) {
-      const now = performance.now();
-      const elapsedMs = now - lastSampleAt;
-      const totalElapsedMs = now - startedAt;
-      if (elapsedMs >= 250 || loadedBytes === 0 || lastSpeedBytesPerSecond === null) {
-        const deltaBytes = Math.max(0, loadedBytes - lastLoadedBytes);
-        lastSpeedBytesPerSecond =
-          elapsedMs > 0
-            ? (deltaBytes / elapsedMs) * 1000
-            : totalElapsedMs > 0
-              ? (loadedBytes / totalElapsedMs) * 1000
-              : 0;
-        lastLoadedBytes = loadedBytes;
-        lastSampleAt = now;
-      }
-      return formatTransferSpeed(
-        lastSpeedBytesPerSecond ??
-          (totalElapsedMs > 0 ? (loadedBytes / totalElapsedMs) * 1000 : 0),
-      );
-    },
-  };
-}
-
-function calculateTransferAverageSpeed(loadedBytes: number, startedAt: number) {
-  const elapsedSeconds = Math.max(0.001, (Date.now() - startedAt) / 1000);
-  return Math.max(0, loadedBytes / elapsedSeconds);
-}
-
-function formatTransferSpeed(bytesPerSecond: number) {
-  if (!Number.isFinite(bytesPerSecond) || bytesPerSecond <= 0) {
-    return null;
-  }
-  return `${formatFileSize(bytesPerSecond)}/s`;
-}
-
 function transferSessionName(connection: ConnectionProfile) {
   return sanitizeLocalSegment(connection.name || connection.host || "mxterm-session");
 }
@@ -13632,146 +13023,6 @@ function previewRemoteFileEntryMetadata(entry: RemoteFileEntry): RemoteFileEntry
   };
 }
 
-function transferFileTypeClass(item: RemoteFileTransferItem) {
-  if (item.kind === "directory") {
-    return "directory";
-  }
-  const name = item.name.toLowerCase();
-  if (
-    name.endsWith(".tar.gz") ||
-    name.endsWith(".tgz") ||
-    name.endsWith(".zip") ||
-    name.endsWith(".gz") ||
-    name.endsWith(".7z") ||
-    name.endsWith(".rar")
-  ) {
-    return "archive";
-  }
-  if (name.endsWith(".log")) {
-    return "log";
-  }
-  return "file";
-}
-
-function transferFileTypeLabel(item: RemoteFileTransferItem) {
-  if (item.kind === "directory") {
-    return null;
-  }
-  const name = item.name.toLowerCase();
-  if (name.endsWith(".tar.gz") || name.endsWith(".tgz")) return "TGZ";
-  if (name.endsWith(".zip")) return "ZIP";
-  if (name.endsWith(".gz")) return "GZ";
-  if (name.endsWith(".7z")) return "7Z";
-  if (name.endsWith(".rar")) return "RAR";
-  if (name.endsWith(".log")) return "LOG";
-  const extension = item.name.includes(".") ? item.name.split(".").pop() || "" : "";
-  return extension.length > 0 && extension.length <= 4 ? extension.toUpperCase() : null;
-}
-
-function transferItemSizeText(item: RemoteFileTransferItem) {
-  if (item.kind === "directory") {
-    return item.progressDetail?.includes(" / ") || item.progressDetail?.startsWith("压缩包 ")
-      ? item.progressDetail
-      : "目录";
-  }
-  if (item.progressDetail?.includes(" / ")) {
-    return item.progressDetail;
-  }
-  if (item.progressDetail?.startsWith("压缩包 ")) {
-    return item.progressDetail;
-  }
-  return "文件";
-}
-
-function transferDirectionLabel(direction: TransferDirection) {
-  return direction === "upload" ? "上传" : "下载";
-}
-
-function transferKindLabel(kind: TransferKind) {
-  return kind === "directory" ? "目录" : "文件";
-}
-
-function transferSourcePath(item: RemoteFileTransferItem) {
-  if (item.direction === "upload") {
-    return item.localPath || "本地选择的文件";
-  }
-  return item.remotePath;
-}
-
-function transferTargetPath(item: RemoteFileTransferItem) {
-  if (item.direction === "upload") {
-    return item.remotePath;
-  }
-  return item.localPath || "本地下载目录";
-}
-
-function formatTransferDetailTime(timestamp: number) {
-  const date = new Date(timestamp);
-  if (Number.isNaN(date.getTime())) {
-    return "--";
-  }
-  return date.toLocaleString("zh-CN", {
-    hour: "2-digit",
-    hour12: false,
-    minute: "2-digit",
-    month: "2-digit",
-    day: "2-digit",
-  });
-}
-
-function transferStatusLabel(status: TransferStatus) {
-  const labels: Record<TransferStatus, string> = {
-    canceled: "已取消",
-    error: "失败",
-    queued: "等待",
-    running: "进行中",
-    skipped: "已跳过",
-    success: "完成",
-  };
-  return labels[status];
-}
-
-function transferInlineErrorText(error: string) {
-  return error
-    .split(/\r?\n/)
-    .map((line) => normalizeErrorText(line))
-    .filter(Boolean)
-    .join("；");
-}
-
-function transferDisplayStatusLabel(item: RemoteFileTransferItem) {
-  if (item.status !== "running" && item.status !== "queued") {
-    return transferStatusLabel(item.status);
-  }
-
-  const stage = item.stage.trim();
-  if (!stage) {
-    return transferStatusLabel(item.status);
-  }
-  if (stage.includes("等待")) {
-    return "等待";
-  }
-  if (stage.includes("压缩") || stage.includes("打包") || stage.includes("tar.gz")) {
-    return "压缩中";
-  }
-  if (stage.includes("扫描")) {
-    return "扫描中";
-  }
-  if (stage.includes("检查") || stage.includes("准备")) {
-    return "准备中";
-  }
-  if (stage.includes("下载")) {
-    return "下载中";
-  }
-  if (stage.includes("上传")) {
-    return "上传中";
-  }
-  if (stage.includes("解压")) {
-    return "解压中";
-  }
-  return transferStatusLabel(item.status);
-}
-
 function remoteKindLabel(kind: RemoteFileEntry["type"]) {
   const labels: Record<RemoteFileEntry["type"], string> = {
     directory: "目录",
@@ -13780,13 +13031,6 @@ function remoteKindLabel(kind: RemoteFileEntry["type"]) {
     symlink: "符号链接",
   };
   return labels[kind];
-}
-
-function formatFileSize(size: number) {
-  if (size < 1024) return `${size.toString()} B`;
-  if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
-  if (size < 1024 * 1024 * 1024) return `${(size / 1024 / 1024).toFixed(1)} MB`;
-  return `${(size / 1024 / 1024 / 1024).toFixed(1)} GB`;
 }
 
 function formatRemoteMtime(mtime: number) {

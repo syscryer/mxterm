@@ -12,6 +12,11 @@ const tauriCapability = readFileSync(new URL("../src-tauri/capabilities/default.
 const tauriEventsTs = readFileSync(new URL("../src/shared/tauri/events.ts", import.meta.url), "utf8");
 const tauriDialogTs = readFileSync(new URL("../src/shared/tauri/dialog.ts", import.meta.url), "utf8");
 const remoteFilePanel = readFileSync(new URL("../src/features/files/RemoteFilePanel.tsx", import.meta.url), "utf8");
+const remoteFileTransferPanel = readFileSync(new URL("../src/features/files/RemoteFileTransferPanel.tsx", import.meta.url), "utf8");
+const remoteFileTransferStore = readFileSync(new URL("../src/features/files/remoteFileTransferStore.ts", import.meta.url), "utf8");
+const remoteFileTransferTypes = readFileSync(new URL("../src/features/files/remoteFileTransferTypes.ts", import.meta.url), "utf8");
+const remoteFileTransferUtils = readFileSync(new URL("../src/features/files/remoteFileTransferUtils.ts", import.meta.url), "utf8");
+const remoteFileTransferController = readFileSync(new URL("../src/features/files/useRemoteFileTransferController.ts", import.meta.url), "utf8");
 const remoteFileTypes = readFileSync(new URL("../src/features/files/remoteFileTypes.ts", import.meta.url), "utf8");
 const workspaceShell = readFileSync(new URL("../src/features/layout/WorkspaceShell.tsx", import.meta.url), "utf8");
 const settingsTypes = readFileSync(new URL("../src/features/settings/settingsTypes.ts", import.meta.url), "utf8");
@@ -304,16 +309,13 @@ for (const workspaceNeedle of [
   "closeRemoteFileTab",
   "dirty",
   "remote-file-conflict",
-  "remoteFileTransfers",
   "RemoteFileTransferPanel",
-  "listenRemoteFileTransferProgress",
   "remoteFileUploadLocalFile",
   "remoteFileUploadLocalArchive",
   "remoteFilePrepareUploadTemp",
   "remoteFileAppendUploadTemp",
   "remoteFileDeleteUploadTemp",
   "remoteFileDownloadToLocal",
-  "remoteFileCancelTransfer",
   "remoteFileCheckDownloadTarget",
   "resolveDownloadConflictPolicy",
   "downloadTargetOptions",
@@ -322,9 +324,6 @@ for (const workspaceNeedle of [
   "resolveUploadConflictPolicy",
   "progressDetail",
   "speedText",
-  "formatTransferSpeed",
-  "transferProgressPercent",
-  "RemoteFileTransferItem",
   "resolveUploadConflictPolicy",
   "resolveDownloadConflictPolicy",
   "setTransferProgress",
@@ -352,11 +351,51 @@ for (const workspaceNeedle of [
   }
 }
 
+for (const workspaceForbiddenNeedle of [
+  "remoteFileTransfers",
+  "setRemoteFileTransfers",
+  "listenRemoteFileTransferProgress",
+  "remoteFileCancelTransfer",
+  "transferQueueRef",
+  "runningTransferIdsRef",
+  "transferTasksRef",
+]) {
+  if (workspaceShell.includes(workspaceForbiddenNeedle)) {
+    throw new Error(`WorkspaceShell should not own transfer runtime state: found ${workspaceForbiddenNeedle}`);
+  }
+}
+
+for (const transferModuleNeedle of [
+  "RemoteFileTransferItem",
+  "useRemoteFileTransferStore",
+  "createStore",
+  "queueRemoteTransferProgress",
+  "listenRemoteFileTransferProgress",
+  "remoteFileCancelTransfer",
+  "transferQueueRef",
+  "runningTransferIdsRef",
+  "transferTasksRef",
+  "formatTransferSpeed",
+  "transferProgressPercent",
+  "maxFinishedTransferHistory",
+]) {
+  const transferSources = [
+    remoteFileTransferPanel,
+    remoteFileTransferStore,
+    remoteFileTransferTypes,
+    remoteFileTransferUtils,
+    remoteFileTransferController,
+  ].join("\n");
+  if (!transferSources.includes(transferModuleNeedle)) {
+    throw new Error(`Remote file transfer modules should include ${transferModuleNeedle}`);
+  }
+}
+
 if (/interpolateTransferProgress\(\s*38,\s*92,\s*event\.loaded_bytes/.test(workspaceShell)) {
   throw new Error("SFTP transfer progress should use loaded_bytes / total_bytes directly");
 }
 
-if (!workspaceShell.includes('item.localPath && item.kind !== "directory"')) {
+if (!remoteFileTransferPanel.includes('item.localPath && item.kind !== "directory"')) {
   throw new Error("Downloaded directories should not show the local open button");
 }
 
@@ -459,9 +498,27 @@ for (const transferProgressNeedle of [
     !styles.includes(transferProgressNeedle) &&
     !commandsTs.includes(transferProgressNeedle) &&
     !tauriEventsTs.includes(transferProgressNeedle) &&
-    !remoteFileTypes.includes(transferProgressNeedle)
+    !remoteFileTypes.includes(transferProgressNeedle) &&
+    !remoteFileTransferPanel.includes(transferProgressNeedle) &&
+    !remoteFileTransferStore.includes(transferProgressNeedle)
   ) {
     throw new Error(`Transfer progress UI should include ${transferProgressNeedle}`);
+  }
+}
+
+for (const progressSelector of [".transfer-progress-mini > span", ".transfer-progress > span"]) {
+  const selectorIndex = styles.indexOf(progressSelector);
+  if (selectorIndex === -1) {
+    throw new Error(`Transfer progress style should include ${progressSelector}`);
+  }
+  const blockStart = styles.indexOf("{", selectorIndex);
+  const blockEnd = styles.indexOf("}", blockStart);
+  const block = styles.slice(blockStart, blockEnd);
+  if (!block.includes("transform-origin") || !block.includes("transition: transform")) {
+    throw new Error(`${progressSelector} should animate transform instead of layout width`);
+  }
+  if (/transition:\s*width/.test(block)) {
+    throw new Error(`${progressSelector} should not animate width`);
   }
 }
 
