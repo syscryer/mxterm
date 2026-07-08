@@ -22,6 +22,7 @@ import {
   AlertTriangle,
   ChevronDown,
   ChevronLeft,
+  ChevronRight,
   Clock3,
   Clipboard,
   CheckCircle2,
@@ -187,6 +188,7 @@ const WORKSPACE_IDLE_PREWARM_BATCHES: Array<{
   },
 ];
 import type { RemoteFileEditorTab } from "../editor/remoteFileEditorTypes";
+import { RemoteFileIcon } from "../files/RemoteFileIcon";
 import type { RemoteFileTool, RemoteFileUploadItem } from "../files/RemoteFilePanel";
 import { RemoteFileTransferPanel } from "../files/RemoteFileTransferPanel";
 import {
@@ -627,6 +629,133 @@ const editorTerminalKeyboardResizeStep = 3;
 const fileReadChunkBytes = 4 * 1024 * 1024;
 const uploadTempAppendChunkBytes = fileReadChunkBytes;
 const remoteFileDropTargetAttribute = "data-remote-file-drop-target";
+const tabScrollTolerancePx = 1;
+const tabScrollStateRefreshMs = 180;
+
+interface WorkbenchTabScrollState {
+  canScrollLeft: boolean;
+  canScrollRight: boolean;
+  hasOverflow: boolean;
+}
+
+const defaultWorkbenchTabScrollState: WorkbenchTabScrollState = {
+  canScrollLeft: false,
+  canScrollRight: false,
+  hasOverflow: false,
+};
+
+function useWorkbenchTabScroller({
+  activeKey,
+  enabled,
+  itemCount,
+}: {
+  activeKey: string | null;
+  enabled: boolean;
+  itemCount: number;
+}) {
+  const scrollerRef = useRef<HTMLDivElement | null>(null);
+  const [scrollState, setScrollState] = useState<WorkbenchTabScrollState>(
+    defaultWorkbenchTabScrollState,
+  );
+
+  const updateScrollState = useCallback(() => {
+    const scroller = scrollerRef.current;
+    if (!scroller || !enabled) {
+      setScrollState((current) =>
+        current.canScrollLeft || current.canScrollRight || current.hasOverflow
+          ? defaultWorkbenchTabScrollState
+          : current,
+      );
+      return;
+    }
+
+    const maxScrollLeft = Math.max(0, scroller.scrollWidth - scroller.clientWidth);
+    const nextState = {
+      canScrollLeft: scroller.scrollLeft > tabScrollTolerancePx,
+      canScrollRight: scroller.scrollLeft < maxScrollLeft - tabScrollTolerancePx,
+      hasOverflow: maxScrollLeft > tabScrollTolerancePx,
+    };
+
+    setScrollState((current) =>
+      current.canScrollLeft === nextState.canScrollLeft &&
+      current.canScrollRight === nextState.canScrollRight &&
+      current.hasOverflow === nextState.hasOverflow
+        ? current
+        : nextState,
+    );
+  }, [enabled]);
+
+  useLayoutEffect(() => {
+    const scroller = scrollerRef.current;
+    if (!scroller || !enabled) {
+      updateScrollState();
+      return;
+    }
+
+    let animationFrame = window.requestAnimationFrame(updateScrollState);
+    const scheduleScrollStateUpdate = () => {
+      window.cancelAnimationFrame(animationFrame);
+      animationFrame = window.requestAnimationFrame(updateScrollState);
+    };
+    const resizeObserver =
+      typeof ResizeObserver === "undefined"
+        ? null
+        : new ResizeObserver(scheduleScrollStateUpdate);
+
+    resizeObserver?.observe(scroller);
+    scroller.addEventListener("scroll", scheduleScrollStateUpdate, { passive: true });
+    window.addEventListener("resize", scheduleScrollStateUpdate);
+
+    return () => {
+      window.cancelAnimationFrame(animationFrame);
+      resizeObserver?.disconnect();
+      scroller.removeEventListener("scroll", scheduleScrollStateUpdate);
+      window.removeEventListener("resize", scheduleScrollStateUpdate);
+    };
+  }, [enabled, itemCount, updateScrollState]);
+
+  useLayoutEffect(() => {
+    const scroller = scrollerRef.current;
+    if (!scroller || !enabled || itemCount === 0) {
+      updateScrollState();
+      return;
+    }
+
+    const activeTab = scroller.querySelector<HTMLElement>(
+      '[data-workbench-tab-active="true"]',
+    );
+    activeTab?.scrollIntoView({ block: "nearest", inline: "nearest" });
+    const animationFrame = window.requestAnimationFrame(updateScrollState);
+    return () => window.cancelAnimationFrame(animationFrame);
+  }, [activeKey, enabled, itemCount, updateScrollState]);
+
+  const scrollTabs = useCallback(
+    (direction: "left" | "right") => {
+      const scroller = scrollerRef.current;
+      if (!scroller) {
+        return;
+      }
+      const distance = Math.max(128, Math.floor(scroller.clientWidth * 0.58));
+      scroller.scrollBy({
+        behavior: "smooth",
+        left: direction === "left" ? -distance : distance,
+      });
+      window.setTimeout(updateScrollState, tabScrollStateRefreshMs);
+    },
+    [updateScrollState],
+  );
+
+  return {
+    canScrollLeft: scrollState.canScrollLeft,
+    canScrollRight: scrollState.canScrollRight,
+    hasOverflow: scrollState.hasOverflow,
+    ref: scrollerRef,
+    scrollLeft: () => scrollTabs("left"),
+    scrollRight: () => scrollTabs("right"),
+  };
+}
+
+type WorkbenchTabScrollController = ReturnType<typeof useWorkbenchTabScroller>;
 
 type NativeFileDropPosition = Extract<DragDropEvent, { type: "enter" | "over" | "drop" }>["position"];
 
@@ -1582,6 +1711,38 @@ export function WorkspaceShell() {
   const showRdpWorkspace = !showingHome && showingRdp && hasSessionWorkspace;
   const showVncWorkspace = !showingHome && showingVnc && hasSessionWorkspace;
   const showWorkspaceToolPane = !showingHome && hasSessionWorkspace;
+  const remoteEditorTabScroll = useWorkbenchTabScroller({
+    activeKey: activeRemoteFileTab?.id || null,
+    enabled: showSessionWorkspace && activeRemoteFileTabs.length > 0 && !isActiveTerminalFileUnified,
+    itemCount: activeRemoteFileTabs.length,
+  });
+  const sshWorkbenchActiveTabKey = activeUnifiedTab
+    ? `${activeUnifiedTab.kind}:${activeUnifiedTab.id}`
+    : activeTabId;
+  const sshWorkbenchTabCount =
+    activeConnectionTabs.length +
+    (isActiveTerminalFileUnified ? activeRemoteFileTabs.length : 0) +
+    (activeConnectedTerminalTab ? 1 : 0);
+  const sshTerminalTabScroll = useWorkbenchTabScroller({
+    activeKey: sshWorkbenchActiveTabKey,
+    enabled: showSessionWorkspace,
+    itemCount: sshWorkbenchTabCount,
+  });
+  const rdpTabScroll = useWorkbenchTabScroller({
+    activeKey: activeRdpSession?.id || null,
+    enabled: showRdpWorkspace,
+    itemCount: activeRdpSessions.length,
+  });
+  const vncTabScroll = useWorkbenchTabScroller({
+    activeKey: activeVncSession?.id || null,
+    enabled: showVncWorkspace,
+    itemCount: activeVncSessions.length,
+  });
+  const localTerminalTabScroll = useWorkbenchTabScroller({
+    activeKey: activeLocalTerminalTabId,
+    enabled: showingLocalTerminal && !showingHome,
+    itemCount: localTerminalTabs.length + 2 + (localTerminalProfilesError ? 1 : 0),
+  });
   const shouldShowAiAssistantPanel = showWorkspaceToolPane && rightTool === "ai";
   const shouldRenderAiAssistantPanel =
     aiAssistantPanelLoaded || shouldShowAiAssistantPanel;
@@ -4188,8 +4349,45 @@ export function WorkspaceShell() {
     return !showingHome && tabId === activeRemoteFileTab?.id;
   }
 
+  function renderWorkbenchTabScrollControls(
+    tabScroll: WorkbenchTabScrollController,
+    label: string,
+  ) {
+    if (!tabScroll.hasOverflow) {
+      return null;
+    }
+
+    return (
+      <div className="workbench-tab-scroll-controls" aria-label={`${label}滚动控制`}>
+        <Tooltip label="向左滚动标签">
+          <button
+            className="workbench-tab-scroll-button"
+            type="button"
+            aria-label={`向左滚动${label}`}
+            disabled={!tabScroll.canScrollLeft}
+            onClick={tabScroll.scrollLeft}
+          >
+            <ChevronLeft className="ui-icon" aria-hidden="true" />
+          </button>
+        </Tooltip>
+        <Tooltip label="向右滚动标签">
+          <button
+            className="workbench-tab-scroll-button"
+            type="button"
+            aria-label={`向右滚动${label}`}
+            disabled={!tabScroll.canScrollRight}
+            onClick={tabScroll.scrollRight}
+          >
+            <ChevronRight className="ui-icon" aria-hidden="true" />
+          </button>
+        </Tooltip>
+      </div>
+    );
+  }
+
   function renderRemoteFileSubtab(tab: RemoteFileEditorTab, index: number) {
     const savedTabs = activeRemoteFileTabs.filter(isClosableSavedRemoteFileTab);
+    const active = isRemoteFileSubtabActive(tab);
     return (
       <TabContextMenu
         key={tab.id}
@@ -4243,7 +4441,8 @@ export function WorkspaceShell() {
         ]}
       >
         <div
-          className={`subtab-shell file-tab ${isRemoteFileSubtabActive(tab) ? "active" : ""}`}
+          className={`subtab-shell file-tab ${active ? "active" : ""}`}
+          data-workbench-tab-active={active ? "true" : undefined}
         >
           <button
             className="subtab workbench-draggable-tab"
@@ -4258,7 +4457,8 @@ export function WorkspaceShell() {
               })
             }
           >
-            <span>{tab.name}</span>
+            <RemoteFileIcon className="file-tab-icon" entry={{ name: tab.name, type: "file" }} />
+            <span className="file-tab-name">{tab.name}</span>
             {tab.dirty ? <span className="dirty-dot" aria-label="已修改" /> : null}
           </button>
           <button
@@ -7309,7 +7509,10 @@ export function WorkspaceShell() {
                     data-workbench-tab-drop-zone="file"
                     data-workbench-tab-drop-active={workbenchTabDropZone === "file" ? "true" : undefined}
                   >
-                    {activeRemoteFileTabs.map(renderRemoteFileSubtab)}
+                    <div className="workbench-tab-scroll-list" ref={remoteEditorTabScroll.ref}>
+                      {activeRemoteFileTabs.map(renderRemoteFileSubtab)}
+                    </div>
+                    {renderWorkbenchTabScrollControls(remoteEditorTabScroll, "远程文件标签")}
                   </nav>
 
                   <section className="remote-editor-stack" aria-label="文件编辑器">
@@ -7367,88 +7570,92 @@ export function WorkspaceShell() {
                   data-workbench-tab-drop-zone="terminal"
                   data-workbench-tab-drop-active={workbenchTabDropZone === "terminal" ? "true" : undefined}
                 >
-                  {activeConnectionTabs.map((tab, index) => (
-                    <TabContextMenu
-                      key={tab.id}
-                      actions={[
-                        {
-                          hint: "Ctrl+F4",
-                          label: "关闭",
-                          onSelect: () => closeTerminal(tab.id),
-                        },
-                        {
-                          disabled: activeConnectionTabs.length <= 1,
-                          label: "关闭其他",
-                          onSelect: () => closeOtherTerminalTabs(tab.id),
-                        },
-                        {
-                          disabled: index >= activeConnectionTabs.length - 1,
-                          label: "关闭右侧标签页",
-                          onSelect: () => closeTerminalTabsToRight(tab.id),
-                        },
-                        {
-                          disabled: activeConnectionTabs.length === 0,
-                          hint: "Ctrl+K W",
-                          label: "全部关闭",
-                          onSelect: () => closeAllTerminalTabsForConnection(tab.connectionId),
-                        },
-                        ...(isConnectionTerminalFileUnified(tab.connectionId)
-                          ? [
-                              {
-                                label: "恢复上下分屏",
-                                onSelect: () =>
-                                  restoreConnectionTerminalFileSplit(tab.connectionId, "terminal", {
-                                    connectionId: tab.connectionId,
-                                    id: tab.id,
-                                    kind: "terminal",
-                                  }),
-                                separatorBefore: true,
-                              },
-                            ]
-                          : []),
-                      ]}
-                    >
-                      <div
-                        className={`subtab-shell ${isTerminalSubtabActive(tab) ? "active" : ""}`}
+                  <div className="workbench-tab-scroll-list" ref={sshTerminalTabScroll.ref}>
+                    {activeConnectionTabs.map((tab, index) => (
+                      <TabContextMenu
+                        key={tab.id}
+                        actions={[
+                          {
+                            hint: "Ctrl+F4",
+                            label: "关闭",
+                            onSelect: () => closeTerminal(tab.id),
+                          },
+                          {
+                            disabled: activeConnectionTabs.length <= 1,
+                            label: "关闭其他",
+                            onSelect: () => closeOtherTerminalTabs(tab.id),
+                          },
+                          {
+                            disabled: index >= activeConnectionTabs.length - 1,
+                            label: "关闭右侧标签页",
+                            onSelect: () => closeTerminalTabsToRight(tab.id),
+                          },
+                          {
+                            disabled: activeConnectionTabs.length === 0,
+                            hint: "Ctrl+K W",
+                            label: "全部关闭",
+                            onSelect: () => closeAllTerminalTabsForConnection(tab.connectionId),
+                          },
+                          ...(isConnectionTerminalFileUnified(tab.connectionId)
+                            ? [
+                                {
+                                  label: "恢复上下分屏",
+                                  onSelect: () =>
+                                    restoreConnectionTerminalFileSplit(tab.connectionId, "terminal", {
+                                      connectionId: tab.connectionId,
+                                      id: tab.id,
+                                      kind: "terminal",
+                                    }),
+                                  separatorBefore: true,
+                                },
+                              ]
+                            : []),
+                        ]}
                       >
-                        <button
-                          className="subtab workbench-draggable-tab"
-                          type="button"
-                          onClick={(event) => handleTerminalSubtabClick(event, tab)}
-                          onMouseDown={(event) =>
-                            handleWorkbenchTabMouseDown(event, {
-                              connectionId: tab.connectionId,
-                              id: tab.id,
-                              kind: "terminal",
-                            })
-                          }
+                        <div
+                          className={`subtab-shell ${isTerminalSubtabActive(tab) ? "active" : ""}`}
+                          data-workbench-tab-active={isTerminalSubtabActive(tab) ? "true" : undefined}
                         >
-                          <span>{tab.title}</span>
-                        </button>
+                          <button
+                            className="subtab workbench-draggable-tab"
+                            type="button"
+                            onClick={(event) => handleTerminalSubtabClick(event, tab)}
+                            onMouseDown={(event) =>
+                              handleWorkbenchTabMouseDown(event, {
+                                connectionId: tab.connectionId,
+                                id: tab.id,
+                                kind: "terminal",
+                              })
+                            }
+                          >
+                            <span>{tab.title}</span>
+                          </button>
+                          <button
+                            className="subtab-close"
+                            type="button"
+                            aria-label={`关闭 ${tab.title}`}
+                            onClick={() => closeTerminal(tab.id)}
+                          >
+                            <X className="ui-icon" aria-hidden="true" />
+                          </button>
+                        </div>
+                      </TabContextMenu>
+                    ))}
+                    {isActiveTerminalFileUnified ? activeRemoteFileTabs.map(renderRemoteFileSubtab) : null}
+                    {activeConnectedTerminalTab ? (
+                      <Tooltip label="新建同连接终端">
                         <button
-                          className="subtab-close"
+                          className="add-subtab"
                           type="button"
-                          aria-label={`关闭 ${tab.title}`}
-                          onClick={() => closeTerminal(tab.id)}
+                          aria-label="新建同连接终端"
+                          onClick={openTerminalInActiveConnection}
                         >
-                          <X className="ui-icon" aria-hidden="true" />
+                          <Plus className="ui-icon" aria-hidden="true" />
                         </button>
-                      </div>
-                    </TabContextMenu>
-                  ))}
-                  {isActiveTerminalFileUnified ? activeRemoteFileTabs.map(renderRemoteFileSubtab) : null}
-                  {activeConnectedTerminalTab ? (
-                    <Tooltip label="新建同连接终端">
-                      <button
-                        className="add-subtab"
-                        type="button"
-                        aria-label="新建同连接终端"
-                        onClick={openTerminalInActiveConnection}
-                      >
-                        <Plus className="ui-icon" aria-hidden="true" />
-                      </button>
-                    </Tooltip>
-                  ) : null}
+                      </Tooltip>
+                    ) : null}
+                  </div>
+                  {renderWorkbenchTabScrollControls(sshTerminalTabScroll, "终端标签")}
                   <div className="terminal-subtab-actions">
                     {activeSshToolbarTerminalTab ? (
                       <Tooltip label={activeTerminalSearch?.open ? "关闭终端搜索" : "搜索终端输出"}>
@@ -7861,56 +8068,60 @@ export function WorkspaceShell() {
                 aria-hidden={!showRdpWorkspace}
               >
                 <nav className="terminal-subtabs rdp-subtabs" aria-label="RDP 会话标签">
-                  {activeRdpSessions.map((session, index) => (
-                    <TabContextMenu
-                      key={session.id}
-                      actions={[
-                        {
-                          hint: "Ctrl+F4",
-                          label: "关闭",
-                          onSelect: () => closeRdpSession(session.id),
-                        },
-                        {
-                          disabled: activeRdpSessions.length <= 1,
-                          label: "关闭其他",
-                          onSelect: () => closeOtherRdpSessions(session.id),
-                        },
-                        {
-                          disabled: index >= activeRdpSessions.length - 1,
-                          label: "关闭右侧标签页",
-                          onSelect: () => closeRdpSessionsToRight(session.id),
-                        },
-                        {
-                          disabled: activeRdpSessions.length === 0,
-                          hint: "Ctrl+K W",
-                          label: "全部关闭",
-                          onSelect: () => closeAllRdpSessionsForConnection(session.connectionId),
-                        },
-                      ]}
-                    >
-                      <div
-                        className={`subtab-shell ${session.id === activeRdpSession?.id ? "active" : ""}`}
+                  <div className="workbench-tab-scroll-list" ref={rdpTabScroll.ref}>
+                    {activeRdpSessions.map((session, index) => (
+                      <TabContextMenu
+                        key={session.id}
+                        actions={[
+                          {
+                            hint: "Ctrl+F4",
+                            label: "关闭",
+                            onSelect: () => closeRdpSession(session.id),
+                          },
+                          {
+                            disabled: activeRdpSessions.length <= 1,
+                            label: "关闭其他",
+                            onSelect: () => closeOtherRdpSessions(session.id),
+                          },
+                          {
+                            disabled: index >= activeRdpSessions.length - 1,
+                            label: "关闭右侧标签页",
+                            onSelect: () => closeRdpSessionsToRight(session.id),
+                          },
+                          {
+                            disabled: activeRdpSessions.length === 0,
+                            hint: "Ctrl+K W",
+                            label: "全部关闭",
+                            onSelect: () => closeAllRdpSessionsForConnection(session.connectionId),
+                          },
+                        ]}
                       >
-                        <button
-                          className="subtab rdp-subtab"
-                          type="button"
-                          title={`${session.title} · ${rdpStatusLabel(session.status)}`}
-                          onClick={() => activateRdpSession(session)}
+                        <div
+                          className={`subtab-shell ${session.id === activeRdpSession?.id ? "active" : ""}`}
+                          data-workbench-tab-active={session.id === activeRdpSession?.id ? "true" : undefined}
                         >
-                          <MonitorPlay className="ui-icon" aria-hidden="true" />
-                          <span>{session.title}</span>
-                        </button>
-                        <button
-                          className="subtab-close"
-                          type="button"
-                          aria-label={`关闭 ${session.title}`}
-                          onClick={() => closeRdpSession(session.id)}
-                        >
-                          <X className="ui-icon" aria-hidden="true" />
-                        </button>
-                      </div>
-                    </TabContextMenu>
-                  ))}
+                          <button
+                            className="subtab rdp-subtab"
+                            type="button"
+                            title={`${session.title} · ${rdpStatusLabel(session.status)}`}
+                            onClick={() => activateRdpSession(session)}
+                          >
+                            <MonitorPlay className="ui-icon" aria-hidden="true" />
+                            <span>{session.title}</span>
+                          </button>
+                          <button
+                            className="subtab-close"
+                            type="button"
+                            aria-label={`关闭 ${session.title}`}
+                            onClick={() => closeRdpSession(session.id)}
+                          >
+                            <X className="ui-icon" aria-hidden="true" />
+                          </button>
+                        </div>
+                      </TabContextMenu>
+                    ))}
+                  </div>
+                  {renderWorkbenchTabScrollControls(rdpTabScroll, "RDP 会话标签")}
                   <div className="terminal-subtab-actions">
                     <Tooltip label={rightPaneCollapsed ? "展开右侧面板" : "收起右侧面板"}>
                       <button
@@ -7958,56 +8169,60 @@ export function WorkspaceShell() {
                 aria-hidden={!showVncWorkspace}
               >
                 <nav className="terminal-subtabs rdp-subtabs vnc-subtabs" aria-label="VNC 会话标签">
-                  {activeVncSessions.map((session, index) => (
-                    <TabContextMenu
-                      key={session.id}
-                      actions={[
-                        {
-                          hint: "Ctrl+F4",
-                          label: "关闭",
-                          onSelect: () => closeVncSession(session.id),
-                        },
-                        {
-                          disabled: activeVncSessions.length <= 1,
-                          label: "关闭其他",
-                          onSelect: () => closeOtherVncSessions(session.id),
-                        },
-                        {
-                          disabled: index >= activeVncSessions.length - 1,
-                          label: "关闭右侧标签页",
-                          onSelect: () => closeVncSessionsToRight(session.id),
-                        },
-                        {
-                          disabled: activeVncSessions.length === 0,
-                          hint: "Ctrl+K W",
-                          label: "全部关闭",
-                          onSelect: () => closeAllVncSessionsForConnection(session.connectionId),
-                        },
-                      ]}
-                    >
-                      <div
-                        className={`subtab-shell ${session.id === activeVncSession?.id ? "active" : ""}`}
+                  <div className="workbench-tab-scroll-list" ref={vncTabScroll.ref}>
+                    {activeVncSessions.map((session, index) => (
+                      <TabContextMenu
+                        key={session.id}
+                        actions={[
+                          {
+                            hint: "Ctrl+F4",
+                            label: "关闭",
+                            onSelect: () => closeVncSession(session.id),
+                          },
+                          {
+                            disabled: activeVncSessions.length <= 1,
+                            label: "关闭其他",
+                            onSelect: () => closeOtherVncSessions(session.id),
+                          },
+                          {
+                            disabled: index >= activeVncSessions.length - 1,
+                            label: "关闭右侧标签页",
+                            onSelect: () => closeVncSessionsToRight(session.id),
+                          },
+                          {
+                            disabled: activeVncSessions.length === 0,
+                            hint: "Ctrl+K W",
+                            label: "全部关闭",
+                            onSelect: () => closeAllVncSessionsForConnection(session.connectionId),
+                          },
+                        ]}
                       >
-                        <button
-                          className="subtab rdp-subtab vnc-subtab"
-                          type="button"
-                          title={`${session.title} · ${vncStatusLabel(session.status)}`}
-                          onClick={() => activateVncSession(session)}
+                        <div
+                          className={`subtab-shell ${session.id === activeVncSession?.id ? "active" : ""}`}
+                          data-workbench-tab-active={session.id === activeVncSession?.id ? "true" : undefined}
                         >
-                          <MonitorPlay className="ui-icon" aria-hidden="true" />
-                          <span>{session.title}</span>
-                        </button>
-                        <button
-                          className="subtab-close"
-                          type="button"
-                          aria-label={`关闭 ${session.title}`}
-                          onClick={() => closeVncSession(session.id)}
-                        >
-                          <X className="ui-icon" aria-hidden="true" />
-                        </button>
-                      </div>
-                    </TabContextMenu>
-                  ))}
+                          <button
+                            className="subtab rdp-subtab vnc-subtab"
+                            type="button"
+                            title={`${session.title} · ${vncStatusLabel(session.status)}`}
+                            onClick={() => activateVncSession(session)}
+                          >
+                            <MonitorPlay className="ui-icon" aria-hidden="true" />
+                            <span>{session.title}</span>
+                          </button>
+                          <button
+                            className="subtab-close"
+                            type="button"
+                            aria-label={`关闭 ${session.title}`}
+                            onClick={() => closeVncSession(session.id)}
+                          >
+                            <X className="ui-icon" aria-hidden="true" />
+                          </button>
+                        </div>
+                      </TabContextMenu>
+                    ))}
+                  </div>
+                  {renderWorkbenchTabScrollControls(vncTabScroll, "VNC 会话标签")}
                   <div className="terminal-subtab-actions">
                     <Tooltip label={rightPaneCollapsed ? "展开右侧面板" : "收起右侧面板"}>
                       <button
@@ -8069,84 +8284,88 @@ export function WorkspaceShell() {
                 aria-hidden={!showingLocalTerminal}
               >
                 <nav className="terminal-subtabs" aria-label="本地终端标签">
-                  {localTerminalTabs.map((tab, index) => (
-                    <TabContextMenu
-                      key={tab.id}
-                      actions={[
-                        {
-                          hint: "Ctrl+F4",
-                          label: "关闭",
-                          onSelect: () => closeLocalTerminalSession(tab),
-                        },
-                        {
-                          disabled: localTerminalTabs.length <= 1,
-                          label: "关闭其他",
-                          onSelect: () => closeOtherLocalTerminalTabs(tab.id),
-                        },
-                        {
-                          disabled: index >= localTerminalTabs.length - 1,
-                          label: "关闭右侧标签页",
-                          onSelect: () => closeLocalTerminalTabsToRight(tab.id),
-                        },
-                        {
-                          disabled: localTerminalTabs.length === 0,
-                          hint: "Ctrl+K W",
-                          label: "全部关闭",
-                          onSelect: () => closeLocalTerminalTabs(localTerminalTabs.map((item) => item.id)),
-                        },
-                      ]}
-                    >
-                      <div
-                        className={`subtab-shell ${tab.id === activeLocalTerminalTabId ? "active" : ""}`}
+                  <div className="workbench-tab-scroll-list" ref={localTerminalTabScroll.ref}>
+                    {localTerminalTabs.map((tab, index) => (
+                      <TabContextMenu
+                        key={tab.id}
+                        actions={[
+                          {
+                            hint: "Ctrl+F4",
+                            label: "关闭",
+                            onSelect: () => closeLocalTerminalSession(tab),
+                          },
+                          {
+                            disabled: localTerminalTabs.length <= 1,
+                            label: "关闭其他",
+                            onSelect: () => closeOtherLocalTerminalTabs(tab.id),
+                          },
+                          {
+                            disabled: index >= localTerminalTabs.length - 1,
+                            label: "关闭右侧标签页",
+                            onSelect: () => closeLocalTerminalTabsToRight(tab.id),
+                          },
+                          {
+                            disabled: localTerminalTabs.length === 0,
+                            hint: "Ctrl+K W",
+                            label: "全部关闭",
+                            onSelect: () => closeLocalTerminalTabs(localTerminalTabs.map((item) => item.id)),
+                          },
+                        ]}
                       >
-                        <button
-                          className="subtab local-terminal-subtab"
-                          type="button"
-                          title={`${tab.title} · ${tab.status}`}
-                          onClick={() => activateLocalTerminalTab(tab)}
+                        <div
+                          className={`subtab-shell ${tab.id === activeLocalTerminalTabId ? "active" : ""}`}
+                          data-workbench-tab-active={tab.id === activeLocalTerminalTabId ? "true" : undefined}
                         >
-                          <LocalTerminalIcon className="ui-icon" kind={tab.profileKind} title={tab.title} />
-                          <span>{tab.title}</span>
-                        </button>
+                          <button
+                            className="subtab local-terminal-subtab"
+                            type="button"
+                            title={`${tab.title} · ${tab.status}`}
+                            onClick={() => activateLocalTerminalTab(tab)}
+                          >
+                            <LocalTerminalIcon className="ui-icon" kind={tab.profileKind} title={tab.title} />
+                            <span>{tab.title}</span>
+                          </button>
+                          <button
+                            className="subtab-close"
+                            type="button"
+                            aria-label={`关闭 ${tab.title}`}
+                            onClick={() => closeLocalTerminalSession(tab)}
+                          >
+                            <X className="ui-icon" aria-hidden="true" />
+                          </button>
+                        </div>
+                      </TabContextMenu>
+                    ))}
+                    <Tooltip label="新建默认终端">
+                      <button
+                        className="add-subtab"
+                        type="button"
+                        aria-label="新建默认终端"
+                        disabled={!defaultLocalTerminalProfile}
+                        onClick={() => void openLocalTerminalByProfile(resolveDefaultLocalTerminalProfile())}
+                      >
+                        <Plus className="ui-icon" aria-hidden="true" />
+                      </button>
+                    </Tooltip>
+                    <LocalTerminalLauncher
+                      disabled={localTerminalProfiles.length === 0}
+                      loading={localTerminalProfilesLoading}
+                      profiles={localTerminalProfiles}
+                      onOpenProfile={(profile) => void openLocalTerminalByProfile(profile)}
+                    />
+                    {localTerminalProfilesError ? (
+                      <div className="local-terminal-subtabs-meta">
                         <button
-                          className="subtab-close"
+                          className="local-terminal-inline-action"
                           type="button"
-                          aria-label={`关闭 ${tab.title}`}
-                          onClick={() => closeLocalTerminalSession(tab)}
+                          onClick={openLocalTerminalSettings}
                         >
-                          <X className="ui-icon" aria-hidden="true" />
+                          {localTerminalProfilesError}
                         </button>
                       </div>
-                    </TabContextMenu>
-                  ))}
-                  <Tooltip label="新建默认终端">
-                    <button
-                      className="add-subtab"
-                      type="button"
-                      aria-label="新建默认终端"
-                      disabled={!defaultLocalTerminalProfile}
-                      onClick={() => void openLocalTerminalByProfile(resolveDefaultLocalTerminalProfile())}
-                    >
-                      <Plus className="ui-icon" aria-hidden="true" />
-                    </button>
-                  </Tooltip>
-                  <LocalTerminalLauncher
-                    disabled={localTerminalProfiles.length === 0}
-                    loading={localTerminalProfilesLoading}
-                    profiles={localTerminalProfiles}
-                    onOpenProfile={(profile) => void openLocalTerminalByProfile(profile)}
-                  />
-                  {localTerminalProfilesError ? (
-                    <div className="local-terminal-subtabs-meta">
-                      <button
-                        className="local-terminal-inline-action"
-                        type="button"
-                        onClick={openLocalTerminalSettings}
-                      >
-                        {localTerminalProfilesError}
-                      </button>
-                    </div>
-                  ) : null}
+                    ) : null}
+                  </div>
+                  {renderWorkbenchTabScrollControls(localTerminalTabScroll, "本地终端标签")}
                   <div className="terminal-subtab-actions">
                     {activeLocalTerminalTab?.sessionId ? (
                       <Tooltip label={activeLocalTerminalSearch?.open ? "关闭终端搜索" : "搜索终端输出"}>

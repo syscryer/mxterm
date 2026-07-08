@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 
 const iconSource = readFileSync("src/features/files/remoteFileIcons.ts", "utf8");
+const iconComponentSource = readFileSync("src/features/files/RemoteFileIcon.tsx", "utf8");
 const panelSource = readFileSync("src/features/files/RemoteFilePanel.tsx", "utf8");
 const styleSource = readFileSync("src/styles/app.css", "utf8");
 const fileNameSource = readFileSync("src/shared/remoteFiles/fileNames.ts", "utf8");
@@ -20,6 +21,9 @@ const failures = [];
 for (const value of forbidden) {
   if (iconSource.includes(value)) {
     failures.push(`remoteFileIcons.ts must not contain ${value}`);
+  }
+  if (iconComponentSource.includes(value)) {
+    failures.push(`RemoteFileIcon.tsx must not contain ${value}`);
   }
 }
 

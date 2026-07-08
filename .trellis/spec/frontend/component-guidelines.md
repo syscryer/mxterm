@@ -261,7 +261,8 @@ Ant Design, Mantine, or similar libraries just to fix one modal or button.
   the one it is currently rendering.
 - Remote file icons must be local UI, not network-loaded assets. Keep file and
   folder type mapping in `src/features/files/remoteFileIcons.ts`, render icons
-  as local SVG/component markup in `RemoteFilePanel`, and run
+  as local SVG/component markup through `src/features/files/RemoteFileIcon.tsx`,
+  and share that component between the remote file tree and remote editor tabs. Run
   `node scripts/check-remote-file-local-icons-source.mjs` after changing the
   icon resolver or file tree icon styles.
 - Remote file file-name special cases shared by file icons and Monaco language
