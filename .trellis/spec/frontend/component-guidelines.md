@@ -537,6 +537,16 @@ Ant Design, Mantine, or similar libraries just to fix one modal or button.
   `requestAnimationFrame`, and wrap the state update in `startTransition`.
   Derived work such as visible-entry filtering, flattening expanded trees, and
   selection ordering must return empty results until the tree is ready.
+- Remote file transfer runtime state must stay outside `WorkspaceShell` React
+  state. Queue refs, running transfer sets, transfer task maps, and
+  `remote_file:transfer_progress` listeners belong in the transfer controller /
+  store modules, and progress events must be batched before updating UI state.
+  `WorkspaceShell` may create tasks and react to low-frequency completion
+  callbacks, but it must not subscribe to progress events or own the transfer
+  list. Transfer progress bars should animate with `transform: scaleX()` rather
+  than width, and reduced-motion users should not receive infinite progress
+  pulse animation. Run `node scripts/check-remote-file-editor-source.mjs` after
+  changing transfer state, panel, or progress styles.
 - Workspace-level right-pane tool props should only construct the visible tool's
   subtree. Do not pass `MonitorPanel`, `TunnelPanel`, `CommandLibraryPanel`,
   transfer docks, or Docker tools as hidden React children just to preserve

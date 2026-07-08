@@ -11742,10 +11742,11 @@ body.vnc-runner-window-body {
 
 .transfer-progress-mini > span {
   position: absolute;
-  inset: 0 auto 0 0;
+  inset: 0;
   border-radius: inherit;
   background: var(--mx-primary);
-  transition: width 180ms ease;
+  transform-origin: left center;
+  transition: transform 180ms ease;
 }
 
 .transfer-panel-percent {
@@ -11956,8 +11957,9 @@ body.vnc-runner-window-body {
 }
 
 .transfer-type-icon:has(span) {
-  grid-template-rows: 15px 9px;
-  row-gap: 1px;
+  align-content: center;
+  grid-template-rows: 16px 8px;
+  row-gap: 2px;
 }
 
 .transfer-item-main {
@@ -11975,9 +11977,9 @@ body.vnc-runner-window-body {
   grid-column: 1 / -1;
   min-width: 0;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr) auto auto;
   align-items: center;
-  gap: 7px;
+  gap: 6px;
 }
 
 .transfer-item strong {
@@ -11996,6 +11998,17 @@ body.vnc-runner-window-body {
   font-size: 10px;
   font-weight: 650;
   line-height: 1.35;
+  white-space: nowrap;
+}
+
+.transfer-progress-status {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--mx-muted);
+  font-size: 11px;
+  font-weight: 520;
+  line-height: 1.35;
+  text-overflow: ellipsis;
   white-space: nowrap;
 }
 
@@ -12108,11 +12121,12 @@ body.vnc-runner-window-body {
 
 .transfer-progress > span {
   position: absolute;
-  inset: 0 auto 0 0;
+  inset: 0;
   min-width: 0;
   border-radius: inherit;
   background: var(--mx-primary);
-  transition: width 180ms ease;
+  transform-origin: left center;
+  transition: transform 180ms ease;
 }
 
 .transfer-progress.indeterminate > span {
@@ -12147,6 +12161,17 @@ body.vnc-runner-window-body {
 .transfer-item.skipped .transfer-progress > span,
 .transfer-item.canceled .transfer-progress > span {
   background: var(--mx-subtle);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .transfer-progress-mini > span,
+  .transfer-progress > span {
+    transition: none;
+  }
+
+  .transfer-progress.indeterminate > span {
+    animation: none;
+  }
 }
 
 /* AI assistant */
