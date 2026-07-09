@@ -159,6 +159,7 @@ export function TerminalPanel({
   const startupOutputBufferingRef = useRef(false);
   const startupOutputFlushTimerRef = useRef<number | null>(null);
   const terminalOutputListenerReadyRef = useRef(false);
+  const listenersReadyRef = useRef(!hasTauriRuntime());
   const terminalOutputWriterRef = useRef<((decoded: string) => void) | null>(null);
   const pendingOutputBufferRef = useRef("");
   const pendingOutputFrameRef = useRef<number | null>(null);
@@ -197,6 +198,10 @@ export function TerminalPanel({
   useEffect(() => {
     sessionIdRef.current = sessionId;
   }, [sessionId]);
+
+  useEffect(() => {
+    listenersReadyRef.current = listenersReady;
+  }, [listenersReady]);
 
   useEffect(() => {
     onStatusChange(tabId, status);
@@ -423,6 +428,14 @@ export function TerminalPanel({
     const dataDisposable = terminal.onData((data) => {
       const activeSessionId = sessionIdRef.current;
       if (!activeSessionId) {
+        if (
+          connection &&
+          listenersReadyRef.current &&
+          isTerminalEnterInput(data) &&
+          !reconnectingRef.current
+        ) {
+          void reconnectCurrentTerminal();
+        }
         return;
       }
       const inputDirectory = applyTerminalInputDirectoryData(
@@ -504,11 +517,14 @@ export function TerminalPanel({
         if (!matchesTerminalEvent(event, sessionIdRef.current, activeRequestIdRef.current)) {
           return;
         }
+        sessionIdRef.current = null;
         setSessionId(null);
         const suffix =
           event.exit_status === null ? "" : `，退出码 ${event.exit_status.toString()}`;
         setStatus(`已断开${suffix}`);
-        terminal.writeln(`\r\n[会话已断开${suffix}]`);
+        terminal.writeln(
+          `\r\n[会话已断开${suffix}${connection ? "，按 Enter 重新连接" : ""}]`,
+        );
       });
 
       const progressListener = listenTerminalConnectProgress((event) => {
@@ -1416,6 +1432,10 @@ function formatError(error: unknown) {
     return String((error as { message: unknown }).message);
   }
   return String(error);
+}
+
+function isTerminalEnterInput(data: string) {
+  return data === "\r" || data === "\n" || data === "\r\n";
 }
 
 function isTerminalCopyShortcut(event: KeyboardEvent) {
