@@ -7217,6 +7217,17 @@ button {
   gap: 6px;
 }
 
+.scheduled-task-summary > .scheduled-task-summary-actions {
+  display: inline-flex;
+  flex-wrap: nowrap;
+  justify-self: end;
+}
+
+.scheduled-task-summary > .scheduled-task-summary-actions .toolbox-icon-button {
+  flex: 0 0 26px;
+  padding: 0;
+}
+
 .scheduled-task-form {
   flex: 0 0 auto;
   min-width: 0;
