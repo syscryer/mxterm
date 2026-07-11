@@ -2,10 +2,12 @@ import { DismissableLayerBranch } from "@radix-ui/react-dismissable-layer";
 import { ChevronDown, Check } from "lucide-react";
 import {
   type CSSProperties,
+  Fragment,
   type ReactNode,
   type WheelEvent as ReactWheelEvent,
   useEffect,
   useLayoutEffect,
+  useMemo,
   useRef,
   useState,
 } from "react";
@@ -13,8 +15,12 @@ import { createPortal } from "react-dom";
 
 export interface AppSelectOption<T extends string> {
   disabled?: boolean;
+  group?: ReactNode;
+  icon?: ReactNode;
   label: ReactNode;
+  searchText?: string;
   value: T;
+  variant?: "action";
 }
 
 interface AppSelectProps<T extends string> {
@@ -22,10 +28,14 @@ interface AppSelectProps<T extends string> {
   className?: string;
   disabled?: boolean;
   menuMinWidth?: number;
+  openRequestKey?: number;
   options: Array<AppSelectOption<T>>;
   placeholder?: ReactNode;
+  searchable?: boolean;
+  searchPlaceholder?: string;
   value: T;
   onChange: (value: T) => void;
+  onOpenChange?: (open: boolean) => void;
 }
 
 interface MenuPosition {
@@ -36,8 +46,10 @@ interface MenuPosition {
 }
 
 interface MenuPositionOptions {
+  groupCount: number;
   menuMinWidth?: number;
   optionCount: number;
+  searchable?: boolean;
 }
 
 export function AppSelect<T extends string>({
@@ -45,22 +57,51 @@ export function AppSelect<T extends string>({
   className,
   disabled = false,
   menuMinWidth,
+  openRequestKey = 0,
   options,
   placeholder = "请选择",
+  searchable = false,
+  searchPlaceholder = "搜索",
   value,
   onChange,
+  onOpenChange,
 }: AppSelectProps<T>) {
   const triggerRef = useRef<HTMLButtonElement | null>(null);
   const menuRef = useRef<HTMLDivElement | null>(null);
+  const searchInputRef = useRef<HTMLInputElement | null>(null);
   const [open, setOpen] = useState(false);
+  const [searchQuery, setSearchQuery] = useState("");
   const [position, setPosition] = useState<MenuPosition | null>(null);
   const selectedOption = options.find((option) => option.value === value);
+  const displayedOptions = useMemo(
+    () => filterAppSelectOptions(options, searchQuery, searchable),
+    [options, searchQuery, searchable],
+  );
   const selectedIndex = Math.max(
     0,
-    options.findIndex((option) => option.value === value),
+    displayedOptions.findIndex((option) => option.value === value),
   );
   const [highlightedIndex, setHighlightedIndex] = useState(selectedIndex);
   const selectLabel = selectedOption?.label || placeholder;
+  const groupCount = countOptionGroups(displayedOptions);
+
+  function setSelectOpen(nextOpen: boolean) {
+    setOpen(nextOpen);
+    if (!nextOpen) {
+      setSearchQuery("");
+    }
+    onOpenChange?.(nextOpen);
+  }
+
+  useEffect(() => {
+    if (!openRequestKey || disabled) {
+      return;
+    }
+    setSelectOpen(true);
+    if (!searchable) {
+      window.requestAnimationFrame(() => triggerRef.current?.focus());
+    }
+  }, [disabled, openRequestKey]);
 
   useLayoutEffect(() => {
     if (!open) {
@@ -68,10 +109,30 @@ export function AppSelect<T extends string>({
     }
 
     setPosition(
-      readMenuPosition(triggerRef.current, { menuMinWidth, optionCount: options.length }),
+      readMenuPosition(triggerRef.current, {
+        groupCount,
+        menuMinWidth,
+        optionCount: displayedOptions.length,
+        searchable,
+      }),
     );
     setHighlightedIndex(selectedIndex);
-  }, [menuMinWidth, open, options.length, selectedIndex]);
+  }, [displayedOptions.length, groupCount, menuMinWidth, open, searchable, selectedIndex]);
+
+  useEffect(() => {
+    if (!open || !searchable) {
+      return;
+    }
+    const frame = window.requestAnimationFrame(() => searchInputRef.current?.focus());
+    return () => window.cancelAnimationFrame(frame);
+  }, [open, searchable]);
+
+  useEffect(() => {
+    if (!open || !searchable) {
+      return;
+    }
+    setHighlightedIndex(findFirstEnabledOptionIndex(displayedOptions));
+  }, [displayedOptions, open, searchQuery, searchable]);
 
   useEffect(() => {
     if (!open) {
@@ -87,12 +148,17 @@ export function AppSelect<T extends string>({
         return;
       }
 
-      setOpen(false);
+      setSelectOpen(false);
     }
 
     function updatePosition() {
       setPosition(
-        readMenuPosition(triggerRef.current, { menuMinWidth, optionCount: options.length }),
+        readMenuPosition(triggerRef.current, {
+          groupCount,
+          menuMinWidth,
+          optionCount: displayedOptions.length,
+          searchable,
+        }),
       );
     }
 
@@ -105,7 +171,7 @@ export function AppSelect<T extends string>({
       window.removeEventListener("resize", updatePosition);
       window.removeEventListener("scroll", updatePosition, true);
     };
-  }, [menuMinWidth, open, options.length]);
+  }, [displayedOptions.length, groupCount, menuMinWidth, open, searchable]);
 
   function chooseOption(option: AppSelectOption<T>) {
     if (option.disabled) {
@@ -113,12 +179,12 @@ export function AppSelect<T extends string>({
     }
 
     onChange(option.value);
-    setOpen(false);
+    setSelectOpen(false);
     window.requestAnimationFrame(() => triggerRef.current?.focus());
   }
 
   function moveHighlight(direction: 1 | -1) {
-    const nextIndex = findEnabledOptionIndex(options, highlightedIndex, direction);
+    const nextIndex = findEnabledOptionIndex(displayedOptions, highlightedIndex, direction);
     if (nextIndex >= 0) {
       setHighlightedIndex(nextIndex);
     }
@@ -155,38 +221,41 @@ export function AppSelect<T extends string>({
         aria-expanded={open}
         aria-label={ariaLabel}
         disabled={disabled}
-        onClick={() => setOpen((value) => !value)}
+        onClick={() => setSelectOpen(!open)}
         onKeyDown={(event) => {
           if (event.key === "ArrowDown") {
             event.preventDefault();
             if (!open) {
-              setOpen(true);
+              setSelectOpen(true);
               return;
             }
             moveHighlight(1);
           } else if (event.key === "ArrowUp") {
             event.preventDefault();
             if (!open) {
-              setOpen(true);
+              setSelectOpen(true);
               return;
             }
             moveHighlight(-1);
           } else if (event.key === "Enter" || event.key === " ") {
             event.preventDefault();
             if (!open) {
-              setOpen(true);
+              setSelectOpen(true);
               return;
             }
-            const option = options[highlightedIndex];
+            const option = displayedOptions[highlightedIndex];
             if (option) {
               chooseOption(option);
             }
           } else if (event.key === "Escape") {
-            setOpen(false);
+            setSelectOpen(false);
           }
         }}
       >
-        <span>{selectLabel}</span>
+        <span className="app-select-value">
+          {selectedOption?.icon || null}
+          <span className="app-select-value-label">{selectLabel}</span>
+        </span>
         <ChevronDown className="ui-icon" aria-hidden="true" />
       </button>
 
@@ -208,36 +277,82 @@ export function AppSelect<T extends string>({
                 aria-label={ariaLabel}
                 onWheel={handleMenuWheel}
               >
-                {options.map((option, index) => (
-                  <button
-                    className="app-select-item select-menu-item"
-                    key={option.value}
-                    type="button"
-                    role="option"
-                    aria-selected={option.value === value}
-                    data-highlighted={index === highlightedIndex ? "" : undefined}
-                    data-state={option.value === value ? "checked" : undefined}
-                    disabled={option.disabled}
-                    onMouseEnter={() => setHighlightedIndex(index)}
-                    onPointerDown={(event) => {
-                      event.preventDefault();
-                      event.stopPropagation();
-                      chooseOption(option);
-                    }}
-                    onClick={(event) => {
-                      event.preventDefault();
-                      event.stopPropagation();
-                      chooseOption(option);
-                    }}
-                  >
-                    {option.value === value ? (
-                      <Check className="ui-icon" aria-hidden="true" />
-                    ) : (
-                      <span aria-hidden="true" />
-                    )}
-                    <span>{option.label}</span>
-                  </button>
-                ))}
+                {searchable ? (
+                  <div className="app-select-search-shell">
+                    <input
+                      ref={searchInputRef}
+                      className="app-select-search-input"
+                      type="search"
+                      aria-label={searchPlaceholder}
+                      placeholder={searchPlaceholder}
+                      value={searchQuery}
+                      onChange={(event) => setSearchQuery(event.currentTarget.value)}
+                      onKeyDown={(event) => {
+                        if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+                          event.preventDefault();
+                          moveHighlight(event.key === "ArrowDown" ? 1 : -1);
+                        } else if (event.key === "Enter") {
+                          event.preventDefault();
+                          const option = displayedOptions[highlightedIndex];
+                          if (option) {
+                            chooseOption(option);
+                          }
+                        } else if (event.key === "Escape") {
+                          event.preventDefault();
+                          setSelectOpen(false);
+                          window.requestAnimationFrame(() => triggerRef.current?.focus());
+                        }
+                      }}
+                      onPointerDown={(event) => event.stopPropagation()}
+                    />
+                  </div>
+                ) : null}
+                {displayedOptions.map((option, index) => {
+                  const showGroup =
+                    option.group && option.group !== displayedOptions[index - 1]?.group;
+                  return (
+                    <Fragment key={option.value}>
+                      {showGroup ? (
+                        <div className="app-select-group-label" role="presentation">
+                          {option.group}
+                        </div>
+                      ) : null}
+                      <button
+                        className="app-select-item select-menu-item"
+                        type="button"
+                        role="option"
+                        aria-selected={option.value === value}
+                        data-highlighted={index === highlightedIndex ? "" : undefined}
+                        data-state={option.value === value ? "checked" : undefined}
+                        data-variant={option.variant}
+                        disabled={option.disabled}
+                        onMouseEnter={() => setHighlightedIndex(index)}
+                        onPointerDown={(event) => {
+                          event.preventDefault();
+                          event.stopPropagation();
+                          chooseOption(option);
+                        }}
+                        onClick={(event) => {
+                          event.preventDefault();
+                          event.stopPropagation();
+                          chooseOption(option);
+                        }}
+                      >
+                        {option.icon ? (
+                          option.icon
+                        ) : option.value === value ? (
+                          <Check className="ui-icon" aria-hidden="true" />
+                        ) : (
+                          <span aria-hidden="true" />
+                        )}
+                        <span>{option.label}</span>
+                      </button>
+                    </Fragment>
+                  );
+                })}
+                {searchable && displayedOptions.length === 0 ? (
+                  <div className="app-select-empty">没有匹配项</div>
+                ) : null}
               </div>
             </DismissableLayerBranch>,
             document.body,
@@ -249,7 +364,7 @@ export function AppSelect<T extends string>({
 
 function readMenuPosition(
   trigger: HTMLButtonElement | null,
-  { menuMinWidth = 0, optionCount }: MenuPositionOptions,
+  { groupCount, menuMinWidth = 0, optionCount, searchable = false }: MenuPositionOptions,
 ): MenuPosition | null {
   if (!trigger) {
     return null;
@@ -261,7 +376,8 @@ function readMenuPosition(
   const optionHeight = 34;
   const menuPaddingY = 16;
   const menuBorderY = 2;
-  const menuChromeHeight = menuPaddingY + menuBorderY + 2;
+  const menuChromeHeight =
+    menuPaddingY + menuBorderY + 2 + groupCount * 22 + (searchable ? 38 : 0);
   const menuWidth = Math.max(rect.width, menuMinWidth);
   const minimumMenuHeight = optionHeight + menuChromeHeight;
   const desiredHeight = Math.min(
@@ -286,6 +402,43 @@ function readMenuPosition(
     top: openAbove ? rect.top - gap - maxHeight : rect.bottom + gap,
     width: menuWidth,
   };
+}
+
+function countOptionGroups<T extends string>(options: Array<AppSelectOption<T>>) {
+  return options.reduce((count, option, index) =>
+    option.group && option.group !== options[index - 1]?.group ? count + 1 : count,
+  0);
+}
+
+function filterAppSelectOptions<T extends string>(
+  options: Array<AppSelectOption<T>>,
+  query: string,
+  searchable: boolean,
+) {
+  const normalizedQuery = query.trim().toLocaleLowerCase();
+  if (!searchable || !normalizedQuery) {
+    return options;
+  }
+  return options.filter((option) =>
+    appSelectOptionSearchText(option).toLocaleLowerCase().includes(normalizedQuery),
+  );
+}
+
+function appSelectOptionSearchText<T extends string>(option: AppSelectOption<T>) {
+  if (option.searchText) {
+    return option.searchText;
+  }
+  if (typeof option.label === "string" || typeof option.label === "number") {
+    return option.label.toString();
+  }
+  return "";
+}
+
+function findFirstEnabledOptionIndex<T extends string>(options: Array<AppSelectOption<T>>) {
+  return Math.max(
+    0,
+    options.findIndex((option) => !option.disabled),
+  );
 }
 
 function findEnabledOptionIndex<T extends string>(

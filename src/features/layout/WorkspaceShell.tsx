@@ -28,6 +28,7 @@ import {
   CheckCircle2,
   CircleAlert,
   CornerDownLeft,
+  Eraser,
   KeyRound,
   ExternalLink,
   FileText,
@@ -35,6 +36,7 @@ import {
   Loader2,
   LockKeyhole,
   MonitorPlay,
+  PanelsTopLeft,
   PanelRightClose,
   PanelRightOpen,
   Pencil,
@@ -43,6 +45,7 @@ import {
   RefreshCw,
   Search,
   Send,
+  LayoutGrid,
   SquareTerminal,
   Star,
   Trash2,
@@ -349,6 +352,34 @@ import {
   LocalTerminalIcon,
   localTerminalTitle,
 } from "../terminal/LocalTerminalIcons";
+import {
+  TerminalSplitLayout,
+  terminalSplitContentStyle,
+  type TerminalSplitSessionOption,
+} from "../terminal/TerminalSplitSurface";
+import {
+  TerminalSplitMenu,
+  TerminalSplitSyncMenu,
+  type TerminalSplitSyncPaneOption,
+} from "../terminal/TerminalSplitMenu";
+import {
+  closeTerminalSplitPane as closeTerminalSplitLayoutPane,
+  collectTerminalSplitPanes,
+  createTerminalFourPaneLayout,
+  createTerminalSplitLayout,
+  equalizeTerminalSplitLayout,
+  findTerminalSplitPaneByBinding,
+  moveTerminalSplitBinding,
+  removeTerminalSplitBindings,
+  splitTerminalPane,
+  terminalPaneBindingKey,
+  terminalPaneBindingsEqual,
+  terminalSplitMaxPanes,
+  type TerminalPaneBinding,
+  type TerminalSplitBranch,
+  type TerminalSplitNode,
+  updateTerminalSplitRatio as updateTerminalSplitLayoutRatio,
+} from "../terminal/terminalSplitLayout";
 import type {
   LocalTerminalProfile,
   LocalTerminalProfileInput,
@@ -402,6 +433,15 @@ interface TerminalTab {
   title: string;
   type: "connecting" | "terminal";
   warmupOutput: number[];
+}
+
+type TerminalSplitHost =
+  | { connectionId: string; kind: "ssh" }
+  | { kind: "local" };
+
+interface TerminalClearRequest {
+  id: number;
+  tabId: string;
 }
 
 type RdpSessionStatus = "launching" | "external" | "embedded" | "native" | "error";
@@ -915,6 +955,26 @@ export function WorkspaceShell() {
   const [localTerminalProfilesError, setLocalTerminalProfilesError] = useState<string | null>(null);
   const [activeWorkspaceMode, setActiveWorkspaceMode] = useState<WorkspaceMode>("home");
   const [activeLocalTerminalTabId, setActiveLocalTerminalTabId] = useState<string | null>(null);
+  const [terminalSplitLayout, setTerminalSplitLayout] = useState<TerminalSplitNode | null>(null);
+  const [terminalSplitHost, setTerminalSplitHost] = useState<TerminalSplitHost | null>(null);
+  const [terminalSplitAnchorIndex, setTerminalSplitAnchorIndex] = useState(0);
+  const [terminalSplitTabActive, setTerminalSplitTabActive] = useState(false);
+  const [focusedTerminalPaneId, setFocusedTerminalPaneId] = useState<string | null>(null);
+  const [terminalSplitLayoutRevision, setTerminalSplitLayoutRevision] = useState(0);
+  const [terminalSplitAutoCreateSameSession, setTerminalSplitAutoCreateSameSession] =
+    useState(true);
+  const [terminalSplitPickerOpenRequest, setTerminalSplitPickerOpenRequest] =
+    useState<{ key: number; paneId: string } | null>(null);
+  const terminalSplitPickerPendingPaneRef = useRef<string | null>(null);
+  const terminalSplitPickerRequestRef = useRef(0);
+  const [terminalSplitSyncEnabled, setTerminalSplitSyncEnabled] = useState(false);
+  const [terminalSplitSyncParticipantKeys, setTerminalSplitSyncParticipantKeys] =
+    useState<Set<string>>(() => new Set());
+  const [terminalSplitSyncError, setTerminalSplitSyncError] = useState<string | null>(null);
+  const [terminalSplitCloseConfirmOpen, setTerminalSplitCloseConfirmOpen] = useState(false);
+  const [terminalClearRequest, setTerminalClearRequest] = useState<TerminalClearRequest | null>(null);
+  const terminalClearRequestRef = useRef(0);
+  const terminalSplitIdRef = useRef(0);
   const [terminalDirectories, setTerminalDirectories] = useState<Record<string, string>>({});
   const terminalDirectoriesRef = useRef<Record<string, string>>({});
   const terminalPromptDirectorySnapshotReadersRef = useRef(
@@ -1111,6 +1171,50 @@ export function WorkspaceShell() {
   }, [localTerminalTabs]);
 
   useEffect(() => {
+    if (!terminalSplitLayout) {
+      return;
+    }
+    const availableBindings = new Set([
+      ...terminalTabs.map((tab) => terminalPaneBindingKey({ kind: "ssh", tabId: tab.id })),
+      ...localTerminalTabs.map((tab) => terminalPaneBindingKey({ kind: "local", tabId: tab.id })),
+    ]);
+    const currentPanes = collectTerminalSplitPanes(terminalSplitLayout);
+    const unavailableBindingKeys = new Set(
+      currentPanes.flatMap((pane) =>
+        pane.binding && !availableBindings.has(terminalPaneBindingKey(pane.binding))
+          ? [terminalPaneBindingKey(pane.binding)]
+          : [],
+      ),
+    );
+    const nextLayout = removeTerminalSplitBindings(terminalSplitLayout, unavailableBindingKeys);
+    if (!nextLayout) {
+      setTerminalSplitLayout(null);
+      setTerminalSplitHost(null);
+      setTerminalSplitTabActive(false);
+      setFocusedTerminalPaneId(null);
+      setTerminalSplitSyncEnabled(false);
+      setTerminalSplitSyncParticipantKeys(new Set());
+      setTerminalSplitSyncError(null);
+      return;
+    }
+    const nextPanes = collectTerminalSplitPanes(nextLayout);
+    const focusedPaneExists = focusedTerminalPaneId
+      ? nextPanes.some((pane) => pane.id === focusedTerminalPaneId)
+      : false;
+    if (nextLayout !== terminalSplitLayout) {
+      setTerminalSplitLayout(nextLayout);
+    }
+    if (!focusedPaneExists) {
+      setFocusedTerminalPaneId(nextPanes[0]?.id || null);
+    }
+  }, [
+    focusedTerminalPaneId,
+    localTerminalTabs,
+    terminalSplitLayout,
+    terminalTabs,
+  ]);
+
+  useEffect(() => {
     localTerminalProfilesRef.current = localTerminalProfiles;
   }, [localTerminalProfiles]);
 
@@ -1268,12 +1372,112 @@ export function WorkspaceShell() {
   const activeLocalTerminalTab = activeLocalTerminalTabId
     ? localTerminalTabs.find((tab) => tab.id === activeLocalTerminalTabId) || null
     : null;
-  const activeTerminalSearch = activeConnectedTerminalTab
-    ? terminalSearchByTabId[activeConnectedTerminalTab.id]
+  const activeTerminalSplitBinding: TerminalPaneBinding | null =
+    activeWorkspaceMode === "local" && activeLocalTerminalTab
+      ? { kind: "local", tabId: activeLocalTerminalTab.id }
+      : activeWorkspaceMode === "ssh" && activeTerminalTab
+        ? { kind: "ssh", tabId: activeTerminalTab.id }
+        : null;
+  const terminalSplitPanes = useMemo(
+    () => (terminalSplitLayout ? collectTerminalSplitPanes(terminalSplitLayout) : []),
+    [terminalSplitLayout],
+  );
+  const terminalSplitPaneByBinding = useMemo(() => {
+    const panes = new Map<string, (typeof terminalSplitPanes)[number]>();
+    terminalSplitPanes.forEach((pane) => {
+      if (pane.binding) {
+        panes.set(terminalPaneBindingKey(pane.binding), pane);
+      }
+    });
+    return panes;
+  }, [terminalSplitPanes]);
+  const terminalSplitMemberKeys = useMemo(
+    () =>
+      new Set(
+        terminalSplitPanes.flatMap((pane) =>
+          pane.binding ? [terminalPaneBindingKey(pane.binding)] : [],
+        ),
+      ),
+    [terminalSplitPanes],
+  );
+  const focusedTerminalSplitPane = focusedTerminalPaneId
+    ? terminalSplitPanes.find((pane) => pane.id === focusedTerminalPaneId) || null
     : null;
-  const activeLocalTerminalSearch = activeLocalTerminalTab
-    ? terminalSearchByTabId[activeLocalTerminalTab.id]
-    : null;
+  const focusedTerminalSplitBinding = focusedTerminalSplitPane?.binding || null;
+  const terminalSplitExists = Boolean(terminalSplitLayout && terminalSplitPanes.length > 1);
+  const terminalSplitActive = terminalSplitExists && terminalSplitTabActive;
+  const terminalSplitCanAddPane = terminalSplitPanes.length < terminalSplitMaxPanes;
+
+  useEffect(() => {
+    if (!terminalSplitLayout || terminalSplitPanes.length <= terminalSplitMaxPanes) {
+      return;
+    }
+    const binding =
+      focusedTerminalSplitBinding ||
+      terminalSplitPanes.find((pane) => pane.binding)?.binding ||
+      fallbackTerminalSplitBinding();
+    if (!binding) {
+      return;
+    }
+    const bindings = [
+      binding,
+      ...terminalSplitPanes.flatMap((pane) =>
+        pane.binding && !terminalPaneBindingsEqual(pane.binding, binding) ? [pane.binding] : [],
+      ),
+    ].slice(0, terminalSplitMaxPanes);
+    const nextLayout = createTerminalFourPane(bindings);
+    setTerminalSplitLayout(nextLayout.layout);
+    setFocusedTerminalPaneId(nextLayout.focusedPaneId);
+  }, [focusedTerminalSplitBinding, terminalSplitLayout, terminalSplitPanes]);
+
+  useEffect(() => {
+    if (!terminalSplitLayout || terminalSplitPanes.length !== 1) {
+      return;
+    }
+    const remainingBinding = terminalSplitPanes[0]?.binding || null;
+    setTerminalSplitLayout(null);
+    setTerminalSplitHost(null);
+    setTerminalSplitTabActive(false);
+    setFocusedTerminalPaneId(null);
+    setTerminalSplitPickerOpenRequest(null);
+    terminalSplitPickerPendingPaneRef.current = null;
+    setTerminalSplitSyncEnabled(false);
+    setTerminalSplitSyncParticipantKeys(new Set());
+    setTerminalSplitSyncError(null);
+    if (remainingBinding) {
+      activateTerminalBindingAsStandalone(remainingBinding);
+    }
+  }, [terminalSplitLayout, terminalSplitPanes]);
+
+  useEffect(() => {
+    const availableKeys = new Set(
+      terminalSplitPanes.flatMap((pane) =>
+        pane.binding && terminalSessionIdForBinding(pane.binding)
+          ? [terminalPaneBindingKey(pane.binding)]
+          : [],
+      ),
+    );
+    setTerminalSplitSyncParticipantKeys((current) => {
+      const next = new Set(Array.from(current).filter((key) => availableKeys.has(key)));
+      if (terminalSplitSyncEnabled && focusedTerminalSplitBinding) {
+        const focusedKey = terminalPaneBindingKey(focusedTerminalSplitBinding);
+        if (availableKeys.has(focusedKey)) {
+          next.add(focusedKey);
+        }
+      }
+      return setsEqual(current, next) ? current : next;
+    });
+    if (!terminalSplitActive || availableKeys.size < 2) {
+      setTerminalSplitSyncEnabled(false);
+    }
+  }, [
+    focusedTerminalSplitBinding,
+    localTerminalTabs,
+    terminalSplitActive,
+    terminalSplitPanes,
+    terminalSplitSyncEnabled,
+    terminalTabs,
+  ]);
   const defaultCommandHistoryScopeKey = useMemo(
     () =>
       commandHistoryDefaultScopeKey({
@@ -1315,8 +1519,9 @@ export function WorkspaceShell() {
     }
   }, [commandHistoryScopeKey, commandHistoryScopeOptions, defaultCommandHistoryScopeKey]);
 
-  const activeShortcutTerminalTabId =
-    activeWorkspaceMode === "local"
+  const activeShortcutTerminalTabId = terminalSplitActive
+    ? focusedTerminalSplitBinding?.tabId || null
+    : activeWorkspaceMode === "local"
       ? activeLocalTerminalTab?.id || null
       : activeWorkspaceMode === "ssh"
         ? activeConnectedTerminalTab?.id || null
@@ -1652,7 +1857,7 @@ export function WorkspaceShell() {
     ? terminalFileLayoutByConnectionId[activeConnectionId] || settings.basic.remoteFileOpenMode
     : settings.basic.remoteFileOpenMode;
   const isActiveTerminalFileUnified =
-    activeTerminalFileLayout === "unified" && activeRemoteFileTabs.length > 0;
+    !terminalSplitActive && activeTerminalFileLayout === "unified" && activeRemoteFileTabs.length > 0;
   const requestedUnifiedTab = activeConnectionId
     ? activeUnifiedTabByConnectionId[activeConnectionId] || null
     : null;
@@ -1678,8 +1883,19 @@ export function WorkspaceShell() {
   const activeUnifiedTabKind = activeUnifiedTab?.kind || null;
   const isUnifiedFileTabActive = isActiveTerminalFileUnified && activeUnifiedTabKind === "file";
   const activeSshToolbarTerminalTab = isUnifiedFileTabActive ? null : activeConnectedTerminalTab;
-  const showSshTerminalScopedActions = Boolean(activeSshToolbarTerminalTab);
-  const showSshCommandSenderPanel = commandSenderOpen && showSshTerminalScopedActions;
+  const activeTerminalToolbarTabId = terminalSplitActive
+    ? focusedTerminalSplitBinding?.tabId || null
+    : activeWorkspaceMode === "local"
+      ? activeLocalTerminalTab?.sessionId
+        ? activeLocalTerminalTab.id
+        : null
+      : activeSshToolbarTerminalTab?.id || null;
+  const activeTerminalToolbarSearch = activeTerminalToolbarTabId
+    ? terminalSearchByTabId[activeTerminalToolbarTabId] || null
+    : null;
+  const showTerminalScopedActions = Boolean(activeTerminalToolbarTabId);
+  const showTerminalCommandSenderPanel =
+    commandSenderOpen && (terminalSplitActive || showTerminalScopedActions);
   useEffect(() => {
     if (isUnifiedFileTabActive && commandSenderOpen) {
       setCommandSenderOpen(false);
@@ -1688,7 +1904,7 @@ export function WorkspaceShell() {
   const activeWorkbenchSurface =
     isUnifiedFileTabActive
       ? "panel"
-      : activeConnectedTerminalTab
+      : activeConnectedTerminalTab || activeLocalTerminalTab?.sessionId
         ? "terminal"
         : "panel";
   const showUnifiedSplitDropZones = Boolean(
@@ -1708,6 +1924,12 @@ export function WorkspaceShell() {
   const showingRdp = activeWorkspaceMode === "rdp";
   const showingVnc = activeWorkspaceMode === "vnc";
   const showSessionWorkspace = !showingHome && activeWorkspaceMode === "ssh" && hasSessionWorkspace;
+  const showTerminalSplitSurface =
+    terminalSplitActive &&
+    !showingHome &&
+    (terminalTabs.length > 0 || localTerminalTabs.length > 0);
+  const showTerminalWorkbench =
+    showSessionWorkspace || showingLocalTerminal || showTerminalSplitSurface;
   const showRdpWorkspace = !showingHome && showingRdp && hasSessionWorkspace;
   const showVncWorkspace = !showingHome && showingVnc && hasSessionWorkspace;
   const showWorkspaceToolPane = !showingHome && hasSessionWorkspace;
@@ -1716,17 +1938,43 @@ export function WorkspaceShell() {
     enabled: showSessionWorkspace && activeRemoteFileTabs.length > 0 && !isActiveTerminalFileUnified,
     itemCount: activeRemoteFileTabs.length,
   });
-  const sshWorkbenchActiveTabKey = activeUnifiedTab
-    ? `${activeUnifiedTab.kind}:${activeUnifiedTab.id}`
-    : activeTabId;
+  const terminalWorkbenchActiveTabKey = terminalSplitActive
+    ? "terminal-split-group"
+    : activeWorkspaceMode === "local"
+      ? activeLocalTerminalTabId
+      : activeUnifiedTab
+        ? `${activeUnifiedTab.kind}:${activeUnifiedTab.id}`
+        : activeTabId;
+  const visibleSshTerminalTabCount = terminalSplitExists
+    ? activeConnectionTabs.filter(
+        (tab) =>
+          !terminalSplitMemberKeys.has(
+            terminalPaneBindingKey({ kind: "ssh", tabId: tab.id }),
+          ),
+      ).length +
+      (terminalSplitHost?.kind === "ssh" && terminalSplitHost.connectionId === activeConnectionId
+        ? 1
+        : 0)
+    : activeConnectionTabs.length;
+  const visibleLocalTerminalTabCount = terminalSplitExists
+    ? localTerminalTabs.filter(
+        (tab) =>
+          !terminalSplitMemberKeys.has(
+            terminalPaneBindingKey({ kind: "local", tabId: tab.id }),
+          ),
+      ).length + (terminalSplitHost?.kind === "local" ? 1 : 0)
+    : localTerminalTabs.length;
   const sshWorkbenchTabCount =
-    activeConnectionTabs.length +
+    visibleSshTerminalTabCount +
     (isActiveTerminalFileUnified ? activeRemoteFileTabs.length : 0) +
     (activeConnectedTerminalTab ? 1 : 0);
   const sshTerminalTabScroll = useWorkbenchTabScroller({
-    activeKey: sshWorkbenchActiveTabKey,
-    enabled: showSessionWorkspace,
-    itemCount: sshWorkbenchTabCount,
+    activeKey: terminalWorkbenchActiveTabKey,
+    enabled: showTerminalWorkbench,
+    itemCount:
+      activeWorkspaceMode === "local"
+        ? visibleLocalTerminalTabCount + 2 + (localTerminalProfilesError ? 1 : 0)
+        : sshWorkbenchTabCount,
   });
   const rdpTabScroll = useWorkbenchTabScroller({
     activeKey: activeRdpSession?.id || null,
@@ -1737,11 +1985,6 @@ export function WorkspaceShell() {
     activeKey: activeVncSession?.id || null,
     enabled: showVncWorkspace,
     itemCount: activeVncSessions.length,
-  });
-  const localTerminalTabScroll = useWorkbenchTabScroller({
-    activeKey: activeLocalTerminalTabId,
-    enabled: showingLocalTerminal && !showingHome,
-    itemCount: localTerminalTabs.length + 2 + (localTerminalProfilesError ? 1 : 0),
   });
   const shouldShowAiAssistantPanel = showWorkspaceToolPane && rightTool === "ai";
   const shouldRenderAiAssistantPanel =
@@ -1754,8 +1997,13 @@ export function WorkspaceShell() {
   const activeTerminalDirectory = activeConnectedTerminalTab
     ? terminalDirectories[activeConnectedTerminalTab.id] || null
     : null;
-  const activeAiTerminalTab =
-    activeWorkspaceMode === "local" ? activeLocalTerminalTab : activeConnectedTerminalTab;
+  const activeAiTerminalTab = terminalSplitActive
+    ? focusedTerminalSplitBinding?.kind === "local"
+      ? localTerminalTabs.find((tab) => tab.id === focusedTerminalSplitBinding.tabId) || null
+      : terminalTabs.find((tab) => tab.id === focusedTerminalSplitBinding?.tabId) || null
+    : activeWorkspaceMode === "local"
+      ? activeLocalTerminalTab
+      : activeConnectedTerminalTab;
   const activeAiRecentTerminalOutput = activeAiTerminalTab
     ? terminalRecentOutputByTabId[activeAiTerminalTab.id] || ""
     : "";
@@ -1796,6 +2044,126 @@ export function WorkspaceShell() {
     () => localTerminalProfiles[0] || null,
     [localTerminalProfiles],
   );
+  const terminalSplitSessionOptions = useMemo<TerminalSplitSessionOption[]>(
+    () => [
+      ...terminalTabs.map((tab) => {
+        const connection = connectionById.get(tab.connectionId);
+        return {
+          binding: { kind: "ssh" as const, tabId: tab.id },
+          group:
+            tab.connectionId === activeConnectionId ? "当前 SSH 连接" : "其他 SSH 连接",
+          icon: <SquareTerminal className="ui-icon" aria-hidden="true" />,
+          label: `${connection?.name || connection?.host || "SSH"} · ${tab.title}`,
+          searchText: [
+            connection?.name,
+            connection?.username,
+            connection?.host,
+            connection?.port?.toString(),
+            tab.title,
+          ]
+            .filter(Boolean)
+            .join(" "),
+          searchOpen: Boolean(terminalSearchByTabId[tab.id]?.open),
+          status: tab.status,
+          value: terminalPaneBindingKey({ kind: "ssh", tabId: tab.id }),
+        };
+      }),
+      ...localTerminalTabs.map((tab) => {
+        const source =
+          tab.source === "telnet" ? "Telnet" : tab.source === "serial" ? "串口" : "本地";
+        return {
+          binding: { kind: "local" as const, tabId: tab.id },
+          group: tab.source === "local" || !tab.source ? "本地终端" : "Telnet / 串口",
+          icon: <LocalTerminalIcon className="ui-icon" kind={tab.profileKind} title={tab.title} />,
+          label: `${source} · ${tab.title}`,
+          searchText: `${source} ${tab.title}`,
+          searchOpen: Boolean(terminalSearchByTabId[tab.id]?.open),
+          status: tab.status,
+          value: terminalPaneBindingKey({ kind: "local", tabId: tab.id }),
+        };
+      }),
+      ...connections
+        .filter(isSshConnection)
+        .filter(
+          (connection) =>
+            !terminalTabs.some((tab) => tab.connectionId === connection.id),
+        )
+        .map((connection) => ({
+          connectionId: connection.id,
+          group: "未打开 SSH 连接",
+          icon: (
+            <ConnectionSystemLogo compact connection={connection} decorative />
+          ),
+          label: `${connection.name || connection.host} · ${formatConnectionAddress(connection)}`,
+          searchText: [
+            connection.name,
+            connection.username,
+            connection.host,
+            connection.port?.toString(),
+          ]
+            .filter(Boolean)
+            .join(" "),
+          value: `connection:${connection.id}`,
+        })),
+      {
+        disabled: !defaultLocalTerminalProfile,
+        group: "新建会话",
+        label: "新建默认本地终端",
+        value: "action:new-local",
+        variant: "action" as const,
+      },
+      {
+        disabled: terminalTabs.length === 0 && !isSshConnection(activeConnection),
+        group: "新建会话",
+        label: "新建当前连接 SSH 终端",
+        value: "action:new-ssh",
+        variant: "action" as const,
+      },
+    ],
+    [
+      activeConnection,
+      connectionById,
+      connections,
+      defaultLocalTerminalProfile,
+      localTerminalTabs,
+      terminalSearchByTabId,
+      terminalTabs,
+    ],
+  );
+  const terminalSplitSyncPaneOptions = useMemo<TerminalSplitSyncPaneOption[]>(() => {
+    const optionByKey = new Map(
+      terminalSplitSessionOptions
+        .filter((option) => option.binding)
+        .map((option) => [option.value, option]),
+    );
+    return terminalSplitPanes.flatMap((pane, index) => {
+      if (!pane.binding) {
+        return [];
+      }
+      const key = terminalPaneBindingKey(pane.binding);
+      const option = optionByKey.get(key);
+      const focusedKey = focusedTerminalSplitBinding
+        ? terminalPaneBindingKey(focusedTerminalSplitBinding)
+        : null;
+      return [
+        {
+          disabled: !terminalSessionIdForBinding(pane.binding),
+          key,
+          label: `${option?.label || `终端 ${(index + 1).toString()}`}${
+            terminalSplitSyncEnabled && key === focusedKey ? " · 主输入" : ""
+          }`,
+          locked: terminalSplitSyncEnabled && key === focusedKey,
+        },
+      ];
+    });
+  }, [
+    focusedTerminalSplitBinding,
+    localTerminalTabs,
+    terminalSplitPanes,
+    terminalSplitSessionOptions,
+    terminalSplitSyncEnabled,
+    terminalTabs,
+  ]);
   const pendingRemoteFileCloseTab = pendingRemoteFileCloseId
     ? remoteFileTabs.find((tab) => tab.id === pendingRemoteFileCloseId) || null
     : null;
@@ -3855,6 +4223,9 @@ export function WorkspaceShell() {
     );
     const closingTabIds = terminalTabs.filter((tab) => tab.connectionId === connection.id).map((tab) => tab.id);
     closingTabIds.forEach(stopTerminalWarmupCapture);
+    closeRuntimeTerminalSessions(
+      terminalTabsRef.current.filter((tab) => tab.connectionId === connection.id),
+    );
     setTerminalDirectories((directories) => removeDirectoryState(directories, closingTabIds));
     forgetActiveConnectionTabs([connection.id]);
     setTerminalTabs((tabs) => {
@@ -3943,14 +4314,15 @@ export function WorkspaceShell() {
     title?: string,
   ): TerminalTab {
     const now = Date.now();
+    const nonce = `${now.toString()}-${Math.random().toString(36).slice(2, 8)}`;
     const nextIndex = nextTerminalIndexForConnection(tabs, connection.id);
 
     return {
       connectionId: connection.id,
       connectionStep: null,
-      id: `terminal-${connection.id}-${now.toString()}`,
+      id: `terminal-${connection.id}-${nonce}`,
       index: nextIndex,
-      requestId: `terminal-${connection.id}-${now.toString()}`,
+      requestId: `terminal-${connection.id}-${nonce}`,
       status: "正在连接",
       title: title || terminalTabTitle(nextIndex),
       type: "terminal",
@@ -4177,7 +4549,519 @@ export function WorkspaceShell() {
     return tabs.find((tab) => tab.connectionId === connectionId && tab.type === "connecting") || null;
   }
 
-  function activateTerminalTab(tab: TerminalTab) {
+  function nextTerminalSplitId(prefix: string) {
+    terminalSplitIdRef.current += 1;
+    return `${prefix}-${terminalSplitIdRef.current.toString()}`;
+  }
+
+  function terminalSplitHostForBinding(binding: TerminalPaneBinding): TerminalSplitHost | null {
+    if (binding.kind === "local") {
+      return { kind: "local" };
+    }
+    const tab = terminalTabs.find((item) => item.id === binding.tabId);
+    return tab ? { connectionId: tab.connectionId, kind: "ssh" } : null;
+  }
+
+  function terminalSplitAnchorIndexForBinding(binding: TerminalPaneBinding) {
+    if (binding.kind === "local") {
+      return Math.max(0, localTerminalTabs.findIndex((tab) => tab.id === binding.tabId));
+    }
+    const tab = terminalTabs.find((item) => item.id === binding.tabId);
+    if (!tab) {
+      return 0;
+    }
+    return Math.max(
+      0,
+      terminalTabs
+        .filter((item) => item.connectionId === tab.connectionId)
+        .findIndex((item) => item.id === binding.tabId),
+    );
+  }
+
+  function terminalSessionIdForBinding(binding: TerminalPaneBinding) {
+    const tab =
+      binding.kind === "ssh"
+        ? terminalTabs.find((item) => item.id === binding.tabId)
+        : localTerminalTabs.find((item) => item.id === binding.tabId);
+    if (!tab?.sessionId || (tab.status !== "已连接" && tab.status !== "预览")) {
+      return null;
+    }
+    return tab.sessionId;
+  }
+
+  function createSameSessionTerminalBinding(
+    binding: TerminalPaneBinding,
+  ): TerminalPaneBinding | null {
+    if (binding.kind === "ssh") {
+      const sourceTab = terminalTabs.find((tab) => tab.id === binding.tabId);
+      const connection = sourceTab ? connectionById.get(sourceTab.connectionId) || null : null;
+      if (!isSshConnection(connection)) {
+        return null;
+      }
+      const tab = openTerminalInConnection(connection, false);
+      return { kind: "ssh", tabId: tab.id };
+    }
+
+    const sourceTab = localTerminalTabs.find((tab) => tab.id === binding.tabId);
+    if (!sourceTab) {
+      return null;
+    }
+    if (sourceTab.source === "telnet" || sourceTab.source === "serial") {
+      const connection = connectionById.get(sourceTab.profileId) || null;
+      if (
+        (sourceTab.source === "telnet" && isTelnetConnection(connection)) ||
+        (sourceTab.source === "serial" && isSerialConnection(connection))
+      ) {
+        const tab = openCharacterTerminalInConnection(connection, false);
+        return { kind: "local", tabId: tab.id };
+      }
+      return null;
+    }
+
+    const profile = localTerminalProfiles.find((item) => item.id === sourceTab.profileId) || null;
+    const tab = openLocalTerminalByProfile(profile, false);
+    return tab ? { kind: "local", tabId: tab.id } : null;
+  }
+
+  function activateTerminalSplitHost(host: TerminalSplitHost | null = terminalSplitHost) {
+    if (!host) {
+      return;
+    }
+    setActiveView("workspace");
+    setSettingsSectionRequest(undefined);
+    setHomeActive(false);
+    if (host.kind === "ssh") {
+      setActiveWorkspaceMode("ssh");
+      setActiveConnectionId(host.connectionId);
+    } else {
+      setActiveWorkspaceMode("local");
+    }
+  }
+
+  function activateTerminalSplitTab(paneId?: string) {
+    if (!terminalSplitLayout || !terminalSplitHost) {
+      return;
+    }
+    setTerminalSplitTabActive(true);
+    setTerminalSplitSyncError(null);
+    activateTerminalSplitHost();
+    const nextPane =
+      (paneId ? terminalSplitPanes.find((pane) => pane.id === paneId) : null) ||
+      focusedTerminalSplitPane ||
+      terminalSplitPanes[0] ||
+      null;
+    if (nextPane) {
+      focusTerminalSplitPane(nextPane.id);
+    }
+  }
+
+  function requestTerminalSplitPicker(paneId: string, removeOnCancel: boolean) {
+    terminalSplitPickerRequestRef.current += 1;
+    terminalSplitPickerPendingPaneRef.current = removeOnCancel ? paneId : null;
+    setTerminalSplitPickerOpenRequest({
+      key: terminalSplitPickerRequestRef.current,
+      paneId,
+    });
+  }
+
+  function fallbackTerminalSplitBinding(): TerminalPaneBinding | null {
+    if (activeTerminalSplitBinding) {
+      return activeTerminalSplitBinding;
+    }
+    const sshTab = terminalTabs[0];
+    if (sshTab) {
+      return { kind: "ssh", tabId: sshTab.id };
+    }
+    const localTab = localTerminalTabs[0];
+    return localTab ? { kind: "local", tabId: localTab.id } : null;
+  }
+
+  function focusTerminalSplitPane(paneId: string) {
+    const pane = terminalSplitPanes.find((item) => item.id === paneId);
+    if (!pane) {
+      return;
+    }
+    setFocusedTerminalPaneId(pane.id);
+    if (!pane.binding) {
+      return;
+    }
+    if (pane.binding.kind === "ssh") {
+      const tab = terminalTabs.find((item) => item.id === pane.binding?.tabId);
+      if (tab) {
+        setActiveTabId(tab.id);
+        syncCommandSenderTargetTab(tab.connectionId, tab.id);
+      }
+      return;
+    }
+    const tab = localTerminalTabs.find((item) => item.id === pane.binding?.tabId);
+    if (tab) {
+      setActiveLocalTerminalTabId(tab.id);
+      syncCommandSenderTargetTab(localCommandSenderTargetId, tab.id);
+    }
+  }
+
+  function assignTerminalSplitBinding(paneId: string, binding: TerminalPaneBinding) {
+    setTerminalSplitLayout((layout) => {
+      if (!layout) {
+        return layout;
+      }
+      const previousPane = findTerminalSplitPaneByBinding(layout, binding);
+      const targetPane = collectTerminalSplitPanes(layout).find((pane) => pane.id === paneId);
+      let nextLayout = moveTerminalSplitBinding(layout, paneId, binding);
+      if (!previousPane || previousPane.id === paneId) {
+        return nextLayout;
+      }
+      if (targetPane?.binding && !terminalPaneBindingsEqual(targetPane.binding, binding)) {
+        nextLayout = moveTerminalSplitBinding(nextLayout, previousPane.id, targetPane.binding);
+      }
+      return nextLayout;
+    });
+    setFocusedTerminalPaneId(paneId);
+    terminalSplitPickerPendingPaneRef.current = null;
+    setTerminalSplitPickerOpenRequest(null);
+  }
+
+  function startTerminalSplit(direction: TerminalSplitBranch["direction"]) {
+    const initialBinding = fallbackTerminalSplitBinding();
+    if (!initialBinding) {
+      return;
+    }
+    startTerminalSplitForBinding(initialBinding, direction);
+  }
+
+  function startTerminalSplitForBinding(
+    binding: TerminalPaneBinding,
+    direction: TerminalSplitBranch["direction"],
+  ) {
+    if (terminalSplitLayout && !terminalSplitCanAddPane) {
+      return;
+    }
+    if (!terminalSplitLayout) {
+      const host = terminalSplitHostForBinding(binding);
+      if (!host) {
+        return;
+      }
+      const firstPaneId = nextTerminalSplitId("terminal-pane");
+      const nextPaneId = nextTerminalSplitId("terminal-pane");
+      const nextBinding = terminalSplitAutoCreateSameSession
+        ? createSameSessionTerminalBinding(binding) || undefined
+        : undefined;
+      const nextLayout = splitTerminalPane(
+        createTerminalSplitLayout(firstPaneId, binding),
+        firstPaneId,
+        direction,
+        nextTerminalSplitId("terminal-split"),
+        nextPaneId,
+        nextBinding,
+      );
+      setTerminalSplitHost(host);
+      setTerminalSplitAnchorIndex(terminalSplitAnchorIndexForBinding(binding));
+      setTerminalSplitTabActive(true);
+      setTerminalSplitLayout(nextLayout);
+      setFocusedTerminalPaneId(nextPaneId);
+      activateTerminalSplitHost(host);
+      if (!nextBinding) {
+        requestTerminalSplitPicker(nextPaneId, true);
+      }
+      return;
+    }
+
+    const boundPane = findTerminalSplitPaneByBinding(terminalSplitLayout, binding);
+    const paneId = boundPane?.id || focusedTerminalPaneId || terminalSplitPanes[0]?.id;
+    if (!paneId) {
+      return;
+    }
+    const nextPaneId = nextTerminalSplitId("terminal-pane");
+    const nextBinding = boundPane
+      ? terminalSplitAutoCreateSameSession
+        ? createSameSessionTerminalBinding(binding) || undefined
+        : undefined
+      : binding;
+    setTerminalSplitLayout((layout) =>
+      layout
+        ? splitTerminalPane(
+            layout,
+            paneId,
+            direction,
+            nextTerminalSplitId("terminal-split"),
+            nextPaneId,
+            nextBinding,
+          )
+        : layout,
+    );
+    setTerminalSplitTabActive(true);
+    activateTerminalSplitHost();
+    setFocusedTerminalPaneId(nextPaneId);
+    if (!nextBinding) {
+      requestTerminalSplitPicker(nextPaneId, true);
+    }
+  }
+
+  function startTerminalFourPaneLayout() {
+    const initialBinding = fallbackTerminalSplitBinding();
+    if (!initialBinding) {
+      return;
+    }
+    startTerminalFourPaneForBinding(initialBinding);
+  }
+
+  function startTerminalFourPaneForBinding(binding: TerminalPaneBinding) {
+    const host = terminalSplitHost || terminalSplitHostForBinding(binding);
+    if (!host) {
+      return;
+    }
+    const currentBindings = terminalSplitPanes.flatMap((pane) => (pane.binding ? [pane.binding] : []));
+    const bindings = currentBindings.length > 0 ? [...currentBindings] : [binding];
+    if (!bindings.some((candidate) => terminalPaneBindingsEqual(candidate, binding))) {
+      bindings.push(binding);
+    }
+    while (terminalSplitAutoCreateSameSession && bindings.length < terminalSplitMaxPanes) {
+      const nextBinding = createSameSessionTerminalBinding(binding);
+      if (!nextBinding) {
+        break;
+      }
+      bindings.push(nextBinding);
+    }
+    const nextLayout = createTerminalFourPane(bindings.slice(0, terminalSplitMaxPanes));
+    if (!terminalSplitHost) {
+      setTerminalSplitHost(host);
+      setTerminalSplitAnchorIndex(terminalSplitAnchorIndexForBinding(binding));
+    }
+    setTerminalSplitTabActive(true);
+    setTerminalSplitLayout(nextLayout.layout);
+    setFocusedTerminalPaneId(nextLayout.focusedPaneId);
+    activateTerminalSplitHost(host);
+    if (nextLayout.emptyPaneId) {
+      requestTerminalSplitPicker(nextLayout.emptyPaneId, false);
+    }
+  }
+
+  function createTerminalFourPane(bindings: readonly TerminalPaneBinding[]) {
+    const ids = {
+      bottomLeft: nextTerminalSplitId("terminal-pane"),
+      bottomRight: nextTerminalSplitId("terminal-pane"),
+      leftSplit: nextTerminalSplitId("terminal-split"),
+      rightSplit: nextTerminalSplitId("terminal-split"),
+      root: nextTerminalSplitId("terminal-split"),
+      topLeft: nextTerminalSplitId("terminal-pane"),
+      topRight: nextTerminalSplitId("terminal-pane"),
+    };
+    const layout = createTerminalFourPaneLayout(bindings, ids);
+    const panes = collectTerminalSplitPanes(layout);
+    const emptyPane = panes.find((pane) => !pane.binding) || null;
+    const focusedPane =
+      emptyPane ||
+      panes.find((pane) => pane.binding && terminalPaneBindingsEqual(pane.binding, bindings[0])) ||
+      panes[0] ||
+      null;
+    return {
+      emptyPaneId: emptyPane?.id || null,
+      focusedPaneId: focusedPane?.id || ids.topLeft,
+      layout,
+    };
+  }
+
+  function closeTerminalSplitPane(paneId: string) {
+    if (!terminalSplitLayout) {
+      return;
+    }
+    const pane = terminalSplitPanes.find((item) => item.id === paneId) || null;
+    const nextLayout = closeTerminalSplitLayoutPane(terminalSplitLayout, paneId);
+    if (!nextLayout) {
+      setTerminalSplitLayout(null);
+      setTerminalSplitHost(null);
+      setTerminalSplitTabActive(false);
+      setFocusedTerminalPaneId(null);
+      return;
+    }
+    const nextPanes = collectTerminalSplitPanes(nextLayout);
+    const nextFocusedPane =
+      nextPanes.find((pane) => pane.id === focusedTerminalPaneId) || nextPanes[0] || null;
+    setTerminalSplitLayout(nextLayout);
+    setFocusedTerminalPaneId(nextFocusedPane?.id || null);
+    if (pane?.binding?.kind === "ssh") {
+      closeTerminal(pane.binding.tabId);
+    } else if (pane?.binding?.kind === "local") {
+      closeLocalTerminal(pane.binding.tabId);
+    }
+  }
+
+  function handleTerminalSplitPickerOpenChange(paneId: string, open: boolean) {
+    if (open || terminalSplitPickerPendingPaneRef.current !== paneId) {
+      return;
+    }
+    terminalSplitPickerPendingPaneRef.current = null;
+    setTerminalSplitPickerOpenRequest(null);
+    closeTerminalSplitEmptyPane(paneId);
+  }
+
+  function closeTerminalSplitEmptyPane(paneId: string) {
+    setTerminalSplitLayout((layout) =>
+      layout ? closeTerminalSplitLayoutPane(layout, paneId) : layout,
+    );
+    if (focusedTerminalPaneId === paneId) {
+      const fallbackPane = terminalSplitPanes.find((pane) => pane.id !== paneId) || null;
+      setFocusedTerminalPaneId(fallbackPane?.id || null);
+    }
+  }
+
+  function clearTerminalTab(tabId: string) {
+    terminalClearRequestRef.current += 1;
+    setTerminalClearRequest({ id: terminalClearRequestRef.current, tabId });
+  }
+
+  function clearTerminalSplitPane(binding: TerminalPaneBinding) {
+    clearTerminalTab(binding.tabId);
+    const pane = terminalSplitLayout
+      ? findTerminalSplitPaneByBinding(terminalSplitLayout, binding)
+      : null;
+    if (pane) {
+      focusTerminalSplitPane(pane.id);
+    }
+  }
+
+  function toggleTerminalSplitPaneSearch(binding: TerminalPaneBinding) {
+    const pane = terminalSplitLayout
+      ? findTerminalSplitPaneByBinding(terminalSplitLayout, binding)
+      : null;
+    if (pane) {
+      focusTerminalSplitPane(pane.id);
+    }
+    toggleTerminalSearch(binding.tabId);
+  }
+
+  function equalizeTerminalSplitPanes() {
+    setTerminalSplitLayout((layout) => (layout ? equalizeTerminalSplitLayout(layout) : layout));
+    setTerminalSplitLayoutRevision((revision) => revision + 1);
+  }
+
+  function setTerminalSplitSyncState(enabled: boolean) {
+    setTerminalSplitSyncError(null);
+    if (!enabled) {
+      setTerminalSplitSyncEnabled(false);
+      return;
+    }
+    const connectedKeys = new Set(
+      terminalSplitPanes.flatMap((pane) =>
+        pane.binding && terminalSessionIdForBinding(pane.binding)
+          ? [terminalPaneBindingKey(pane.binding)]
+          : [],
+      ),
+    );
+    if (connectedKeys.size < 2) {
+      setTerminalSplitSyncEnabled(false);
+      setTerminalSplitSyncError("至少需要两个已连接终端才能同步输入。");
+      return;
+    }
+    setTerminalSplitSyncParticipantKeys(connectedKeys);
+    setTerminalSplitSyncEnabled(true);
+  }
+
+  function setTerminalSplitSyncParticipant(key: string, participant: boolean) {
+    setTerminalSplitSyncParticipantKeys((current) => {
+      const next = new Set(current);
+      if (participant) {
+        next.add(key);
+      } else {
+        next.delete(key);
+      }
+      if (terminalSplitSyncEnabled && next.size < 2) {
+        setTerminalSplitSyncEnabled(false);
+      }
+      return next;
+    });
+    setTerminalSplitSyncError(null);
+  }
+
+  function handleTerminalSplitUserInput(tabId: string, data: string) {
+    if (!terminalSplitActive || !terminalSplitSyncEnabled || !focusedTerminalSplitBinding) {
+      return;
+    }
+    const sourceKey = terminalPaneBindingKey(focusedTerminalSplitBinding);
+    if (focusedTerminalSplitBinding.tabId !== tabId || !terminalSplitSyncParticipantKeys.has(sourceKey)) {
+      return;
+    }
+    const targetSessionIds = terminalSplitPanes.flatMap((pane) => {
+      if (!pane.binding) {
+        return [];
+      }
+      const key = terminalPaneBindingKey(pane.binding);
+      if (key === sourceKey || !terminalSplitSyncParticipantKeys.has(key)) {
+        return [];
+      }
+      const sessionId = terminalSessionIdForBinding(pane.binding);
+      return sessionId ? [sessionId] : [];
+    });
+    if (targetSessionIds.length === 0) {
+      setTerminalSplitSyncState(false);
+      return;
+    }
+    void Promise.allSettled(targetSessionIds.map((sessionId) => terminalWrite(sessionId, data))).then(
+      (results) => {
+        if (results.some((result) => result.status === "rejected")) {
+          setTerminalSplitSyncEnabled(false);
+          setTerminalSplitSyncError("同步输入失败，已自动关闭。");
+        }
+      },
+    );
+  }
+
+  function requestCloseTerminalSplitGroup() {
+    const boundPaneCount = terminalSplitPanes.filter((pane) => pane.binding).length;
+    if (boundPaneCount > 1) {
+      setTerminalSplitCloseConfirmOpen(true);
+      return;
+    }
+    closeTerminalSplitGroup();
+  }
+
+  function closeTerminalSplitGroup() {
+    const sshTabIds = terminalSplitPanes.flatMap((pane) =>
+      pane.binding?.kind === "ssh" ? [pane.binding.tabId] : [],
+    );
+    const localTabIds = terminalSplitPanes.flatMap((pane) =>
+      pane.binding?.kind === "local" ? [pane.binding.tabId] : [],
+    );
+    setTerminalSplitLayout(null);
+    setTerminalSplitHost(null);
+    setTerminalSplitTabActive(false);
+    setFocusedTerminalPaneId(null);
+    setTerminalSplitPickerOpenRequest(null);
+    terminalSplitPickerPendingPaneRef.current = null;
+    setTerminalSplitSyncEnabled(false);
+    setTerminalSplitSyncParticipantKeys(new Set());
+    setTerminalSplitSyncError(null);
+    if (sshTabIds.length > 0) {
+      closeTerminalTabs(sshTabIds);
+    }
+    if (localTabIds.length > 0) {
+      closeLocalTerminalTabs(localTabIds);
+    }
+  }
+
+  function updateTerminalSplitRatio(splitId: string, ratio: number) {
+    setTerminalSplitLayout((layout) =>
+      layout ? updateTerminalSplitLayoutRatio(layout, splitId, ratio) : layout,
+    );
+  }
+
+  function activateTerminalBindingAsStandalone(binding: TerminalPaneBinding) {
+    if (binding.kind === "ssh") {
+      const tab = terminalTabs.find((item) => item.id === binding.tabId);
+      if (tab) {
+        activateStandaloneTerminalTab(tab);
+      }
+      return;
+    }
+    const tab = localTerminalTabs.find((item) => item.id === binding.tabId);
+    if (tab) {
+      activateStandaloneLocalTerminalTab(tab);
+    }
+  }
+
+  function activateStandaloneTerminalTab(tab: TerminalTab) {
+    setTerminalSplitTabActive(false);
+    setTerminalSplitSyncEnabled(false);
     setActiveView("workspace");
     setSettingsSectionRequest(undefined);
     setActiveWorkspaceMode("ssh");
@@ -4189,6 +5073,17 @@ export function WorkspaceShell() {
       rememberUnifiedActiveTab(tab.connectionId, { kind: "terminal", id: tab.id });
     }
     syncCommandSenderTargetTab(tab.connectionId, tab.id);
+  }
+
+  function activateTerminalTab(tab: TerminalTab) {
+    const pane = terminalSplitLayout
+      ? findTerminalSplitPaneByBinding(terminalSplitLayout, { kind: "ssh", tabId: tab.id })
+      : null;
+    if (pane) {
+      activateTerminalSplitTab(pane.id);
+      return;
+    }
+    activateStandaloneTerminalTab(tab);
   }
 
   function handleWorkbenchTabMouseDown(
@@ -4335,11 +5230,50 @@ export function WorkspaceShell() {
       : tab.id === activeRemoteFileTab?.id;
   }
 
-  function isTerminalPanelActive(tabId: string) {
+  function isTerminalPanelActive(tabId: string, kind: TerminalPaneBinding["kind"] = "ssh") {
+    if (terminalSplitActive) {
+      return Boolean(
+        focusedTerminalSplitBinding &&
+          focusedTerminalSplitBinding.kind === kind &&
+          focusedTerminalSplitBinding.tabId === tabId,
+      );
+    }
     if (isActiveTerminalFileUnified) {
       return showSessionWorkspace && activeUnifiedTab?.kind === "terminal" && activeUnifiedTab.id === tabId;
     }
-    return showSessionWorkspace && tabId === activeTabId;
+    return kind === "local"
+      ? showingLocalTerminal && tabId === activeLocalTerminalTabId
+      : showSessionWorkspace && tabId === activeTabId;
+  }
+
+  function isTerminalPanelVisible(tabId: string, kind: TerminalPaneBinding["kind"]) {
+    if (terminalSplitActive) {
+      return terminalSplitPaneByBinding.has(terminalPaneBindingKey({ kind, tabId }));
+    }
+    return kind === "ssh"
+      ? isTerminalPanelActive(tabId, kind)
+      : showingLocalTerminal && tabId === activeLocalTerminalTabId;
+  }
+
+  function terminalSplitContentProps(binding: TerminalPaneBinding) {
+    const pane = terminalSplitPaneByBinding.get(terminalPaneBindingKey(binding));
+    return {
+      className: pane ? "terminal-split-pane-content" : undefined,
+      layoutRevision: terminalSplitLayoutRevision,
+      onPaneFocus: pane ? () => focusTerminalSplitPane(pane.id) : undefined,
+      style: pane ? terminalSplitContentStyle(pane.bounds) : undefined,
+      visible: isTerminalPanelVisible(binding.tabId, binding.kind),
+    };
+  }
+
+  function terminalSplitStatusProps(binding: TerminalPaneBinding) {
+    const pane = terminalSplitPaneByBinding.get(terminalPaneBindingKey(binding));
+    return {
+      className: pane ? "terminal-split-pane-content" : undefined,
+      onPaneFocus: pane ? () => focusTerminalSplitPane(pane.id) : undefined,
+      style: pane ? terminalSplitContentStyle(pane.bounds) : undefined,
+      visible: isTerminalPanelVisible(binding.tabId, binding.kind),
+    };
   }
 
   function isRemoteFileEditorActive(tabId: string) {
@@ -4347,6 +5281,255 @@ export function WorkspaceShell() {
       return !showingHome && activeUnifiedTab?.kind === "file" && activeUnifiedTab.id === tabId;
     }
     return !showingHome && tabId === activeRemoteFileTab?.id;
+  }
+
+  function renderTerminalSplitGroupSubtab() {
+    const boundPaneCount = terminalSplitPanes.filter((pane) => pane.binding).length;
+    return (
+      <div
+        className={`subtab-shell terminal-split-group-tab ${terminalSplitActive ? "active" : ""}`}
+        data-workbench-tab-active={terminalSplitActive ? "true" : undefined}
+        key="terminal-split-group"
+      >
+        <button
+          className="subtab terminal-split-group-subtab"
+          type="button"
+          aria-label={`打开分屏组，共 ${boundPaneCount.toString()} 个终端`}
+          onClick={() => activateTerminalSplitTab()}
+        >
+          <PanelsTopLeft className="ui-icon" aria-hidden="true" />
+          <span>分屏</span>
+          <span className="terminal-split-group-count" aria-hidden="true">
+            {boundPaneCount.toString()}
+          </span>
+        </button>
+        <button
+          className="subtab-close"
+          type="button"
+          aria-label="关闭分屏组"
+          onClick={requestCloseTerminalSplitGroup}
+        >
+          <X className="ui-icon" aria-hidden="true" />
+        </button>
+      </div>
+    );
+  }
+
+  function renderSshTerminalSubtab(tab: TerminalTab, index: number) {
+    return (
+      <TabContextMenu
+        key={tab.id}
+        actions={[
+          {
+            hint: "Ctrl+F4",
+            label: "关闭",
+            onSelect: () => closeTerminal(tab.id),
+          },
+          {
+            disabled: activeConnectionTabs.length <= 1,
+            label: "关闭其他",
+            onSelect: () => closeOtherTerminalTabs(tab.id),
+          },
+          {
+            disabled: index >= activeConnectionTabs.length - 1,
+            label: "关闭右侧标签页",
+            onSelect: () => closeTerminalTabsToRight(tab.id),
+          },
+          {
+            disabled: activeConnectionTabs.length === 0,
+            hint: "Ctrl+K W",
+            label: "全部关闭",
+            onSelect: () => closeAllTerminalTabsForConnection(tab.connectionId),
+          },
+          {
+            disabled: !terminalSplitCanAddPane,
+            label: "向右分屏",
+            onSelect: () => {
+              activateTerminalTab(tab);
+              startTerminalSplitForBinding({ kind: "ssh", tabId: tab.id }, "row");
+            },
+            separatorBefore: true,
+          },
+          {
+            disabled: !terminalSplitCanAddPane,
+            label: "向下分屏",
+            onSelect: () => {
+              activateTerminalTab(tab);
+              startTerminalSplitForBinding({ kind: "ssh", tabId: tab.id }, "column");
+            },
+          },
+          {
+            label: "四分屏",
+            onSelect: () => {
+              activateTerminalTab(tab);
+              startTerminalFourPaneForBinding({ kind: "ssh", tabId: tab.id });
+            },
+          },
+          ...(isConnectionTerminalFileUnified(tab.connectionId)
+            ? [
+                {
+                  label: "恢复上下分屏",
+                  onSelect: () =>
+                    restoreConnectionTerminalFileSplit(tab.connectionId, "terminal", {
+                      connectionId: tab.connectionId,
+                      id: tab.id,
+                      kind: "terminal",
+                    }),
+                  separatorBefore: true,
+                },
+              ]
+            : []),
+        ]}
+      >
+        <div
+          className={`subtab-shell ${isTerminalSubtabActive(tab) ? "active" : ""}`}
+          data-workbench-tab-active={isTerminalSubtabActive(tab) ? "true" : undefined}
+        >
+          <button
+            className="subtab workbench-draggable-tab"
+            type="button"
+            onClick={(event) => handleTerminalSubtabClick(event, tab)}
+            onMouseDown={(event) =>
+              handleWorkbenchTabMouseDown(event, {
+                connectionId: tab.connectionId,
+                id: tab.id,
+                kind: "terminal",
+              })
+            }
+          >
+            <span>{tab.title}</span>
+          </button>
+          <button
+            className="subtab-close"
+            type="button"
+            aria-label={`关闭 ${tab.title}`}
+            onClick={() => closeTerminal(tab.id)}
+          >
+            <X className="ui-icon" aria-hidden="true" />
+          </button>
+        </div>
+      </TabContextMenu>
+    );
+  }
+
+  function renderSshTerminalSubtabs() {
+    const visibleTabs = terminalSplitExists
+      ? activeConnectionTabs.filter(
+          (tab) =>
+            !terminalSplitMemberKeys.has(
+              terminalPaneBindingKey({ kind: "ssh", tabId: tab.id }),
+            ),
+        )
+      : activeConnectionTabs;
+    const items = visibleTabs.map((tab) =>
+      renderSshTerminalSubtab(tab, activeConnectionTabs.findIndex((item) => item.id === tab.id)),
+    );
+    if (
+      terminalSplitExists &&
+      terminalSplitHost?.kind === "ssh" &&
+      terminalSplitHost.connectionId === activeConnectionId
+    ) {
+      items.splice(Math.min(terminalSplitAnchorIndex, items.length), 0, renderTerminalSplitGroupSubtab());
+    }
+    return items;
+  }
+
+  function renderLocalTerminalSubtab(tab: LocalTerminalTab, index: number) {
+    return (
+      <TabContextMenu
+        key={tab.id}
+        actions={[
+          {
+            hint: "Ctrl+F4",
+            label: "关闭",
+            onSelect: () => closeLocalTerminalSession(tab),
+          },
+          {
+            disabled: localTerminalTabs.length <= 1,
+            label: "关闭其他",
+            onSelect: () => closeOtherLocalTerminalTabs(tab.id),
+          },
+          {
+            disabled: index >= localTerminalTabs.length - 1,
+            label: "关闭右侧标签页",
+            onSelect: () => closeLocalTerminalTabsToRight(tab.id),
+          },
+          {
+            disabled: localTerminalTabs.length === 0,
+            hint: "Ctrl+K W",
+            label: "全部关闭",
+            onSelect: () => closeLocalTerminalTabs(localTerminalTabs.map((item) => item.id)),
+          },
+          {
+            disabled: !terminalSplitCanAddPane,
+            label: "向右分屏",
+            onSelect: () => {
+              activateLocalTerminalTab(tab);
+              startTerminalSplitForBinding({ kind: "local", tabId: tab.id }, "row");
+            },
+            separatorBefore: true,
+          },
+          {
+            disabled: !terminalSplitCanAddPane,
+            label: "向下分屏",
+            onSelect: () => {
+              activateLocalTerminalTab(tab);
+              startTerminalSplitForBinding({ kind: "local", tabId: tab.id }, "column");
+            },
+          },
+          {
+            label: "四分屏",
+            onSelect: () => {
+              activateLocalTerminalTab(tab);
+              startTerminalFourPaneForBinding({ kind: "local", tabId: tab.id });
+            },
+          },
+        ]}
+      >
+        <div
+          className={`subtab-shell ${!terminalSplitActive && tab.id === activeLocalTerminalTabId ? "active" : ""}`}
+          data-workbench-tab-active={
+            !terminalSplitActive && tab.id === activeLocalTerminalTabId ? "true" : undefined
+          }
+        >
+          <button
+            className="subtab local-terminal-subtab"
+            type="button"
+            title={`${tab.title} · ${tab.status}`}
+            onClick={() => activateLocalTerminalTab(tab)}
+          >
+            <LocalTerminalIcon className="ui-icon" kind={tab.profileKind} title={tab.title} />
+            <span>{tab.title}</span>
+          </button>
+          <button
+            className="subtab-close"
+            type="button"
+            aria-label={`关闭 ${tab.title}`}
+            onClick={() => closeLocalTerminalSession(tab)}
+          >
+            <X className="ui-icon" aria-hidden="true" />
+          </button>
+        </div>
+      </TabContextMenu>
+    );
+  }
+
+  function renderLocalTerminalSubtabs() {
+    const visibleTabs = terminalSplitExists
+      ? localTerminalTabs.filter(
+          (tab) =>
+            !terminalSplitMemberKeys.has(
+              terminalPaneBindingKey({ kind: "local", tabId: tab.id }),
+            ),
+        )
+      : localTerminalTabs;
+    const items = visibleTabs.map((tab) =>
+      renderLocalTerminalSubtab(tab, localTerminalTabs.findIndex((item) => item.id === tab.id)),
+    );
+    if (terminalSplitExists && terminalSplitHost?.kind === "local") {
+      items.splice(Math.min(terminalSplitAnchorIndex, items.length), 0, renderTerminalSplitGroupSubtab());
+    }
+    return items;
   }
 
   function renderWorkbenchTabScrollControls(
@@ -5226,6 +6409,19 @@ export function WorkspaceShell() {
   }
 
   function activateLocalTerminalTab(tab: LocalTerminalTab) {
+    const pane = terminalSplitLayout
+      ? findTerminalSplitPaneByBinding(terminalSplitLayout, { kind: "local", tabId: tab.id })
+      : null;
+    if (pane) {
+      activateTerminalSplitTab(pane.id);
+      return;
+    }
+    activateStandaloneLocalTerminalTab(tab);
+  }
+
+  function activateStandaloneLocalTerminalTab(tab: LocalTerminalTab) {
+    setTerminalSplitTabActive(false);
+    setTerminalSplitSyncEnabled(false);
     setActiveView("workspace");
     setSettingsSectionRequest(undefined);
     setActiveWorkspaceMode("local");
@@ -5250,12 +6446,13 @@ export function WorkspaceShell() {
     const nextIndex =
       tabs.filter((tab) => tab.profileId === profile.id).length + 1;
     const now = Date.now();
+    const nonce = `${now.toString()}-${Math.random().toString(36).slice(2, 8)}`;
 
     return {
-      id: `local-terminal-${now.toString()}-${Math.random().toString(36).slice(2, 8)}`,
+      id: `local-terminal-${nonce}`,
       profileId: profile.id,
       profileKind: profile.kind,
-      requestId: `local-terminal-${now.toString()}`,
+      requestId: `local-terminal-${nonce}`,
       source: "local",
       sessionId: undefined,
       status: "正在打开",
@@ -5271,6 +6468,9 @@ export function WorkspaceShell() {
   function closeLocalTerminalTabs(tabIds: string[]) {
     const closingIds = new Set(tabIds);
     tabIds.forEach(stopTerminalWarmupCapture);
+    closeRuntimeTerminalSessions(
+      localTerminalTabsRef.current.filter((tab) => closingIds.has(tab.id)),
+    );
     setLocalTerminalTabs((tabs) => {
       const nextTabs = tabs.filter((tab) => !closingIds.has(tab.id));
       localTerminalTabsRef.current = nextTabs;
@@ -5316,29 +6516,44 @@ export function WorkspaceShell() {
     setHomeActive(false);
     setSettingsSectionRequest(undefined);
     if (localTerminalTabsRef.current.length > 0) {
-      if (!activeLocalTerminalTabId) {
-        setActiveLocalTerminalTabId(localTerminalTabsRef.current[0]?.id || null);
+      const standaloneTabs = localTerminalTabsRef.current.filter(
+        (tab) =>
+          !terminalSplitMemberKeys.has(
+            terminalPaneBindingKey({ kind: "local", tabId: tab.id }),
+          ),
+      );
+      const standaloneTab =
+        standaloneTabs.find((tab) => tab.id === activeLocalTerminalTabId) ||
+        standaloneTabs[0] ||
+        null;
+      if (standaloneTab) {
+        activateStandaloneLocalTerminalTab(standaloneTab);
+      } else if (terminalSplitExists && terminalSplitHost?.kind === "local") {
+        activateTerminalSplitTab();
       }
       return;
     }
     void openLocalTerminalByProfile(resolveDefaultLocalTerminalProfile());
   }
 
-  async function openLocalTerminalByProfile(profile: LocalTerminalProfile | null) {
+  function openLocalTerminalByProfile(
+    profile: LocalTerminalProfile | null,
+    activate = true,
+  ) {
     if (!profile) {
       setLocalTerminalProfilesError("没有可用的本地终端类型。");
-      return;
+      return null;
     }
 
     const tab = buildLocalTerminalTab(localTerminalTabsRef.current, profile);
-    setLocalTerminalTabs((tabs) => {
-      const nextTabs = [...tabs, tab];
-      localTerminalTabsRef.current = nextTabs;
-      return nextTabs;
-    });
-    activateLocalTerminalTab(tab);
+    const nextTabs = [...localTerminalTabsRef.current, tab];
+    localTerminalTabsRef.current = nextTabs;
+    setLocalTerminalTabs(nextTabs);
+    if (activate) {
+      activateLocalTerminalTab(tab);
+    }
 
-    await openRuntimeLocalTerminalSession(tab, "local-preview", () =>
+    void openRuntimeLocalTerminalSession(tab, "local-preview", () =>
       localTerminalOpen({
         cols: 80,
         cwd: profile.cwd || undefined,
@@ -5347,6 +6562,7 @@ export function WorkspaceShell() {
         rows: 24,
       }),
     );
+    return tab;
   }
 
   async function openRuntimeLocalTerminalSession(
@@ -5439,31 +6655,47 @@ export function WorkspaceShell() {
   }
 
   function buildCharacterTerminalTab(
+    tabs: LocalTerminalTab[],
     source: "telnet" | "serial",
     title: string,
     profileId: string,
   ): LocalTerminalTab {
     const now = Date.now();
+    const nonce = `${now.toString()}-${Math.random().toString(36).slice(2, 8)}`;
+    const nextIndex = tabs.filter((tab) => tab.profileId === profileId).length + 1;
     return {
-      id: `${source}-terminal-${now.toString()}-${Math.random().toString(36).slice(2, 8)}`,
+      id: `${source}-terminal-${nonce}`,
       profileId,
       profileKind: source,
-      requestId: `${source}-terminal-${now.toString()}`,
+      requestId: `${source}-terminal-${nonce}`,
       sessionId: undefined,
       source,
       status: "正在连接",
-      title,
+      title: nextIndex > 1 ? `${title} ${nextIndex.toString()}` : title,
       warmupOutput: [],
     };
   }
 
-  function addAndActivateCharacterTerminalTab(tab: LocalTerminalTab) {
-    setLocalTerminalTabs((tabs) => {
-      const nextTabs = [...tabs, tab];
-      localTerminalTabsRef.current = nextTabs;
-      return nextTabs;
-    });
-    activateLocalTerminalTab(tab);
+  function openCharacterTerminalInConnection(
+    connection: TelnetConnectionProfile | SerialConnectionProfile,
+    activate = true,
+  ) {
+    const source = connection.protocol;
+    const title = connection.name || formatConnectionAddress(connection);
+    const tab = buildCharacterTerminalTab(
+      localTerminalTabsRef.current,
+      source,
+      title,
+      connection.id,
+    );
+    const nextTabs = [...localTerminalTabsRef.current, tab];
+    localTerminalTabsRef.current = nextTabs;
+    setLocalTerminalTabs(nextTabs);
+    if (activate) {
+      activateLocalTerminalTab(tab);
+    }
+    void runCharacterConnectionSession(tab, connection);
+    return tab;
   }
 
   function openCharacterConnectionSession(
@@ -5477,11 +6709,7 @@ export function WorkspaceShell() {
       return;
     }
 
-    const source = connection.protocol;
-    const title = connection.name || formatConnectionAddress(connection);
-    const tab = buildCharacterTerminalTab(source, title, connection.id);
-    addAndActivateCharacterTerminalTab(tab);
-    void runCharacterConnectionSession(tab, connection);
+    openCharacterTerminalInConnection(connection);
   }
 
   async function runCharacterConnectionSession(
@@ -6285,6 +7513,15 @@ export function WorkspaceShell() {
     closeTerminalTabs([tabId]);
   }
 
+  function closeRuntimeTerminalSessions(tabs: Array<{ sessionId?: string }>) {
+    const sessionIds = new Set(
+      tabs.map((tab) => tab.sessionId).filter((sessionId): sessionId is string => Boolean(sessionId)),
+    );
+    sessionIds.forEach((sessionId) => {
+      void terminalClose(sessionId).catch(() => undefined);
+    });
+  }
+
   function invalidateDockerExecConnection(connectionId: string) {
     if (!hasTauriRuntime()) {
       return;
@@ -6296,6 +7533,9 @@ export function WorkspaceShell() {
     const closingIds = new Set(tabIds);
     const closingTabIds = terminalTabs.filter((tab) => closingIds.has(tab.id)).map((tab) => tab.id);
     closingTabIds.forEach(stopTerminalWarmupCapture);
+    closeRuntimeTerminalSessions(
+      terminalTabsRef.current.filter((tab) => closingIds.has(tab.id)),
+    );
     setTerminalDirectories((directories) => removeDirectoryState(directories, closingTabIds));
     setTerminalTabs((tabs) => {
       const activeClosingTab = activeTabId
@@ -6453,6 +7693,9 @@ export function WorkspaceShell() {
       .filter((tab) => closingConnectionIds.has(tab.connectionId))
       .map((tab) => tab.id);
     closingTabIds.forEach(stopTerminalWarmupCapture);
+    closeRuntimeTerminalSessions(
+      terminalTabsRef.current.filter((tab) => closingConnectionIds.has(tab.connectionId)),
+    );
     setTerminalDirectories((directories) => removeDirectoryState(directories, closingTabIds));
     forgetActiveConnectionTabs(connectionIds);
     setTerminalTabs((tabs) => {
@@ -6525,15 +7768,66 @@ export function WorkspaceShell() {
 
   function openTerminalInActiveConnection() {
     if (isSshConnection(activeConnection)) {
-      const tab = buildDirectTerminalTab(terminalTabsRef.current, activeConnection);
-      setTerminalTabs((tabs) => {
-        const nextTabs = [...tabs, tab];
-        terminalTabsRef.current = nextTabs;
-        return nextTabs;
-      });
-      activateTerminalTab(tab);
-      void runDirectTerminalTab(tab, activeConnection);
+      openTerminalInConnection(activeConnection);
     }
+  }
+
+  function openTerminalInConnection(connection: ConnectionProfile, activate = true) {
+    const tab = buildDirectTerminalTab(terminalTabsRef.current, connection);
+    const nextTabs = [...terminalTabsRef.current, tab];
+    terminalTabsRef.current = nextTabs;
+    setTerminalTabs(nextTabs);
+    if (activate) {
+      activateTerminalTab(tab);
+    }
+    void runDirectTerminalTab(tab, connection);
+    return tab;
+  }
+
+  function handleTerminalSplitSessionSelect(
+    paneId: string,
+    option: TerminalSplitSessionOption,
+  ) {
+    if (option.binding) {
+      assignTerminalSplitBinding(paneId, option.binding);
+      return;
+    }
+
+    if (option.connectionId) {
+      const connection = connectionById.get(option.connectionId) || null;
+      if (!isSshConnection(connection)) {
+        return;
+      }
+      const tab = startConnectionStep(connection, "terminal", false);
+      if (tab) {
+        assignTerminalSplitBinding(paneId, { kind: "ssh", tabId: tab.id });
+      }
+      return;
+    }
+
+    if (option.value === "action:new-local") {
+      const tab = openLocalTerminalByProfile(resolveDefaultLocalTerminalProfile(), false);
+      if (tab) {
+        assignTerminalSplitBinding(paneId, { kind: "local", tabId: tab.id });
+      }
+      return;
+    }
+
+    if (option.value !== "action:new-ssh") {
+      return;
+    }
+    const currentPane = terminalSplitPanes.find((pane) => pane.id === paneId);
+    const paneConnection =
+      currentPane?.binding?.kind === "ssh"
+        ? terminalTabs.find((tab) => tab.id === currentPane.binding?.tabId)?.connectionId || null
+        : null;
+    const connection =
+      (paneConnection ? connectionById.get(paneConnection) || null : null) || activeConnection;
+    if (!isSshConnection(connection)) {
+      return;
+    }
+    const tab = openTerminalInConnection(connection, false);
+    assignTerminalSplitBinding(paneId, { kind: "ssh", tabId: tab.id });
   }
 
   function openDockerContainerTerminal(container: DockerContainerSummary) {
@@ -6715,14 +8009,18 @@ export function WorkspaceShell() {
     await removeCredential(credential.id);
   }
 
-  function startConnectionStep(connection: ConnectionProfile, mode: ConnectionStepMode) {
+  function startConnectionStep(
+    connection: ConnectionProfile,
+    mode: ConnectionStepMode,
+    activate = true,
+  ) {
     if (isRdpConnection(connection)) {
       openRdpConnectionSession(connection);
-      return;
+      return undefined;
     }
     if (isVncConnection(connection)) {
       openVncConnectionSession(connection);
-      return;
+      return undefined;
     }
 
     const authKind = connection.prompt_auth_kind || connection.inline_auth_kind || "password";
@@ -6750,14 +8048,17 @@ export function WorkspaceShell() {
       terminalTabsRef.current = nextTabs;
       return nextTabs;
     });
-    setActiveWorkspaceMode("ssh");
-    setHomeActive(false);
-    setActiveConnectionId(connection.id);
-    setActiveTabId(tab.id);
-    rememberActiveTab(tab);
+    if (activate) {
+      setActiveWorkspaceMode("ssh");
+      setHomeActive(false);
+      setActiveConnectionId(connection.id);
+      setActiveTabId(tab.id);
+      rememberActiveTab(tab);
+    }
     if (connection.credential_mode !== "prompt") {
       void runConnectionStep(tab.id, step);
     }
+    return tab;
   }
 
   async function runConnectionStep(tabId: string, step: ConnectionStepState) {
@@ -7556,13 +8857,13 @@ export function WorkspaceShell() {
               ) : null}
 
               <section
-                className={`terminal-workbench-pane ${showSshCommandSenderPanel ? "command-sender-open" : ""} ${
-                  showSessionWorkspace ? "" : "is-hidden"
-                }`}
+                className={`terminal-workbench-pane ${showTerminalCommandSenderPanel ? "command-sender-open" : ""} ${
+                  terminalSplitActive ? "terminal-split-active" : ""
+                } ${showTerminalWorkbench ? "" : "is-hidden"}`}
                 data-workbench-surface={activeWorkbenchSurface}
                 data-terminal-tone={terminalTone}
                 aria-label="终端区"
-                aria-hidden={!showSessionWorkspace}
+                aria-hidden={!showTerminalWorkbench}
               >
                 <nav
                   className={`terminal-subtabs ${isActiveTerminalFileUnified ? "unified-subtabs" : ""}`}
@@ -7571,78 +8872,44 @@ export function WorkspaceShell() {
                   data-workbench-tab-drop-active={workbenchTabDropZone === "terminal" ? "true" : undefined}
                 >
                   <div className="workbench-tab-scroll-list" ref={sshTerminalTabScroll.ref}>
-                    {activeConnectionTabs.map((tab, index) => (
-                      <TabContextMenu
-                        key={tab.id}
-                        actions={[
-                          {
-                            hint: "Ctrl+F4",
-                            label: "关闭",
-                            onSelect: () => closeTerminal(tab.id),
-                          },
-                          {
-                            disabled: activeConnectionTabs.length <= 1,
-                            label: "关闭其他",
-                            onSelect: () => closeOtherTerminalTabs(tab.id),
-                          },
-                          {
-                            disabled: index >= activeConnectionTabs.length - 1,
-                            label: "关闭右侧标签页",
-                            onSelect: () => closeTerminalTabsToRight(tab.id),
-                          },
-                          {
-                            disabled: activeConnectionTabs.length === 0,
-                            hint: "Ctrl+K W",
-                            label: "全部关闭",
-                            onSelect: () => closeAllTerminalTabsForConnection(tab.connectionId),
-                          },
-                          ...(isConnectionTerminalFileUnified(tab.connectionId)
-                            ? [
-                                {
-                                  label: "恢复上下分屏",
-                                  onSelect: () =>
-                                    restoreConnectionTerminalFileSplit(tab.connectionId, "terminal", {
-                                      connectionId: tab.connectionId,
-                                      id: tab.id,
-                                      kind: "terminal",
-                                    }),
-                                  separatorBefore: true,
-                                },
-                              ]
-                            : []),
-                        ]}
-                      >
-                        <div
-                          className={`subtab-shell ${isTerminalSubtabActive(tab) ? "active" : ""}`}
-                          data-workbench-tab-active={isTerminalSubtabActive(tab) ? "true" : undefined}
-                        >
+                    {activeWorkspaceMode === "local"
+                      ? renderLocalTerminalSubtabs()
+                      : renderSshTerminalSubtabs()}
+                    {isActiveTerminalFileUnified ? activeRemoteFileTabs.map(renderRemoteFileSubtab) : null}
+                    {activeWorkspaceMode === "local" ? (
+                      <>
+                        <Tooltip label="新建默认终端">
                           <button
-                            className="subtab workbench-draggable-tab"
+                            className="add-subtab"
                             type="button"
-                            onClick={(event) => handleTerminalSubtabClick(event, tab)}
-                            onMouseDown={(event) =>
-                              handleWorkbenchTabMouseDown(event, {
-                                connectionId: tab.connectionId,
-                                id: tab.id,
-                                kind: "terminal",
-                              })
+                            aria-label="新建默认终端"
+                            disabled={!defaultLocalTerminalProfile}
+                            onClick={() =>
+                              void openLocalTerminalByProfile(resolveDefaultLocalTerminalProfile())
                             }
                           >
-                            <span>{tab.title}</span>
+                            <Plus className="ui-icon" aria-hidden="true" />
                           </button>
-                          <button
-                            className="subtab-close"
-                            type="button"
-                            aria-label={`关闭 ${tab.title}`}
-                            onClick={() => closeTerminal(tab.id)}
-                          >
-                            <X className="ui-icon" aria-hidden="true" />
-                          </button>
-                        </div>
-                      </TabContextMenu>
-                    ))}
-                    {isActiveTerminalFileUnified ? activeRemoteFileTabs.map(renderRemoteFileSubtab) : null}
-                    {activeConnectedTerminalTab ? (
+                        </Tooltip>
+                        <LocalTerminalLauncher
+                          disabled={localTerminalProfiles.length === 0}
+                          loading={localTerminalProfilesLoading}
+                          profiles={localTerminalProfiles}
+                          onOpenProfile={(profile) => void openLocalTerminalByProfile(profile)}
+                        />
+                        {localTerminalProfilesError ? (
+                          <div className="local-terminal-subtabs-meta">
+                            <button
+                              className="local-terminal-inline-action"
+                              type="button"
+                              onClick={openLocalTerminalSettings}
+                            >
+                              {localTerminalProfilesError}
+                            </button>
+                          </div>
+                        ) : null}
+                      </>
+                    ) : activeConnectedTerminalTab ? (
                       <Tooltip label="新建同连接终端">
                         <button
                           className="add-subtab"
@@ -7657,22 +8924,75 @@ export function WorkspaceShell() {
                   </div>
                   {renderWorkbenchTabScrollControls(sshTerminalTabScroll, "终端标签")}
                   <div className="terminal-subtab-actions">
-                    {activeSshToolbarTerminalTab ? (
-                      <Tooltip label={activeTerminalSearch?.open ? "关闭终端搜索" : "搜索终端输出"}>
-                        <button
-                          className={`add-subtab terminal-search-toggle ${
-                            activeTerminalSearch?.open ? "active" : ""
-                          }`}
-                          type="button"
-                          aria-label="搜索终端输出"
-                          aria-expanded={Boolean(activeTerminalSearch?.open)}
-                          onClick={() => toggleTerminalSearch(activeSshToolbarTerminalTab.id)}
-                        >
-                          <Search className="ui-icon" aria-hidden="true" />
-                        </button>
-                      </Tooltip>
+                    <TerminalSplitMenu
+                      autoCreateSameSession={terminalSplitAutoCreateSameSession}
+                      canAddPane={terminalSplitCanAddPane}
+                      disabled={!fallbackTerminalSplitBinding()}
+                      onAutoCreateSameSessionChange={setTerminalSplitAutoCreateSameSession}
+                      onSplitDown={() => startTerminalSplit("column")}
+                      onSplitFour={startTerminalFourPaneLayout}
+                      onSplitRight={() => startTerminalSplit("row")}
+                    />
+                    {terminalSplitActive ? (
+                      <>
+                        <TerminalSplitSyncMenu
+                          enabled={terminalSplitSyncEnabled}
+                          panes={terminalSplitSyncPaneOptions}
+                          participantKeys={terminalSplitSyncParticipantKeys}
+                          onEnabledChange={setTerminalSplitSyncState}
+                          onParticipantChange={setTerminalSplitSyncParticipant}
+                        />
+                        <Tooltip label="均分所有 pane">
+                          <button
+                            className="add-subtab terminal-split-equalize"
+                            type="button"
+                            aria-label="均分所有终端 pane"
+                            onClick={equalizeTerminalSplitPanes}
+                          >
+                            <LayoutGrid className="ui-icon" aria-hidden="true" />
+                          </button>
+                        </Tooltip>
+                        {terminalSplitSyncError ? (
+                          <Tooltip label={terminalSplitSyncError}>
+                            <span
+                              className="terminal-split-sync-error"
+                              role="status"
+                              aria-label={terminalSplitSyncError}
+                            >
+                              <CircleAlert className="ui-icon" aria-hidden="true" />
+                            </span>
+                          </Tooltip>
+                        ) : null}
+                      </>
                     ) : null}
-                    {showSshTerminalScopedActions && commandSenderTargets.length > 0 ? (
+                    {!terminalSplitActive && activeTerminalToolbarTabId ? (
+                      <>
+                        <Tooltip label={activeTerminalToolbarSearch?.open ? "关闭终端搜索" : "搜索终端输出"}>
+                          <button
+                            className={`add-subtab terminal-search-toggle ${
+                              activeTerminalToolbarSearch?.open ? "active" : ""
+                            }`}
+                            type="button"
+                            aria-label="搜索终端输出"
+                            aria-expanded={Boolean(activeTerminalToolbarSearch?.open)}
+                            onClick={() => toggleTerminalSearch(activeTerminalToolbarTabId)}
+                          >
+                            <Search className="ui-icon" aria-hidden="true" />
+                          </button>
+                        </Tooltip>
+                        <Tooltip label="清屏">
+                          <button
+                            className="add-subtab terminal-clear-button"
+                            type="button"
+                            aria-label="清屏"
+                            onClick={() => clearTerminalTab(activeTerminalToolbarTabId)}
+                          >
+                            <Eraser className="ui-icon" aria-hidden="true" />
+                          </button>
+                        </Tooltip>
+                      </>
+                    ) : null}
+                    {showTerminalScopedActions && commandSenderTargets.length > 0 ? (
                       <Tooltip label="Command Sender">
                         <button
                           className={`add-subtab command-sender-toggle ${commandSenderOpen ? "active" : ""}`}
@@ -7704,10 +9024,30 @@ export function WorkspaceShell() {
                 </nav>
 
                 <section
-                  className={`terminal-stack ${isActiveTerminalFileUnified ? "terminal-file-unified-stack" : ""}`}
+                  className={`terminal-stack ${isActiveTerminalFileUnified ? "terminal-file-unified-stack" : ""} ${
+                    terminalSplitActive ? "terminal-split-stack" : ""
+                  }`}
                   data-unified-active-kind={activeUnifiedTabKind || undefined}
                   aria-label={isActiveTerminalFileUnified ? "终端和文件编辑器" : "终端"}
                 >
+                  {terminalSplitActive && terminalSplitLayout ? (
+                    <TerminalSplitLayout
+                      focusedPaneId={focusedTerminalPaneId || terminalSplitPanes[0]?.id || ""}
+                      layout={terminalSplitLayout}
+                      pickerOpenRequest={terminalSplitPickerOpenRequest}
+                      sessionOptions={terminalSplitSessionOptions}
+                      syncEnabled={terminalSplitSyncEnabled}
+                      syncParticipantKeys={terminalSplitSyncParticipantKeys}
+                      onClearPane={clearTerminalSplitPane}
+                      onClosePane={closeTerminalSplitPane}
+                      onFocusPane={focusTerminalSplitPane}
+                      onPickerOpenChange={handleTerminalSplitPickerOpenChange}
+                      onRatioChange={updateTerminalSplitRatio}
+                      onResizeEnd={() => setTerminalSplitLayoutRevision((revision) => revision + 1)}
+                      onSelectSession={handleTerminalSplitSessionSelect}
+                      onToggleSearch={toggleTerminalSplitPaneSearch}
+                    />
+                  ) : null}
                   {isActiveTerminalFileUnified ? (
                     <Suspense fallback={<RemoteEditorLoadingFallback />}>
                       {remoteFileTabs.map((tab) => (
@@ -7736,6 +9076,7 @@ export function WorkspaceShell() {
                         key={tab.id}
                         step={tabStep}
                         active={isTerminalPanelActive(tab.id)}
+                        {...terminalSplitStatusProps({ kind: "ssh", tabId: tab.id })}
                         onCancel={() => closeTerminal(tab.id)}
                         onEdit={(connection) => {
                           editConnection(connection);
@@ -7772,6 +9113,7 @@ export function WorkspaceShell() {
                         fallback={
                           <DirectTerminalStatusPanel
                             active={isTerminalPanelActive(tab.id)}
+                            {...terminalSplitStatusProps({ kind: "ssh", tabId: tab.id })}
                             connection={connectionById.get(tab.connectionId) || null}
                             error={null}
                             status="正在加载终端"
@@ -7781,6 +9123,10 @@ export function WorkspaceShell() {
                       >
                         <TerminalPanel
                           active={isTerminalPanelActive(tab.id)}
+                          {...terminalSplitContentProps({ kind: "ssh", tabId: tab.id })}
+                          clearRequestId={
+                            terminalClearRequest?.tabId === tab.id ? terminalClearRequest.id : 0
+                          }
                           connection={connectionById.get(tab.connectionId) || null}
                           ctrlVPaste={settings.localTerminal.ctrlVPaste}
                           cursorBlink={settings.appearance.cursorBlink}
@@ -7804,6 +9150,7 @@ export function WorkspaceShell() {
                               ? (tabId, command) => void recordTerminalInputHistoryCommand(tabId, command)
                               : undefined
                           }
+                          onUserInput={handleTerminalSplitUserInput}
                           onWarmupCaptureReady={stopTerminalWarmupCapture}
                           searchCaseSensitive={Boolean(terminalSearchByTabId[tab.id]?.caseSensitive)}
                           searchNavigationRequest={terminalSearchNavigationRequest}
@@ -7817,6 +9164,7 @@ export function WorkspaceShell() {
                     ) : tab.type === "terminal" ? (
                       <DirectTerminalStatusPanel
                         active={isTerminalPanelActive(tab.id)}
+                        {...terminalSplitStatusProps({ kind: "ssh", tabId: tab.id })}
                         connection={connectionById.get(tab.connectionId) || null}
                         error={tab.error || null}
                         status={tab.status}
@@ -7824,6 +9172,105 @@ export function WorkspaceShell() {
                       />
                     ) : null;
                   })}
+                  {showingLocalTerminal && !terminalSplitActive && localTerminalTabs.length === 0 ? (
+                    <LocalTerminalEmptyPanel
+                      active
+                      error={localTerminalProfilesError}
+                      loading={localTerminalProfilesLoading}
+                      profileName={defaultLocalTerminalProfile?.name || null}
+                      onOpenDefault={() =>
+                        void openLocalTerminalByProfile(resolveDefaultLocalTerminalProfile())
+                      }
+                      onOpenSettings={openLocalTerminalSettings}
+                    />
+                  ) : null}
+                  {localTerminalTabs.map((tab) =>
+                        tab.sessionId ? (
+                          <Suspense
+                            key={tab.id}
+                            fallback={
+                              <LocalTerminalStatusPanel
+                                active={isTerminalPanelActive(tab.id, "local")}
+                                {...terminalSplitStatusProps({ kind: "local", tabId: tab.id })}
+                                error={null}
+                                profile={
+                                  tab.source === "local"
+                                    ? localTerminalProfiles.find((profile) => profile.id === tab.profileId) || null
+                                    : null
+                                }
+                                source={tab.source || "local"}
+                                status="正在加载终端"
+                                title={tab.title}
+                                onOpenSettings={openLocalTerminalSettings}
+                              />
+                            }
+                          >
+                            <TerminalPanel
+                              active={isTerminalPanelActive(tab.id, "local")}
+                              {...terminalSplitContentProps({ kind: "local", tabId: tab.id })}
+                              autoConnect={false}
+                              clearRequestId={
+                                terminalClearRequest?.tabId === tab.id ? terminalClearRequest.id : 0
+                              }
+                              connection={null}
+                              ctrlVPaste={settings.localTerminal.ctrlVPaste}
+                              cursorBlink={settings.appearance.cursorBlink}
+                              cursorStyle={settings.appearance.cursorStyle}
+                              fontFamily={terminalFontFamily}
+                              fontSize={settings.appearance.terminalFontSize}
+                              initialSessionId={tab.sessionId}
+                              initialOutput={tab.warmupOutput}
+                              initialRequestId={tab.requestId}
+                              onRecentOutput={appendTerminalRecentOutput}
+                              onSearchClose={closeTerminalSearch}
+                              onSearchCaseSensitiveToggle={toggleTerminalSearchCaseSensitive}
+                              onSearchQueryChange={updateTerminalSearchQuery}
+                              onSendSelectionToAi={sendTerminalSelectionToAi}
+                              onStatusChange={updateLocalTerminalTabStatus}
+                              onTerminalInputCommand={
+                                settings.command.recordTerminalInputHistory
+                                  ? (tabId, command) =>
+                                      void recordTerminalInputHistoryCommand(tabId, command)
+                                  : undefined
+                              }
+                              onUserInput={handleTerminalSplitUserInput}
+                              onWarmupCaptureReady={stopTerminalWarmupCapture}
+                              searchCaseSensitive={Boolean(terminalSearchByTabId[tab.id]?.caseSensitive)}
+                              searchNavigationRequest={terminalSearchNavigationRequest}
+                              searchOpen={Boolean(terminalSearchByTabId[tab.id]?.open)}
+                              searchQuery={terminalSearchByTabId[tab.id]?.query || ""}
+                              tabId={tab.id}
+                              theme={terminalColorScheme.theme}
+                              title={tab.title}
+                              windowsPty={windowsPtyInfo}
+                            />
+                          </Suspense>
+                        ) : (
+                          <LocalTerminalStatusPanel
+                            active={isTerminalPanelActive(tab.id, "local")}
+                            {...terminalSplitStatusProps({ kind: "local", tabId: tab.id })}
+                            error={tab.error || null}
+                            profile={
+                              tab.source === "local"
+                                ? localTerminalProfiles.find((profile) => profile.id === tab.profileId) || null
+                                : null
+                            }
+                            source={tab.source || "local"}
+                            status={tab.status}
+                            title={tab.title}
+                            key={tab.id}
+                            onOpenSettings={openLocalTerminalSettings}
+                            onRetry={
+                              tab.source === "local" || !tab.source
+                                ? () =>
+                                    void openLocalTerminalByProfile(
+                                      localTerminalProfiles.find((profile) => profile.id === tab.profileId) || null,
+                                    )
+                                : undefined
+                            }
+                          />
+                        ),
+                      )}
                   {showUnifiedSplitDropZones ? (
                     <div className="workbench-split-drop-zones" aria-hidden="true">
                       <div
@@ -7843,207 +9290,7 @@ export function WorkspaceShell() {
                     </div>
                   ) : null}
                 </section>
-                {showSshCommandSenderPanel ? (
-                  <section className="command-sender-panel" aria-label="命令操作台">
-                    <div className="command-sender-console">
-                      <header className="command-sender-console-head">
-                        <div className="command-sender-title">
-                          <span>命令操作台</span>
-                        </div>
-                        <div className="command-select-row">
-                          <AppSelect
-                            ariaLabel="发送模式"
-                            className="command-toolbar-app-select command-send-mode-select"
-                            value="sequential"
-                            options={[
-                              {
-                                label: (
-                                  <span className="command-select-label">
-                                    <Send className="ui-icon" aria-hidden="true" />
-                                    <span>逐条发送</span>
-                                  </span>
-                                ),
-                                value: "sequential",
-                              },
-                            ]}
-                            onChange={() => undefined}
-                          />
-                        </div>
-                        <span />
-                        <div className="command-sender-head-actions">
-                          <span className="command-last-sent">{commandSenderLastSentLabel}</span>
-                          <button
-                            className="command-console-toggle command-sender-close"
-                            type="button"
-                            aria-label="关闭命令操作台"
-                            onClick={() => setCommandSenderOpen(false)}
-                          >
-                            <X className="ui-icon" aria-hidden="true" />
-                            <span className="command-close-text">关闭</span>
-                          </button>
-                        </div>
-                      </header>
-
-                      <div className="command-sender-console-body">
-                        <aside className="command-sender-block command-target-pane" aria-label="投递目标">
-                          <div className="command-sender-label">
-                            <span className="command-target-title">
-                              <span>目标</span>
-                              <span className="command-target-count">
-                                已选 {commandSenderSelectedCount.toString()} / {commandSenderTargets.length.toString()}
-                              </span>
-                            </span>
-                            <span className="command-target-tools">
-                              <label
-                                className="command-target-select-all"
-                                data-state={
-                                  commandSenderAllSelected
-                                    ? "checked"
-                                    : commandSenderPartiallySelected
-                                      ? "mixed"
-                                      : "unchecked"
-                                }
-                              >
-                                <input
-                                  type="checkbox"
-                                  checked={commandSenderAllSelected}
-                                  onChange={toggleCommandSenderAllTargets}
-                                />
-                                <span>{commandSenderAllSelected ? "取消全选" : "全选"}</span>
-                              </label>
-                            </span>
-                          </div>
-
-                          <div className="command-target-list">
-                            {commandSenderTargets.length === 0 ? (
-                              <p className="command-sender-empty">暂无可写入的终端。</p>
-                            ) : (
-                              commandSenderTargets.map((target) => {
-                                const selected = selectedCommandTargetKeySet.has(target.key);
-                                const hasDelivery = target.deliveryStatus !== "idle";
-                                return (
-                                  <div
-                                    className={`command-target command-sender-target ${
-                                      selected ? "selected" : ""
-                                    } ${hasDelivery ? "has-delivery" : ""} ${
-                                      target.deliveryStatus === "failed" ? "has-failed-delivery" : ""
-                                    }`}
-                                    data-delivery={target.deliveryStatus}
-                                    key={target.connectionId}
-                                  >
-                                    <label className="command-target-select">
-                                      <input
-                                        className="command-target-checkbox"
-                                        type="checkbox"
-                                        checked={selected}
-                                        onChange={() => toggleCommandSenderTarget(target)}
-                                      />
-                                      <span className="command-target-copy">
-                                        <strong>{target.label}</strong>
-                                        <span>{target.description}</span>
-                                      </span>
-                                    </label>
-                                    <span className="command-target-meta">
-                                      <span className="command-target-terminal-shell">
-                                        <SquareTerminal className="ui-icon" aria-hidden="true" />
-                                        <AppSelect
-                                          ariaLabel={`${target.label} 子 tab`}
-                                          className="command-target-terminal-select"
-                                          menuMinWidth={176}
-                                          value={target.tabId}
-                                          options={target.tabs.map((tab) => ({
-                                            label: tab.label,
-                                            value: tab.tabId,
-                                          }))}
-                                          onChange={(tabId) => selectCommandSenderTargetTab(target, tabId)}
-                                        />
-                                      </span>
-                                      <span className="command-target-state">在线</span>
-                                      <button
-                                        className={`command-target-delivery command-sender-status ${target.deliveryStatus}`}
-                                        type="button"
-                                        title={target.deliveryMessage || "点击查看对应终端"}
-                                        onClick={() => activateCommandSenderTarget(target)}
-                                      >
-                                        {commandSenderDeliveryLabel(target.deliveryStatus)}
-                                      </button>
-                                    </span>
-                                  </div>
-                                );
-                              })
-                            )}
-                          </div>
-                        </aside>
-
-                        <section className="command-sender-block command-compose-pane" aria-label="命令编辑">
-                          <div className="command-compose-label">命令</div>
-                          <textarea
-                            className="command-input command-sender-input"
-                            value={commandSenderInput}
-                            placeholder="输入要投递到目标终端的命令"
-                            spellCheck={false}
-                            onChange={(event) =>
-                              handleCommandSenderInputChange(event.currentTarget.value)
-                            }
-                            onKeyDown={handleCommandSenderInputKeyDown}
-                          />
-                          {commandLibraryError ? (
-                            <div className="command-library-error" role="status">
-                              {commandLibraryError}
-                            </div>
-                          ) : null}
-                          {commandLibraryUnavailableReason ? (
-                            <div className="command-library-notice" role="status">
-                              {commandLibraryUnavailableReason}
-                            </div>
-                          ) : null}
-                          {commandSenderRisky ? (
-                            <div className="command-risk-warning command-sender-risk-warning show" role="status">
-                              检测到高风险片段，请确认目标机器和命令内容。
-                            </div>
-                          ) : null}
-                          <div className="command-compose-footer command-sender-actions">
-                            <div className="command-send-result">
-                              {commandSenderInput.trim()
-                                ? commandSenderSelectedCount > 0
-                                  ? `${commandSenderSelectedCount.toString()} 个目标待发送。`
-                                  : "请选择至少一个目标。"
-                                : "等待输入命令。"}
-                            </div>
-                            <div className="command-actions">
-                              <button
-                                className="primary-button command-sender-primary"
-                                type="button"
-                                disabled={!commandSenderCanSend}
-                                onClick={() => void sendCommandToTargets(true)}
-                              >
-                                <CornerDownLeft className="ui-icon" aria-hidden="true" />
-                                <span>发送并回车</span>
-                              </button>
-                              <button
-                                className="secondary-button command-sender-secondary"
-                                type="button"
-                                disabled={!commandSenderCanSend}
-                                onClick={() => void sendCommandToTargets(false)}
-                              >
-                                发送不回车
-                              </button>
-                              <button
-                                className="secondary-button clear-command-button command-sender-secondary"
-                                type="button"
-                                disabled={!commandSenderInput}
-                                onClick={clearCommandSenderInput}
-                              >
-                                <Trash2 className="ui-icon" aria-hidden="true" />
-                                <span>清空</span>
-                              </button>
-                            </div>
-                          </div>
-                        </section>
-                      </div>
-                    </div>
-                  </section>
-                ) : null}
+                {showTerminalCommandSenderPanel ? renderCommandSenderPanel() : null}
               </section>
 
               {workbenchTabMouseDrag?.active ? (
@@ -8275,238 +9522,6 @@ export function WorkspaceShell() {
                 </section>
               </section>
 
-              <section
-                className={`terminal-workbench-pane ${commandSenderOpen ? "command-sender-open" : ""} ${
-                  showingLocalTerminal ? "" : "is-hidden"
-                }`}
-                data-terminal-tone={terminalTone}
-                aria-label="本地终端区"
-                aria-hidden={!showingLocalTerminal}
-              >
-                <nav className="terminal-subtabs" aria-label="本地终端标签">
-                  <div className="workbench-tab-scroll-list" ref={localTerminalTabScroll.ref}>
-                    {localTerminalTabs.map((tab, index) => (
-                      <TabContextMenu
-                        key={tab.id}
-                        actions={[
-                          {
-                            hint: "Ctrl+F4",
-                            label: "关闭",
-                            onSelect: () => closeLocalTerminalSession(tab),
-                          },
-                          {
-                            disabled: localTerminalTabs.length <= 1,
-                            label: "关闭其他",
-                            onSelect: () => closeOtherLocalTerminalTabs(tab.id),
-                          },
-                          {
-                            disabled: index >= localTerminalTabs.length - 1,
-                            label: "关闭右侧标签页",
-                            onSelect: () => closeLocalTerminalTabsToRight(tab.id),
-                          },
-                          {
-                            disabled: localTerminalTabs.length === 0,
-                            hint: "Ctrl+K W",
-                            label: "全部关闭",
-                            onSelect: () => closeLocalTerminalTabs(localTerminalTabs.map((item) => item.id)),
-                          },
-                        ]}
-                      >
-                        <div
-                          className={`subtab-shell ${tab.id === activeLocalTerminalTabId ? "active" : ""}`}
-                          data-workbench-tab-active={tab.id === activeLocalTerminalTabId ? "true" : undefined}
-                        >
-                          <button
-                            className="subtab local-terminal-subtab"
-                            type="button"
-                            title={`${tab.title} · ${tab.status}`}
-                            onClick={() => activateLocalTerminalTab(tab)}
-                          >
-                            <LocalTerminalIcon className="ui-icon" kind={tab.profileKind} title={tab.title} />
-                            <span>{tab.title}</span>
-                          </button>
-                          <button
-                            className="subtab-close"
-                            type="button"
-                            aria-label={`关闭 ${tab.title}`}
-                            onClick={() => closeLocalTerminalSession(tab)}
-                          >
-                            <X className="ui-icon" aria-hidden="true" />
-                          </button>
-                        </div>
-                      </TabContextMenu>
-                    ))}
-                    <Tooltip label="新建默认终端">
-                      <button
-                        className="add-subtab"
-                        type="button"
-                        aria-label="新建默认终端"
-                        disabled={!defaultLocalTerminalProfile}
-                        onClick={() => void openLocalTerminalByProfile(resolveDefaultLocalTerminalProfile())}
-                      >
-                        <Plus className="ui-icon" aria-hidden="true" />
-                      </button>
-                    </Tooltip>
-                    <LocalTerminalLauncher
-                      disabled={localTerminalProfiles.length === 0}
-                      loading={localTerminalProfilesLoading}
-                      profiles={localTerminalProfiles}
-                      onOpenProfile={(profile) => void openLocalTerminalByProfile(profile)}
-                    />
-                    {localTerminalProfilesError ? (
-                      <div className="local-terminal-subtabs-meta">
-                        <button
-                          className="local-terminal-inline-action"
-                          type="button"
-                          onClick={openLocalTerminalSettings}
-                        >
-                          {localTerminalProfilesError}
-                        </button>
-                      </div>
-                    ) : null}
-                  </div>
-                  {renderWorkbenchTabScrollControls(localTerminalTabScroll, "本地终端标签")}
-                  <div className="terminal-subtab-actions">
-                    {activeLocalTerminalTab?.sessionId ? (
-                      <Tooltip label={activeLocalTerminalSearch?.open ? "关闭终端搜索" : "搜索终端输出"}>
-                        <button
-                          className={`add-subtab terminal-search-toggle ${
-                            activeLocalTerminalSearch?.open ? "active" : ""
-                          }`}
-                          type="button"
-                          aria-label="搜索终端输出"
-                          aria-expanded={Boolean(activeLocalTerminalSearch?.open)}
-                          onClick={() => toggleTerminalSearch(activeLocalTerminalTab.id)}
-                        >
-                          <Search className="ui-icon" aria-hidden="true" />
-                        </button>
-                      </Tooltip>
-                    ) : null}
-                    {commandSenderTargets.length > 0 ? (
-                      <Tooltip label="Command Sender">
-                        <button
-                          className={`add-subtab command-sender-toggle ${commandSenderOpen ? "active" : ""}`}
-                          type="button"
-                          aria-label="打开命令操作台 Command Sender"
-                          aria-expanded={commandSenderOpen}
-                          onClick={openCommandSender}
-                        >
-                          <Send className="ui-icon" aria-hidden="true" />
-                        </button>
-                      </Tooltip>
-                    ) : null}
-                    <Tooltip label={rightPaneCollapsed ? "展开右侧面板" : "收起右侧面板"}>
-                      <button
-                        className="add-subtab terminal-subtab-panel-toggle"
-                        type="button"
-                        aria-label={rightPaneCollapsed ? "展开右侧面板" : "收起右侧面板"}
-                        aria-expanded={!rightPaneCollapsed}
-                        onClick={() => setRightPaneCollapsed((collapsed) => !collapsed)}
-                      >
-                        {rightPaneCollapsed ? (
-                          <PanelRightOpen className="ui-icon" aria-hidden="true" />
-                        ) : (
-                          <PanelRightClose className="ui-icon" aria-hidden="true" />
-                        )}
-                      </button>
-                    </Tooltip>
-                  </div>
-                </nav>
-
-                <section className="terminal-stack" aria-label="本地终端">
-                  {localTerminalTabs.length === 0 ? (
-                    <LocalTerminalEmptyPanel
-                      active={showingLocalTerminal}
-                      error={localTerminalProfilesError}
-                      loading={localTerminalProfilesLoading}
-                      profileName={defaultLocalTerminalProfile?.name || null}
-                      onOpenDefault={() => void openLocalTerminalByProfile(resolveDefaultLocalTerminalProfile())}
-                      onOpenSettings={openLocalTerminalSettings}
-                    />
-                  ) : (
-                    localTerminalTabs.map((tab) =>
-                      tab.sessionId ? (
-                        <Suspense
-                          key={tab.id}
-                          fallback={
-                            <LocalTerminalStatusPanel
-                              active={showingLocalTerminal && tab.id === activeLocalTerminalTabId}
-                              error={null}
-                              profile={
-                                tab.source === "local"
-                                  ? localTerminalProfiles.find((profile) => profile.id === tab.profileId) || null
-                                  : null
-                              }
-                              source={tab.source || "local"}
-                              status="正在加载终端"
-                              title={tab.title}
-                              onOpenSettings={openLocalTerminalSettings}
-                            />
-                          }
-                        >
-                          <TerminalPanel
-                            active={showingLocalTerminal && tab.id === activeLocalTerminalTabId}
-                            autoConnect={false}
-                            connection={null}
-                            ctrlVPaste={settings.localTerminal.ctrlVPaste}
-                            cursorBlink={settings.appearance.cursorBlink}
-                            cursorStyle={settings.appearance.cursorStyle}
-                            fontFamily={terminalFontFamily}
-                            fontSize={settings.appearance.terminalFontSize}
-                            initialSessionId={tab.sessionId}
-                            initialOutput={tab.warmupOutput}
-                            initialRequestId={tab.requestId}
-                            onRecentOutput={appendTerminalRecentOutput}
-                            onSearchClose={closeTerminalSearch}
-                            onSearchCaseSensitiveToggle={toggleTerminalSearchCaseSensitive}
-                            onSearchQueryChange={updateTerminalSearchQuery}
-                            onSendSelectionToAi={sendTerminalSelectionToAi}
-                            onStatusChange={updateLocalTerminalTabStatus}
-                            onTerminalInputCommand={
-                              settings.command.recordTerminalInputHistory
-                                ? (tabId, command) => void recordTerminalInputHistoryCommand(tabId, command)
-                                : undefined
-                            }
-                            onWarmupCaptureReady={stopTerminalWarmupCapture}
-                            searchCaseSensitive={Boolean(terminalSearchByTabId[tab.id]?.caseSensitive)}
-                            searchNavigationRequest={terminalSearchNavigationRequest}
-                            searchOpen={Boolean(terminalSearchByTabId[tab.id]?.open)}
-                            searchQuery={terminalSearchByTabId[tab.id]?.query || ""}
-                            tabId={tab.id}
-                            theme={terminalColorScheme.theme}
-                            title={tab.title}
-                            windowsPty={windowsPtyInfo}
-                          />
-                        </Suspense>
-                      ) : (
-                        <LocalTerminalStatusPanel
-                          active={showingLocalTerminal && tab.id === activeLocalTerminalTabId}
-                          error={tab.error || null}
-                          profile={
-                            tab.source === "local"
-                              ? localTerminalProfiles.find((profile) => profile.id === tab.profileId) || null
-                              : null
-                          }
-                          source={tab.source || "local"}
-                          status={tab.status}
-                          title={tab.title}
-                          key={tab.id}
-                          onOpenSettings={openLocalTerminalSettings}
-                          onRetry={
-                            tab.source === "local" || !tab.source
-                              ? () =>
-                                  void openLocalTerminalByProfile(
-                                    localTerminalProfiles.find((profile) => profile.id === tab.profileId) || null,
-                                  )
-                              : undefined
-                          }
-                        />
-                      ),
-                    )
-                  )}
-                </section>
-                {showingLocalTerminal ? renderCommandSenderPanel() : null}
-              </section>
             </section>
           ) : null}
         </section>
@@ -8948,6 +9963,17 @@ export function WorkspaceShell() {
           </Dialog.Content>
         </Dialog.Portal>
       </Dialog.Root>
+
+      <ConfirmDialog
+        confirmLabel="关闭全部"
+        description={`关闭分屏组将同时关闭其中 ${terminalSplitPanes
+          .filter((pane) => pane.binding)
+          .length.toString()} 个终端会话，组外普通标签不受影响。`}
+        open={terminalSplitCloseConfirmOpen}
+        title="关闭分屏组"
+        onConfirm={closeTerminalSplitGroup}
+        onOpenChange={setTerminalSplitCloseConfirmOpen}
+      />
 
       <ConfirmDialog
         confirmLabel="删除"
@@ -9958,20 +10984,28 @@ function LocalTerminalEmptyPanel({
 
 function LocalTerminalStatusPanel({
   active,
+  className,
   error,
+  onPaneFocus,
   profile,
   source,
   status,
+  style,
   title,
+  visible = active,
   onOpenSettings,
   onRetry,
 }: {
   active: boolean;
+  className?: string;
   error: string | null;
+  onPaneFocus?: () => void;
   profile: LocalTerminalProfile | null;
   source: "local" | "telnet" | "serial";
   status: string;
+  style?: CSSProperties;
   title: string;
+  visible?: boolean;
   onOpenSettings: () => void;
   onRetry?: () => void;
 }) {
@@ -9982,10 +11016,12 @@ function LocalTerminalStatusPanel({
   return (
     <section
       className={`terminal-direct-status local-terminal-status ${failed ? "is-error" : "is-loading"} ${
-        active ? "" : "is-hidden"
-      }`}
+        visible ? "" : "is-hidden"
+      } ${className || ""}`}
       aria-label={`${title} 状态`}
-      aria-hidden={!active}
+      aria-hidden={!visible}
+      style={style}
+      onPointerDown={onPaneFocus}
     >
       <div>
         {failed ? (
@@ -10091,26 +11127,36 @@ function LocalTerminalLauncher({
 
 function DirectTerminalStatusPanel({
   active,
+  className,
   connection,
   error,
+  onPaneFocus,
   status,
+  style,
   title,
+  visible = active,
 }: {
   active: boolean;
+  className?: string;
   connection: ConnectionProfile | null;
   error: string | null;
+  onPaneFocus?: () => void;
   status: string;
+  style?: CSSProperties;
   title: string;
+  visible?: boolean;
 }) {
   const failed = status === "连接失败";
 
   return (
     <section
       className={`terminal-direct-status ${failed ? "is-error" : "is-loading"} ${
-        active ? "" : "is-hidden"
-      }`}
+        visible ? "" : "is-hidden"
+      } ${className || ""}`}
       aria-label={`${title} 状态`}
-      aria-hidden={!active}
+      aria-hidden={!visible}
+      style={style}
+      onPointerDown={onPaneFocus}
     >
       <div>
         {failed ? (
@@ -10132,7 +11178,9 @@ function DirectTerminalStatusPanel({
 
 function ConnectionStepPanel({
   active,
+  className,
   step,
+  onPaneFocus,
   onCancel,
   onEdit,
   onPromptAuthKindChange,
@@ -10142,9 +11190,13 @@ function ConnectionStepPanel({
   onRetry,
   onSubmitPrompt,
   onTrustHostKey,
+  style,
+  visible = active,
 }: {
   active: boolean;
+  className?: string;
   step: ConnectionStepState;
+  onPaneFocus?: () => void;
   onCancel: () => void;
   onEdit: (connection: ConnectionProfile) => void;
   onPromptAuthKindChange: (authKind: ConnectionAuthKind) => void;
@@ -10154,6 +11206,8 @@ function ConnectionStepPanel({
   onRetry: () => void;
   onSubmitPrompt: (event: FormEvent<HTMLFormElement>) => void;
   onTrustHostKey: () => void;
+  style?: CSSProperties;
+  visible?: boolean;
 }) {
   const hostKeyChanged = step.hostKeyDecision === "changed";
   const activeStepIndex = currentConnectionStepIndex(step);
@@ -10186,10 +11240,12 @@ function ConnectionStepPanel({
 
   return (
     <section
-      className={`connection-step-page ${active ? "" : "is-hidden"}`}
+      className={`connection-step-page ${visible ? "" : "is-hidden"} ${className || ""}`}
       data-step-status={step.status}
       aria-label="连接步骤"
-      aria-hidden={!active}
+      aria-hidden={!visible}
+      style={style}
+      onPointerDown={onPaneFocus}
     >
       <div className="connection-step-body">
         <section className="connection-step-shell">
@@ -13107,6 +14163,13 @@ function concatenateUint8Arrays(chunks: Uint8Array[], totalBytes: number) {
 
 function yieldToBrowser() {
   return new Promise<void>((resolve) => window.setTimeout(resolve, 0));
+}
+
+function setsEqual<T>(left: ReadonlySet<T>, right: ReadonlySet<T>) {
+  if (left.size !== right.size) {
+    return false;
+  }
+  return Array.from(left).every((value) => right.has(value));
 }
 
 function scheduleIdleTask(callback: () => void, timeoutMs: number): () => void {
