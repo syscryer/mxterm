@@ -16,7 +16,7 @@ import {
   Search,
   X,
 } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { type CSSProperties, useEffect, useRef, useState } from "react";
 import "@xterm/xterm/css/xterm.css";
 
 import type { ConnectionProfile } from "../connections/connectionTypes";
@@ -69,6 +69,8 @@ export type TerminalPromptDirectorySnapshotReader = () => string | null;
 
 interface TerminalPanelProps {
   active: boolean;
+  className?: string;
+  clearRequestId?: number;
   connection: ConnectionProfile | null;
   autoConnect?: boolean;
   ctrlVPaste?: boolean;
@@ -79,14 +81,18 @@ interface TerminalPanelProps {
   initialOutput?: number[];
   initialRequestId?: string;
   initialSessionId: string;
+  layoutRevision?: number;
+  onPaneFocus?: () => void;
   searchCaseSensitive?: boolean;
   searchNavigationRequest?: TerminalSearchNavigationRequest | null;
   searchOpen?: boolean;
   searchQuery?: string;
+  style?: CSSProperties;
   onWarmupCaptureReady?: (tabId: string) => void;
   tabId: string;
   theme: ITheme;
   title: string;
+  visible?: boolean;
   windowsPty?: IWindowsPty;
   onCurrentDirectoryChange?: (tabId: string, path: string) => void;
   onPromptDirectorySnapshotChange?: (
@@ -101,10 +107,13 @@ interface TerminalPanelProps {
   onSessionIdChange?: (tabId: string, sessionId: string, requestId?: string) => void;
   onStatusChange: (tabId: string, status: string) => void;
   onTerminalInputCommand?: (tabId: string, command: string) => void;
+  onUserInput?: (tabId: string, data: string) => void;
 }
 
 export function TerminalPanel({
   active,
+  className,
+  clearRequestId = 0,
   connection,
   autoConnect = true,
   ctrlVPaste = true,
@@ -115,8 +124,10 @@ export function TerminalPanel({
   initialOutput = [],
   initialRequestId,
   initialSessionId,
+  layoutRevision = 0,
   onCurrentDirectoryChange,
   onPromptDirectorySnapshotChange,
+  onPaneFocus,
   onRecentOutput,
   onSearchClose,
   onSearchCaseSensitiveToggle,
@@ -125,14 +136,17 @@ export function TerminalPanel({
   onSessionIdChange,
   onStatusChange,
   onTerminalInputCommand,
+  onUserInput,
   onWarmupCaptureReady,
   searchCaseSensitive = false,
   searchNavigationRequest = null,
   searchOpen = false,
   searchQuery = "",
+  style,
   tabId,
   theme,
   title,
+  visible = active,
   windowsPty,
 }: TerminalPanelProps) {
   const hostRef = useRef<HTMLDivElement | null>(null);
@@ -153,6 +167,7 @@ export function TerminalPanel({
   const onWarmupCaptureReadyRef = useRef(onWarmupCaptureReady);
   const onSessionIdChangeRef = useRef(onSessionIdChange);
   const onTerminalInputCommandRef = useRef(onTerminalInputCommand);
+  const onUserInputRef = useRef(onUserInput);
   const reconnectingPreviousSessionIdRef = useRef<string | null>(null);
   const reconnectingRef = useRef(false);
   const startupOutputBufferRef = useRef("");
@@ -171,6 +186,7 @@ export function TerminalPanel({
   const ctrlVPasteRef = useRef(ctrlVPaste);
   const suppressNextNativePasteRef = useRef(false);
   const lastSearchNavigationRequestIdRef = useRef<number | null>(null);
+  const lastClearRequestIdRef = useRef(0);
   const previousSearchOpenRef = useRef(searchOpen);
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [listenersReady, setListenersReady] = useState(!hasTauriRuntime());
@@ -190,6 +206,10 @@ export function TerminalPanel({
   useEffect(() => {
     onTerminalInputCommandRef.current = onTerminalInputCommand;
   }, [onTerminalInputCommand]);
+
+  useEffect(() => {
+    onUserInputRef.current = onUserInput;
+  }, [onUserInput]);
 
   useEffect(() => {
     ctrlVPasteRef.current = ctrlVPaste;
@@ -448,6 +468,7 @@ export function TerminalPanel({
       }
       const inputHistory = applyTerminalInputHistoryData(inputHistoryStateRef.current, data);
       inputHistoryStateRef.current = inputHistory.state;
+      onUserInputRef.current?.(tabId, data);
       void terminalWrite(activeSessionId, data)
         .then(() => {
           inputHistory.commands.forEach((command) => {
@@ -562,14 +583,7 @@ export function TerminalPanel({
 
     return () => {
       disposed = true;
-      const activeSessionId = sessionIdRef.current;
-      if (activeSessionId) {
-        void terminalClose(activeSessionId).catch(() => {});
-      }
-      const reconnectingPreviousSessionId = reconnectingPreviousSessionIdRef.current;
-      if (reconnectingPreviousSessionId && reconnectingPreviousSessionId !== activeSessionId) {
-        void terminalClose(reconnectingPreviousSessionId).catch(() => {});
-      }
+      // 终端会话由标签关闭流程统一回收，分屏移动不能中断 PTY。
       reconnectingPreviousSessionIdRef.current = null;
       stopOutputListener?.();
       stopStateListener?.();
@@ -639,6 +653,15 @@ export function TerminalPanel({
     }
     previousSearchOpenRef.current = searchOpen;
   }, [searchOpen]);
+
+  useEffect(() => {
+    if (!clearRequestId || lastClearRequestIdRef.current === clearRequestId) {
+      return;
+    }
+    lastClearRequestIdRef.current = clearRequestId;
+    terminalRef.current?.clear();
+    terminalRef.current?.scrollToBottom();
+  }, [clearRequestId]);
 
   useEffect(() => {
     if (
@@ -807,6 +830,16 @@ export function TerminalPanel({
     }
   }, [active]);
 
+  useEffect(() => {
+    if (!visible) {
+      return;
+    }
+    const terminal = terminalRef.current;
+    if (terminal) {
+      fitAndSyncTerminalSize(terminal, fitAddonRef.current, sessionIdRef.current, lastSyncedSizeRef);
+    }
+  }, [layoutRevision, visible]);
+
   const hasContextMenuSelection = contextMenuSelection.trim().length > 0;
   const canPasteFromMenu = Boolean(sessionId);
   const canReconnectFromMenu = Boolean(connection) && hasTauriRuntime() && listenersReady && !reconnecting;
@@ -929,8 +962,13 @@ export function TerminalPanel({
 
   return (
     <section
-      className={`terminal-panel ${active ? "" : "is-hidden"} ${searchOpen ? "terminal-search-open" : ""}`}
+      className={`terminal-panel ${visible ? "" : "is-hidden"} ${searchOpen ? "terminal-search-open" : ""} ${
+        className || ""
+      }`}
       aria-label={`${title} 终端`}
+      aria-hidden={!visible}
+      style={style}
+      onPointerDown={onPaneFocus}
     >
       {searchOpen ? (
         <div className="terminal-search-bar" role="search">

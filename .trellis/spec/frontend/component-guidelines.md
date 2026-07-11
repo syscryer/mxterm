@@ -306,6 +306,39 @@ Ant Design, Mantine, or similar libraries just to fix one modal or button.
   ResizeObserver / xterm `onResize` callbacks and clear pending resize timers
   when deactivated. Initial session handoff, tab activation, and font changes
   may still use immediate sync because they are discrete events.
+- Terminal split layouts must keep visibility separate from focus. `visible`
+  controls whether a pane continues rendering output, while `active` remains
+  the single focused pane that receives keyboard focus and high-frequency resize
+  handling. A layout resize may use a discrete revision to fit every visible
+  pane after the drag ends; it must not make every pane observe window resize.
+  Backend session lifetime belongs to the workspace tab close path, not the
+  `TerminalPanel` cleanup, because changing a pane layout can temporarily
+  unmount and remount the xterm component without closing its PTY.
+
+- Terminal split layouts must contain no more than four leaf panes. The
+  four-pane command rebuilds the whole split tree as one 2x2 layout instead of
+  nesting another layout into the focused pane; directional split commands must
+  be disabled and rejected once four panes exist. Rendering must also normalize
+  an old oversized in-memory tree back to four panes. Pane frames do not draw
+  individual outer borders: the shared resizer is the only divider, while focus
+  is indicated in the pane header.
+
+- Terminal split chrome is an overlay above stable `TerminalPanel` instances.
+  A bound pane frame must remain visually transparent outside its header and
+  resizer; never paint an opaque pane-sized background above xterm content.
+  Only an empty leaf may draw an empty-state surface. Visual verification must
+  include a terminal with real rendered output, because a browser preview with
+  no PTY output cannot reveal this class of coverage bug.
+
+  ```tsx
+  <TerminalPanel
+    active={pane.id === focusedPaneId}
+    visible={Boolean(pane.binding)}
+    layoutRevision={layoutRevision}
+    tabId={pane.binding.tabId}
+    {...terminalProps}
+  />
+  ```
 - `TerminalPanel` should briefly buffer startup handoff output before first
   paint so `initialOutput` and early live events are written to xterm in one
   ordered batch. If the batch contains a duplicated leading shell prompt before
