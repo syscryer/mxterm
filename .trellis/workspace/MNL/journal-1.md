@@ -1017,3 +1017,36 @@ Implemented remote file tree multi-selection, context-menu-only bulk download/de
 ### Next Steps
 
 - None - task complete
+
+
+## Session 31: Remote MCP stability, transfer, and update handoff
+
+**Date**: 2026-07-12
+**Task**: Remote MCP stability, transfer, and update handoff
+**Branch**: `master`
+
+### Summary
+
+Added remote MCP supervision and logs, unified MCP SFTP transfers with resumable mxpart behavior, verified real transfers against 192.168.10.16, and added updater confirmation plus MCP blocker termination.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `76253c7` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
