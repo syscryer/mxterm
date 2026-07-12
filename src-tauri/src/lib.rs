@@ -59,6 +59,7 @@ pub fn run() {
                 let app_handle = app.handle().clone();
                 let manager = app.state::<mcp::McpRemoteServiceManager>();
                 let _ = mcp::start_remote_service_from_settings(&app_handle, &manager);
+                mcp::start_remote_service_supervisor(app_handle);
             }
             #[cfg(target_os = "macos")]
             if let Some(main_window) = app.get_webview_window("main") {
@@ -112,6 +113,10 @@ pub fn run() {
             mcp::mcp_remote_service_start,
             mcp::mcp_remote_service_stop,
             mcp::mcp_remote_service_restart,
+            mcp::mcp_update_blockers,
+            mcp::mcp_prepare_for_update,
+            mcp::mcp_remote_log_read,
+            mcp::mcp_remote_log_clear,
             mcp::mcp_remote_token_rotate,
             commands::get_app_runtime_info,
             commands::get_windows_pty_info,

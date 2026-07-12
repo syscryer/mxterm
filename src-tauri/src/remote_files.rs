@@ -1888,7 +1888,7 @@ fn local_relative_path(root: &Path, relative_path: &str) -> PathBuf {
         })
 }
 
-async fn upload_sftp_file(
+pub(crate) async fn upload_sftp_file(
     sftp: &SftpSession,
     local_path: &Path,
     final_remote_path: &str,
@@ -2010,7 +2010,7 @@ async fn upload_sftp_file(
     Ok(())
 }
 
-async fn download_sftp_file(
+pub(crate) async fn download_sftp_file(
     sftp: &SftpSession,
     remote_path: &str,
     final_local_path: &Path,

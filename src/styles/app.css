@@ -673,6 +673,91 @@ button {
   justify-content: flex-start;
 }
 
+.mcp-remote-runtime-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+  color: var(--mx-muted);
+  font-size: 12px;
+}
+
+.mcp-remote-runtime-meta .is-error {
+  color: var(--mx-danger);
+}
+
+.mcp-remote-log {
+  min-width: 0;
+  border-top: 1px solid var(--mx-line-soft);
+  display: grid;
+  gap: 8px;
+  padding-top: 10px;
+}
+
+.mcp-remote-log > header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.mcp-remote-log > header > div:first-child {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.mcp-remote-log strong {
+  color: var(--mx-text);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.mcp-remote-log small {
+  overflow: hidden;
+  color: var(--mx-muted);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mcp-remote-log > header > div:last-child {
+  display: inline-flex;
+  gap: 2px;
+}
+
+.mcp-remote-log button {
+  width: 28px;
+  height: 28px;
+  border: 0;
+  border-radius: 6px;
+  display: grid;
+  place-items: center;
+  color: var(--mx-muted);
+  background: transparent;
+}
+
+.mcp-remote-log button:hover:not(:disabled) {
+  color: var(--mx-text);
+  background: var(--mx-active);
+}
+
+.mcp-remote-log pre {
+  min-height: 96px;
+  max-height: 220px;
+  margin: 0;
+  overflow: auto;
+  border: 1px solid var(--mx-line-soft);
+  border-radius: 6px;
+  padding: 9px 10px;
+  color: var(--mx-text);
+  background: var(--mx-panel-soft);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 .mcp-connection-exposure-panel {
   display: grid;
   gap: 0;

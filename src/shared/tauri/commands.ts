@@ -120,8 +120,10 @@ import type {
 } from "../../features/settings/webdavSyncTypes";
 import type {
   McpLocalNetworkInfo,
+  McpRemoteLogOutput,
   McpRemoteServiceStatus,
   McpSettings,
+  McpUpdateBlockerStatus,
 } from "../../features/settings/mcpSettingsTypes";
 
 export interface SecretVaultStatus {
@@ -1191,6 +1193,22 @@ export function mcpRemoteServiceStop() {
 
 export function mcpRemoteServiceRestart() {
   return invoke<McpRemoteServiceStatus>("mcp_remote_service_restart");
+}
+
+export function mcpUpdateBlockers() {
+  return invoke<McpUpdateBlockerStatus>("mcp_update_blockers");
+}
+
+export function mcpPrepareForUpdate() {
+  return invoke<McpUpdateBlockerStatus>("mcp_prepare_for_update");
+}
+
+export function mcpRemoteLogRead() {
+  return invoke<McpRemoteLogOutput>("mcp_remote_log_read");
+}
+
+export function mcpRemoteLogClear() {
+  return invoke<McpRemoteLogOutput>("mcp_remote_log_clear");
 }
 
 export function mcpRemoteTokenRotate() {

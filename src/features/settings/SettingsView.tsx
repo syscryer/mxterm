@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type FormEvent } from "react";
+import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import {
   Archive,
   ArrowLeft,
@@ -65,6 +66,8 @@ import {
   localTerminalListProfiles,
   mcpExecutablePath,
   mcpLocalNetworkInfo,
+  mcpRemoteLogClear,
+  mcpRemoteLogRead,
   mcpRemoteServiceRestart,
   mcpRemoteServiceStatus,
   mcpRemoteTokenRotate,
@@ -133,6 +136,7 @@ import { ShortcutSettingsSection } from "./ShortcutSettingsSection";
 import {
   defaultMcpSettings,
   type McpLocalNetworkInfo,
+  type McpRemoteLogOutput,
   type McpSettings,
 } from "./mcpSettingsTypes";
 import type { UseAppUpdateResult } from "./useAppUpdate";
@@ -943,6 +947,7 @@ function McpSettingsSection({ connections }: { connections: ConnectionProfile[] 
   const [legacySseConfigCopied, setLegacySseConfigCopied] = useState(false);
   const [tokenCopied, setTokenCopied] = useState(false);
   const [remoteActionBusy, setRemoteActionBusy] = useState<string | null>(null);
+  const [remoteLog, setRemoteLog] = useState<McpRemoteLogOutput | null>(null);
   const [remoteHostDraft, setRemoteHostDraft] = useState(defaultMcpSettings.remote_host);
   const [remotePortDraft, setRemotePortDraft] = useState(defaultMcpSettings.remote_port.toString());
   const [remoteTokenDraft, setRemoteTokenDraft] = useState("");
@@ -1110,11 +1115,15 @@ function McpSettingsSection({ connections }: { connections: ConnectionProfile[] 
       }
       try {
         setLoading(true);
-        const next = await mcpSettingsGet();
+        const [next, nextRemoteLog] = await Promise.all([
+          mcpSettingsGet(),
+          mcpRemoteLogRead().catch(() => null),
+        ]);
         const nextExecutablePath = await mcpExecutablePath().catch(() => executablePath);
         const nextLocalNetworkInfo = await mcpLocalNetworkInfo().catch(() => null);
         if (!cancelled) {
           setSettings(next);
+          setRemoteLog(nextRemoteLog);
           setExecutablePath(nextExecutablePath);
           setLocalNetworkInfo(nextLocalNetworkInfo);
           setError(null);
@@ -1279,6 +1288,34 @@ function McpSettingsSection({ connections }: { connections: ConnectionProfile[] 
       }));
     } catch (error) {
       setError(error instanceof Error ? error.message : "远程 MCP 服务重启失败。");
+    } finally {
+      setRemoteActionBusy(null);
+    }
+  }
+
+  async function refreshRemoteLog() {
+    if (!desktopRuntime) {
+      return;
+    }
+    setRemoteActionBusy("log");
+    try {
+      setRemoteLog(await mcpRemoteLogRead());
+    } catch (error) {
+      setError(error instanceof Error ? error.message : "远程 MCP 日志读取失败。");
+    } finally {
+      setRemoteActionBusy(null);
+    }
+  }
+
+  async function clearRemoteLog() {
+    if (!desktopRuntime) {
+      return;
+    }
+    setRemoteActionBusy("clear-log");
+    try {
+      setRemoteLog(await mcpRemoteLogClear());
+    } catch (error) {
+      setError(error instanceof Error ? error.message : "远程 MCP 日志清空失败。");
     } finally {
       setRemoteActionBusy(null);
     }
@@ -1474,6 +1511,45 @@ function McpSettingsSection({ connections }: { connections: ConnectionProfile[] 
               <span>重启服务</span>
             </button>
           </div>
+
+          <div className="mcp-remote-runtime-meta">
+            <span>健康状态：{remoteStatus?.healthy ? "正常" : settings.remote_enabled ? "检查中或异常" : "未启用"}</span>
+            <span>自动重启：{(remoteStatus?.restart_count || 0).toString()} 次</span>
+            {remoteStatus?.started_at ? <span>启动：{remoteStatus.started_at}</span> : null}
+            {remoteStatus?.error ? <span className="is-error">最近错误：{remoteStatus.error}</span> : null}
+          </div>
+
+          <section className="mcp-remote-log" aria-label="远程 MCP 服务日志">
+            <header>
+              <div>
+                <strong>服务日志</strong>
+                <small>{remoteLog?.truncated ? "显示最近 128 KB" : remoteLog?.path || remoteStatus?.log_path || "尚未读取"}</small>
+              </div>
+              <div>
+                <Tooltip label="刷新日志">
+                  <button type="button" aria-label="刷新远程 MCP 日志" onClick={() => void refreshRemoteLog()}>
+                    {remoteActionBusy === "log" ? <Loader2 className="ui-icon spin" aria-hidden="true" /> : <RefreshCw className="ui-icon" aria-hidden="true" />}
+                  </button>
+                </Tooltip>
+                <Tooltip label="复制日志">
+                  <button type="button" aria-label="复制远程 MCP 日志" disabled={!remoteLog?.content} onClick={() => void navigator.clipboard.writeText(remoteLog?.content || "")}>
+                    <Copy className="ui-icon" aria-hidden="true" />
+                  </button>
+                </Tooltip>
+                <Tooltip label="打开日志目录">
+                  <button type="button" aria-label="打开远程 MCP 日志目录" disabled={!remoteLog?.path && !remoteStatus?.log_path} onClick={() => void revealItemInDir(remoteLog?.path || remoteStatus?.log_path || "")}>
+                    <FolderOpen className="ui-icon" aria-hidden="true" />
+                  </button>
+                </Tooltip>
+                <Tooltip label="清空日志">
+                  <button type="button" aria-label="清空远程 MCP 日志" disabled={remoteActionBusy === "clear-log"} onClick={() => void clearRemoteLog()}>
+                    <Trash2 className="ui-icon" aria-hidden="true" />
+                  </button>
+                </Tooltip>
+              </div>
+            </header>
+            <pre>{remoteLog?.content || "点击刷新查看远程 MCP 服务日志。"}</pre>
+          </section>
 
           <div className="mcp-remote-token-line">
             <label className="mcp-remote-token-field">
@@ -2898,6 +2974,19 @@ function BasicSettingsSection({
           />
         </SettingsRow>
       </div>
+
+      <ConfirmDialog
+        open={appUpdate.mcpStopConfirmationOpen}
+        title="关闭 MCP 后安装更新"
+        description={`检测到 ${appUpdate.mcpStopProcessCount.toString()} 个 MCP 进程正在使用更新文件。继续会关闭这些进程，并中断其它 Agent 当前的 MCP 调用，然后安装更新并重启 MXterm。`}
+        confirmLabel="关闭并安装"
+        onConfirm={appUpdate.confirmInstallAfterMcpStop}
+        onOpenChange={(open) => {
+          if (!open) {
+            appUpdate.cancelInstallAfterMcpStop();
+          }
+        }}
+      />
     </section>
   );
 }
