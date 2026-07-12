@@ -11,6 +11,24 @@ export interface McpRemoteServiceStatus {
   token_saved: boolean;
   token_preview?: string | null;
   error?: string | null;
+  healthy: boolean;
+  started_at?: string | null;
+  last_health_at?: string | null;
+  restart_count: number;
+  consecutive_failures: number;
+  log_path?: string | null;
+}
+
+export interface McpRemoteLogOutput {
+  content: string;
+  path: string;
+  truncated: boolean;
+  updated_at: string;
+}
+
+export interface McpUpdateBlockerStatus {
+  process_count: number;
+  managed_remote_running: boolean;
 }
 
 export interface McpLocalNetworkInfo {

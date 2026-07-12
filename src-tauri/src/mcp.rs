@@ -1,6 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::env;
-use std::fs;
+use std::fs::{self, OpenOptions};
+use std::io::Write;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -12,7 +13,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use tauri::{AppHandle, Manager, State};
-use tokio::io::AsyncWriteExt;
 
 use crate::app_error::AppError;
 use crate::connections::{
@@ -22,6 +22,9 @@ use crate::connections::{
     VncRunnerKind, VncScaleMode, VncSecurityCredentialMode,
 };
 use crate::remote_exec_pool::{RemoteExecRetry, RemoteExecSessionPool};
+use crate::remote_files::{
+    download_sftp_file, upload_sftp_file, SftpProgressCallback, TransferCancelToken,
+};
 use crate::ssh_config::{ResolvedSshConfig, RuntimeCredentialInput};
 use crate::storage_repository::StorageRepository;
 use crate::storage_vault::{SecretStore, VaultState};
@@ -42,6 +45,10 @@ const DEFAULT_TIMEOUT_SECONDS: u64 = 30;
 const MAX_TIMEOUT_SECONDS: u64 = 300;
 const DEFAULT_OUTPUT_BYTES: usize = 64 * 1024;
 const MAX_OUTPUT_BYTES: usize = 1024 * 1024;
+const REMOTE_LOG_MAX_BYTES: u64 = 2 * 1024 * 1024;
+const REMOTE_LOG_TAIL_BYTES: usize = 128 * 1024;
+const REMOTE_HEALTH_INTERVAL_SECONDS: u64 = 15;
+const REMOTE_HEALTH_FAILURE_THRESHOLD: u32 = 3;
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 
@@ -142,6 +149,26 @@ pub struct McpRemoteServiceStatus {
     pub token_saved: bool,
     pub token_preview: Option<String>,
     pub error: Option<String>,
+    pub healthy: bool,
+    pub started_at: Option<String>,
+    pub last_health_at: Option<String>,
+    pub restart_count: u32,
+    pub consecutive_failures: u32,
+    pub log_path: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct McpRemoteLogOutput {
+    pub content: String,
+    pub path: String,
+    pub truncated: bool,
+    pub updated_at: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct McpUpdateBlockerStatus {
+    pub process_count: u32,
+    pub managed_remote_running: bool,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -1264,103 +1291,34 @@ fn validate_local_directory_target(path: &Path) -> Result<(), AppError> {
     })
 }
 
-fn mcp_remote_part_path(remote_path: &str, timestamp_ms: u128) -> String {
-    let trimmed = remote_path.trim_end_matches('/');
-    let (parent, file_name) = trimmed
-        .rsplit_once('/')
-        .map_or(("", trimmed), |(parent, name)| {
-            if parent.is_empty() {
-                ("/", name)
-            } else {
-                (parent, name)
-            }
-        });
-    let file_name = if file_name.is_empty() {
-        "target"
-    } else {
-        file_name
-    };
-    let part_name = format!(".mxterm-mcp-transfer-{timestamp_ms}-{file_name}.part");
-    if parent.is_empty() {
-        part_name
-    } else if parent == "/" {
-        format!("/{part_name}")
-    } else {
-        format!("{parent}/{part_name}")
-    }
-}
-
-fn mcp_local_part_path(local_path: &Path, timestamp_ms: u128) -> PathBuf {
-    let file_name = local_path
-        .file_name()
-        .and_then(|value| value.to_str())
-        .filter(|value| !value.is_empty())
-        .unwrap_or("download");
-    let part_name = format!(".mxterm-mcp-transfer-{timestamp_ms}-{file_name}.part");
-    local_path
-        .parent()
-        .map(|parent| parent.join(&part_name))
-        .unwrap_or_else(|| PathBuf::from(part_name))
-}
-
 async fn upload_file_inner(
     sftp: &russh_sftp::client::SftpSession,
     local_path: &Path,
     remote_path: &str,
 ) -> Result<u64, AppError> {
-    let mut local = tokio::fs::File::open(local_path).await.map_err(|error| {
-        AppError::new(
-            "mcp_upload_local_open_failed",
-            "本地文件打开失败。",
-            error,
-            true,
-        )
-    })?;
-    let part_path = mcp_remote_part_path(remote_path, now_millis());
-    let mut remote = sftp.create(part_path.clone()).await.map_err(|error| {
-        AppError::new(
-            "mcp_upload_remote_create_failed",
-            "远程临时文件创建失败。",
-            error,
-            true,
-        )
-    })?;
-    let copied = match tokio::io::copy(&mut local, &mut remote).await {
-        Ok(copied) => copied,
-        Err(error) => {
-            let _ = sftp.remove_file(part_path).await;
-            return Err(AppError::new(
-                "mcp_upload_failed",
-                "文件上传失败。",
+    let total_bytes = tokio::fs::metadata(local_path)
+        .await
+        .map_err(|error| {
+            AppError::new(
+                "mcp_upload_local_open_failed",
+                "本地文件打开失败。",
                 error,
                 true,
-            ));
-        }
-    };
-    if let Err(error) = remote.shutdown().await {
-        let _ = sftp.remove_file(part_path).await;
-        return Err(AppError::new(
-            "mcp_upload_flush_failed",
-            "远程临时文件写入完成失败。",
-            error,
-            true,
-        ));
-    }
-
-    let _ = sftp.remove_file(remote_path.to_string()).await;
-    if let Err(error) = sftp
-        .rename(part_path.clone(), remote_path.to_string())
-        .await
-    {
-        let _ = sftp.remove_file(part_path).await;
-        return Err(AppError::new(
-            "mcp_upload_rename_failed",
-            "远程临时文件重命名失败。",
-            error,
-            true,
-        ));
-    }
-    Ok(copied)
+            )
+        })?
+        .len();
+    let progress: SftpProgressCallback = Arc::new(|_, _| {});
+    upload_sftp_file(
+        sftp,
+        local_path,
+        remote_path,
+        total_bytes,
+        0,
+        progress,
+        &TransferCancelToken::default(),
+    )
+    .await?;
+    Ok(total_bytes)
 }
 
 async fn download_file_inner(
@@ -1368,59 +1326,30 @@ async fn download_file_inner(
     remote_path: &str,
     local_path: &Path,
 ) -> Result<u64, AppError> {
-    let mut remote = sftp.open(remote_path.to_string()).await.map_err(|error| {
-        AppError::new(
-            "mcp_download_remote_open_failed",
-            "远程文件打开失败。",
-            error,
-            true,
-        )
-    })?;
-    let part_path = mcp_local_part_path(local_path, now_millis());
-    let mut local = tokio::fs::File::create(&part_path).await.map_err(|error| {
-        AppError::new(
-            "mcp_download_local_create_failed",
-            "本地临时文件创建失败。",
-            error,
-            true,
-        )
-    })?;
-    let copied = match tokio::io::copy(&mut remote, &mut local).await {
-        Ok(copied) => copied,
-        Err(error) => {
-            let _ = tokio::fs::remove_file(&part_path).await;
-            return Err(AppError::new(
-                "mcp_download_failed",
-                "文件下载失败。",
+    let total_bytes = sftp
+        .metadata(remote_path.to_string())
+        .await
+        .map_err(|error| {
+            AppError::new(
+                "mcp_download_remote_open_failed",
+                "远程文件打开失败。",
                 error,
                 true,
-            ));
-        }
-    };
-    if let Err(error) = local.shutdown().await {
-        let _ = tokio::fs::remove_file(&part_path).await;
-        return Err(AppError::new(
-            "mcp_download_flush_failed",
-            "本地临时文件写入完成失败。",
-            error,
-            true,
-        ));
-    }
-    drop(local);
-
-    if local_path.exists() {
-        let _ = tokio::fs::remove_file(local_path).await;
-    }
-    if let Err(error) = tokio::fs::rename(&part_path, local_path).await {
-        let _ = tokio::fs::remove_file(&part_path).await;
-        return Err(AppError::new(
-            "mcp_download_rename_failed",
-            "本地临时文件重命名失败。",
-            error,
-            true,
-        ));
-    }
-    Ok(copied)
+            )
+        })?
+        .len();
+    let progress: SftpProgressCallback = Arc::new(|_, _| {});
+    download_sftp_file(
+        sftp,
+        remote_path,
+        local_path,
+        total_bytes,
+        0,
+        progress,
+        &TransferCancelToken::default(),
+    )
+    .await?;
+    Ok(total_bytes)
 }
 
 async fn upload_directory_inner(
@@ -1561,6 +1490,82 @@ fn sidecar_executable_name() -> &'static str {
     }
 }
 
+#[cfg(windows)]
+fn running_mcp_process_count() -> Result<u32, AppError> {
+    let mut command = Command::new("tasklist");
+    command
+        .args(["/FI", "IMAGENAME eq mxterm-mcp.exe", "/FO", "CSV", "/NH"])
+        .creation_flags(CREATE_NO_WINDOW);
+    let output = command.output().map_err(|error| {
+        AppError::new(
+            "mcp_update_process_check_failed",
+            "MCP 进程检查失败。",
+            error,
+            true,
+        )
+    })?;
+    if !output.status.success() {
+        return Err(AppError::new(
+            "mcp_update_process_check_failed",
+            "MCP 进程检查失败。",
+            String::from_utf8_lossy(&output.stderr),
+            true,
+        ));
+    }
+    let output = String::from_utf8_lossy(&output.stdout);
+    Ok(parse_tasklist_mcp_process_count(&output))
+}
+
+#[cfg(windows)]
+fn parse_tasklist_mcp_process_count(output: &str) -> u32 {
+    output
+        .lines()
+        .filter(|line| {
+            line.trim_start()
+                .to_ascii_lowercase()
+                .starts_with("\"mxterm-mcp.exe\",")
+        })
+        .count() as u32
+}
+
+#[cfg(not(windows))]
+fn running_mcp_process_count() -> Result<u32, AppError> {
+    Ok(0)
+}
+
+#[cfg(windows)]
+fn terminate_external_mcp_processes() -> Result<(), AppError> {
+    if running_mcp_process_count()? == 0 {
+        return Ok(());
+    }
+    let mut command = Command::new("taskkill");
+    command
+        .args(["/IM", "mxterm-mcp.exe", "/F", "/T"])
+        .creation_flags(CREATE_NO_WINDOW);
+    let output = command.output().map_err(|error| {
+        AppError::new(
+            "mcp_update_process_stop_failed",
+            "无法关闭阻止更新的 MCP 进程。",
+            error,
+            true,
+        )
+    })?;
+    if output.status.success() || running_mcp_process_count()? == 0 {
+        return Ok(());
+    }
+    Err(AppError::new(
+        "mcp_update_process_stop_failed",
+        "无法关闭阻止更新的 MCP 进程。",
+        String::from_utf8_lossy(&output.stderr),
+        true,
+    ))
+}
+
+#[cfg(not(windows))]
+fn terminate_external_mcp_processes() -> Result<(), AppError> {
+    Ok(())
+}
+
 fn now_millis() -> u128 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -1619,6 +1624,14 @@ struct McpRemoteServiceRuntime {
     child: Option<Child>,
     signature: Option<String>,
     last_error: Option<String>,
+    started_at: Option<String>,
+    last_health_at: Option<String>,
+    restart_count: u32,
+    consecutive_failures: u32,
+    healthy: bool,
+    supervisor_started: bool,
+    log_path: Option<String>,
+    update_preparing: bool,
 }
 
 impl McpRemoteServiceManager {
@@ -1647,8 +1660,20 @@ impl McpRemoteServiceManager {
                 runtime.child = Some(child);
                 runtime.signature = Some(signature);
                 runtime.last_error = None;
+                runtime.started_at = now_timestamp().ok();
+                runtime.consecutive_failures = 0;
+                runtime.healthy = true;
+                runtime.log_path = remote_log_path(&app_data_dir(app).unwrap_or_default())
+                    .to_str()
+                    .map(str::to_string);
+                append_remote_log(app, "INFO", "remote MCP service started");
             }
             Err(error) => {
+                append_remote_log(
+                    app,
+                    "ERROR",
+                    &format!("remote MCP service start failed: {}", error.message),
+                );
                 runtime.last_error = Some(error.message);
             }
         }
@@ -1675,6 +1700,50 @@ impl McpRemoteServiceManager {
             runtime.last_error = None;
         }
         self.reconcile(app, settings)
+    }
+
+    fn mark_health(&self, healthy: bool, error: Option<String>) -> bool {
+        let mut runtime = self.lock_runtime();
+        runtime.last_health_at = now_timestamp().ok();
+        runtime.healthy = healthy;
+        if healthy {
+            runtime.consecutive_failures = 0;
+            return false;
+        }
+        runtime.consecutive_failures = runtime.consecutive_failures.saturating_add(1);
+        runtime.last_error = error;
+        runtime.consecutive_failures >= REMOTE_HEALTH_FAILURE_THRESHOLD
+    }
+
+    fn mark_automatic_restart(&self) {
+        let mut runtime = self.lock_runtime();
+        runtime.restart_count = runtime.restart_count.saturating_add(1);
+        runtime.consecutive_failures = 0;
+    }
+
+    fn start_supervisor_once(&self) -> bool {
+        let mut runtime = self.lock_runtime();
+        if runtime.supervisor_started {
+            return false;
+        }
+        runtime.supervisor_started = true;
+        true
+    }
+
+    fn is_update_preparing(&self) -> bool {
+        self.lock_runtime().update_preparing
+    }
+
+    fn prepare_for_update(&self) {
+        let mut runtime = self.lock_runtime();
+        runtime.update_preparing = true;
+        stop_remote_child(&mut runtime);
+        runtime.healthy = false;
+        runtime.last_error = None;
+    }
+
+    fn resume_after_update_failure(&self) {
+        self.lock_runtime().update_preparing = false;
     }
 
     fn lock_runtime(&self) -> std::sync::MutexGuard<'_, McpRemoteServiceRuntime> {
@@ -1709,6 +1778,15 @@ fn spawn_remote_child(
 ) -> Result<Child, AppError> {
     let executable = sidecar_executable_path()?;
     let data_dir = app_data_dir(app)?;
+    let log_file = open_remote_log_file(&data_dir, true)?;
+    let log_error = log_file.try_clone().map_err(|error| {
+        AppError::new(
+            "mcp_remote_log_open_failed",
+            "远程 MCP 日志文件打开失败。",
+            error,
+            true,
+        )
+    })?;
     let mut command = Command::new(&executable);
     command
         .arg("serve")
@@ -1721,8 +1799,8 @@ fn spawn_remote_child(
         .arg("--data-dir")
         .arg(data_dir)
         .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
+        .stdout(Stdio::from(log_file))
+        .stderr(Stdio::from(log_error));
     #[cfg(windows)]
     command.creation_flags(CREATE_NO_WINDOW);
     command.spawn().map_err(|error| {
@@ -1745,6 +1823,7 @@ fn refresh_remote_child(settings: &McpSettings, runtime: &mut McpRemoteServiceRu
             runtime.signature = None;
             if settings.remote_enabled {
                 runtime.last_error = Some(format!("远程 MCP 服务已退出：{status}"));
+                runtime.healthy = false;
             }
         }
         Ok(None) => {}
@@ -1752,6 +1831,7 @@ fn refresh_remote_child(settings: &McpSettings, runtime: &mut McpRemoteServiceRu
             runtime.child = None;
             runtime.signature = None;
             runtime.last_error = Some(format!("远程 MCP 服务状态读取失败：{error}"));
+            runtime.healthy = false;
         }
     }
 }
@@ -1783,7 +1863,152 @@ fn remote_service_status(
         token_saved: settings.remote_token_hash.is_some(),
         token_preview: settings.remote_token_preview.clone(),
         error: runtime.last_error.clone(),
+        healthy: running && runtime.healthy,
+        started_at: runtime.started_at.clone(),
+        last_health_at: runtime.last_health_at.clone(),
+        restart_count: runtime.restart_count,
+        consecutive_failures: runtime.consecutive_failures,
+        log_path: runtime.log_path.clone(),
     }
+}
+
+fn remote_log_path(data_dir: &Path) -> PathBuf {
+    data_dir.join("logs").join("mcp-remote.log")
+}
+
+fn open_remote_log_file(data_dir: &Path, rotate: bool) -> Result<fs::File, AppError> {
+    let path = remote_log_path(data_dir);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|error| {
+            AppError::new(
+                "mcp_remote_log_create_failed",
+                "远程 MCP 日志目录创建失败。",
+                error,
+                true,
+            )
+        })?;
+    }
+    if rotate && fs::metadata(&path).map(|meta| meta.len()).unwrap_or(0) >= REMOTE_LOG_MAX_BYTES {
+        let previous = path.with_extension("log.1");
+        let _ = fs::remove_file(&previous);
+        let _ = fs::rename(&path, previous);
+    }
+    OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .map_err(|error| {
+            AppError::new(
+                "mcp_remote_log_open_failed",
+                "远程 MCP 日志文件打开失败。",
+                error,
+                true,
+            )
+        })
+}
+
+fn append_remote_log(app: &AppHandle, level: &str, message: &str) {
+    let Ok(data_dir) = app_data_dir(app) else {
+        return;
+    };
+    let Ok(mut file) = open_remote_log_file(&data_dir, false) else {
+        return;
+    };
+    let timestamp = now_timestamp().unwrap_or_else(|_| "unknown-time".to_string());
+    let safe_message = message.replace(['\r', '\n'], " ");
+    let _ = writeln!(file, "{timestamp} {level} supervisor {safe_message}");
+}
+
+async fn remote_service_health_check(port: u16) -> bool {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpStream;
+
+    let address = format!("127.0.0.1:{port}");
+    let Ok(Ok(mut stream)) =
+        tokio::time::timeout(Duration::from_secs(3), TcpStream::connect(address)).await
+    else {
+        return false;
+    };
+    if stream
+        .write_all(b"GET /health HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+        .await
+        .is_err()
+    {
+        return false;
+    }
+    let mut response = Vec::with_capacity(512);
+    let read_result = tokio::time::timeout(Duration::from_secs(3), async {
+        let mut chunk = [0_u8; 512];
+        while response.len() < 4096 {
+            let size = stream.read(&mut chunk).await?;
+            if size == 0 {
+                break;
+            }
+            response.extend_from_slice(&chunk[..size]);
+            if response.windows(4).any(|window| window == b"\r\n\r\n") {
+                break;
+            }
+        }
+        Ok::<(), std::io::Error>(())
+    })
+    .await;
+    read_result.is_ok()
+        && String::from_utf8_lossy(&response)
+            .lines()
+            .next()
+            .is_some_and(|line| line.starts_with("HTTP/1.1 200 "))
+}
+
+pub fn start_remote_service_supervisor(app: AppHandle) {
+    let should_start = {
+        let manager = app.state::<McpRemoteServiceManager>();
+        manager.start_supervisor_once()
+    };
+    if !should_start {
+        return;
+    }
+    tauri::async_runtime::spawn(async move {
+        loop {
+            tokio::time::sleep(Duration::from_secs(REMOTE_HEALTH_INTERVAL_SECONDS)).await;
+            let Ok(repository) = settings_repository_for_app(&app) else {
+                continue;
+            };
+            let Ok(settings) = load_settings(&repository) else {
+                continue;
+            };
+            let manager = app.state::<McpRemoteServiceManager>();
+            if manager.is_update_preparing() {
+                continue;
+            }
+            if !settings.remote_enabled {
+                let _ = manager.stop(&settings);
+                continue;
+            }
+
+            let status = manager.status(&settings);
+            let healthy = status.running && remote_service_health_check(settings.remote_port).await;
+            if manager.is_update_preparing() {
+                continue;
+            }
+            if manager.mark_health(
+                healthy,
+                (!healthy).then(|| "远程 MCP 健康检查失败。".to_string()),
+            ) {
+                append_remote_log(
+                    &app,
+                    "WARN",
+                    "health check threshold reached; restarting service",
+                );
+                manager.mark_automatic_restart();
+                let status = manager.restart(&app, &settings);
+                if status.running {
+                    append_remote_log(&app, "INFO", "remote MCP service restarted automatically");
+                } else {
+                    append_remote_log(&app, "ERROR", "automatic remote MCP restart failed");
+                }
+            }
+        }
+    });
 }
 
 pub fn mcp_settings_output(
@@ -1851,6 +2076,7 @@ pub fn mcp_settings_save(
 ) -> Result<McpSettingsOutput, AppError> {
     let repository = settings_repository_for_app(&app)?;
     let (settings, generated_token) = save_settings(&repository, request, &now_timestamp()?)?;
+    manager.resume_after_update_failure();
     let status = manager.reconcile(&app, &settings);
     Ok(mcp_settings_output(settings, generated_token, status))
 }
@@ -1880,6 +2106,7 @@ pub fn mcp_remote_service_start(
     manager: State<'_, McpRemoteServiceManager>,
 ) -> Result<McpRemoteServiceStatus, AppError> {
     let settings = load_settings(&settings_repository_for_app(&app)?)?;
+    manager.resume_after_update_failure();
     Ok(manager.reconcile(&app, &settings))
 }
 
@@ -1898,7 +2125,97 @@ pub fn mcp_remote_service_restart(
     manager: State<'_, McpRemoteServiceManager>,
 ) -> Result<McpRemoteServiceStatus, AppError> {
     let settings = load_settings(&settings_repository_for_app(&app)?)?;
+    manager.resume_after_update_failure();
     Ok(manager.restart(&app, &settings))
+}
+
+#[tauri::command]
+pub fn mcp_update_blockers(
+    app: AppHandle,
+    manager: State<'_, McpRemoteServiceManager>,
+) -> Result<McpUpdateBlockerStatus, AppError> {
+    let settings = load_settings(&settings_repository_for_app(&app)?)?;
+    let managed_remote_running = manager.status(&settings).running;
+    Ok(McpUpdateBlockerStatus {
+        process_count: running_mcp_process_count()?.max(u32::from(managed_remote_running)),
+        managed_remote_running,
+    })
+}
+
+#[tauri::command]
+pub fn mcp_prepare_for_update(
+    app: AppHandle,
+    manager: State<'_, McpRemoteServiceManager>,
+) -> Result<McpUpdateBlockerStatus, AppError> {
+    let settings = load_settings(&settings_repository_for_app(&app)?)?;
+    let managed_remote_running = manager.status(&settings).running;
+    let process_count = running_mcp_process_count()?.max(u32::from(managed_remote_running));
+    manager.prepare_for_update();
+    if let Err(error) = terminate_external_mcp_processes() {
+        manager.resume_after_update_failure();
+        let _ = manager.reconcile(&app, &settings);
+        return Err(error);
+    }
+    append_remote_log(&app, "INFO", "MCP processes stopped for application update");
+    Ok(McpUpdateBlockerStatus {
+        process_count,
+        managed_remote_running,
+    })
+}
+
+#[tauri::command]
+pub fn mcp_remote_log_read(app: AppHandle) -> Result<McpRemoteLogOutput, AppError> {
+    let path = remote_log_path(&app_data_dir(&app)?);
+    if !path.exists() {
+        drop(open_remote_log_file(&app_data_dir(&app)?, false)?);
+    }
+    let bytes = fs::read(&path).map_err(|error| {
+        AppError::new(
+            "mcp_remote_log_read_failed",
+            "远程 MCP 日志读取失败。",
+            error,
+            true,
+        )
+    })?;
+    let length = bytes.len();
+    let truncated = length > REMOTE_LOG_TAIL_BYTES;
+    let tail_start = length.saturating_sub(REMOTE_LOG_TAIL_BYTES);
+    let content = String::from_utf8_lossy(&bytes[tail_start..]).into_owned();
+    Ok(McpRemoteLogOutput {
+        content,
+        path: path.to_string_lossy().to_string(),
+        truncated,
+        updated_at: now_timestamp()?,
+    })
+}
+
+#[tauri::command]
+pub fn mcp_remote_log_clear(app: AppHandle) -> Result<McpRemoteLogOutput, AppError> {
+    let path = remote_log_path(&app_data_dir(&app)?);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|error| {
+            AppError::new(
+                "mcp_remote_log_clear_failed",
+                "远程 MCP 日志清空失败。",
+                error,
+                true,
+            )
+        })?;
+    }
+    fs::write(&path, []).map_err(|error| {
+        AppError::new(
+            "mcp_remote_log_clear_failed",
+            "远程 MCP 日志清空失败。",
+            error,
+            true,
+        )
+    })?;
+    Ok(McpRemoteLogOutput {
+        content: String::new(),
+        path: path.to_string_lossy().to_string(),
+        truncated: false,
+        updated_at: now_timestamp()?,
+    })
 }
 
 #[tauri::command]
@@ -2113,19 +2430,6 @@ mod tests {
     }
 
     #[test]
-    fn transfer_temp_paths_stay_next_to_targets() {
-        let remote_part = mcp_remote_part_path("/opt/app/archive.tar.gz", 42);
-        assert!(remote_part.starts_with("/opt/app/.mxterm-mcp-transfer-42-"));
-        assert!(remote_part.ends_with("-archive.tar.gz.part"));
-
-        let local_part = mcp_local_part_path(Path::new("C:/tmp/archive.tar.gz"), 42);
-        assert_eq!(
-            local_part.file_name().and_then(|value| value.to_str()),
-            Some(".mxterm-mcp-transfer-42-archive.tar.gz.part")
-        );
-    }
-
-    #[test]
     fn transfer_result_serializes_bytes_and_duration() {
         let result = McpTransferResult {
             connection_id: "conn".to_string(),
@@ -2172,6 +2476,19 @@ mod tests {
         assert!(verify_remote_token(token, &hash));
         assert!(!verify_remote_token("wrong-token", &hash));
         assert!(!hash.contains(token));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn tasklist_parser_counts_only_mcp_sidecars() {
+        let output = "\"mxterm-mcp.exe\",\"123\",\"Console\",\"1\",\"10,000 K\"\r\n\
+                      \"MXTERM-MCP.EXE\",\"456\",\"Console\",\"1\",\"11,000 K\"\r\n\
+                      \"m-xterm.exe\",\"789\",\"Console\",\"1\",\"90,000 K\"\r\n";
+        assert_eq!(parse_tasklist_mcp_process_count(output), 2);
+        assert_eq!(
+            parse_tasklist_mcp_process_count("INFO: No tasks are running"),
+            0
+        );
     }
 
     #[test]

@@ -2248,3 +2248,73 @@ useEffect(() => {
 ```
 
 The component cleans up and treats `stream_id` as the stream owner.
+
+## Scenario: Update Confirmation for Running MCP Processes
+
+### 1. Scope / Trigger
+
+- Trigger: changing `useAppUpdate`, updater installation UI, or MCP update-blocker commands.
+- Source files: `src/features/settings/useAppUpdate.ts`, `src/features/settings/SettingsView.tsx`, `src/shared/tauri/appUpdate.ts`, and `src/shared/tauri/commands.ts`.
+
+### 2. Signatures
+
+- `mcpUpdateBlockers(): Promise<McpUpdateBlockerStatus>`
+- `mcpPrepareForUpdate(): Promise<McpUpdateBlockerStatus>`
+- `mcpRemoteServiceStart(): Promise<McpRemoteServiceStatus>`
+- `UseAppUpdateResult.confirmInstallAfterMcpStop(): Promise<void>`
+- `UseAppUpdateResult.cancelInstallAfterMcpStop(): void`
+
+### 3. Contracts
+
+- Clicking install first queries MCP blockers.
+- Zero blockers proceeds directly to updater installation.
+- One or more blockers opens the shared `ConfirmDialog` and states that active Agent MCP calls will be interrupted.
+- Cancellation must not stop any process or change updater state.
+- Confirmation calls `mcpPrepareForUpdate` before `installAppUpdate`.
+- If installation fails after successful preparation, call `mcpRemoteServiceStart` best-effort before displaying the updater error.
+- The confirmation uses the shared dialog and existing token-driven styles; do not use `window.confirm` or a feature-local modal.
+
+### 4. Validation & Error Matrix
+
+| Condition | Frontend behavior |
+| --- | --- |
+| Blocker check fails | Set updater status to failed and do not install |
+| User cancels warning | Close dialog; keep update available |
+| MCP preparation fails | Show failure; backend restores managed service |
+| Installation fails after preparation | Restart managed service best-effort, then show error |
+| Installation succeeds | Relaunch application |
+
+### 5. Good / Base / Bad Cases
+
+- Good: two MCP processes are detected, the dialog says two processes will close, and install starts only after confirmation.
+- Base: no MCP process exists, so the update path is unchanged.
+- Bad: silently terminating MCP processes when the user clicks install.
+- Bad: leaving the managed MCP supervisor suspended after an updater failure.
+
+### 6. Tests Required
+
+- Run `npm run check` after changing the update hook contract.
+- Run `node scripts/check-startup-module-boundary-source.mjs` because `WorkspaceShell` owns the update hook.
+- Verify the confirmation dialog in light and dark themes when an update is available.
+- On Windows release builds, verify a running stdio sidecar no longer blocks installation.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```ts
+await mcpPrepareForUpdate();
+await installAppUpdate(update);
+```
+
+This kills active Agent calls without consent.
+
+#### Correct
+
+```ts
+const blockers = await mcpUpdateBlockers();
+if (blockers.process_count > 0) openConfirmation();
+else await installAppUpdate(update);
+```
+
+Process termination remains an explicit user decision.

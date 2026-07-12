@@ -10,6 +10,11 @@ import {
   type AppUpdateCheckResult,
 } from "../../shared/tauri/appUpdate";
 import type { AppRuntimeInfo } from "../../shared/tauri/commands";
+import {
+  mcpPrepareForUpdate,
+  mcpRemoteServiceStart,
+  mcpUpdateBlockers,
+} from "../../shared/tauri/commands";
 
 export type AppUpdateStatus =
   | "idle"
@@ -28,6 +33,10 @@ export interface UseAppUpdateResult {
   dismissWorkspaceNotice: () => void;
   distributionLabel: string;
   installNow: () => Promise<void>;
+  confirmInstallAfterMcpStop: () => Promise<void>;
+  cancelInstallAfterMcpStop: () => void;
+  mcpStopConfirmationOpen: boolean;
+  mcpStopProcessCount: number;
   installProgress: string | null;
   installing: boolean;
   message: string | null;
@@ -52,6 +61,8 @@ export function useAppUpdate({
   const [update, setUpdate] = useState<Update | null>(null);
   const [installProgress, setInstallProgress] = useState<string | null>(null);
   const [dismissedVersion, setDismissedVersion] = useState<string | null>(null);
+  const [mcpStopConfirmationOpen, setMcpStopConfirmationOpen] = useState(false);
+  const [mcpStopProcessCount, setMcpStopProcessCount] = useState(0);
   const lastAutoCheckVersionRef = useRef<string | null>(null);
 
   useEffect(() => {
@@ -146,7 +157,7 @@ export function useAppUpdate({
     await runCheck(false);
   }, [runCheck]);
 
-  const installNow = useCallback(async () => {
+  const performInstall = useCallback(async (stopMcpProcesses: boolean) => {
     if (!update) {
       setStatus("failed");
       setMessage("没有可安装的更新，请先检查更新。");
@@ -156,13 +167,51 @@ export function useAppUpdate({
     setStatus("installing");
     setInstallProgress("正在准备更新...");
     setMessage(null);
+    let mcpStopped = false;
     try {
+      if (stopMcpProcesses) {
+        setInstallProgress("正在关闭 MCP 服务...");
+        await mcpPrepareForUpdate();
+        mcpStopped = true;
+      }
       await installAppUpdate(update, setInstallProgress);
     } catch (error) {
+      if (mcpStopped) {
+        await mcpRemoteServiceStart().catch(() => undefined);
+      }
       setStatus("failed");
       setMessage(formatError(error, "安装更新失败，请到 GitHub Release 手动下载。"));
     }
   }, [update]);
+
+  const installNow = useCallback(async () => {
+    if (!update) {
+      setStatus("failed");
+      setMessage("没有可安装的更新，请先检查更新。");
+      return;
+    }
+    try {
+      const blockers = await mcpUpdateBlockers();
+      if (blockers.process_count > 0) {
+        setMcpStopProcessCount(blockers.process_count);
+        setMcpStopConfirmationOpen(true);
+        return;
+      }
+      await performInstall(false);
+    } catch (error) {
+      setStatus("failed");
+      setMessage(formatError(error, "MCP 进程检查失败，暂时无法安装更新。"));
+    }
+  }, [performInstall, update]);
+
+  const confirmInstallAfterMcpStop = useCallback(async () => {
+    setMcpStopConfirmationOpen(false);
+    await performInstall(true);
+  }, [performInstall]);
+
+  const cancelInstallAfterMcpStop = useCallback(() => {
+    setMcpStopConfirmationOpen(false);
+  }, []);
 
   const dismissWorkspaceNotice = useCallback(() => {
     if (updateVersion) {
@@ -193,8 +242,12 @@ export function useAppUpdate({
       ? formatAppDistributionMode(runtimeInfo.distributionMode)
       : "读取中",
     installNow,
+    confirmInstallAfterMcpStop,
+    cancelInstallAfterMcpStop,
     installProgress,
     installing: status === "installing",
+    mcpStopConfirmationOpen,
+    mcpStopProcessCount,
     message: status === "installing" ? installProgress : message,
     repositoryUrl: runtimeInfo?.repositoryUrl || "https://github.com/syscryer/mxterm",
     runtimeInfo,

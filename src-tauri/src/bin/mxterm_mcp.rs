@@ -283,11 +283,21 @@ fn serve_http(data_dir: &Path, config: HttpConfig) -> io::Result<()> {
 
 async fn serve_http_async(host: String, port: u16, state: HttpState) -> io::Result<()> {
     let listener = TcpListener::bind((host.as_str(), port)).await?;
+    eprintln!("remote MCP HTTP service listening on {host}:{port}");
     loop {
-        let (stream, _) = listener.accept().await?;
+        let (stream, peer) = match listener.accept().await {
+            Ok(connection) => connection,
+            Err(error) => {
+                eprintln!("remote MCP HTTP accept error: {error}");
+                tokio::time::sleep(Duration::from_millis(250)).await;
+                continue;
+            }
+        };
         let connection_state = state.clone();
         tauri::async_runtime::spawn(async move {
-            let _ = handle_http_connection(stream, connection_state).await;
+            if let Err(error) = handle_http_connection(stream, connection_state).await {
+                eprintln!("remote MCP HTTP connection error from {peer}: {error}");
+            }
         });
     }
 }

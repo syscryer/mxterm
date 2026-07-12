@@ -2947,3 +2947,75 @@ app.emit("ai:chat_stream", AiChatStreamEvent {
 ```
 
 Colon-separated events and `stream_id` matching keep the UI stream-safe.
+
+## Scenario: Remote MCP Service Lifecycle and Update Handoff
+
+### 1. Scope / Trigger
+
+- Trigger: changing remote MCP process supervision, logs, HTTP health behavior, MCP file transfer, or application update installation on Windows.
+- Source files: `src-tauri/src/mcp.rs`, `src-tauri/src/bin/mxterm_mcp.rs`, `src-tauri/src/remote_files.rs`, and `src-tauri/src/lib.rs`.
+
+### 2. Signatures
+
+- `mcp_remote_service_status() -> McpRemoteServiceStatus`
+- `mcp_remote_log_read() -> McpRemoteLogOutput`
+- `mcp_remote_log_clear() -> McpRemoteLogOutput`
+- `mcp_update_blockers() -> McpUpdateBlockerStatus`
+- `mcp_prepare_for_update() -> McpUpdateBlockerStatus`
+
+`McpUpdateBlockerStatus` contains `process_count: u32` and `managed_remote_running: bool`.
+
+### 3. Contracts
+
+- `McpRemoteServiceManager` is the only owner of the managed HTTP sidecar child.
+- The supervisor probes loopback `/health` every 15 seconds and restarts only after three consecutive failures.
+- Sidecar stdout/stderr and supervisor lifecycle events use `<app-data>/logs/mcp-remote.log`; logs must exclude tokens, Authorization headers, passwords, private keys, and complete tool arguments.
+- MCP file and directory transfers delegate to the shared SFTP transfer primitives so `.mxpart`, 256 KiB chunks, resume offsets, completion checks, and upload-confirm errors remain consistent with desktop transfers.
+- Windows update preparation must suspend supervisor recovery before stopping the managed child and terminating remaining `mxterm-mcp.exe` processes.
+- `mcp_prepare_for_update` must restore supervisor state and the managed service if process termination fails.
+- The supervisor must check update-preparing state before and after an awaited health probe so an in-flight probe cannot restart the sidecar during installation.
+
+### 4. Validation & Error Matrix
+
+| Condition | Error / behavior |
+| --- | --- |
+| MCP process enumeration fails | `mcp_update_process_check_failed` |
+| A blocker cannot be terminated | `mcp_update_process_stop_failed`; restore managed service |
+| Log tail begins inside UTF-8 text | Decode with lossy boundary repair; do not fail the command |
+| Health response is split across TCP reads | Read through the HTTP header terminator before evaluating status |
+| Partial transfer exists and is smaller than source | Resume from `.mxpart` offset |
+
+### 5. Good / Base / Bad Cases
+
+- Good: update preparation suspends recovery, kills blockers after explicit UI confirmation, and installation can replace `mxterm-mcp.exe`.
+- Good: an installer failure calls the existing service-start command and restores the configured managed HTTP service.
+- Base: no MCP process is running; updater proceeds without a confirmation dialog.
+- Bad: calling `taskkill` without user confirmation.
+- Bad: stopping the child without suspending the supervisor, allowing it to restart while the installer is replacing files.
+
+### 6. Tests Required
+
+- Run `cargo check --manifest-path src-tauri/Cargo.toml`.
+- Run `cargo test --manifest-path src-tauri/Cargo.toml mcp::tests --lib`.
+- Assert Windows `tasklist` parsing counts only `mxterm-mcp.exe` rows.
+- Verify real MCP upload, download, upload resume, and download resume against an exposed SSH connection before release when transfer internals change.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```rust
+stop_remote_child(&mut runtime);
+update.install()?;
+```
+
+The supervisor or an external stdio client can keep or reacquire the executable lock.
+
+#### Correct
+
+```rust
+manager.prepare_for_update();
+terminate_external_mcp_processes()?;
+```
+
+Preparation suspends recovery and removes managed and external sidecar blockers before installation.
