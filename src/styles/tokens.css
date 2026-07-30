@@ -119,7 +119,7 @@
     var(--mx-bg);
   --mx-material-panel: rgb(255 255 255 / 76%);
   --mx-material-panel-soft: rgb(248 250 252 / 66%);
-  --mx-chrome-fill: rgb(238 242 248 / 0%);
+  --mx-chrome-fill: rgb(238 242 248 / 62%);
   --mx-chrome-line: rgb(86 98 118 / 14%);
   --mx-chrome-active: rgb(0 0 0 / 5%);
   --mx-chrome-glow: rgb(255 255 255 / 18%);
@@ -285,12 +285,12 @@ body[data-theme-mode="dark"][data-window-material="mica"] {
 
 .app-shell[data-theme-mode="dark"][data-window-material="acrylic"],
 body[data-theme-mode="dark"][data-window-material="acrylic"] {
-  --mx-chrome-fill: rgb(30 31 34 / 100%);
+  --mx-chrome-fill: rgb(30 31 34 / 64%);
   --mx-chrome-line: rgb(255 255 255 / 8%);
   --mx-chrome-active: rgb(255 255 255 / 7%);
   --mx-chrome-glow: rgb(255 255 255 / 6%);
   --mx-chrome-blur: 72px;
-  --mx-sidebar-surface: var(--mx-chrome-fill);
+  --mx-sidebar-surface: transparent;
   --mx-sidebar-border: color-mix(in srgb, var(--mx-line) 42%, transparent);
   --mx-sidebar-hover: color-mix(in srgb, var(--mx-text) 7%, transparent);
   --mx-sidebar-active: rgb(255 255 255 / 7%);
@@ -469,12 +469,12 @@ body[data-platform="macos"][data-theme-mode="dark"] {
 
   .app-shell[data-theme-mode="system"][data-window-material="acrylic"],
   body[data-theme-mode="system"][data-window-material="acrylic"] {
-    --mx-chrome-fill: rgb(30 31 34 / 100%);
+    --mx-chrome-fill: rgb(30 31 34 / 64%);
     --mx-chrome-line: rgb(255 255 255 / 8%);
     --mx-chrome-active: rgb(255 255 255 / 7%);
     --mx-chrome-glow: rgb(255 255 255 / 6%);
     --mx-chrome-blur: 72px;
-    --mx-sidebar-surface: var(--mx-chrome-fill);
+    --mx-sidebar-surface: transparent;
     --mx-sidebar-border: color-mix(in srgb, var(--mx-line) 42%, transparent);
     --mx-sidebar-hover: color-mix(in srgb, var(--mx-text) 7%, transparent);
     --mx-sidebar-active: rgb(255 255 255 / 7%);
