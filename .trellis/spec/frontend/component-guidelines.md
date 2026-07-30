@@ -183,6 +183,14 @@ Ant Design, Mantine, or similar libraries just to fix one modal or button.
   rounded top-left corner. Do not draw internal divider lines between the
   titlebar's left chrome and the left sidebar chrome; they should read as one
   continuous material surface. This contrast is what makes the material visible.
+- Windows Acrylic uses a fixed neutral root tint contract: light
+  `rgb(238 242 248 / 62%)`, explicit dark and system-dark
+  `rgb(30 31 34 / 64%)`, and `72px` for `--mx-chrome-blur`. Keep the Acrylic
+  sidebar surface transparent so titlebar and sidebar inherit one root layer;
+  do not stack the same tint again on `.app-sidebar`. Preserve opaque
+  `--mx-panel` surfaces for workspaces, settings, forms, and terminals. Run
+  `node scripts/check-acrylic-material-source.mjs` after changing window
+  material tokens or chrome/sidebar material styles.
 - Chrome selection surfaces must stay neutral. Titlebar session tabs, terminal
   subtabs, right-pane tool tabs, settings segmented controls, and shared
   sidebar/settings navigation active rows should use `--mx-chrome-active` or
