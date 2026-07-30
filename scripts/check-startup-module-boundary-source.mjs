@@ -98,6 +98,21 @@ assertIncludes(
 );
 assertIncludes(
   shellSource,
+  "preloadSettingsViewComponent,",
+  "SettingsView idle prewarm must resolve the component, not only fetch its module.",
+);
+assertIncludes(
+  shellSource,
+  "const SettingsViewComponent = LoadedSettingsView ?? SettingsView;",
+  "Settings navigation must render the resolved SettingsView component when prewarm has completed.",
+);
+assertIncludes(
+  shellSource,
+  "void preloadSettingsViewComponent()",
+  "First settings navigation must wait for the component before replacing the workspace.",
+);
+assertIncludes(
+  shellSource,
   "const RemoteFilePanel = lazy(",
   "RemoteFilePanel must be lazy-loaded from WorkspaceShell.",
 );

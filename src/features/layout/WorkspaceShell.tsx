@@ -99,9 +99,13 @@ const loadTerminalPanel = () => import("../terminal/TerminalPanel");
 
 type ConnectionDialogModule = typeof import("../connections/ConnectionDialog");
 type LoadedConnectionDialogComponent = ConnectionDialogModule["ConnectionDialog"];
+type SettingsViewModule = typeof import("../settings/SettingsView");
+type LoadedSettingsViewComponent = SettingsViewModule["SettingsView"];
 
 let connectionDialogModulePromise: Promise<ConnectionDialogModule> | null = null;
 let loadedConnectionDialogComponent: LoadedConnectionDialogComponent | null = null;
+let settingsViewModulePromise: Promise<SettingsViewModule> | null = null;
+let loadedSettingsViewComponent: LoadedSettingsViewComponent | null = null;
 
 function preloadConnectionDialogModule() {
   connectionDialogModulePromise ??= loadConnectionDialog();
@@ -115,6 +119,20 @@ async function preloadConnectionDialogComponent() {
   const module = await preloadConnectionDialogModule();
   loadedConnectionDialogComponent = module.ConnectionDialog;
   return loadedConnectionDialogComponent;
+}
+
+function preloadSettingsViewModule() {
+  settingsViewModulePromise ??= loadSettingsView();
+  return settingsViewModulePromise;
+}
+
+async function preloadSettingsViewComponent() {
+  if (loadedSettingsViewComponent) {
+    return loadedSettingsViewComponent;
+  }
+  const module = await preloadSettingsViewModule();
+  loadedSettingsViewComponent = module.SettingsView;
+  return loadedSettingsViewComponent;
 }
 
 const RemoteFileEditor = lazy(async () => {
@@ -138,7 +156,7 @@ const MonitorPanel = lazy(async () => {
   return { default: module.MonitorPanel };
 });
 const SettingsView = lazy(async () => {
-  const module = await loadSettingsView();
+  const module = await preloadSettingsViewModule();
   return { default: module.SettingsView };
 });
 const DockerToolPanel = lazy(async () => {
@@ -175,7 +193,7 @@ const WORKSPACE_IDLE_PREWARM_BATCHES: Array<{
   {
     timeoutMs: 1500,
     loaders: [
-      loadSettingsView,
+      preloadSettingsViewComponent,
       loadConnectionSearchDialog,
       loadRemoteFilePanel,
     ],
@@ -1006,6 +1024,8 @@ export function WorkspaceShell() {
   const [rightTool, setRightTool] = useState<RemoteFileTool>("files");
   const [aiAssistantPanelLoaded, setAiAssistantPanelLoaded] = useState(false);
   const [settingsViewLoaded, setSettingsViewLoaded] = useState(false);
+  const [LoadedSettingsView, setLoadedSettingsView] =
+    useState<LoadedSettingsViewComponent | null>(() => loadedSettingsViewComponent);
   const [nativeFileDropTargetPath, setNativeFileDropTargetPath] = useState<string | null>(null);
   const [remoteFileProperties, setRemoteFileProperties] =
     useState<RemoteFilePropertiesState | null>(null);
@@ -1990,6 +2010,7 @@ export function WorkspaceShell() {
   const shouldRenderAiAssistantPanel =
     aiAssistantPanelLoaded || shouldShowAiAssistantPanel;
   const shouldRenderSettingsView = settingsViewLoaded || activeView === "settings";
+  const SettingsViewComponent = LoadedSettingsView ?? SettingsView;
   const activeConnectionSelectionId =
     activeWorkspaceMode === "ssh" || activeWorkspaceMode === "rdp" || activeWorkspaceMode === "vnc"
       ? activeConnectionId
@@ -6762,7 +6783,18 @@ export function WorkspaceShell() {
   function openSettingsSection(sectionId?: SettingsSectionId) {
     setSettingsSectionRequest(sectionId);
     setSettingsSectionRequestKey((current) => current + 1);
-    setActiveView("settings");
+    if (LoadedSettingsView) {
+      setActiveView("settings");
+      return;
+    }
+    void preloadSettingsViewComponent()
+      .then((SettingsComponent) => {
+        setLoadedSettingsView(() => SettingsComponent);
+        setActiveView("settings");
+      })
+      .catch(() => {
+        setActiveView("settings");
+      });
   }
 
   function returnFromSettings() {
@@ -10329,7 +10361,7 @@ export function WorkspaceShell() {
 
       {shouldRenderSettingsView ? (
         <Suspense fallback={<SettingsViewFallback hidden={activeView !== "settings"} />}>
-          <SettingsView
+          <SettingsViewComponent
             appUpdate={appUpdate}
             activeSection={settingsSectionRequest}
             activeSectionRequestKey={settingsSectionRequestKey}

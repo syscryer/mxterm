@@ -939,7 +939,7 @@ export function ConnectionDialog({
         <div className="connection-dialog-fields">
           <div className={`form-grid ${showGroupField ? "form-grid-wide" : "form-grid-single"}`}>
             <label>
-              <span>名称</span>
+              <span>名称（可以为空）</span>
               <input
                 value={form.name || ""}
                 onChange={(event) => setForm({ ...form, name: event.target.value })}
@@ -971,7 +971,7 @@ export function ConnectionDialog({
                 required
                 value={form.host}
                 onChange={(event) => setForm({ ...form, host: event.target.value })}
-                placeholder="192.168.1.20"
+                placeholder="请输入主机地址"
               />
             </label>
             <label>
@@ -1048,7 +1048,7 @@ export function ConnectionDialog({
         <div className="connection-dialog-fields">
           <div className={`form-grid ${showGroupField ? "form-grid-wide" : "form-grid-single"}`}>
             <label>
-              <span>名称</span>
+              <span>名称（可以为空）</span>
               <input
                 value={form.name || ""}
                 onChange={(event) => setForm({ ...form, name: event.target.value })}
@@ -1203,7 +1203,7 @@ export function ConnectionDialog({
         <div className="connection-dialog-fields">
           <div className={`form-grid ${showGroupField ? "form-grid-wide" : "form-grid-single"}`}>
             <label>
-              <span>名称</span>
+              <span>名称（可以为空）</span>
               <input
               value={form.name || ""}
               onChange={(event) => setForm({ ...form, name: event.target.value })}
@@ -1236,7 +1236,7 @@ export function ConnectionDialog({
                 required
                 value={form.host}
                 onChange={(event) => setForm({ ...form, host: event.target.value })}
-                placeholder="192.168.1.20"
+                placeholder="请输入主机地址"
               />
             </label>
             <label>
@@ -1342,7 +1342,7 @@ export function ConnectionDialog({
                     {...usernameInputAttributes}
                     value={form.username}
                     onChange={(event) => setForm({ ...form, username: event.target.value })}
-                    placeholder="administrator"
+                    placeholder="请输入用户名"
                   />
                 </label>
               ) : null}
@@ -1420,7 +1420,7 @@ export function ConnectionDialog({
         {/* 目标：名称/分组、主机/端口 平铺，无分组标题 */}
         <div className={`form-grid ${showGroupField ? "form-grid-wide" : "form-grid-single"}`}>
           <label>
-            <span>名称</span>
+            <span>名称（可以为空）</span>
             <input
               value={form.name || ""}
               onChange={(event) => setForm({ ...form, name: event.target.value })}
@@ -1453,7 +1453,7 @@ export function ConnectionDialog({
               required
               value={form.host}
               onChange={(event) => setForm({ ...form, host: event.target.value })}
-              placeholder="192.168.1.20"
+              placeholder="请输入主机地址"
             />
           </label>
           <label>
@@ -1509,7 +1509,7 @@ export function ConnectionDialog({
                     {...usernameInputAttributes}
                     value={form.username}
                     onChange={(event) => setForm({ ...form, username: event.target.value })}
-                    placeholder="root"
+                    placeholder="请输入用户名"
                   />
                 </label>
                 <label>
@@ -1557,7 +1557,7 @@ export function ConnectionDialog({
                   {...usernameInputAttributes}
                   value={form.username}
                   onChange={(event) => setForm({ ...form, username: event.target.value })}
-                  placeholder="root"
+                  placeholder="请输入用户名"
                 />
               </label>
             )}

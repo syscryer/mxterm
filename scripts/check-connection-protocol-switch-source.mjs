@@ -40,8 +40,12 @@ const requiredSnippets = [
     snippet: "? protocolDefaultPorts.ssh",
   },
   {
-    message: "SSH host placeholder should use a local-network example.",
-    snippet: 'placeholder="192.168.1.20"',
+    message: "Connection host fields should use direct input guidance.",
+    snippet: 'placeholder="请输入主机地址"',
+  },
+  {
+    message: "Connection username fields should use direct input guidance.",
+    snippet: 'placeholder="请输入用户名"',
   },
 ];
 
@@ -51,8 +55,21 @@ for (const { message, snippet } of requiredSnippets) {
   }
 }
 
-if (dialogSource.includes('placeholder="203.0.113.70"')) {
-  throw new Error("SSH host placeholder should not use the public documentation address 203.0.113.70.");
+const optionalNameLabel = "<span>名称（可以为空）</span>";
+const optionalNameLabelCount = dialogSource.split(optionalNameLabel).length - 1;
+if (optionalNameLabelCount !== 4 || dialogSource.includes("<span>名称</span>")) {
+  throw new Error("Every connection protocol name field should visibly explain that it may be blank.");
+}
+
+for (const placeholder of [
+  'placeholder="192.168.1.20"',
+  'placeholder="203.0.113.70"',
+  'placeholder="root"',
+  'placeholder="administrator"',
+]) {
+  if (dialogSource.includes(placeholder)) {
+    throw new Error(`Connection fields should not use example values as placeholders: ${placeholder}`);
+  }
 }
 
 const normalizeStart = dialogSource.indexOf("function normalizeForSubmit(");
