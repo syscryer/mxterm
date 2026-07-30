@@ -1050,3 +1050,35 @@ Added remote MCP supervision and logs, unified MCP SFTP transfers with resumable
 ### Next Steps
 
 - None - task complete
+
+
+## Session 32: 统一 Acrylic 材质表现
+
+**Date**: 2026-07-30
+**Task**: 统一 Acrylic 材质表现
+
+### Summary
+
+完成 mXterm Acrylic 材质与 CodeM 对齐，补充源码检查与前端规范；通过类型检查、启动边界检查和生产构建，归档 Acrylic 任务。
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `6750d50` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
