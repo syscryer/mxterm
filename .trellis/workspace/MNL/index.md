@@ -8,8 +8,8 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 32
-- **Last Active**: 2026-07-30
+- **Total Sessions**: 33
+- **Last Active**: 2026-08-01
 <!-- @@@/auto:current-status -->
 
 ---
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~1084 | Active |
+| `journal-1.md` | ~1117 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 33 | 2026-08-01 | 增强远程文件悬浮信息 | `47d9b7f` | `master` |
 | 32 | 2026-07-30 | 统一 Acrylic 材质表现 | `6750d50` | `-` |
 | 31 | 2026-07-12 | Remote MCP stability, transfer, and update handoff | `76253c7` | `master` |
 | 30 | 2026-07-08 | 远程文件传输性能隔离 | `5457b37` | `master` |
