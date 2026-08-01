@@ -54,3 +54,30 @@ export async function selectDockerLogSavePath(defaultName: string) {
     title: "保存容器日志",
   });
 }
+
+export async function selectConnectionTransferImportPath() {
+  const selected = await open({
+    multiple: false,
+    filters: [
+      {
+        extensions: ["json"],
+        name: "mXterm 连接迁移文件",
+      },
+    ],
+    title: "选择连接迁移文件",
+  });
+  return normalizeSelectedPaths(selected)[0] || null;
+}
+
+export async function selectConnectionTransferExportPath() {
+  return save({
+    defaultPath: `mxterm-connections-${new Date().toISOString().slice(0, 10)}.mxterm-connections.json`,
+    filters: [
+      {
+        extensions: ["json"],
+        name: "mXterm 连接迁移文件",
+      },
+    ],
+    title: "导出连接",
+  });
+}

@@ -5472,6 +5472,358 @@ button {
   font-weight: 520;
 }
 
+.connection-transfer-dialog {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  z-index: 21;
+  width: min(520px, calc(100vw - 40px));
+  max-height: min(720px, calc(100vh - 40px));
+  border: 1px solid var(--mx-line);
+  border-radius: 8px;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  overflow: hidden;
+  transform: translate(-50%, -50%);
+  outline: none;
+  color: var(--mx-text);
+  background: var(--mx-material-panel, var(--mx-panel));
+  box-shadow: var(--mx-glass-shadow);
+  backdrop-filter: blur(var(--mx-material-content-blur)) saturate(1.08);
+}
+
+.connection-transfer-header {
+  min-width: 0;
+  border-bottom: 1px solid var(--mx-line);
+  display: grid;
+  grid-template-columns: 30px minmax(0, 1fr) 30px;
+  align-items: center;
+  gap: 9px;
+  padding: 11px 12px;
+  background: var(--mx-material-panel-soft, var(--mx-panel-soft));
+}
+
+.connection-transfer-heading-icon {
+  width: 30px;
+  height: 30px;
+  border: 1px solid var(--mx-line);
+  border-radius: 7px;
+  display: grid;
+  place-items: center;
+  color: var(--mx-primary);
+  background: var(--mx-panel);
+}
+
+.connection-transfer-header h2,
+.connection-transfer-header p {
+  margin: 0;
+}
+
+.connection-transfer-header h2 {
+  font-size: 14px;
+  font-weight: 620;
+}
+
+.connection-transfer-header p {
+  margin-top: 2px;
+  color: var(--mx-muted);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.connection-transfer-close,
+.connection-transfer-password button {
+  width: 30px;
+  height: 30px;
+  border: 0;
+  border-radius: 6px;
+  display: grid;
+  place-items: center;
+  color: var(--mx-muted);
+  background: transparent;
+  cursor: pointer;
+}
+
+.connection-transfer-close:hover,
+.connection-transfer-password button:hover {
+  color: var(--mx-text);
+  background: var(--mx-active);
+}
+
+.connection-transfer-body {
+  min-height: 0;
+  overflow: auto;
+}
+
+.connection-transfer-form {
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+}
+
+.connection-transfer-field {
+  min-width: 0;
+  display: grid;
+  gap: 6px;
+  color: var(--mx-muted);
+  font-size: 12px;
+  font-weight: 520;
+}
+
+.connection-transfer-field > input,
+.connection-transfer-password {
+  min-width: 0;
+  height: 34px;
+  border: 1px solid var(--mx-line);
+  border-radius: 6px;
+  color: var(--mx-text);
+  background: var(--mx-panel);
+}
+
+.connection-transfer-field > input {
+  padding: 0 10px;
+  font: inherit;
+}
+
+.connection-transfer-password {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 34px;
+  align-items: center;
+}
+
+.connection-transfer-password input {
+  min-width: 0;
+  height: 32px;
+  border: 0;
+  padding: 0 10px;
+  outline: none;
+  color: var(--mx-text);
+  background: transparent;
+  font: inherit;
+}
+
+.connection-transfer-file {
+  min-width: 0;
+  height: 36px;
+  border: 1px solid var(--mx-line);
+  border-radius: 6px;
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr) 16px;
+  align-items: center;
+  gap: 8px;
+  padding: 0 10px;
+  color: var(--mx-muted);
+  background: var(--mx-panel);
+  text-align: left;
+  cursor: pointer;
+}
+
+.connection-transfer-file span {
+  overflow: hidden;
+  color: var(--mx-text);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.connection-transfer-note,
+.connection-transfer-error {
+  margin: 0;
+  border-radius: 6px;
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr);
+  gap: 7px;
+  padding: 8px 9px;
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.connection-transfer-note {
+  color: var(--mx-muted);
+  background: var(--mx-panel-soft);
+}
+
+.connection-transfer-error {
+  color: var(--mx-danger);
+  background: color-mix(in srgb, var(--mx-danger) 8%, var(--mx-panel));
+}
+
+.connection-transfer-preview {
+  border-top: 1px solid var(--mx-line);
+  display: grid;
+  gap: 12px;
+  padding-top: 12px;
+}
+
+.connection-transfer-stats {
+  border: 1px solid var(--mx-line);
+  border-radius: 7px;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  overflow: hidden;
+  background: var(--mx-panel);
+}
+
+.connection-transfer-stats > div {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+  padding: 9px;
+}
+
+.connection-transfer-stats > div + div {
+  border-left: 1px solid var(--mx-line);
+}
+
+.connection-transfer-stats strong {
+  font-family: var(--font-mono);
+  font-size: 17px;
+  font-weight: 600;
+}
+
+.connection-transfer-stats span,
+.connection-transfer-stats small {
+  color: var(--mx-muted);
+  font-size: 11px;
+}
+
+.connection-transfer-warning {
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr);
+  gap: 7px;
+  color: var(--mx-warning);
+}
+
+.connection-transfer-warning span {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.connection-transfer-warning strong,
+.connection-transfer-warning ul {
+  max-height: 96px;
+  margin: 2px 0 0;
+  padding-left: 16px;
+  overflow: auto;
+  color: var(--mx-muted);
+  font-size: 10px;
+}
+
+.connection-transfer-warning li {
+  overflow-wrap: anywhere;
+}
+
+.connection-transfer-warning small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.connection-transfer-complete-error {
+  margin: -12px 14px 14px;
+}
+
+.connection-transfer-warning strong {
+  font-size: 11px;
+}
+
+.connection-transfer-warning small {
+  color: var(--mx-muted);
+  font-size: 10px;
+}
+
+.connection-transfer-actions {
+  border-top: 1px solid var(--mx-line);
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin: 2px -14px -14px;
+  padding: 10px 14px;
+  background: var(--mx-material-panel-soft, var(--mx-panel-soft));
+}
+
+.connection-transfer-actions button,
+.connection-transfer-complete button {
+  min-width: 78px;
+  height: 32px;
+  border: 1px solid var(--mx-line);
+  border-radius: 6px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 0 13px;
+  color: var(--mx-text);
+  background: var(--mx-panel);
+  font-size: 12px;
+  font-weight: 540;
+  cursor: pointer;
+}
+
+.connection-transfer-actions .primary-button,
+.connection-transfer-complete .primary-button {
+  border-color: var(--mx-primary);
+  color: var(--mx-panel);
+  background: var(--mx-primary);
+}
+
+.connection-transfer-dialog button:disabled,
+.connection-transfer-dialog input:disabled {
+  cursor: default;
+  opacity: 0.56;
+}
+
+.connection-transfer-dialog :is(button, input):focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--mx-primary) 55%, transparent);
+  outline-offset: 1px;
+}
+
+.connection-transfer-complete {
+  min-height: 260px;
+  display: grid;
+  place-items: center;
+  align-content: center;
+  gap: 7px;
+  padding: 24px;
+  text-align: center;
+}
+
+.connection-transfer-complete > .ui-icon {
+  width: 34px;
+  height: 34px;
+  color: var(--mx-success);
+}
+
+.connection-transfer-complete strong {
+  font-size: 15px;
+}
+
+.connection-transfer-complete span,
+.connection-transfer-complete small {
+  color: var(--mx-muted);
+  font-size: 11px;
+}
+
+.connection-transfer-complete button {
+  margin-top: 10px;
+}
+
+@media (max-width: 560px) {
+  .connection-transfer-dialog {
+    width: calc(100vw - 24px);
+    max-height: calc(100vh - 24px);
+  }
+
+  .connection-transfer-stats {
+    grid-template-columns: 1fr;
+  }
+
+  .connection-transfer-stats > div + div {
+    border-top: 1px solid var(--mx-line);
+    border-left: 0;
+  }
+}
+
 .activity-list {
   display: grid;
   gap: 7px;

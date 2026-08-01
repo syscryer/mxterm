@@ -2,6 +2,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use aes_gcm::aead::{Aead, Nonce as AeadNonce};
@@ -11,6 +12,7 @@ use base64::engine::{general_purpose::STANDARD, Engine as _};
 use serde::{Deserialize, Serialize};
 
 use crate::app_error::AppError;
+use crate::connection_transfer_recovery::recover_pending_connection_transfer;
 use crate::connections::{ConnectionAuthKind, ConnectionStore};
 use crate::credentials::CredentialStore;
 use crate::storage::{write_json_document, JsonStoreErrorLabels};
@@ -95,20 +97,34 @@ pub enum SecretStoreFailure {
 pub struct InMemorySecretStore {
     secrets: Arc<Mutex<HashMap<String, String>>>,
     failure: Option<SecretStoreFailure>,
+    successful_operations_before_failure: usize,
+    matching_operations: Arc<AtomicUsize>,
 }
 
 impl InMemorySecretStore {
     pub fn failing(failure: SecretStoreFailure) -> Self {
+        Self::failing_after(failure, 0)
+    }
+
+    pub fn failing_after(failure: SecretStoreFailure, successful_operations: usize) -> Self {
         Self {
             secrets: Arc::default(),
             failure: Some(failure),
+            successful_operations_before_failure: successful_operations,
+            matching_operations: Arc::default(),
         }
+    }
+
+    fn should_fail(&self, operation: SecretStoreFailure) -> bool {
+        self.failure == Some(operation)
+            && self.matching_operations.fetch_add(1, Ordering::Relaxed)
+                >= self.successful_operations_before_failure
     }
 }
 
 impl SecretStore for InMemorySecretStore {
     fn set_secret(&self, reference: &SecretReference, secret: &str) -> Result<(), AppError> {
-        if self.failure == Some(SecretStoreFailure::Write) {
+        if self.should_fail(SecretStoreFailure::Write) {
             return Err(secret_store_write_failed(
                 &reference.account,
                 "in-memory failure",
@@ -124,7 +140,7 @@ impl SecretStore for InMemorySecretStore {
     }
 
     fn get_secret(&self, reference: &SecretReference) -> Result<String, AppError> {
-        if self.failure == Some(SecretStoreFailure::Read) {
+        if self.should_fail(SecretStoreFailure::Read) {
             return Err(secret_store_read_failed(
                 &reference.account,
                 "in-memory failure",
@@ -141,7 +157,7 @@ impl SecretStore for InMemorySecretStore {
     }
 
     fn delete_secret(&self, reference: &SecretReference) -> Result<(), AppError> {
-        if self.failure == Some(SecretStoreFailure::Delete) {
+        if self.should_fail(SecretStoreFailure::Delete) {
             return Err(secret_store_delete_failed(
                 &reference.account,
                 "in-memory failure",
@@ -220,6 +236,7 @@ impl VaultState {
         root: impl AsRef<Path>,
         master_password: &str,
     ) -> Result<VaultStatus, AppError> {
+        recover_pending_connection_transfer(root.as_ref())?;
         if master_password.trim().is_empty() {
             return Err(AppError::new(
                 "vault_password_missing",

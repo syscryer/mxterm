@@ -28,6 +28,7 @@ import {
   CheckCircle2,
   CircleAlert,
   CornerDownLeft,
+  Download,
   Eraser,
   KeyRound,
   ExternalLink,
@@ -73,6 +74,7 @@ import type {
   VncRunnerWindowPayload,
   VncRunnerKind,
 } from "../connections/connectionTypes";
+import type { ConnectionTransferMode } from "../connections/connectionTransferTypes";
 import {
   defaultRdpExternalRunnerForPlatform,
   defaultJumpConfig,
@@ -88,6 +90,7 @@ import { connectionInfoFromVncProfile } from "../connections/vncConnectionInfo";
 const loadRemoteFileEditor = () => import("../editor/RemoteFileEditor");
 const loadConnectionDialog = () => import("../connections/ConnectionDialog");
 const loadConnectionSearchDialog = () => import("../connections/ConnectionSearchDialog");
+const loadConnectionTransferDialog = () => import("../connections/ConnectionTransferDialog");
 const loadRemoteFilePanel = () => import("../files/RemoteFilePanel");
 const loadMonitorPanel = () => import("../monitor/MonitorPanel");
 const loadSettingsView = () => import("../settings/SettingsView");
@@ -146,6 +149,10 @@ const ConnectionDialog = lazy(async () => {
 const ConnectionSearchDialog = lazy(async () => {
   const module = await loadConnectionSearchDialog();
   return { default: module.ConnectionSearchDialog };
+});
+const ConnectionTransferDialog = lazy(async () => {
+  const module = await loadConnectionTransferDialog();
+  return { default: module.ConnectionTransferDialog };
 });
 const RemoteFilePanel = lazy(async () => {
   const module = await loadRemoteFilePanel();
@@ -861,6 +868,7 @@ export function WorkspaceShell() {
     credentials,
     error: credentialError,
     loading: credentialLoading,
+    reload: reloadCredentials,
     remove: removeCredential,
     upsert: upsertCredential,
   } = useCredentials({ enabled: storageReady });
@@ -872,6 +880,8 @@ export function WorkspaceShell() {
     useState<SettingsSectionId | undefined>();
   const [settingsSectionRequestKey, setSettingsSectionRequestKey] = useState(0);
   const [dialogOpen, setDialogOpen] = useState(false);
+  const [connectionTransferMode, setConnectionTransferMode] =
+    useState<ConnectionTransferMode | null>(null);
   const [LoadedConnectionDialog, setLoadedConnectionDialog] =
     useState<LoadedConnectionDialogComponent | null>(null);
   const [connectionSearchOpen, setConnectionSearchOpen] = useState(false);
@@ -8825,6 +8835,8 @@ export function WorkspaceShell() {
             onCreateConnection={() => createConnection()}
             onDelete={deleteConnection}
             onEdit={editConnection}
+            onExportConnections={() => setConnectionTransferMode("export")}
+            onImportConnections={() => setConnectionTransferMode("import")}
             onPreloadCreateConnection={preloadCreateConnectionDialog}
             onRefresh={reload}
             hidden={!showingHome}
@@ -9760,6 +9772,23 @@ export function WorkspaceShell() {
           </Suspense>
         ) : null}
       </main>
+
+      {connectionTransferMode ? (
+        <Suspense fallback={null}>
+          <ConnectionTransferDialog
+            mode={connectionTransferMode}
+            open
+            onImported={async () => {
+              await Promise.all([reload(), reloadCredentials()]);
+            }}
+            onOpenChange={(open) => {
+              if (!open) {
+                setConnectionTransferMode(null);
+              }
+            }}
+          />
+        </Suspense>
+      ) : null}
 
       {connectionSearchOpen ? (
         <Suspense fallback={<ConnectionSearchDialogFallback />}>
@@ -11748,6 +11777,8 @@ function ConnectionHome({
   onCreateConnection,
   onDelete,
   onEdit,
+  onExportConnections,
+  onImportConnections,
   onPreloadCreateConnection,
   onRefresh,
 }: {
@@ -11760,6 +11791,8 @@ function ConnectionHome({
   onCreateConnection: () => void;
   onDelete: (connection: ConnectionProfile) => void | Promise<void>;
   onEdit: (connection: ConnectionProfile) => void;
+  onExportConnections: () => void;
+  onImportConnections: () => void;
   onPreloadCreateConnection?: () => void;
   onRefresh: () => void | Promise<void>;
 }) {
@@ -12042,11 +12075,18 @@ function ConnectionHome({
           <section className="summary-block">
             <p className="summary-title">仓库维护</p>
             <div className="quick-links">
-              <button className="quick-link" type="button" onClick={onRefresh}>
+              <button className="quick-link" type="button" onClick={onImportConnections}>
                 <Upload className="ui-icon" aria-hidden="true" />
                 <span>
                   <strong>导入连接</strong>
                   <small>批量迁移时使用</small>
+                </span>
+              </button>
+              <button className="quick-link" type="button" onClick={onExportConnections}>
+                <Download className="ui-icon" aria-hidden="true" />
+                <span>
+                  <strong>导出连接</strong>
+                  <small>加密迁移全部连接</small>
                 </span>
               </button>
             </div>

@@ -2,6 +2,8 @@ mod ai_assistant;
 pub mod app_error;
 mod command_library;
 mod commands;
+mod connection_transfer;
+mod connection_transfer_recovery;
 mod connections;
 mod credentials;
 mod docker_tools;
@@ -14,6 +16,7 @@ mod remote_exec_pool;
 mod remote_files;
 mod remote_monitor;
 mod scheduled_tasks;
+mod secure_bundle;
 mod ssh_config;
 mod storage;
 pub mod storage_migration;
@@ -75,6 +78,9 @@ pub fn run() {
             commands::secret_vault_lock,
             commands::secret_vault_enable_master_password,
             commands::secret_vault_disable_master_password,
+            commands::connection_transfer_export,
+            commands::connection_transfer_preview,
+            commands::connection_transfer_import,
             commands::connection_list,
             commands::connection_upsert,
             commands::connection_set_favorite,
