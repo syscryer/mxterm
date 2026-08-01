@@ -1115,3 +1115,39 @@ Added remote MCP supervision and logs, unified MCP SFTP transfers with resumable
 ### Next Steps
 
 - None - task complete
+
+
+## Session 34: 清理 Trellis 任务与规范状态
+
+**Date**: 2026-08-01
+**Task**: 清理 Trellis 任务与规范状态
+**Branch**: `master`
+
+### Summary
+
+归档已核验完成的历史任务，校正规范索引状态，并保留未完成任务。
+
+### Main Changes
+
+- 归档 16 个已有完成证据的历史任务，并保留仍未完成的任务。
+- 核对 backend/frontend 规范索引，使状态与实际规范内容一致。
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `d092fd2` | `chore(task): 清理 Trellis 状态并补充迁移规范` |
+
+### Testing
+
+- [OK] `task.py list` 与 `task.py list-archive`
+- [OK] 当前父任务及三个子任务的 `task.py validate`
+- [OK] `git diff --check`
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete

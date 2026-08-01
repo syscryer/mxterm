@@ -8,7 +8,7 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 33
+- **Total Sessions**: 34
 - **Last Active**: 2026-08-01
 <!-- @@@/auto:current-status -->
 
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~1117 | Active |
+| `journal-1.md` | ~1150 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 34 | 2026-08-01 | 清理 Trellis 任务与规范状态 | `d092fd2` | `master` |
 | 33 | 2026-08-01 | 增强远程文件悬浮信息 | `47d9b7f` | `master` |
 | 32 | 2026-07-30 | 统一 Acrylic 材质表现 | `6750d50` | `-` |
 | 31 | 2026-07-12 | Remote MCP stability, transfer, and update handoff | `76253c7` | `master` |
