@@ -138,4 +138,4 @@ Codex hooks 需要用户级 `~/.codex/config.toml` 启用 `features.hooks = true
 
 ## 许可
 
-当前仓库尚未加入 `LICENSE` 文件。正式公开前建议补充明确的开源许可证。
+本项目采用 [MIT License](LICENSE) 开源。
