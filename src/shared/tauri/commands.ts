@@ -24,6 +24,12 @@ import type {
   VncSessionCloseResult,
 } from "../../features/connections/connectionTypes";
 import type {
+  ConnectionTransferConflictStrategy,
+  ConnectionTransferExportResult,
+  ConnectionTransferImportResult,
+  ConnectionTransferPreviewResult,
+} from "../../features/connections/connectionTransferTypes";
+import type {
   AiChatSession,
   AiChatSessionSummary,
   AiChatStreamStartRequest,
@@ -179,6 +185,30 @@ export function secretVaultEnableMasterPassword(masterPassword: string) {
 export function secretVaultDisableMasterPassword() {
   return invoke<SecretVaultStatus>("secret_vault_disable_master_password");
 }
+
+export function connectionTransferExport(path: string, password: string) {
+  return invoke<ConnectionTransferExportResult>("connection_transfer_export", {
+    request: { path, password },
+  });
+}
+
+export function connectionTransferPreview(path: string, password: string) {
+  return invoke<ConnectionTransferPreviewResult>("connection_transfer_preview", {
+    request: { path, password },
+  });
+}
+
+export function connectionTransferImport(
+  path: string,
+  password: string,
+  fingerprint: string,
+  strategy: ConnectionTransferConflictStrategy,
+) {
+  return invoke<ConnectionTransferImportResult>("connection_transfer_import", {
+    request: { path, password, fingerprint, strategy },
+  });
+}
+
 export function connectionList() {
   return invoke<ConnectionProfile[]>("connection_list");
 }

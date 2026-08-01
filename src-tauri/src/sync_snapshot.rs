@@ -1,9 +1,5 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use aes_gcm::aead::{Aead, Nonce as AeadNonce, Payload};
-use aes_gcm::{Aes256Gcm, KeyInit};
-use argon2::{Algorithm, Argon2, Params, Version};
-use base64::engine::{general_purpose::STANDARD, Engine as _};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -14,6 +10,9 @@ use crate::connections::{
     TelnetConnectionConfig, VncConnectionConfig,
 };
 use crate::known_hosts::KnownHostEntry;
+use crate::secure_bundle::{
+    decrypt_json, encrypt_json, EncryptedJsonEnvelope, PASSWORD_CIPHER, PASSWORD_KDF,
+};
 use crate::storage_repository::StorageRepository;
 use crate::storage_sqlite::SQLITE_SCHEMA_VERSION;
 use crate::tunnels::TunnelRule;
@@ -22,15 +21,6 @@ pub const SYNC_FORMAT: &str = "mxterm-sync";
 pub const SYNC_PROTOCOL_VERSION: u16 = 1;
 pub const DATA_ARTIFACT: &str = "data.json";
 pub const SECRETS_ARTIFACT: &str = "secrets.enc";
-
-const SYNC_CIPHER: &str = "aes-256-gcm";
-const SYNC_KDF: &str = "argon2id";
-const SYNC_SALT_BYTES: usize = 16;
-const SYNC_NONCE_BYTES: usize = 12;
-const SYNC_KEY_BYTES: usize = 32;
-const SYNC_MEMORY_COST_KIB: u32 = 19 * 1024;
-const SYNC_TIME_COST: u32 = 2;
-const SYNC_PARALLELISM: u32 = 1;
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
 pub struct SyncManifest {
@@ -176,30 +166,8 @@ pub struct SyncImportResult {
 struct RemoteSecretsEnvelope {
     format: String,
     protocol_version: u16,
-    kdf: RemoteSecretsKdf,
-    cipher: String,
-    salt: String,
-    nonce: String,
-    ciphertext: String,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-struct RemoteSecretsKdf {
-    name: String,
-    memory_cost_kib: u32,
-    time_cost: u32,
-    parallelism: u32,
-}
-
-impl Default for RemoteSecretsKdf {
-    fn default() -> Self {
-        Self {
-            name: SYNC_KDF.to_string(),
-            memory_cost_kib: SYNC_MEMORY_COST_KIB,
-            time_cost: SYNC_TIME_COST,
-            parallelism: SYNC_PARALLELISM,
-        }
-    }
+    #[serde(flatten)]
+    encrypted: EncryptedJsonEnvelope,
 }
 
 pub struct SyncSnapshotService;
@@ -306,20 +274,12 @@ impl SyncSnapshotService {
         let envelope: RemoteSecretsEnvelope = serde_json::from_slice(encrypted)
             .map_err(|error| sync_snapshot_secret_decrypt_failed(error))?;
         validate_remote_secret_envelope(&envelope)?;
-        let salt = decode_base64_fixed::<SYNC_SALT_BYTES>(&envelope.salt, "salt")?;
-        let nonce = decode_base64_fixed::<SYNC_NONCE_BYTES>(&envelope.nonce, "nonce")?;
-        let ciphertext = STANDARD
-            .decode(&envelope.ciphertext)
-            .map_err(|error| sync_snapshot_secret_decrypt_failed(error))?;
-        let key = derive_sync_key(sync_password, &salt, &envelope.kdf)?;
-        let plaintext_bytes = decrypt_bytes(
-            &key,
-            &nonce,
-            &ciphertext,
+        let plaintext: SyncSecretsPlaintext = decrypt_json(
             &remote_secret_aad(&manifest.snapshot_id, &sha256_hex(data_json)),
-        )?;
-        let plaintext: SyncSecretsPlaintext = serde_json::from_slice(&plaintext_bytes)
-            .map_err(|error| sync_snapshot_secret_decrypt_failed(error))?;
+            sync_password,
+            &envelope.encrypted,
+        )
+        .map_err(sync_snapshot_secret_decrypt_failed)?;
         if plaintext.version != SYNC_PROTOCOL_VERSION {
             return Err(sync_snapshot_secret_decrypt_failed(format!(
                 "unsupported secrets version {}",
@@ -443,8 +403,8 @@ fn build_manifest(
         db_schema_version: SQLITE_SCHEMA_VERSION as u32,
         artifacts,
         encryption: SyncEncryptionInfo {
-            secrets_cipher: SYNC_CIPHER.to_string(),
-            secrets_kdf: SYNC_KDF.to_string(),
+            secrets_cipher: PASSWORD_CIPHER.to_string(),
+            secrets_kdf: PASSWORD_KDF.to_string(),
         },
     }
 }
@@ -513,115 +473,27 @@ fn encrypt_remote_secrets(
     sync_password: &str,
     plaintext: &SyncSecretsPlaintext,
 ) -> Result<Vec<u8>, AppError> {
-    let kdf = RemoteSecretsKdf::default();
-    let salt = random_array::<SYNC_SALT_BYTES>()?;
-    let nonce = random_array::<SYNC_NONCE_BYTES>()?;
-    let key = derive_sync_key(sync_password, &salt, &kdf)?;
-    let plaintext_bytes = serde_json::to_vec(plaintext).map_err(sync_snapshot_serialize_failed)?;
-    let ciphertext = encrypt_bytes(
-        &key,
-        &nonce,
-        &plaintext_bytes,
+    let encrypted = encrypt_json(
         &remote_secret_aad(snapshot_id, data_hash),
-    )?;
+        sync_password,
+        plaintext,
+    )
+    .map_err(sync_snapshot_serialize_failed)?;
     let envelope = RemoteSecretsEnvelope {
         format: SYNC_FORMAT.to_string(),
         protocol_version: SYNC_PROTOCOL_VERSION,
-        kdf,
-        cipher: SYNC_CIPHER.to_string(),
-        salt: STANDARD.encode(salt),
-        nonce: STANDARD.encode(nonce),
-        ciphertext: STANDARD.encode(ciphertext),
+        encrypted,
     };
     serde_json::to_vec_pretty(&envelope).map_err(sync_snapshot_serialize_failed)
 }
 
 fn validate_remote_secret_envelope(envelope: &RemoteSecretsEnvelope) -> Result<(), AppError> {
-    if envelope.format != SYNC_FORMAT
-        || envelope.protocol_version != SYNC_PROTOCOL_VERSION
-        || envelope.cipher != SYNC_CIPHER
-        || envelope.kdf.name != SYNC_KDF
-    {
+    if envelope.format != SYNC_FORMAT || envelope.protocol_version != SYNC_PROTOCOL_VERSION {
         return Err(sync_snapshot_secret_decrypt_failed(
             "unsupported remote secrets envelope",
         ));
     }
     Ok(())
-}
-
-fn derive_sync_key(
-    sync_password: &str,
-    salt: &[u8; SYNC_SALT_BYTES],
-    kdf: &RemoteSecretsKdf,
-) -> Result<[u8; SYNC_KEY_BYTES], AppError> {
-    let params = Params::new(
-        kdf.memory_cost_kib,
-        kdf.time_cost,
-        kdf.parallelism,
-        Some(SYNC_KEY_BYTES),
-    )
-    .map_err(|error| sync_snapshot_secret_decrypt_failed(error))?;
-    let argon2 = Argon2::new(Algorithm::Argon2id, Version::V0x13, params);
-    let mut key = [0u8; SYNC_KEY_BYTES];
-    argon2
-        .hash_password_into(sync_password.as_bytes(), salt, &mut key)
-        .map_err(|error| sync_snapshot_secret_decrypt_failed(error))?;
-    Ok(key)
-}
-
-fn encrypt_bytes(
-    key: &[u8; SYNC_KEY_BYTES],
-    nonce: &[u8; SYNC_NONCE_BYTES],
-    plaintext: &[u8],
-    aad: &[u8],
-) -> Result<Vec<u8>, AppError> {
-    let cipher = Aes256Gcm::new(key.into());
-    let nonce = AeadNonce::<Aes256Gcm>::try_from(nonce.as_slice())
-        .map_err(|_| sync_snapshot_serialize_failed("invalid nonce length"))?;
-    cipher
-        .encrypt(
-            &nonce,
-            Payload {
-                msg: plaintext,
-                aad,
-            },
-        )
-        .map_err(|error| sync_snapshot_serialize_failed(error))
-}
-
-fn decrypt_bytes(
-    key: &[u8; SYNC_KEY_BYTES],
-    nonce: &[u8; SYNC_NONCE_BYTES],
-    ciphertext: &[u8],
-    aad: &[u8],
-) -> Result<Vec<u8>, AppError> {
-    let cipher = Aes256Gcm::new(key.into());
-    let nonce = AeadNonce::<Aes256Gcm>::try_from(nonce.as_slice())
-        .map_err(|_| sync_snapshot_secret_decrypt_failed("invalid nonce length"))?;
-    cipher
-        .decrypt(
-            &nonce,
-            Payload {
-                msg: ciphertext,
-                aad,
-            },
-        )
-        .map_err(|error| sync_snapshot_secret_decrypt_failed(error))
-}
-
-fn random_array<const N: usize>() -> Result<[u8; N], AppError> {
-    let mut bytes = [0u8; N];
-    getrandom::fill(&mut bytes).map_err(sync_snapshot_serialize_failed)?;
-    Ok(bytes)
-}
-
-fn decode_base64_fixed<const N: usize>(value: &str, label: &str) -> Result<[u8; N], AppError> {
-    let bytes = STANDARD
-        .decode(value)
-        .map_err(|error| sync_snapshot_secret_decrypt_failed(format!("{label}: {error}")))?;
-    bytes.try_into().map_err(|_| {
-        sync_snapshot_secret_decrypt_failed(format!("{label} length must be {N} bytes"))
-    })
 }
 
 fn remote_secret_aad(snapshot_id: &str, data_hash: &str) -> Vec<u8> {

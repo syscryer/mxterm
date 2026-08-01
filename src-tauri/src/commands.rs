@@ -15,6 +15,11 @@ use crate::command_library::{
     CommandHistoryEntry, CommandHistoryIdRequest, CommandHistoryListRequest,
     CommandHistoryRecordRequest, CommandSnippet, CommandSnippetIdRequest, CommandSnippetInput,
 };
+use crate::connection_transfer::{
+    export_to_file, import_from_file, preview_file, ConnectionTransferConflictStrategy,
+    ConnectionTransferExportResult, ConnectionTransferImportResult,
+    ConnectionTransferPreviewResult,
+};
 use crate::connections::{
     parse_remote_system_probe, ConnectionAuthKind, ConnectionProfile, ConnectionProfileInput,
     REMOTE_SYSTEM_PROBE_COMMAND,
@@ -108,6 +113,26 @@ pub struct TerminalConnectRequest {
     pub rows: u16,
     #[serde(skip)]
     pub runtime_config: Option<ResolvedSshConfig>,
+}
+
+#[derive(Deserialize)]
+pub struct ConnectionTransferExportRequest {
+    pub path: String,
+    pub password: String,
+}
+
+#[derive(Deserialize)]
+pub struct ConnectionTransferPreviewRequest {
+    pub path: String,
+    pub password: String,
+}
+
+#[derive(Deserialize)]
+pub struct ConnectionTransferImportRequest {
+    pub path: String,
+    pub password: String,
+    pub fingerprint: String,
+    pub strategy: ConnectionTransferConflictStrategy,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1775,6 +1800,50 @@ pub async fn remote_file_download_to_local(
             skipped: false,
         })
     }
+}
+
+#[tauri::command]
+pub async fn connection_transfer_export(
+    app: AppHandle,
+    request: ConnectionTransferExportRequest,
+) -> Result<ConnectionTransferExportResult, AppError> {
+    let _connection_guard = connection_store_lock().lock().await;
+    let _credential_guard = credential_store_lock().lock().await;
+    let repository = StorageRepository::open_app(&app)?;
+    export_to_file(
+        &repository,
+        Path::new(&request.path),
+        &request.password,
+        &now_timestamp()?,
+    )
+}
+
+#[tauri::command]
+pub async fn connection_transfer_preview(
+    app: AppHandle,
+    request: ConnectionTransferPreviewRequest,
+) -> Result<ConnectionTransferPreviewResult, AppError> {
+    let _connection_guard = connection_store_lock().lock().await;
+    let _credential_guard = credential_store_lock().lock().await;
+    let repository = StorageRepository::open_app(&app)?;
+    preview_file(&repository, Path::new(&request.path), &request.password)
+}
+
+#[tauri::command]
+pub async fn connection_transfer_import(
+    app: AppHandle,
+    request: ConnectionTransferImportRequest,
+) -> Result<ConnectionTransferImportResult, AppError> {
+    let _connection_guard = connection_store_lock().lock().await;
+    let _credential_guard = credential_store_lock().lock().await;
+    let mut repository = StorageRepository::open_app(&app)?;
+    import_from_file(
+        &mut repository,
+        Path::new(&request.path),
+        &request.password,
+        request.fingerprint.trim(),
+        request.strategy,
+    )
 }
 
 #[tauri::command]
