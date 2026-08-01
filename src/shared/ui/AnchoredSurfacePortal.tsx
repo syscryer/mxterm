@@ -16,10 +16,13 @@ interface AnchoredSurfacePortalProps {
   ariaLabel?: string;
   children: ReactNode;
   className: string;
+  consumeEscape?: boolean;
   desiredHeight?: number;
+  id?: string;
   minHeight?: number;
   open: boolean;
   role?: string;
+  side?: "bottom" | "left" | "right" | "top";
   width: number;
   onOpenChange: (open: boolean) => void;
 }
@@ -37,10 +40,13 @@ export function AnchoredSurfacePortal({
   ariaLabel,
   children,
   className,
+  consumeEscape = false,
   desiredHeight = 280,
+  id,
   minHeight = 120,
   open,
   role,
+  side,
   width,
   onOpenChange,
 }: AnchoredSurfacePortalProps) {
@@ -57,10 +63,11 @@ export function AnchoredSurfacePortal({
         align,
         desiredHeight,
         minHeight,
+        side,
         width,
       }),
     );
-  }, [align, anchorRef, desiredHeight, minHeight, open, width]);
+  }, [align, anchorRef, desiredHeight, minHeight, open, side, width]);
 
   useEffect(() => {
     if (!open) {
@@ -80,6 +87,10 @@ export function AnchoredSurfacePortal({
 
     function closeOnEscape(event: KeyboardEvent) {
       if (event.key === "Escape") {
+        if (consumeEscape) {
+          event.preventDefault();
+          event.stopPropagation();
+        }
         onOpenChange(false);
       }
     }
@@ -90,6 +101,7 @@ export function AnchoredSurfacePortal({
           align,
           desiredHeight,
           minHeight,
+          side,
           width,
         }),
       );
@@ -106,7 +118,7 @@ export function AnchoredSurfacePortal({
       window.removeEventListener("resize", updatePosition);
       window.removeEventListener("scroll", updatePosition, true);
     };
-  }, [align, anchorRef, desiredHeight, minHeight, onOpenChange, open, width]);
+  }, [align, anchorRef, consumeEscape, desiredHeight, minHeight, onOpenChange, open, side, width]);
 
   if (!open || !position) {
     return null;
@@ -116,6 +128,7 @@ export function AnchoredSurfacePortal({
     <DismissableLayerBranch asChild>
       <div
         ref={surfaceRef}
+        id={id}
         className={className}
         style={
           {
@@ -142,11 +155,13 @@ function readAnchoredSurfacePosition(
     align,
     desiredHeight,
     minHeight,
+    side,
     width,
   }: {
     align: "start" | "end";
     desiredHeight: number;
     minHeight: number;
+    side?: "bottom" | "left" | "right" | "top";
     width: number;
   },
 ): AnchoredSurfacePosition | null {
@@ -159,7 +174,33 @@ function readAnchoredSurfacePosition(
   const gap = 5;
   const spaceBelow = window.innerHeight - rect.bottom - viewportPadding;
   const spaceAbove = rect.top - viewportPadding;
-  const openAbove = spaceBelow < desiredHeight && spaceAbove > spaceBelow;
+  const spaceLeft = rect.left - viewportPadding;
+  const spaceRight = window.innerWidth - rect.right - viewportPadding;
+  const availableViewportHeight = Math.max(0, window.innerHeight - viewportPadding * 2);
+  const sidePlacement = side === "left" || side === "right";
+  if (sidePlacement) {
+    const openLeft = side === "left" ? spaceLeft >= width || spaceLeft >= spaceRight : !(spaceRight >= width || spaceRight >= spaceLeft);
+    const maxHeight = Math.min(desiredHeight, availableViewportHeight);
+    const preferredTop = align === "end" ? rect.bottom - maxHeight : rect.top;
+    return {
+      left: Math.min(
+        Math.max(viewportPadding, openLeft ? rect.left - gap - width : rect.right + gap),
+        Math.max(viewportPadding, window.innerWidth - width - viewportPadding),
+      ),
+      maxHeight,
+      top: Math.min(
+        Math.max(viewportPadding, preferredTop),
+        Math.max(viewportPadding, window.innerHeight - maxHeight - viewportPadding),
+      ),
+      width,
+    };
+  }
+
+  const openAbove = side === "top"
+    ? spaceAbove >= desiredHeight || spaceAbove >= spaceBelow
+    : side === "bottom"
+      ? !(spaceBelow >= desiredHeight || spaceBelow >= spaceAbove)
+      : spaceBelow < desiredHeight && spaceAbove > spaceBelow;
   const availableHeight = Math.max(
     minHeight,
     (openAbove ? spaceAbove : spaceBelow) - gap,

@@ -227,6 +227,12 @@ import {
   formatTransferProgressBytes,
   interpolateTransferProgress,
 } from "../files/remoteFileTransferUtils";
+import {
+  formatRemoteFileIdentity,
+  formatRemoteFileTimestamp,
+  remoteFileKindLabel,
+  shouldShowRemoteFileSize,
+} from "../files/remoteFileMetadataPresentation";
 import type { AiContextBlock } from "../ai/aiTypes";
 import {
   isRemotePathStrictDescendant,
@@ -11696,11 +11702,21 @@ function RemoteFilePropertiesTable({ metadata }: { metadata: RemoteFileEntryMeta
       </div>
       <div>
         <dt>类型</dt>
-        <dd>{remoteKindLabel(metadata.type)}</dd>
+        <dd>{remoteFileKindLabel(metadata.type)}</dd>
+      </div>
+      {shouldShowRemoteFileSize(metadata.type) ? (
+        <div>
+          <dt>大小</dt>
+          <dd>{formatFileSize(metadata.size)}</dd>
+        </div>
+      ) : null}
+      <div>
+        <dt>用户</dt>
+        <dd>{formatRemoteFileIdentity(metadata.owner, metadata.uid, "UID")}</dd>
       </div>
       <div>
-        <dt>大小</dt>
-        <dd>{formatFileSize(metadata.size)}</dd>
+        <dt>用户组</dt>
+        <dd>{formatRemoteFileIdentity(metadata.group, metadata.gid, "GID")}</dd>
       </div>
       <div>
         <dt>权限</dt>
@@ -11708,11 +11724,15 @@ function RemoteFilePropertiesTable({ metadata }: { metadata: RemoteFileEntryMeta
       </div>
       <div>
         <dt>修改时间</dt>
-        <dd>{formatRemoteMtime(metadata.mtime)}</dd>
+        <dd>{formatRemoteFileTimestamp(metadata.mtime, "未知")}</dd>
+      </div>
+      <div>
+        <dt>创建时间</dt>
+        <dd>{formatRemoteFileTimestamp(metadata.birthtime, "系统不支持")}</dd>
       </div>
       <div>
         <dt>绝对路径</dt>
-        <dd title={metadata.path}>{metadata.path}</dd>
+        <dd>{metadata.path}</dd>
       </div>
     </dl>
   );
@@ -14328,30 +14348,16 @@ function resolveNativeFileDropTargetPath(position: NativeFileDropPosition) {
 
 function previewRemoteFileEntryMetadata(entry: RemoteFileEntry): RemoteFileEntryMetadata {
   return {
+    birthtime: Date.now() / 1000 - 86400,
+    gid: 1000,
+    group: "mxterm",
     mode: entry.type === "directory" ? "755" : "644",
     mtime: Date.now() / 1000,
     name: entry.name,
+    owner: "preview",
     path: entry.path,
     size: entry.type === "directory" ? 0 : previewRemoteFileMetadata(entry.path).size,
     type: entry.type,
+    uid: 1000,
   };
-}
-
-function remoteKindLabel(kind: RemoteFileEntry["type"]) {
-  const labels: Record<RemoteFileEntry["type"], string> = {
-    directory: "目录",
-    file: "文件",
-    other: "其他",
-    symlink: "符号链接",
-  };
-  return labels[kind];
-}
-
-function formatRemoteMtime(mtime: number) {
-  const milliseconds = mtime > 10_000_000_000 ? mtime : mtime * 1000;
-  const date = new Date(milliseconds);
-  if (Number.isNaN(date.getTime())) {
-    return "未知";
-  }
-  return date.toLocaleString();
 }

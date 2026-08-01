@@ -40,10 +40,11 @@ import {
 } from "react";
 
 import type { ConnectionProfile } from "../connections/connectionTypes";
-import { remoteFileList } from "../../shared/tauri/commands";
+import { remoteFileList, remoteFileMetadata } from "../../shared/tauri/commands";
 import { hasTauriRuntime } from "../../shared/tauri/runtime";
 import { Tooltip } from "../../shared/ui/Tooltip";
 import { RemoteFileIcon } from "./RemoteFileIcon";
+import { RemoteFileInfoTooltip, type RemoteFileInfoState } from "./RemoteFileInfoTooltip";
 import {
   isRemotePathStrictDescendant,
   normalizeRemotePath,
@@ -52,7 +53,7 @@ import {
   shouldShowRemoteDirectoryEmptyRow,
   sortRemoteFileEntries,
 } from "./remoteFilePaths";
-import type { RemoteFileEntry } from "./remoteFileTypes";
+import type { RemoteFileEntry, RemoteFileEntryMetadata } from "./remoteFileTypes";
 
 export type RemoteFileTool = "files" | "monitor" | "commands" | "tools" | "ai";
 
@@ -136,6 +137,16 @@ interface RemoteFileVisibleRow {
   entry: RemoteFileEntry;
 }
 
+interface RemoteFileInfoTarget {
+  cacheKey: string;
+  entry: RemoteFileEntry;
+}
+
+interface RemoteFileInfoCandidate extends RemoteFileInfoTarget {
+  anchor: HTMLButtonElement;
+  connectionId: string;
+}
+
 const previewDirectoryEntries: Record<string, RemoteFileEntry[]> = {
   "/": [
     { name: "logs", path: "/opt/app/logs", type: "directory" },
@@ -158,6 +169,8 @@ const previewDirectoryEntries: Record<string, RemoteFileEntry[]> = {
 
 const defaultRemotePath = "/";
 const loadingIndicatorDelayMs = 180;
+const remoteFileInfoDelayMs = 350;
+const remoteFileInfoTooltipId = "remote-file-info-tooltip";
 const defaultRemoteFileTools: RemoteFileTool[] = ["files", "monitor", "commands", "tools", "ai"];
 
 interface RemoteFilePanelStateSnapshot {
@@ -231,7 +244,16 @@ function RemoteFilePanelComponent({
   const [pendingRevealScrollPath, setPendingRevealScrollPath] = useState<string | null>(null);
   const [selectedEntriesByPath, setSelectedEntriesByPath] = useState<Record<string, RemoteFileEntry>>({});
   const [selectionAnchorPath, setSelectionAnchorPath] = useState<string | null>(null);
+  const [remoteFileInfoTarget, setRemoteFileInfoTarget] = useState<RemoteFileInfoTarget | null>(null);
+  const [remoteFileInfoState, setRemoteFileInfoState] = useState<RemoteFileInfoState | null>(null);
   const loadingIndicatorTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const remoteFileInfoTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const remoteFileInfoAnchorRef = useRef<HTMLElement | null>(null);
+  const remoteFileInfoCandidateRef = useRef<RemoteFileInfoCandidate | null>(null);
+  const remoteFileInfoVisibleKeyRef = useRef<string | null>(null);
+  const remoteFileMetadataCacheRef = useRef(new Map<string, RemoteFileInfoState>());
+  const remoteFileMetadataRequestRef = useRef(new Map<string, Promise<RemoteFileEntryMetadata>>());
+  const remoteFileMetadataGenerationRef = useRef(new Map<string, number>());
   const fileListRef = useRef<HTMLDivElement | null>(null);
   const remoteFileRowRefs = useRef(new Map<string, HTMLButtonElement>());
   const connectionLoadScopeRef = useRef(0);
@@ -284,6 +306,10 @@ function RemoteFilePanelComponent({
     setPendingRevealScrollPath(null);
     setError(null);
     clearLoadingIndicatorTimer();
+    closeRemoteFileInfo();
+    remoteFileMetadataCacheRef.current.clear();
+    remoteFileMetadataRequestRef.current.clear();
+    remoteFileMetadataGenerationRef.current.clear();
   }, [connectionId]);
 
   useLayoutEffect(() => {
@@ -313,6 +339,7 @@ function RemoteFilePanelComponent({
       return;
     }
     setReadyFilePanelRenderKey("");
+    closeRemoteFileInfo();
   }, [active, connectionId, effectiveActiveTool]);
 
   useEffect(() => {
@@ -389,6 +416,7 @@ function RemoteFilePanelComponent({
       connectionLoadScopeRef.current += 1;
       directoryLoadRequestRef.current += 1;
       clearLoadingIndicatorTimer();
+      clearRemoteFileInfoTimer();
     },
     [],
   );
@@ -430,76 +458,90 @@ function RemoteFilePanelComponent({
       ) : effectiveActiveTool === "commands" ? (
         commandPanel || <p className="file-panel-empty">还没有命令片段。</p>
       ) : effectiveActiveTool === "files" ? (
-        <FilePanelShell
-          disabled={disabled}
-          hasExpandedDirectories={hasExpandedDirectories}
-          loading={Boolean(visibleLoadingPath)}
-          path={activeDirectoryPath}
-          showHidden={showHidden}
-          terminalPath={terminalDirectory}
-          locatedDirectoryPath={locatedDirectoryPath}
-          canLocateTerminalDirectory={Boolean(terminalDirectory || resolveTerminalPath)}
-          uploadMenuOpen={uploadMenuOpen}
-          onLocateTerminalDirectory={revealTerminalDirectory}
-          onPathSubmit={navigateToPath}
-          onRefresh={() => void loadDirectory(activeDirectoryPath, true)}
-          onCollapseExpandedDirectories={collapseExpandedDirectories}
-          onToggleHidden={() => setShowHidden((value) => !value)}
-          onToggleUploadMenu={() => setUploadMenuOpen((open) => !open)}
-          onCreateDirectory={connection ? onCreateDirectory : undefined}
-          onCreateFile={connection ? onCreateFile : undefined}
-          onCopyCurrentPath={connection ? () => onCopyPath?.(activeDirectoryPath) : undefined}
-          onUploadDirectory={connection ? onUploadDirectory : undefined}
-          onUploadFile={connection ? onUploadFile : undefined}
-        >
-          {!connection ? (
-            <p className="file-panel-empty">打开一个 SSH 会话后显示远程文件。</p>
-          ) : (
-            <>
-              {error ? <p className="file-panel-error">{error}</p> : null}
-              {!fileTreeReady ? (
-                <div
-                  className={`file-list ${effectiveDropTargetPath === activeDirectoryPath ? "is-drop-target" : ""}`}
-                  data-remote-file-drop-target={activeDirectoryPath}
-                >
-                  <section className="remote-file-tree" aria-label="远程文件树">
-                    <p className="file-panel-empty">正在恢复文件视图...</p>
-                  </section>
-                </div>
-              ) : (
-                <ContextMenu.Root>
-                  <ContextMenu.Trigger asChild>
-                    <div
-                      ref={fileListRef}
-                      className={`file-list ${effectiveDropTargetPath === activeDirectoryPath ? "is-drop-target" : ""}`}
-                      data-remote-file-drop-target={activeDirectoryPath}
-                      onDragEnter={(event) => handleLocalDragEnter(event, activeDirectoryPath)}
-                      onDragLeave={(event) => handleLocalDragLeave(event, activeDirectoryPath)}
-                      onDragOver={(event) => handleLocalDragOver(event, activeDirectoryPath)}
-                      onDrop={(event) => handleDropUpload(event, activeDirectoryPath)}
-                    >
-                      <section className="remote-file-tree" aria-label="远程文件树">
-                        {entries.length ? (
-                          renderRows(entries, 0)
-                        ) : showCurrentPathLoading ? (
-                          <p className="file-panel-empty">读取目录中...</p>
-                        ) : isCurrentPathLoading ? null : (
-                          <p className="file-panel-empty">当前目录为空。</p>
-                        )}
-                      </section>
-                    </div>
-                  </ContextMenu.Trigger>
-                  <ContextMenu.Portal>
-                    <ContextMenu.Content className="context-menu-content">
-                      {renderBlankMenu()}
-                    </ContextMenu.Content>
-                  </ContextMenu.Portal>
-                </ContextMenu.Root>
-              )}
-            </>
-          )}
-          {transferPanel ? <div className="file-transfer-dock-wrap">{transferPanel}</div> : null}
-        </FilePanelShell>
+        <>
+          <FilePanelShell
+            disabled={disabled}
+            hasExpandedDirectories={hasExpandedDirectories}
+            loading={Boolean(visibleLoadingPath)}
+            path={activeDirectoryPath}
+            showHidden={showHidden}
+            terminalPath={terminalDirectory}
+            locatedDirectoryPath={locatedDirectoryPath}
+            canLocateTerminalDirectory={Boolean(terminalDirectory || resolveTerminalPath)}
+            uploadMenuOpen={uploadMenuOpen}
+            onLocateTerminalDirectory={revealTerminalDirectory}
+            onPathSubmit={navigateToPath}
+            onRefresh={() => void loadDirectory(activeDirectoryPath, true)}
+            onCollapseExpandedDirectories={collapseExpandedDirectories}
+            onToggleHidden={() => setShowHidden((value) => !value)}
+            onToggleUploadMenu={() => setUploadMenuOpen((open) => !open)}
+            onCreateDirectory={connection ? onCreateDirectory : undefined}
+            onCreateFile={connection ? onCreateFile : undefined}
+            onCopyCurrentPath={connection ? () => onCopyPath?.(activeDirectoryPath) : undefined}
+            onUploadDirectory={connection ? onUploadDirectory : undefined}
+            onUploadFile={connection ? onUploadFile : undefined}
+          >
+            {!connection ? (
+              <p className="file-panel-empty">打开一个 SSH 会话后显示远程文件。</p>
+            ) : (
+              <>
+                {error ? <p className="file-panel-error">{error}</p> : null}
+                {!fileTreeReady ? (
+                  <div
+                    className={`file-list ${effectiveDropTargetPath === activeDirectoryPath ? "is-drop-target" : ""}`}
+                    data-remote-file-drop-target={activeDirectoryPath}
+                  >
+                    <section className="remote-file-tree" aria-label="远程文件树">
+                      <p className="file-panel-empty">正在恢复文件视图...</p>
+                    </section>
+                  </div>
+                ) : (
+                  <ContextMenu.Root>
+                    <ContextMenu.Trigger asChild>
+                      <div
+                        ref={fileListRef}
+                        className={`file-list ${effectiveDropTargetPath === activeDirectoryPath ? "is-drop-target" : ""}`}
+                        data-remote-file-drop-target={activeDirectoryPath}
+                        onDragEnter={(event) => handleLocalDragEnter(event, activeDirectoryPath)}
+                        onDragLeave={(event) => handleLocalDragLeave(event, activeDirectoryPath)}
+                        onDragOver={(event) => handleLocalDragOver(event, activeDirectoryPath)}
+                        onDrop={(event) => handleDropUpload(event, activeDirectoryPath)}
+                      >
+                        <section className="remote-file-tree" aria-label="远程文件树">
+                          {entries.length ? (
+                            renderRows(entries, 0)
+                          ) : showCurrentPathLoading ? (
+                            <p className="file-panel-empty">读取目录中...</p>
+                          ) : isCurrentPathLoading ? null : (
+                            <p className="file-panel-empty">当前目录为空。</p>
+                          )}
+                        </section>
+                      </div>
+                    </ContextMenu.Trigger>
+                    <ContextMenu.Portal>
+                      <ContextMenu.Content className="context-menu-content">
+                        {renderBlankMenu()}
+                      </ContextMenu.Content>
+                    </ContextMenu.Portal>
+                  </ContextMenu.Root>
+                )}
+              </>
+            )}
+            {transferPanel ? <div className="file-transfer-dock-wrap">{transferPanel}</div> : null}
+          </FilePanelShell>
+          <RemoteFileInfoTooltip
+            anchorRef={remoteFileInfoAnchorRef}
+            entry={remoteFileInfoTarget?.entry || null}
+            id={remoteFileInfoTooltipId}
+            open={Boolean(remoteFileInfoTarget)}
+            state={remoteFileInfoState}
+            onOpenChange={(open) => {
+              if (!open) {
+                closeRemoteFileInfo();
+              }
+            }}
+          />
+        </>
       ) : null}
     </aside>
   );
@@ -510,6 +552,131 @@ function RemoteFilePanelComponent({
       path: activeDirectoryPath,
       type: "directory",
     };
+  }
+
+  function clearRemoteFileInfoTimer() {
+    if (remoteFileInfoTimerRef.current) {
+      clearTimeout(remoteFileInfoTimerRef.current);
+      remoteFileInfoTimerRef.current = null;
+    }
+  }
+
+  function closeRemoteFileInfo() {
+    clearRemoteFileInfoTimer();
+    remoteFileInfoCandidateRef.current = null;
+    remoteFileInfoVisibleKeyRef.current = null;
+    remoteFileInfoAnchorRef.current = null;
+    setRemoteFileInfoTarget(null);
+    setRemoteFileInfoState(null);
+  }
+
+  function scheduleRemoteFileInfo(entry: RemoteFileEntry, anchor: HTMLButtonElement) {
+    if (!connection) {
+      return;
+    }
+    clearRemoteFileInfoTimer();
+    const normalizedEntry = { ...entry, path: normalizeRemotePath(entry.path) };
+    const candidate: RemoteFileInfoCandidate = {
+      anchor,
+      cacheKey: remoteFileInfoCacheKey(connection.id, normalizedEntry.path),
+      connectionId: connection.id,
+      entry: normalizedEntry,
+    };
+    remoteFileInfoCandidateRef.current = candidate;
+    remoteFileInfoTimerRef.current = setTimeout(() => {
+      remoteFileInfoTimerRef.current = null;
+      if (remoteFileInfoCandidateRef.current !== candidate || connectionId !== candidate.connectionId) {
+        return;
+      }
+      remoteFileInfoAnchorRef.current = candidate.anchor;
+      remoteFileInfoVisibleKeyRef.current = candidate.cacheKey;
+      setRemoteFileInfoTarget({ cacheKey: candidate.cacheKey, entry: candidate.entry });
+      const cached = remoteFileMetadataCacheRef.current.get(candidate.cacheKey);
+      setRemoteFileInfoState(cached || { status: "loading" });
+      if (!cached) {
+        beginRemoteFileInfoLoad(candidate);
+      }
+    }, remoteFileInfoDelayMs);
+  }
+
+  function beginRemoteFileInfoLoad(candidate: RemoteFileInfoCandidate) {
+    if (remoteFileMetadataRequestRef.current.has(candidate.cacheKey)) {
+      return;
+    }
+    const requestScope = connectionLoadScopeRef.current;
+    const requestGeneration = remoteFileMetadataGenerationRef.current.get(candidate.cacheKey) || 0;
+    const request = hasTauriRuntime()
+      ? remoteFileMetadata(candidate.connectionId, candidate.entry.path)
+      : Promise.resolve(previewRemoteFileInfoMetadata(candidate.entry));
+    remoteFileMetadataRequestRef.current.set(candidate.cacheKey, request);
+    void request
+      .then((metadata) => {
+        if (
+          connectionLoadScopeRef.current !== requestScope ||
+          (remoteFileMetadataGenerationRef.current.get(candidate.cacheKey) || 0) !== requestGeneration
+        ) {
+          return;
+        }
+        const nextState: RemoteFileInfoState = { metadata, status: "ready" };
+        remoteFileMetadataCacheRef.current.set(candidate.cacheKey, nextState);
+        if (remoteFileInfoVisibleKeyRef.current === candidate.cacheKey) {
+          setRemoteFileInfoState(nextState);
+        }
+      })
+      .catch(() => {
+        if (
+          connectionLoadScopeRef.current !== requestScope ||
+          (remoteFileMetadataGenerationRef.current.get(candidate.cacheKey) || 0) !== requestGeneration
+        ) {
+          return;
+        }
+        const nextState: RemoteFileInfoState = {
+          error: "属性读取失败，请刷新后重试。",
+          status: "error",
+        };
+        remoteFileMetadataCacheRef.current.set(candidate.cacheKey, nextState);
+        if (remoteFileInfoVisibleKeyRef.current === candidate.cacheKey) {
+          setRemoteFileInfoState(nextState);
+        }
+      })
+      .finally(() => {
+        if (remoteFileMetadataRequestRef.current.get(candidate.cacheKey) === request) {
+          remoteFileMetadataRequestRef.current.delete(candidate.cacheKey);
+        }
+      });
+  }
+
+  function invalidateRemoteFileMetadataCache(path: string) {
+    if (!connectionId) {
+      return;
+    }
+    const normalizedPath = normalizeRemotePath(path);
+    const cachePrefix = `${connectionId}\0`;
+    const affectedKeys = new Set([
+      ...remoteFileMetadataCacheRef.current.keys(),
+      ...remoteFileMetadataRequestRef.current.keys(),
+    ]);
+    for (const cacheKey of affectedKeys) {
+      if (!cacheKey.startsWith(cachePrefix)) {
+        continue;
+      }
+      const cachedPath = cacheKey.slice(cachePrefix.length);
+      if (cachedPath === normalizedPath || isRemotePathStrictDescendant(cachedPath, normalizedPath)) {
+        remoteFileMetadataGenerationRef.current.set(
+          cacheKey,
+          (remoteFileMetadataGenerationRef.current.get(cacheKey) || 0) + 1,
+        );
+        remoteFileMetadataCacheRef.current.delete(cacheKey);
+        remoteFileMetadataRequestRef.current.delete(cacheKey);
+      }
+    }
+    const pendingPath = remoteFileInfoCandidateRef.current?.entry.path;
+    const visiblePath = remoteFileInfoTarget?.entry.path;
+    if ([pendingPath, visiblePath].some(
+      (targetPath) => targetPath === normalizedPath || isRemotePathStrictDescendant(targetPath, normalizedPath),
+    )) {
+      closeRemoteFileInfo();
+    }
   }
 
   function navigateToPath(path: string) {
@@ -562,6 +729,9 @@ function RemoteFilePanelComponent({
     const normalizedPath = normalizeRemotePath(path);
     if (!connection) {
       return;
+    }
+    if (force) {
+      invalidateRemoteFileMetadataCache(normalizedPath);
     }
     if (!force && directoryEntriesRef.current[normalizedPath]) {
       setError(null);
@@ -765,11 +935,21 @@ function RemoteFilePanelComponent({
                 ...(isLocatedDirectory ? { background: "var(--mx-active)", color: "var(--mx-text)" } : {}),
               }}
               type="button"
-              title={entry.path}
+              aria-describedby={remoteFileInfoTarget?.cacheKey === remoteFileInfoCacheKey(connectionId, entry.path)
+                ? remoteFileInfoTooltipId
+                : undefined}
               aria-pressed={isSelected}
               aria-current={isLocatedDirectory ? "location" : isActiveDirectory ? "page" : undefined}
               onClick={(event) => handleEntryClick(event, entry, isDirectory)}
-              onContextMenu={() => handleEntryContextMenu(entry)}
+              onBlur={(event) => {
+                if (!event.currentTarget.matches(":hover")) {
+                  closeRemoteFileInfo();
+                }
+              }}
+              onContextMenu={() => {
+                closeRemoteFileInfo();
+                handleEntryContextMenu(entry);
+              }}
               onDoubleClick={() => {
                 if (!isDirectory) {
                   onOpenFile?.(entry);
@@ -794,6 +974,13 @@ function RemoteFilePanelComponent({
                 }
               }}
               onDragStart={(event) => handleRemoteDragStart(event, entry)}
+              onFocus={(event) => scheduleRemoteFileInfo(entry, event.currentTarget)}
+              onMouseEnter={(event) => scheduleRemoteFileInfo(entry, event.currentTarget)}
+              onMouseLeave={(event) => {
+                if (document.activeElement !== event.currentTarget) {
+                  closeRemoteFileInfo();
+                }
+              }}
               onDrop={(event) => {
                 if (isDirectory) {
                   handleDropUpload(event, entry.path);
@@ -1461,6 +1648,26 @@ function formatError(error: unknown) {
     return String((error as { message: unknown }).message);
   }
   return String(error);
+}
+
+function remoteFileInfoCacheKey(connectionId: string | null, path: string) {
+  return connectionId ? `${connectionId}\0${normalizeRemotePath(path)}` : "";
+}
+
+function previewRemoteFileInfoMetadata(entry: RemoteFileEntry): RemoteFileEntryMetadata {
+  return {
+    birthtime: 1717710000,
+    gid: 1000,
+    group: "mxterm",
+    mode: entry.type === "directory" ? "755" : "644",
+    mtime: 1717712222,
+    name: entry.name,
+    owner: "preview",
+    path: normalizeRemotePath(entry.path),
+    size: entry.type === "directory" ? 0 : Math.max(128, entry.name.length * 64),
+    type: entry.type,
+    uid: 1000,
+  };
 }
 
 function visibleEntries(entries: RemoteFileEntry[], showHidden: boolean) {

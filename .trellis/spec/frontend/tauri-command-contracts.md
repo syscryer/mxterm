@@ -490,7 +490,12 @@ type RemoteFileWriteResult = {
 };
 
 type RemoteFileEntryMetadata = RemoteFileMetadata & {
+  birthtime: number | null;
+  gid: number | null;
+  group: string | null;
+  owner: string | null;
   type: "directory" | "file" | "symlink" | "other";
+  uid: number | null;
 };
 
 type RemoteFilePathCheckResult = {
@@ -632,6 +637,10 @@ type RemoteFileTransferProgressEvent = {
 - File transfer settings live under `settings.fileTransfer` and include `downloadRoot`, `groupBySession`, `timestampDirectory`, `timestampFormat`, `keepArchives`, and `conflictPolicyDefault`.
 - `settings.fileTransfer.downloadRoot` is optional. Blank means Rust resolves the system Downloads directory; the settings UI should make that clear through the row copy and placeholder, allow manual path entry, and offer a Tauri directory picker for choosing a custom root.
 - Copy path actions copy the remote absolute path only. Create-file, create-directory, and rename dialogs edit the entry basename only, show the parent directory as read-only context, and submit `joinRemotePath(parentPath, name)` / `joinRemotePath(remotePathParent(entry.path), newName)`. Do not prefill or accept a full remote path in these dialogs; slash-containing input should show a name-only validation message.
+- Remote file rows must not use a native `title` tooltip for the path. `RemoteFilePanel` owns one shared `RemoteFileInfoTooltip` / `AnchoredSurfacePortal`, opens it after a short hover or focus delay, and keeps the existing properties action as the complete non-hover entry point.
+- Hover metadata is lazy and cached by `connectionId + normalizedPath`. Coalesce concurrent reads for the same key, reject stale completion by connection scope and per-path generation, clear the cache on connection change, and invalidate the refreshed directory plus descendants on a forced refresh.
+- The metadata surface and properties dialog use the shared presentation helpers. Directories omit size; owner/group prefer names and fall back to `UID <id>` / `GID <id>`; absent birth time renders `系统不支持`. `birthtime` is filesystem creation time only and must never be inferred from mtime or POSIX ctime.
+- The information surface uses `role="tooltip"` plus row `aria-describedby`, exposes its content directly without replacing it with a surface-level `aria-label`, supports keyboard focus, and consumes Escape when dismissing so the key does not reach the active terminal.
 
 ### 4. Validation & Error Matrix
 
@@ -646,6 +655,9 @@ type RemoteFileTransferProgressEvent = {
 | Save returns `remote_file_conflict` | Keep local edits, show conflict UI, and offer reload, overwrite, or cancel. |
 | Save fails for another reason | Keep local edits dirty and show the error without closing the tab. |
 | Dirty tab close is requested | Show a confirmation dialog with save/discard/cancel semantics or an equivalent safe flow. |
+| Entry metadata owner/group name is null but numeric id exists | Render `UID <id>` / `GID <id>`; render `未知` only when both values are unavailable. |
+| Entry metadata `birthtime` is null, zero, or invalid | Render `系统不支持`; do not substitute mtime or ctime. |
+| A forced directory refresh starts while a metadata hover is pending or visible | Close the surface and invalidate cached/in-flight metadata for that directory and descendants. |
 | Delete succeeds for an opened file | Close or mark the matching tab unavailable, then choose a deterministic fallback active tab. |
 | Upload is requested in browser preview | Do not call the Tauri wrapper; show preview-only feedback or a disabled state. |
 | Upload target exists and default policy is `ask` | Prompt for rename / skip / overwrite after `remoteFileCheckPath(...)` confirms the exact remote target exists, before local archive creation or upload. |
@@ -670,18 +682,20 @@ type RemoteFileTransferProgressEvent = {
 - Good: a local directory drop resolves to an absolute native path, calls `remoteFileUploadLocalArchive` once with the matching `transferId`, lets Rust scan/upload over SFTP, and reports real loaded/total progress in the transfer panel.
 - Good: `WorkspaceShell` listens to `remote_file:transfer_progress`, matches by `transfer_id`, and displays `loaded / total` plus `MB/s` while the command is still running.
 - Good: the user clicks cancel on a running transfer, `WorkspaceShell` calls `remoteFileCancelTransfer`, and a later `remote_file_transfer_canceled` command error leaves the row canceled rather than failed.
+- Good: a user pauses over or focuses `/opt/app/app.log`; after the delay one shared surface reads `remoteFileMetadata`, shows owner/group/permissions/mtime/birth time/path, and reuses the cached result on the next hover.
 - Base: a user creates `/tmp/app.conf`; React calls `remoteFileCreateFile(connection.id, path)`, refreshes the parent directory, then opens the new file tab.
-- Bad: a component stores passwords in file action state, calls `invoke("remote_file_write", ...)` directly, uploads every folder child through separate commands from React, shows fake pulse progress over real SFTP events, or closes a dirty Monaco tab without confirmation.
+- Bad: a component stores passwords in file action state, calls `invoke("remote_file_write", ...)` directly, mounts a native path `title` or one portal per file row, substitutes ctime for creation time, uploads every folder child through separate commands from React, shows fake pulse progress over real SFTP events, or closes a dirty Monaco tab without confirmation.
 
 ### 6. Tests Required
 
 - Run `node scripts/check-remote-file-editor-source.mjs` after changing remote editor wrappers, Monaco integration, file tab state, or file panel actions.
+- Run `node scripts/check-remote-file-hover-metadata.mjs` and `node scripts/check-remote-file-metadata-presentation.mjs` after changing entry metadata fields, hover/focus behavior, cache invalidation, shared anchored placement, or presentation fallbacks.
 - The source check must cover `remoteFileMetadata`, `remoteFileCheckPath`, upload conflict preflight, `remoteFileCheckDownloadTarget`, download conflict preflight, `remoteFileUploadLocalFile`, `remoteFileUploadLocalArchive`, Tauri dialog upload helpers, drag/drop upload temp helpers, `remoteFileDownloadToLocal`, drag upload/download handlers, `CompressionStream("gzip")`, `webkitdirectory`, `fileTransfer` settings, and basename-only rename.
 - The source check must cover `transfer_id`, `remote_file:transfer_progress`, `remoteFileCancelTransfer`, speed text, streamed tar/gzip preview helpers, and progressbar markup whenever transfer UI or command wrappers change.
 - Run `pnpm check` after changing TypeScript command payloads, editor types, or workspace/file panel props.
 - Run `npm run build` after visible Monaco/workspace/CSS changes.
 - Add frontend tests once the test runner exists for duplicate tab activation, dirty close confirmation, conflict branching, browser-preview upload blocking, and wrapper payload shape.
-- Cross-check frontend result fields against `RemoteFileMetadata`, `RemoteFileReadResult`, and `RemoteFileWriteResult` in `src-tauri/src/remote_files.rs`.
+- Cross-check frontend result fields against `RemoteFileMetadata`, `RemoteFileEntryMetadata`, `RemoteFileReadResult`, and `RemoteFileWriteResult` in `src-tauri/src/remote_files.rs`.
 
 ### 7. Wrong vs Correct
 

@@ -899,6 +899,11 @@ RemoteFileEntryMetadata {
     size: u64,
     mtime: u64,
     mode: Option<String>,
+    owner: Option<String>,
+    uid: Option<u64>,
+    group: Option<String>,
+    gid: Option<u64>,
+    birthtime: Option<u64>,
     type: "directory" | "file" | "symlink" | "other",
 }
 
@@ -996,7 +1001,10 @@ LocalPathMetadataResult {
 - `ReusableExecSession` must keep non-progress `exec_with_stdin` behavior available for save/write commands, and add progress-aware variants instead of forcing every exec caller to emit UI events.
 - `RemoteFileManager` may reuse a `ReusableExecSession` per connection signature. If an exec fails, invalidate the handle, reconnect once, and retry the command.
 - `RemoteFileManager` owns a transfer registry keyed by `transfer_id`. `remote_file_cancel_transfer` sets the matching token; chunk loops and directory scans must check the token and return `remote_file_transfer_canceled` quickly without deleting `.mxpart` files.
-- `remote_file_metadata` returns regular file, directory, symlink, or other metadata for the properties dialog. The serialized kind field is `type`.
+- `remote_file_metadata` returns regular file, directory, symlink, or other metadata for the properties dialog and lazy file-tree information surface. The serialized kind field is `type`.
+- `build_remote_entry_metadata_command` must quote the requested path and emit kind, path, size, mtime, mode, owner, UID, group, GID, and birth time as NUL-delimited fields. Use GNU/Linux `stat -c` with BSD/macOS `stat -f` fallbacks so whitespace or localized identity names do not change field boundaries.
+- `birthtime` means filesystem birth/creation time. Read GNU `%W` or BSD/macOS `%B`, normalize missing, invalid, or non-positive values to `None`, and never use GNU `%Z` or POSIX ctime as creation time.
+- Owner/group names are optional. Normalize empty and case-insensitive `UNKNOWN` names to `None`, preserve numeric UID/GID when available, and do not fail the complete metadata request when these optional identity fields cannot be resolved.
 - `remote_file_check_path` is a lightweight existence/type preflight for exact transfer targets. It must check only the requested path, return `{ exists, path, type }`, and must not list the parent directory, scan directory contents, read file content, create archives, or start upload/download work.
 - `remote_file_upload_file` is a single-file byte upload. It accepts a conflict policy and returns the final remote path plus optional metadata; skipped uploads return `metadata: None`.
 - `remote_file_upload_local_file` accepts a trusted local file path from the Tauri dialog path or a backend-owned upload temp path from the drag/drop fallback, streams that file through SFTP to `{remote_path}.mxpart`, and renames the part file to the final path only after the upload completes.
@@ -1045,6 +1053,8 @@ LocalPathMetadataResult {
 | Download command exits non-zero | `remote_file_download_failed` | true |
 | Entry metadata command exits non-zero | `remote_file_metadata_failed` | true |
 | Entry metadata output cannot parse | `remote_file_metadata_parse_failed` | true |
+| Owner/group name cannot resolve but UID/GID parses | no error; name is `None`, numeric id is returned | n/a |
+| Birth time is missing, invalid, or non-positive | no error; `birthtime` is `None` | n/a |
 | Remote target preflight command exits non-zero | `remote_file_check_path_failed` | true |
 | Remote target preflight output cannot parse | `remote_file_check_path_parse_failed` | true |
 | Archive upload target cannot resolve | `remote_file_archive_resolve_failed` / `remote_file_archive_resolve_parse_failed` | true |
@@ -1069,8 +1079,9 @@ LocalPathMetadataResult {
 - Good: `remote_file_upload_local_archive` receives a Tauri-dialog directory path for `dist`, resolves `/opt/app/dist (1)` under rename policy, creates `/opt/app/dist (1).mxpart`, uploads regular files through SFTP with resume, renames the staged root to the final root, and returns the final remote path.
 - Good: `remote_file_download_to_local` receives a directory path and settings-derived timestamp name, scans the remote directory over SFTP, downloads each file under `Downloads/<session>/<timestamp>/dist`, emits global loaded/total progress, and returns `local_path` plus `local_directory`.
 - Good: `remote_file_cancel_transfer` receives a running `transfer_id`, marks its token canceled, the active SFTP chunk loop returns `remote_file_transfer_canceled`, and the UI keeps the row canceled rather than failed.
+- Good: `remote_file_metadata` reads a quoted path through GNU/BSD `stat`, parses all ten NUL-delimited fields, preserves UID/GID when names are unknown, and returns `birthtime: None` when the filesystem reports `0`.
 - Base: `remote_file_read` receives a small UTF-8 file, metadata parses with optional mode, content has no NUL bytes, and the response sets `encoding = "utf-8"` and `editable = true`.
-- Bad: write logic builds `format!("cat > {}", content)`, extracts a directory archive over an existing target instead of using SFTP conflict policy, deletes `.mxpart` on user cancellation, or accepts a frontend password field for a remote file command.
+- Bad: write logic builds `format!("cat > {}", content)`, entry metadata labels POSIX ctime (`stat -c %Z`) as creation time, extracts a directory archive over an existing target instead of using SFTP conflict policy, deletes `.mxpart` on user cancellation, or accepts a frontend password field for a remote file command.
 
 ### 6. Tests Required
 
@@ -1082,7 +1093,7 @@ LocalPathMetadataResult {
 - Unit-test `build_remote_upload_command`, `build_remote_resolve_child_command`, and `build_remote_extract_archive_command` for quoted paths, POSIX shell syntax, tar usage in legacy archive upload, and no embedded file content. Source-check local upload temp helpers and `exec_with_stdin_file_progress` when changing legacy upload plumbing.
 - Unit-test SFTP part-path helpers, resume offset handling, capped SFTP read lengths, remote relative path joining, local relative path joining, and remote rename parent/name helpers.
 - Source-check progress plumbing for `REMOTE_FILE_TRANSFER_PROGRESS`, `RemoteFileTransferProgressEvent`, `ExecProgressCallback`, `SftpProgressCallback`, `remote_sftp_transfer_progress_callback`, `exec_with_stdin_progress`, and `exec_with_stdout_progress`.
-- Unit-test `parse_remote_entry_metadata` and `parse_remote_transfer_path` for NUL-delimited fields and skipped/final path parsing.
+- Unit-test `build_remote_entry_metadata_command` and `parse_remote_entry_metadata` for quoted paths, GNU/BSD owner/group/UID/GID/birth-time probes, ten NUL-delimited fields, `UNKNOWN` identity normalization, numeric fallback preservation, unsupported birth time, and absence of `%Z`/ctime creation-time logic. Unit-test `parse_remote_transfer_path` for skipped/final path parsing.
 - Unit-test local download helpers for sanitized path segments, rename conflict behavior, skip/overwrite handling, and retained archive naming.
 - Unit-test the edit limit constant so `REMOTE_FILE_EDIT_LIMIT_BYTES == 2 * 1024 * 1024`.
 - Run `cargo test --manifest-path src-tauri/Cargo.toml remote_files --lib` after changing `src-tauri/src/remote_files.rs`.

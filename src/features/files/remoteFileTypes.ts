@@ -15,7 +15,12 @@ export interface RemoteFileMetadata {
 }
 
 export interface RemoteFileEntryMetadata extends RemoteFileMetadata {
+  birthtime: number | null;
+  gid: number | null;
+  group: string | null;
+  owner: string | null;
   type: RemoteFileKind;
+  uid: number | null;
 }
 
 export interface RemoteFilePathCheckResult {
