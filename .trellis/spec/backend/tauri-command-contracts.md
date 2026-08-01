@@ -3030,3 +3030,83 @@ terminate_external_mcp_processes()?;
 ```
 
 Preparation suspends recovery and removes managed and external sidecar blockers before installation.
+
+## Scenario: Encrypted Connection Repository Transfer
+
+### 1. Scope / Trigger
+
+- Trigger: changing the portable connection bundle, its three Tauri commands, the SQLite merge rules, or credential-vault recovery.
+- Source files: `src-tauri/src/connection_transfer.rs`, `src-tauri/src/connection_transfer_recovery.rs`, `src-tauri/src/secure_bundle.rs`, `src-tauri/src/commands.rs`, and `src-tauri/src/storage_vault.rs`.
+- The transfer format is independent from `mxterm-sync`; only the tested Argon2id and AES-256-GCM helper is shared.
+
+### 2. Signatures
+
+- `connection_transfer_export(app, request: { path: String, password: String }) -> Result<ConnectionTransferExportResult, AppError>`
+- `connection_transfer_preview(app, request: { path: String, password: String }) -> Result<ConnectionTransferPreviewResult, AppError>`
+- `connection_transfer_import(app, request: { path: String, password: String, fingerprint: String, strategy: ConnectionTransferConflictStrategy }) -> Result<ConnectionTransferImportResult, AppError>`
+- `ConnectionTransferConflictStrategy` serializes as `skip | overwrite`.
+- `ConnectionTransferPreviewResult` returns a SHA-256 `fingerprint`, per-entity `total/new/conflicts` counts, and `private_key_warnings`.
+- `ConnectionTransferImportResult` returns per-entity `created/updated/skipped` counts and the number of restored secrets.
+
+### 3. Contracts
+
+- The JSON envelope uses `format = "mxterm-connections"` and `version = 1`. Its readable `data` contains connection groups, reusable credentials, and all supported connection protocols; `secrets` is an encrypted JSON envelope.
+- `data_sha256` is SHA-256 over `serde_json::to_vec(&data)`. AES-GCM associated data is `mxterm-connections\0v1\0<data_sha256>`, so readable metadata cannot be changed independently from encrypted credentials.
+- Exported secrets may contain passwords and private-key passphrases, but never vault references or private-key file contents. Private-key paths remain metadata and unavailable paths are preview warnings.
+- Reject files over 16 MiB, passwords over 1024 bytes, more than 10,000 connections, 5,000 credentials, 5,000 groups, or 20,000 secret records before mutation.
+- Preview validates format, version, digest, decryption, duplicates, references, limits, and conflicts. Import re-reads the file and requires the exact preview fingerprint before applying it.
+- `skip` is the default UI policy. `overwrite` must be supplied explicitly. Connections and credentials conflict by stable ID; groups resolve both stable-ID and unique-name conflicts.
+- Export, preview, and import hold both connection and credential store locks. Import performs the SQLite changes in one transaction and compensates every vault write on ordinary failure.
+- Before vault mutation, write `.connection-transfer-pending.json` and back up `secrets.enc` to `.connection-transfer-secrets.enc.bak`. The SQLite transaction writes its transaction ID to `app_settings[connection_transfer_last_commit]`.
+- On repository reopen, a pending journal whose transaction ID is not committed restores the previous vault; a committed ID keeps the new vault. Recovery failure is non-recoverable and stops repository use.
+
+### 4. Validation & Error Matrix
+
+| Condition | Error code | Mutation allowed |
+| --- | --- | --- |
+| Missing path | `connection_transfer_path_required` | No |
+| Empty or oversized password | `connection_transfer_password_required` / `connection_transfer_password_too_long` | No |
+| Empty, unreadable, invalid, or oversized file | `connection_transfer_file_read_failed` / `connection_transfer_file_parse_failed` / `connection_transfer_file_too_large` | No |
+| Wrong format or version | `connection_transfer_incompatible` | No |
+| Readable data digest changed | `connection_transfer_data_modified` | No |
+| Wrong password or damaged ciphertext | `connection_transfer_decrypt_failed` | No |
+| Duplicate IDs, dangling references, or count-limit violation | `connection_transfer_invalid_data` | No |
+| File changed after preview | `connection_transfer_file_changed` | No |
+| SQLite or vault apply failure | `connection_transfer_import_failed` | Roll back and compensate |
+| Pending-journal recovery cannot complete | `connection_transfer_recovery_failed` | Stop repository use |
+
+### 5. Good / Base / Bad Cases
+
+- Good: export readable connection metadata with encrypted credentials, preview the same bytes, then import with the returned fingerprint and explicit conflict strategy.
+- Base: preview reports only conflicts; `skip` preserves all local rows and secrets and returns skipped counts.
+- Bad: trusting a previously parsed bundle during import without re-reading and comparing the file fingerprint.
+- Bad: committing SQLite and then writing vault secrets without a journal and compensating backup.
+
+### 6. Tests Required
+
+- `cargo test --manifest-path src-tauri/Cargo.toml connection_transfer` must cover correct/wrong passwords, metadata tampering, invalid references, skip/overwrite behavior, TOCTOU rejection, ordinary rollback, and cross-process recovery.
+- `cargo test --manifest-path src-tauri/Cargo.toml sync_snapshot::tests` must remain green after changes to `secure_bundle`.
+- `cargo fmt --manifest-path src-tauri/Cargo.toml -- --check` must pass.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```rust
+let previewed = read_bundle_file(path)?;
+apply_bundle(repository, &previewed, password, strategy)?;
+```
+
+This applies stale bytes if the file is replaced after preview.
+
+#### Correct
+
+```rust
+let (bundle, fingerprint) = read_bundle_file(path)?;
+if fingerprint != expected_fingerprint {
+    return Err(connection_transfer_file_changed());
+}
+apply_bundle(repository, &bundle, password, strategy)?;
+```
+
+Import revalidates the exact file before any persistent mutation.
