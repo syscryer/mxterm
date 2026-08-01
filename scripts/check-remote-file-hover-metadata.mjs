@@ -20,6 +20,11 @@ assert.doesNotMatch(
   /title=\{entry\.path\}/,
   "remote file rows should not use the browser-native path tooltip",
 );
+assert.match(
+  panelSource,
+  /const remoteFileInfoDelayMs = 2000;/,
+  "the metadata surface should wait 2000ms before opening",
+);
 assert.match(panelSource, /<RemoteFileInfoTooltip\b/, "the file tree should mount one shared metadata surface");
 assert.match(tooltipSource, /role="tooltip"/, "the metadata surface should expose tooltip semantics");
 assert.match(tooltipSource, /\bconsumeEscape\b/, "Escape should dismiss the tooltip without reaching the terminal");

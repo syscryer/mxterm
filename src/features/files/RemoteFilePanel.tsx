@@ -169,7 +169,7 @@ const previewDirectoryEntries: Record<string, RemoteFileEntry[]> = {
 
 const defaultRemotePath = "/";
 const loadingIndicatorDelayMs = 180;
-const remoteFileInfoDelayMs = 350;
+const remoteFileInfoDelayMs = 2000;
 const remoteFileInfoTooltipId = "remote-file-info-tooltip";
 const defaultRemoteFileTools: RemoteFileTool[] = ["files", "monitor", "commands", "tools", "ai"];
 
