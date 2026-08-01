@@ -1082,3 +1082,36 @@ Added remote MCP supervision and logs, unified MCP SFTP transfers with resumable
 ### Next Steps
 
 - None - task complete
+
+
+## Session 33: 增强远程文件悬浮信息
+
+**Date**: 2026-08-01
+**Task**: 增强远程文件悬浮信息
+**Branch**: `master`
+
+### Summary
+
+为远程文件树新增按需加载的自定义元数据浮层，展示用户、用户组、权限、修改与创建时间，并补齐缓存失效、跨平台解析、主题样式和回归验证。
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `47d9b7f` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
