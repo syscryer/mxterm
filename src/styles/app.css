@@ -71,6 +71,75 @@ button {
   fill: rgb(248 250 252 / 88%);
 }
 
+.remote-file-info-tooltip {
+  display: grid;
+  gap: 7px;
+  padding: 9px 10px;
+  color: var(--mx-text);
+  pointer-events: none;
+  white-space: normal;
+}
+
+.remote-file-info-head {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding-bottom: 7px;
+  border-bottom: 1px solid var(--mx-line-soft);
+}
+
+.remote-file-info-head strong {
+  min-width: 0;
+  overflow: hidden;
+  font-size: 12px;
+  font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.remote-file-info-list {
+  margin: 0;
+  display: grid;
+}
+
+.remote-file-info-list > div {
+  min-height: 22px;
+  display: grid;
+  grid-template-columns: 66px minmax(0, 1fr);
+  align-items: start;
+  gap: 8px;
+  padding: 3px 0;
+}
+
+.remote-file-info-list dt {
+  color: var(--mx-muted);
+}
+
+.remote-file-info-list dd {
+  min-width: 0;
+  margin: 0;
+  color: var(--mx-text);
+}
+
+.remote-file-info-list dd.is-path {
+  overflow-wrap: anywhere;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.remote-file-info-status {
+  margin: 0;
+  padding-top: 7px;
+  border-top: 1px solid var(--mx-line-soft);
+  color: var(--mx-muted);
+}
+
+.remote-file-info-status.is-error {
+  color: var(--mx-danger);
+}
+
 .app-shell {
   --mx-scrollbar-size: 6px;
   --mx-scrollbar-thumb: transparent;
@@ -15164,6 +15233,13 @@ body[data-platform="macos"] .dialog-backdrop {
   color: var(--mx-text);
   font-family: var(--font-mono);
   font-size: 12px;
+}
+
+.remote-file-properties div:last-child dd {
+  overflow: visible;
+  overflow-wrap: anywhere;
+  text-overflow: clip;
+  white-space: normal;
 }
 
 .transfer-conflict-dialog {

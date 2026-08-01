@@ -76,6 +76,11 @@ pub struct RemoteFileEntryMetadata {
     pub size: u64,
     pub mtime: u64,
     pub mode: Option<String>,
+    pub owner: Option<String>,
+    pub uid: Option<u64>,
+    pub group: Option<String>,
+    pub gid: Option<u64>,
+    pub birthtime: Option<u64>,
     #[serde(rename = "type")]
     pub kind: RemoteFileKind,
 }
@@ -306,7 +311,13 @@ pub fn build_remote_entry_metadata_command(path: &str) -> String {
          size=$(stat -c %s \"$path\" 2>/dev/null || stat -f %z \"$path\" 2>/dev/null || printf 0); \
          mtime=$(stat -c %Y \"$path\" 2>/dev/null || stat -f %m \"$path\" 2>/dev/null) || exit 4; \
          mode=$(stat -c %a \"$path\" 2>/dev/null || stat -f %Lp \"$path\" 2>/dev/null || printf ''); \
-         printf '%s\\000%s\\000%s\\000%s\\000%s\\000' \"$kind\" \"$path\" \"$size\" \"$mtime\" \"$mode\""
+         owner=$(stat -c %U \"$path\" 2>/dev/null || stat -f %Su \"$path\" 2>/dev/null || printf ''); \
+         uid=$(stat -c %u \"$path\" 2>/dev/null || stat -f %u \"$path\" 2>/dev/null || printf ''); \
+         group_name=$(stat -c %G \"$path\" 2>/dev/null || stat -f %Sg \"$path\" 2>/dev/null || printf ''); \
+         gid=$(stat -c %g \"$path\" 2>/dev/null || stat -f %g \"$path\" 2>/dev/null || printf ''); \
+         birthtime=$(stat -c %W \"$path\" 2>/dev/null || stat -f %B \"$path\" 2>/dev/null || printf ''); \
+         printf '%s\\000%s\\000%s\\000%s\\000%s\\000%s\\000%s\\000%s\\000%s\\000%s\\000' \
+           \"$kind\" \"$path\" \"$size\" \"$mtime\" \"$mode\" \"$owner\" \"$uid\" \"$group_name\" \"$gid\" \"$birthtime\""
     )
 }
 
@@ -471,6 +482,11 @@ pub fn parse_remote_entry_metadata(output: &[u8]) -> Option<RemoteFileEntryMetad
     let size = fields.next()?;
     let mtime = fields.next()?;
     let mode = fields.next().unwrap_or_default();
+    let owner = fields.next().unwrap_or_default();
+    let uid = fields.next().unwrap_or_default();
+    let group = fields.next().unwrap_or_default();
+    let gid = fields.next().unwrap_or_default();
+    let birthtime = fields.next().unwrap_or_default();
 
     let path = String::from_utf8_lossy(path).to_string();
     let size = String::from_utf8_lossy(size).trim().parse::<u64>().ok()?;
@@ -482,8 +498,26 @@ pub fn parse_remote_entry_metadata(output: &[u8]) -> Option<RemoteFileEntryMetad
         size,
         mtime,
         mode: if mode.is_empty() { None } else { Some(mode) },
+        owner: parse_optional_identity_name(owner),
+        uid: parse_optional_u64(uid),
+        group: parse_optional_identity_name(group),
+        gid: parse_optional_u64(gid),
+        birthtime: parse_optional_u64(birthtime).filter(|value| *value > 0),
         kind: find_kind(kind.first().copied()),
     })
+}
+
+fn parse_optional_identity_name(field: &[u8]) -> Option<String> {
+    let value = String::from_utf8_lossy(field).trim().to_string();
+    if value.is_empty() || value.eq_ignore_ascii_case("unknown") {
+        None
+    } else {
+        Some(value)
+    }
+}
+
+fn parse_optional_u64(field: &[u8]) -> Option<u64> {
+    String::from_utf8_lossy(field).trim().parse::<u64>().ok()
 }
 
 pub fn parse_remote_path_check_output(output: &[u8]) -> Option<RemoteFilePathCheckResult> {
@@ -2486,9 +2520,10 @@ fn next_transfer_read_len(loaded_bytes: u64, total_bytes: u64, buffer_len: usize
 #[cfg(test)]
 mod tests {
     use super::{
-        build_remote_list_command, build_remote_path_check_command, build_remote_write_command,
-        join_remote_relative_path, local_download_part_path, local_relative_path,
-        local_upload_relative_path, looks_like_binary, next_transfer_read_len,
+        build_remote_entry_metadata_command, build_remote_list_command,
+        build_remote_path_check_command, build_remote_write_command, join_remote_relative_path,
+        local_download_part_path, local_relative_path, local_upload_relative_path,
+        looks_like_binary, next_transfer_read_len, parse_remote_entry_metadata,
         parse_remote_file_metadata, parse_remote_list_output, parse_remote_path_check_output,
         quote_posix_shell, remote_file_upload_confirm_error, remote_parent_path,
         remote_transfer_part_path, resume_offset_for_partial, split_remote_name,
@@ -2576,6 +2611,54 @@ mod tests {
 
         assert_eq!(metadata.name, "deploy.sh");
         assert_eq!(metadata.mode.as_deref(), Some("755"));
+    }
+
+    #[test]
+    fn build_remote_entry_metadata_command_collects_portable_identity_and_birthtime() {
+        let command = build_remote_entry_metadata_command("/srv/app's data/cert.pem");
+
+        assert!(command.contains("path='/srv/app'\\''s data/cert.pem'"));
+        assert!(command.contains("stat -c %U"));
+        assert!(command.contains("stat -f %Su"));
+        assert!(command.contains("stat -c %u"));
+        assert!(command.contains("stat -f %u"));
+        assert!(command.contains("stat -c %G"));
+        assert!(command.contains("stat -f %Sg"));
+        assert!(command.contains("stat -c %g"));
+        assert!(command.contains("stat -f %g"));
+        assert!(command.contains("stat -c %W"));
+        assert!(command.contains("stat -f %B"));
+        assert!(!command.contains("stat -c %Z"));
+    }
+
+    #[test]
+    fn parse_remote_entry_metadata_reads_identity_and_birthtime() {
+        let metadata = parse_remote_entry_metadata(
+            b"f\0/opt/app/cert.pem\0128\01717712222\0640\0deploy\01001\0certs\01002\01717710000\0",
+        )
+        .expect("entry metadata should parse");
+        let serialized = serde_json::to_value(metadata).expect("metadata should serialize");
+
+        assert_eq!(serialized["owner"], "deploy");
+        assert_eq!(serialized["uid"], 1001);
+        assert_eq!(serialized["group"], "certs");
+        assert_eq!(serialized["gid"], 1002);
+        assert_eq!(serialized["birthtime"], 1717710000);
+    }
+
+    #[test]
+    fn parse_remote_entry_metadata_normalizes_unsupported_birthtime() {
+        let metadata = parse_remote_entry_metadata(
+            b"d\0/opt/app/archive\04096\01717712222\0750\0UNKNOWN\01001\0UNKNOWN\01002\00\0",
+        )
+        .expect("entry metadata should parse");
+        let serialized = serde_json::to_value(metadata).expect("metadata should serialize");
+
+        assert!(serialized["owner"].is_null());
+        assert_eq!(serialized["uid"], 1001);
+        assert!(serialized["group"].is_null());
+        assert_eq!(serialized["gid"], 1002);
+        assert!(serialized["birthtime"].is_null());
     }
 
     #[test]
