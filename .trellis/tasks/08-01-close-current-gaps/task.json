@@ -1,0 +1,30 @@
+{
+  "id": "close-current-gaps",
+  "name": "close-current-gaps",
+  "title": "收敛当前产品与工程缺口",
+  "description": "",
+  "status": "planning",
+  "dev_type": null,
+  "scope": null,
+  "package": null,
+  "priority": "P2",
+  "creator": "MNL",
+  "assignee": "MNL",
+  "createdAt": "2026-08-01",
+  "completedAt": null,
+  "branch": null,
+  "base_branch": "master",
+  "worktree_path": null,
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [
+    "08-01-encrypted-connection-transfer",
+    "08-01-add-mit-license",
+    "08-01-reconcile-trellis-state"
+  ],
+  "parent": null,
+  "relatedFiles": [],
+  "notes": "",
+  "meta": {}
+}

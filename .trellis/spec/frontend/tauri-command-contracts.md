@@ -2332,3 +2332,76 @@ else await installAppUpdate(update);
 ```
 
 Process termination remains an explicit user decision.
+
+## Scenario: Encrypted Connection Transfer UI and Tauri Wrappers
+
+### 1. Scope / Trigger
+
+- Trigger: changing the homepage repository-maintenance entries, transfer dialog state machine, file pickers, or the three transfer wrappers.
+- Source files: `src/features/connections/ConnectionTransferDialog.tsx`, `src/features/connections/connectionTransferTypes.ts`, `src/features/layout/WorkspaceShell.tsx`, `src/shared/tauri/commands.ts`, and `src/shared/tauri/dialog.ts`.
+
+### 2. Signatures
+
+- `connectionTransferExport(path: string, password: string): Promise<ConnectionTransferExportResult>`
+- `connectionTransferPreview(path: string, password: string): Promise<ConnectionTransferPreviewResult>`
+- `connectionTransferImport(path: string, password: string, fingerprint: string, strategy: "skip" | "overwrite"): Promise<ConnectionTransferImportResult>`
+- `selectConnectionTransferImportPath(): Promise<string | null>`
+- `selectConnectionTransferExportPath(): Promise<string | null>`
+- `ConnectionTransferDialog` receives `mode: "import" | "export"`, controlled `open`, `onOpenChange`, and an import-success callback.
+
+### 3. Contracts
+
+- `WorkspaceShell` must load `ConnectionTransferDialog` with `React.lazy`; do not add it to the startup module graph.
+- Homepage import and export are separate commands. Import must never reuse the connection refresh handler, and export success must not refresh the repository.
+- File-picker cancellation returns `null` and must not invoke a backend command.
+- Export requires a non-empty password and matching confirmation before invoke. Password values remain component state only and are cleared when the dialog closes.
+- Import selects a file, accepts a password, runs preview, displays counts and private-key warnings, defaults conflict handling to `skip`, and requires an explicit select change for `overwrite`.
+- Import passes the preview fingerprint unchanged. Only a successful import awaits the existing connection/group reload callback; cancellation, preview failure, and apply failure do not reload.
+- Busy state disables duplicate actions. Errors stay visible in the dialog and do not close it. Long private-key paths wrap.
+- Use shared Radix dialog patterns, Lucide icons, `AppSelect`, shared input attributes, and global `--mx-*` tokens. The workflow must work in light, explicit dark, and system-dark themes.
+
+### 4. Validation & Error Matrix
+
+| Condition | Frontend behavior |
+| --- | --- |
+| Picker returns `null` | Keep the dialog idle; do not invoke Rust |
+| Export passwords differ | Show inline validation; do not invoke Rust |
+| Preview fails | Keep file and password workflow visible; show mapped error |
+| Preview succeeds | Show summary, warnings, and `skip` as the selected strategy |
+| User selects `overwrite` | Send `overwrite` only on the subsequent import action |
+| Import fails or file fingerprint changed | Show error; do not reload repository |
+| Import succeeds | Show result, await repository reload once, then allow close |
+| Export succeeds | Show file/count result; do not reload repository |
+
+### 5. Good / Base / Bad Cases
+
+- Good: choose a file, preview it, inspect conflicts, explicitly switch to overwrite if needed, then apply with the preview fingerprint.
+- Base: cancel either file picker and leave repository state unchanged.
+- Bad: invoke import immediately after file selection without a preview.
+- Bad: keep a password in global state, settings, logs, or persisted storage.
+
+### 6. Tests Required
+
+- `npm run check:connection-transfer` must assert real import/export handlers, typed wrappers, `AppSelect` strategies, lazy loading, and token-only styling.
+- `node scripts/check-startup-module-boundary-source.mjs` and `npm run build` must keep `ConnectionTransferDialog` in a separate chunk.
+- `npm run check` must pass after request or response type changes.
+- Desktop smoke must cover picker cancellation, password mismatch, preview errors, skip/overwrite selection, import-only reload, keyboard focus, and light/dark/system-dark rendering.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```tsx
+<button onClick={onRefresh}>导入连接</button>
+```
+
+This presents a transfer action while only refreshing the list.
+
+#### Correct
+
+```tsx
+const ConnectionTransferDialog = lazy(loadConnectionTransferDialog);
+<button onClick={() => openConnectionTransfer("import")}>导入连接</button>
+```
+
+The visible command opens the real, lazy transfer workflow.
