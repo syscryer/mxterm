@@ -1151,3 +1151,36 @@ Added remote MCP supervision and logs, unified MCP SFTP transfers with resumable
 ### Next Steps
 
 - None - task complete
+
+
+## Session 35: 修复高频终端与 Docker 日志卡顿
+
+**Date**: 2026-08-04
+**Task**: 修复高频终端与 Docker 日志卡顿
+**Branch**: `master`
+
+### Summary
+
+为 SSH 与流式执行增加限时限量输出合并，前端按 xterm 解析回调串行写入并批量刷新 Docker 日志；补齐确定性压力测试、源码检查和前后端规范。
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `57efd4a` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
