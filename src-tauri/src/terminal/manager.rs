@@ -14,7 +14,9 @@ use crate::terminal::local::{LocalTerminalSession, OpenLocalSession};
 use crate::terminal::serial::{
     OpenSerialSession, SerialTerminalOpenRequest, SerialTerminalSession,
 };
-use crate::terminal::session::{OpenProgress, TerminalOutputDecoder, TerminalSession};
+use crate::terminal::session::{
+    OpenProgress, TerminalOutputBatcher, TerminalOutputDecoder, TerminalSession,
+};
 use crate::terminal::telnet::{
     OpenTelnetSession, TelnetTerminalOpenRequest, TelnetTerminalSession,
 };
@@ -318,13 +320,32 @@ fn spawn_reader(
             }
         };
         let mut decode_error = None;
+        let mut output_batcher = TerminalOutputBatcher::new();
 
-        while let Some(message) = reader.wait().await {
+        loop {
+            let message = if let Some(deadline) = output_batcher.deadline() {
+                match tokio::time::timeout_at(deadline, reader.wait()).await {
+                    Ok(message) => message,
+                    Err(_) => {
+                        if let Some(batch) = output_batcher.flush() {
+                            emit_terminal_output(&app, &session_id, &request_id, batch);
+                        }
+                        continue;
+                    }
+                }
+            } else {
+                reader.wait().await
+            };
+            let Some(message) = message else {
+                break;
+            };
             match message {
                 ChannelMsg::Data { data } | ChannelMsg::ExtendedData { data, .. } => {
                     match decoder.decode(&data, false) {
                         Ok(decoded) => {
-                            emit_terminal_output(&app, &session_id, &request_id, decoded);
+                            for batch in output_batcher.push(&decoded) {
+                                emit_terminal_output(&app, &session_id, &request_id, batch);
+                            }
                         }
                         Err(error) => {
                             decode_error = Some(error);
@@ -342,13 +363,27 @@ fn spawn_reader(
         }
 
         match decode_error {
-            Some(error) => emit_terminal_error(&app, &session_id, &request_id, &error),
-            None => match decoder.decode(&[], true) {
-                Ok(tail) if !tail.is_empty() => {
-                    emit_terminal_output(&app, &session_id, &request_id, tail);
+            Some(error) => {
+                if let Some(batch) = output_batcher.flush() {
+                    emit_terminal_output(&app, &session_id, &request_id, batch);
                 }
-                Ok(_) => {}
-                Err(error) => emit_terminal_error(&app, &session_id, &request_id, &error),
+                emit_terminal_error(&app, &session_id, &request_id, &error);
+            }
+            None => match decoder.decode(&[], true) {
+                Ok(tail) => {
+                    for batch in output_batcher.push(&tail) {
+                        emit_terminal_output(&app, &session_id, &request_id, batch);
+                    }
+                    if let Some(batch) = output_batcher.flush() {
+                        emit_terminal_output(&app, &session_id, &request_id, batch);
+                    }
+                }
+                Err(error) => {
+                    if let Some(batch) = output_batcher.flush() {
+                        emit_terminal_output(&app, &session_id, &request_id, batch);
+                    }
+                    emit_terminal_error(&app, &session_id, &request_id, &error);
+                }
             },
         }
 

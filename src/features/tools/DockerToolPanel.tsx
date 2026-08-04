@@ -77,6 +77,10 @@ import {
 import { selectDockerLogSavePath } from "../../shared/tauri/dialog";
 import { hasTauriRuntime } from "../../shared/tauri/runtime";
 import { listenDockerImagePullProgress, listenDockerLogStream } from "../../shared/tauri/events";
+import {
+  BufferedTextFlush,
+  createTimeoutTextSchedule,
+} from "../../shared/stream/bufferedTextFlush";
 import { ConfirmDialog } from "../../shared/ui/ConfirmDialog";
 import { AppSelect } from "../../shared/ui/AppSelect";
 import { TabContextMenu, type TabContextMenuAction } from "../../shared/ui/TabContextMenu";
@@ -135,6 +139,8 @@ interface DockerImagePullTask {
 }
 
 type DockerImageRunDraft = DockerImageRunRequest;
+
+const DOCKER_LOG_FLUSH_DELAY_MS = 80;
 
 interface DockerToolPanelProps {
   active: boolean;
@@ -331,6 +337,7 @@ export function DockerToolPanel({
   const engineConfigDraftRef = useRef("");
   const connectionIdRef = useRef<string | null>(connectionId);
   const logsStreamIdRef = useRef<string | null>(null);
+  const logsContentBufferRef = useRef<BufferedTextFlush | null>(null);
   const logOutputRef = useRef<HTMLPreElement | null>(null);
   const dockerInitialLoadRef = useRef<Record<"containers" | "images", boolean>>({
     containers: Boolean(initialCache?.lastContainersRefreshAt),
@@ -368,6 +375,7 @@ export function DockerToolPanel({
     if (previousStreamId && hasTauriRuntime()) {
       void dockerContainerLogsStop(previousStreamId);
     }
+    logsContentBufferRef.current?.discard();
     logsStreamIdRef.current = null;
     setToolboxView(cached?.toolboxView || "docker");
     setDockerView(cached?.dockerView || "containers");
@@ -433,6 +441,13 @@ export function DockerToolPanel({
     if (!hasTauriRuntime()) {
       return;
     }
+    const textBuffer = new BufferedTextFlush({
+      onFlush: (text) => {
+        setLogsContent((content) => trimDockerLogContent(`${content}${text}`));
+      },
+      schedule: createTimeoutTextSchedule(DOCKER_LOG_FLUSH_DELAY_MS),
+    });
+    logsContentBufferRef.current = textBuffer;
     let disposed = false;
     let unlisten: (() => void) | null = null;
     void listenDockerImagePullProgress((event) => {
@@ -459,6 +474,10 @@ export function DockerToolPanel({
     });
     return () => {
       disposed = true;
+      textBuffer.dispose();
+      if (logsContentBufferRef.current === textBuffer) {
+        logsContentBufferRef.current = null;
+      }
       unlisten?.();
     };
   }, [connectionId]);
@@ -1088,6 +1107,11 @@ export function DockerToolPanel({
     if (previousStreamId && hasTauriRuntime()) {
       void dockerContainerLogsStop(previousStreamId);
     }
+    if (resetContent) {
+      logsContentBufferRef.current?.discard();
+    } else {
+      logsContentBufferRef.current?.flush();
+    }
     const streamId = createDockerLogStreamId(container.id);
     logsStreamIdRef.current = streamId;
     setLogsTarget(container);
@@ -1134,6 +1158,7 @@ export function DockerToolPanel({
       void dockerContainerLogsStop(streamId);
     }
     logsStreamIdRef.current = null;
+    logsContentBufferRef.current?.discard();
     setLogsTarget(null);
     setLogsStreamId(null);
     setLogsContent("");
@@ -1146,6 +1171,7 @@ export function DockerToolPanel({
 
   function restartLogs() {
     if (logsTarget) {
+      logsContentBufferRef.current?.discard();
       void openLogs(logsTarget);
     }
   }
@@ -1155,6 +1181,7 @@ export function DockerToolPanel({
     if (streamId && hasTauriRuntime()) {
       void dockerContainerLogsStop(streamId);
     }
+    logsContentBufferRef.current?.flush();
     logsStreamIdRef.current = null;
     setLogsStreamId(null);
     setLogsLoading(false);
@@ -1324,12 +1351,13 @@ export function DockerToolPanel({
       if (!chunk) {
         return;
       }
-      setLogsContent((content) => trimDockerLogContent(`${content}${chunk}`));
+      logsContentBufferRef.current?.append(chunk);
       setLogsLoading(false);
       setLogsStreaming(true);
       return;
     }
 
+    logsContentBufferRef.current?.flush();
     setLogsLoading(false);
     setLogsStreaming(false);
     if (event.kind === "error") {
@@ -1366,6 +1394,7 @@ export function DockerToolPanel({
   }
 
   function clearLogs() {
+    logsContentBufferRef.current?.discard();
     setLogsContent("");
     setLogsError(null);
   }

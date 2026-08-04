@@ -9987,10 +9987,6 @@ button {
   white-space: pre-wrap;
 }
 
-.docker-log-output.is-following {
-  scroll-behavior: smooth;
-}
-
 .command-library-history-main {
   min-width: 0;
   display: grid;

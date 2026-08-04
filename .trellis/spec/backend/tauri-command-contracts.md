@@ -246,6 +246,7 @@ reachable: bool
 - Telnet input owns Enter and Backspace mode conversion in Rust, filters Telnet IAC control bytes, and sends NAWS when negotiated or resized.
 - Serial sessions use `serialport` for port enumeration and blocking COM/TTY IO. Reads must run outside the async runtime, and close must release the port instead of leaving Windows COM handles occupied.
 - The interactive terminal reader must not stop on `ChannelMsg::Eof`; continue reading until `ChannelMsg::Close` or channel end so a shell prompt or late startup output cannot be lost during frontend handoff.
+- SSH interactive output and `ReusableExecSession::exec_streaming_stdout_chunks` must pass decoded/raw stdout through the shared `TerminalOutputBatcher`. A batch flushes at 32 KiB or 8 ms from the first pending chunk, whichever comes first; later chunks must not extend that deadline. Flush pending bytes before normal return, close/channel end, or a terminal decode error. This changes only event/callback granularity and must preserve byte order and the existing event payloads.
 - Tauri event names must use allowed characters only. Use colon-separated names such as `terminal:output`, `terminal:state_changed`, and `terminal:connect_progress`; do not use dot-separated names.
 - On Windows, local terminal profile discovery must treat external command output as a platform boundary. `wsl.exe -l -q` may return UTF-16LE without a BOM, so WSL distribution parsing must decode UTF-16 when the byte shape indicates it and must strip NUL separators before building `wsl.exe -d <distro>` args. Because release GUI builds can otherwise show or block on an external WSL console window, the WSL probe must use `std::os::windows::process::CommandExt` with `CREATE_NO_WINDOW`, pipe stdout/stderr, and enforce a short timeout that skips WSL profiles instead of blocking app startup.
 - On Windows, detected PowerShell local terminal profiles must use `-NoLogo -NoProfile` by default. Loading user profile scripts can add seconds of startup latency through prompt themes, module discovery, conda hooks, or network paths; users who need profile scripts should create an explicit custom profile without `-NoProfile`.
@@ -279,6 +280,7 @@ reachable: bool
 | Advanced keepalive interval outside allowed range | `connection_keepalive_invalid` | true |
 | Advanced terminal encoding is not supported | `connection_terminal_encoding_invalid` | true |
 | Terminal output cannot decode with configured encoding | `terminal_encoding_decode_failed` | true |
+| Terminal output decode fails with an earlier batch pending | Emit the pending ordered bytes first, then emit the existing decode error output and close state. |
 | Terminal input cannot encode with configured encoding | `terminal_encoding_encode_failed` | true |
 | Delete/open unknown connection id | `connection_missing` | false |
 | Transient dialog test has invalid profile input | same validation code as `connection_upsert` | true |
@@ -310,6 +312,7 @@ reachable: bool
 - Good: `connection_reveal_inline_secret` returns the inline password for an inline connection, while a saved-credential connection must be opened through account management and `credential_reveal_secret`.
 - Good: `connection_test_profile` receives the unsaved dialog form, validates it, resolves inline or saved credential material, opens and closes a test SSH session, and leaves `connections.json` unchanged.
 - Good: `terminal_connect` receives `connection_id` for a saved-credential connection plus stale frontend host fields; Rust loads the saved profile, resolves the credential, verifies the host key, carries the proxy/jump/timeout settings, and uses the saved values.
+- Good: 10,000 small SSH stdout chunks are emitted in ordered batches no larger than 32 KiB, with the final partial batch flushed before the close/state event.
 - Base: `connection_test` receives prompt credentials, resolves the saved connection with those runtime credentials, opens a reusable exec session, closes it, and returns `{ ok: true }`.
 - Bad: `credential_delete` deletes a credential referenced by an existing connection, a dialog test calls `ConnectionStore::upsert` before connecting, or a command handler accepts frontend-supplied raw credentials for remote-file commands.
 
@@ -318,6 +321,7 @@ reachable: bool
 - Unit-test connection validation for blank host, blank username, zero port, credential modes, proxy validation, SSH jump validation, advanced validation, and legacy migration.
 - Unit-test SSH jump runtime validation and jump-auth error mapping in the shared terminal session connection path.
 - Unit-test terminal encoding validation plus SSH terminal output decode and input encode helpers.
+- Unit-test `TerminalOutputBatcher` for ordered high-volume input, the 32 KiB ceiling, a deadline anchored to the first pending chunk, and final partial flush.
 - Unit-test credential validation for blank name, missing password, missing private key, auth-field clearing, and JSON store round-trip/delete.
 - Unit-test untouched inline connection and credential secret preservation, reveal command behavior, and transient connection tests that reuse existing inline secrets without persisting.
 - Unit-test known-host store behavior for unknown, trusted, and changed fingerprints.
@@ -2357,6 +2361,7 @@ DockerImageRunRequest {
 - Read-only Docker commands may reconnect and retry once when a cached SSH exec session is stale: container list, image list, container logs, container inspect, network list, engine status, and engine config read. Side-effecting commands must not auto-retry after an exec failure: container start/stop/restart/remove, restart-policy update, network connect, image pull/remove, engine start/stop/restart, and engine config save.
 - Live container log streams use `DockerLogStreamManager`, not the shared short-command `DockerExecSessionManager`. A `docker logs -f` command must have its own `ReusableExecSession` so an open log dialog cannot block container/image refreshes on the pooled exec-session mutex.
 - `docker_container_logs_start` must quote the container id, run `docker logs -f --tail <tail> -- <container> 2>&1`, stream stdout chunks through `docker:log_stream`, and avoid accumulating unbounded stdout in memory. `tail = 0` is valid for resuming realtime output without replaying historical log lines.
+- Streaming exec stdout must use `TerminalOutputBatcher` before invoking the Docker log callback. Keep the 32 KiB / 8 ms shared limits and flush the final partial batch before `kind = "finished"` or `kind = "error"`; do not accumulate the full log stream or change `DockerLogStreamEvent` fields.
 - `docker_container_logs_stop` must be idempotent for unknown or already-closed `stream_id` values, but blank `stream_id` remains a validation error. Stopping a stream must close the SSH exec session so the remote `docker logs -f` process exits.
 - `docker_container_logs_save` writes UTF-8 text to the selected local file path only. It must validate a nonblank path and nonempty content, must not execute remote Docker commands, and must not accept SSH credential fields.
 - `docker_container_inspect` must quote the container id, run `docker inspect -- <container>`, parse the first JSON array item into a structured `DockerContainerDetail`, mask sensitive environment values, and keep a pretty `raw_json` copy for explicit user copy actions only.
@@ -2407,6 +2412,7 @@ DockerImageRunRequest {
 
 - Good: `docker_container_action` receives only `connection_id`, `container_id`, and `action`, resolves the saved connection, quotes the container id, executes the Docker CLI, and returns a structured `DockerActionResult`.
 - Good: `docker_container_logs_start` opens a dedicated exec session for `docker logs -f`, emits chunks without buffering the full stream, and `docker_container_logs_stop` closes that session when the UI closes the dialog.
+- Good: sustained Docker stdout is delivered as ordered, bounded batches while low-volume output is visible within the shared 8 ms flush window.
 - Good: `docker_container_logs_save` writes the current UI log buffer to the chosen local path without touching the remote SSH session.
 - Good: `docker_container_inspect` returns a structured detail payload plus copied raw inspect JSON, with sensitive environment values masked before React receives them.
 - Good: `docker_container_update_restart_policy` and `docker_container_connect_network` use saved `connection_id`, quote every user-controlled CLI argument, and do not auto-retry side effects after an exec failure.
@@ -2429,6 +2435,7 @@ DockerImageRunRequest {
 - Run `cargo check --manifest-path src-tauri/Cargo.toml` after adding or changing Docker command registrations, event structs, or stream manager state.
 - Run targeted Rust tests for `docker_tools` when Rust test runs are approved for the session.
 - Run targeted Rust tests for `remote_exec_pool` when changing generic exec session reuse rules and Rust test runs are approved for the session.
+- Run `cargo test --manifest-path src-tauri/Cargo.toml terminal_output_batcher` after changing interactive SSH or streaming exec output batching.
 
 ### 7. Wrong vs Correct
 
@@ -2445,6 +2452,20 @@ let config = ResolvedSshConfig::from_profile(profile)?;
 manager
     .exec_with_stdout_chunks(app, &config, "docker logs -f ...", callback)
     .await?;
+```
+
+#### Wrong
+
+```rust
+ChannelMsg::Data { data } => stdout_chunks(&data),
+```
+
+#### Correct
+
+```rust
+for batch in stdout_batcher.push(&data) {
+    stdout_chunks(&batch);
+}
 ```
 
 #### Correct
