@@ -13,6 +13,7 @@ use tauri::{AppHandle, Manager};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::sync::{Mutex, RwLock};
+use tokio::time::Instant;
 use uuid::Uuid;
 
 use crate::app_error::AppError;
@@ -29,7 +30,62 @@ use crate::storage_repository::StorageRepository;
 use crate::storage_vault::{SecretStore, VaultState};
 
 const REMOTE_EXEC_TRANSFER_CHUNK_BYTES: usize = 256 * 1024;
+const TERMINAL_OUTPUT_BATCH_MAX_BYTES: usize = 32 * 1024;
+const TERMINAL_OUTPUT_BATCH_MAX_WAIT: Duration = Duration::from_millis(8);
 const SFTP_REQUEST_TIMEOUT_SECS: u64 = 60;
+
+pub(crate) struct TerminalOutputBatcher {
+    pending: Vec<u8>,
+    started_at: Option<Instant>,
+}
+
+impl TerminalOutputBatcher {
+    pub(crate) fn new() -> Self {
+        Self {
+            pending: Vec::with_capacity(TERMINAL_OUTPUT_BATCH_MAX_BYTES),
+            started_at: None,
+        }
+    }
+
+    pub(crate) fn push(&mut self, data: &[u8]) -> Vec<Vec<u8>> {
+        self.push_at(data, Instant::now())
+    }
+
+    pub(crate) fn deadline(&self) -> Option<Instant> {
+        self.started_at
+            .map(|started_at| started_at + TERMINAL_OUTPUT_BATCH_MAX_WAIT)
+    }
+
+    pub(crate) fn flush(&mut self) -> Option<Vec<u8>> {
+        if self.pending.is_empty() {
+            return None;
+        }
+        self.started_at = None;
+        Some(std::mem::replace(
+            &mut self.pending,
+            Vec::with_capacity(TERMINAL_OUTPUT_BATCH_MAX_BYTES),
+        ))
+    }
+
+    fn push_at(&mut self, mut data: &[u8], now: Instant) -> Vec<Vec<u8>> {
+        let mut batches = Vec::new();
+        while !data.is_empty() {
+            if self.pending.is_empty() {
+                self.started_at = Some(now);
+            }
+            let available = TERMINAL_OUTPUT_BATCH_MAX_BYTES - self.pending.len();
+            let take = available.min(data.len());
+            self.pending.extend_from_slice(&data[..take]);
+            data = &data[take..];
+            if self.pending.len() == TERMINAL_OUTPUT_BATCH_MAX_BYTES {
+                if let Some(batch) = self.flush() {
+                    batches.push(batch);
+                }
+            }
+        }
+        batches
+    }
+}
 
 type SshHandle = client::Handle<KnownHostClient>;
 type ChannelWriter = ChannelWriteHalf<client::Msg>;
@@ -759,17 +815,39 @@ impl ReusableExecSession {
 
         let mut stderr = Vec::new();
         let mut exit_status = None;
+        let mut stdout_batcher = TerminalOutputBatcher::new();
 
-        while let Some(message) = channel.wait().await {
+        loop {
+            let message = if let Some(deadline) = stdout_batcher.deadline() {
+                match tokio::time::timeout_at(deadline, channel.wait()).await {
+                    Ok(message) => message,
+                    Err(_) => {
+                        if let Some(batch) = stdout_batcher.flush() {
+                            stdout_chunks(&batch);
+                        }
+                        continue;
+                    }
+                }
+            } else {
+                channel.wait().await
+            };
+            let Some(message) = message else {
+                break;
+            };
             match message {
                 ChannelMsg::Data { data } => {
-                    stdout_chunks(&data);
+                    for batch in stdout_batcher.push(&data) {
+                        stdout_chunks(&batch);
+                    }
                 }
                 ChannelMsg::ExtendedData { data, .. } => stderr.extend_from_slice(&data),
                 ChannelMsg::ExitStatus { exit_status: code } => exit_status = Some(code),
                 ChannelMsg::Close => break,
                 _ => {}
             }
+        }
+        if let Some(batch) = stdout_batcher.flush() {
+            stdout_chunks(&batch);
         }
 
         let _ = channel.close().await;
@@ -1882,6 +1960,45 @@ mod tests {
     };
 
     use super::*;
+
+    #[test]
+    fn terminal_output_batcher_preserves_order_and_limits_batch_size() {
+        let chunks = (0..10_000)
+            .map(|index| format!("{index}:日志\n").into_bytes())
+            .collect::<Vec<_>>();
+        let expected = chunks.concat();
+        let mut batcher = TerminalOutputBatcher::new();
+        let mut batches = Vec::new();
+
+        for chunk in chunks {
+            batches.extend(batcher.push(&chunk));
+        }
+        if let Some(tail) = batcher.flush() {
+            batches.push(tail);
+        }
+
+        assert!(batches
+            .iter()
+            .all(|batch| batch.len() <= TERMINAL_OUTPUT_BATCH_MAX_BYTES));
+        assert_eq!(batches.concat(), expected);
+    }
+
+    #[test]
+    fn terminal_output_batcher_keeps_first_chunk_deadline_and_flushes_tail() {
+        let started_at = Instant::now();
+        let mut batcher = TerminalOutputBatcher::new();
+
+        assert!(batcher.push_at(b"first", started_at).is_empty());
+        assert!(batcher
+            .push_at(b"-second", started_at + Duration::from_millis(2))
+            .is_empty());
+        assert_eq!(
+            batcher.deadline(),
+            Some(started_at + TERMINAL_OUTPUT_BATCH_MAX_WAIT)
+        );
+        assert_eq!(batcher.flush().as_deref(), Some(b"first-second".as_slice()));
+        assert_eq!(batcher.deadline(), None);
+    }
 
     fn jump_profile(jump: ConnectionJumpConfig) -> ConnectionProfile {
         ConnectionProfile {

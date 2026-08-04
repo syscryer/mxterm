@@ -215,6 +215,8 @@ type SerialTerminalOpenRequest = {
 - During terminal handoff, match terminal output/state events by `request_id` as well as by `session_id`; shell prompts can arrive before the frontend receives the returned session id.
 - Keep the terminal handoff warmup listener alive briefly after replacing the connecting tab, and make `TerminalPanel` consume appended `initialOutput` bytes. Otherwise the remote prompt can land between `terminalConnect` resolving and the xterm listener mounting, leaving a connected but visually blank terminal while remote file browsing works. While the startup buffer is active, `TerminalPanel` must ignore live output events whose `request_id` equals `initialRequestId`; stop warmup capture only after the startup buffer has flushed and the mounted output listener is ready, so one startup byte stream cannot be rendered through both paths.
 - `TerminalPanel` should buffer startup handoff output briefly and write it as one ordered batch with early live events. If the combined startup batch contains a duplicated leading shell prompt before a login banner / motd and the same prompt appears again at the end, remove only that leading duplicate before writing to xterm. If the prompt is joined to the first banner line, such as `root@host:~# Welcome to ...`, strip only the prompt prefix and keep the banner text. If warmup and live capture the same leading login banner block before the first prompt, keep one copy of that startup banner. If warmup and live capture produce adjacent duplicate prompts such as `[root@host ~]# [root@host ~]#`, collapse them to a single prompt before writing.
+- Interactive output must enter `TerminalOutputQueue` before xterm. Keep a bounded batch size, allow at most one `terminal.write(data, onParsed)` call in flight, and schedule the next batch only from the xterm parser callback. Reconnect and unmount must clear or dispose data that has not started writing; writer failure must stop the queue instead of continuing against a disposed terminal.
+- Update the workspace recent-output projection from accepted xterm batches, not from every raw `terminal:output` event. Semantic highlighting triggered by `onWriteParsed` must use a bounded timer and cancel it on dispose; do not rescan the recent buffer through an unbounded microtask chain during sustained output.
 - Local Windows terminals must call `getWindowsPtyInfo()` and pass the mapped `{ backend, buildNumber }` object to `TerminalPanel`. xterm uses the build number to decide ConPTY reflow behavior; a bare `{ backend: "conpty" }` can keep older wrapping heuristics enabled on modern Windows builds.
 - Do not store terminal session runtime state inside a `ConnectionProfile`. Connection profiles are persistent data; terminal tabs and session ids are runtime state.
 - Do not log passwords, private-key passphrases, or full command payloads.
@@ -254,6 +256,7 @@ type SerialTerminalOpenRequest = {
 | `terminalConnect` fails before session id exists | Keep the connection-preparation tab open and show structured failure, retry, edit, and close actions. |
 | Same-connection new terminal direct connect fails | Keep the direct terminal tab visible with a compact failed state; do not replace it with the connection-preparation page. |
 | Shell output arrives before or immediately after `terminalConnect` resolves | Capture warmup output by `request_id`, pass it into `TerminalPanel` as initial output, and append any late handoff bytes until the xterm listener is ready. |
+| xterm writer throws during output submission | Stop and clear the output queue; do not schedule more writes against the terminal instance. |
 
 ### 5. Good / Base / Bad Cases
 
@@ -263,6 +266,7 @@ type SerialTerminalOpenRequest = {
 - Good: `ConnectionDialog` tests the current unsaved form through `connectionTestProfile(input)`, leaving the connection repository unchanged until the user clicks save.
 - Good: `SettingsView` edits saved login-account records through `useCredentials`; it asks for username plus password or private key material, and never asks for host or port in account management.
 - Good: `SettingsView` security section enables master-password protection only after vault rekey succeeds; when enabled, the section is locked until the security password is entered, then shows idle lock, allow reveal, change password, and disable protection.
+- Good: 10,000 small output chunks preserve their exact order while `TerminalOutputQueue` keeps one parser write in flight and avoids splitting a UTF-16 surrogate pair across batches.
 - Base: `ConnectionPane` displays `username@host:port`, calls `onOpen(connection)`, and does not know about Tauri details.
 - Bad: A component calls `invoke("connection_upsert", ...)` directly, tests an unsaved dialog form by saving/upserting it first, stores runtime session ids inside `ConnectionProfile`, or sends raw passwords to remote-file commands.
 
@@ -276,6 +280,7 @@ type SerialTerminalOpenRequest = {
 - Run `node scripts/check-terminal-startup-output-source.mjs` after changing `TerminalPanel` startup output buffering or prompt deduplication.
 - Run `node scripts/check-terminal-interactive-pty-source.mjs` after changing `TerminalPanel` xterm options or local Windows terminal creation props.
 - Run `node scripts/check-terminal-resize-debounce-source.mjs` after changing `TerminalPanel` fit / resize observer / backend resize synchronization.
+- Run `node --test scripts/terminal-output-flow.test.mjs` after changing terminal output batching, xterm write scheduling, Docker text buffering, or their lifecycle cleanup.
 - Run `node scripts/check-remote-file-editor-source.mjs` after changing `ConnectionDialog`, `WorkspaceShell` dialog test handlers, or connection command wrappers so the no-save dialog-test guard is checked.
 - Run `node scripts/check-remote-file-editor-source.mjs` after changing workspace terminal tab creation, so the same-connection new terminal path stays separate from the connection-preparation page.
 - Run `node scripts/check-workspace-ssh-activation-source.mjs` after changing workspace terminal tab creation or top-level workspace switching, so opening SSH from the local terminal workspace still reveals the SSH session.
@@ -312,6 +317,18 @@ setConnections([...connections, { ...connection, sessionId }]);
 
 ```tsx
 setTabs((items) => [...items, createTerminalTab(connection.id)]);
+```
+
+#### Wrong
+
+```tsx
+listenTerminalOutput((event) => terminal.write(decode(event.data)));
+```
+
+#### Correct
+
+```tsx
+listenTerminalOutput((event) => terminalOutputQueue.enqueue(decode(event.data)));
 ```
 
 ## Scenario: Remote File List Wrapper
@@ -1864,7 +1881,8 @@ type DockerLogStreamEvent = {
 - Image quick run opens from the image card, uses `dockerImageRun(...)`, and sends only structured run options plus the saved `connection_id`. The dialog must keep errors inline, close only after success, then refresh the container list.
 - Container logs use `dockerContainerLogsStart(...)` plus `docker:log_stream` events for live output. The UI must stop the active stream with `dockerContainerLogsStop(streamId)` when the log dialog closes, the container target changes, the connection changes, or the component unmounts.
 - Log stream events must be matched by `stream_id` before appending content. Stale chunks from a previous stream must not be appended into the current dialog.
-- Log output should strip ANSI control codes before rendering, keep a bounded in-memory buffer, and support follow-tail behavior that pauses when the user scrolls away from the bottom.
+- Log output should strip ANSI control codes before rendering, merge incoming text for a short bounded window before one React state commit, keep the existing 400,000-character visible limit, and support follow-tail behavior that pauses when the user scrolls away from the bottom.
+- Flush buffered log text before `error` or `finished` state updates and when realtime streaming is paused. Discard buffered text before clear, close, restart, connection changes, and unmount so stale chunks cannot reappear later. Follow-tail scrolling must jump to the latest content without continuous CSS smooth-scroll animation.
 - Realtime streaming and follow-tail are separate controls. `暂停实时` stops the backend log stream and keeps the current buffer visible; `启用实时` starts a new stream with `tail = 0` so only new log lines append. `跟随尾部` / `恢复跟随` only controls scroll behavior.
 - Log download saves the current visible log buffer through `dockerContainerLogsSave(...)` after a save dialog path is chosen. It must not re-run `docker logs`, append stale stream chunks, or require SSH credentials in the UI.
 - The Docker page has `containers`, `images`, and `engine` internal views. Entering the engine view may load Docker status and daemon config; ordinary container/image refreshes must not run expensive engine disk probes.
@@ -1913,6 +1931,7 @@ type DockerLogStreamEvent = {
 - Good: container detail shows masked sensitive environment values from Rust and does not try to reveal or reparse raw inspect JSON in the UI.
 - Good: opening container logs starts one live stream, appends only matching `stream_id` chunks, pauses follow-tail when the user scrolls up, and stops the stream on close.
 - Good: pausing realtime logs stops the remote `docker logs -f` process while preserving the visible buffer; enabling realtime resumes from new output without duplicating the initial tail.
+- Good: high-frequency matching chunks append to `BufferedTextFlush`, produce one content update per flush window, and are discarded before clear/close/restart lifecycle changes.
 - Good: downloading logs writes the current bounded buffer to the user-selected local path without interrupting the live stream.
 - Good: image quick run uses `AppSelect` for network and restart policy, structured rows for ports/env/volumes, and the typed `dockerImageRun(...)` wrapper instead of direct invoke.
 - Good: opening a container terminal creates a normal SSH terminal tab and writes the quoted `docker exec -it ... sh` command after the terminal session is connected.
@@ -1953,7 +1972,7 @@ setInterval(() => setLogs(result.content), 1000);
 await dockerContainerLogsStart(connection.id, container.id, streamId, 300);
 const unlisten = await listenDockerLogStream((event) => {
   if (event.stream_id === streamId && event.kind === "chunk") {
-    appendLogChunk(event.content || "");
+    logsContentBufferRef.current?.append(event.content || "");
   }
 });
 ```

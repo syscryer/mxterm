@@ -46,11 +46,16 @@ import {
   type TerminalSemanticHighlighter,
 } from "./terminalSemanticHighlight";
 import { normalizeStartupOutput } from "./terminalStartupOutput";
+import {
+  createTerminalOutputSchedule,
+  TerminalOutputQueue,
+} from "./terminalOutputFlow";
 import { Tooltip } from "../../shared/ui/Tooltip";
 import type { TerminalCursorStyle } from "../settings/settingsTypes";
 
 const TERMINAL_SCROLLBAR_WIDTH = 6;
 const STARTUP_OUTPUT_BUFFER_MS = 250;
+const TERMINAL_OUTPUT_BATCH_MAX_CHARS = 64 * 1024;
 const TERMINAL_OUTPUT_BATCH_MAX_WAIT_MS = 16;
 const PROMPT_DIRECTORY_FAST_SNAPSHOT_LOOKBACK_ROWS = 1000;
 const PROMPT_DIRECTORY_ANCHOR_SNAPSHOT_LOOKBACK_ROWS = 2000;
@@ -176,9 +181,7 @@ export function TerminalPanel({
   const terminalOutputListenerReadyRef = useRef(false);
   const listenersReadyRef = useRef(!hasTauriRuntime());
   const terminalOutputWriterRef = useRef<((decoded: string) => void) | null>(null);
-  const pendingOutputBufferRef = useRef("");
-  const pendingOutputFrameRef = useRef<number | null>(null);
-  const pendingOutputTimerRef = useRef<number | null>(null);
+  const terminalOutputQueueRef = useRef<TerminalOutputQueue | null>(null);
   const lastSyncedSizeRef = useRef<string | null>(null);
   const pendingResizeTimerRef = useRef<number | null>(null);
   const activeRef = useRef(active);
@@ -355,6 +358,13 @@ export function TerminalPanel({
     initialOutputWrittenLengthRef.current = 0;
     startupOutputBufferRef.current = "";
     startupOutputBufferingRef.current = Boolean(initialRequestId);
+    const terminalOutputQueue = new TerminalOutputQueue({
+      maxBatchChars: TERMINAL_OUTPUT_BATCH_MAX_CHARS,
+      onBatch: (batch) => onRecentOutput?.(tabId, batch),
+      schedule: createTerminalOutputSchedule(TERMINAL_OUTPUT_BATCH_MAX_WAIT_MS),
+      write: (data, onParsed) => terminal.write(data, onParsed),
+    });
+    terminalOutputQueueRef.current = terminalOutputQueue;
 
     const flushStartupOutput = () => {
       if (startupOutputFlushTimerRef.current !== null) {
@@ -368,40 +378,8 @@ export function TerminalPanel({
       }
       startupOutputBufferingRef.current = false;
       if (bufferedOutput) {
-        terminal.write(normalizeStartupOutput(bufferedOutput));
+        terminalOutputQueue.enqueue(normalizeStartupOutput(bufferedOutput));
       }
-    };
-
-    const clearPendingOutputSchedule = () => {
-      if (pendingOutputFrameRef.current !== null) {
-        window.cancelAnimationFrame(pendingOutputFrameRef.current);
-        pendingOutputFrameRef.current = null;
-      }
-      if (pendingOutputTimerRef.current !== null) {
-        window.clearTimeout(pendingOutputTimerRef.current);
-        pendingOutputTimerRef.current = null;
-      }
-    };
-
-    const flushPendingOutput = () => {
-      clearPendingOutputSchedule();
-      const bufferedOutput = pendingOutputBufferRef.current;
-      pendingOutputBufferRef.current = "";
-      if (bufferedOutput) {
-        terminal.write(bufferedOutput);
-      }
-    };
-
-    const scheduleTerminalWrite = (decoded: string) => {
-      pendingOutputBufferRef.current += decoded;
-      if (pendingOutputFrameRef.current !== null) {
-        return;
-      }
-      pendingOutputFrameRef.current = window.requestAnimationFrame(flushPendingOutput);
-      pendingOutputTimerRef.current = window.setTimeout(
-        flushPendingOutput,
-        TERMINAL_OUTPUT_BATCH_MAX_WAIT_MS,
-      );
     };
 
     const writeDecodedOutput = (decoded: string) => {
@@ -416,11 +394,9 @@ export function TerminalPanel({
       });
       if (startupOutputBufferingRef.current) {
         startupOutputBufferRef.current += decoded;
-        onRecentOutput?.(tabId, decoded);
         return;
       }
-      onRecentOutput?.(tabId, decoded);
-      scheduleTerminalWrite(decoded);
+      terminalOutputQueue.enqueue(decoded);
     };
 
     terminalOutputWriterRef.current = writeDecodedOutput;
@@ -596,8 +572,10 @@ export function TerminalPanel({
       startupOutputBufferRef.current = "";
       startupOutputBufferingRef.current = false;
       terminalOutputListenerReadyRef.current = false;
-      pendingOutputBufferRef.current = "";
-      clearPendingOutputSchedule();
+      terminalOutputQueue.dispose();
+      if (terminalOutputQueueRef.current === terminalOutputQueue) {
+        terminalOutputQueueRef.current = null;
+      }
       terminalOutputWriterRef.current = null;
       clearPendingTerminalResizeSync(pendingResizeTimerRef);
       hostRef.current?.removeEventListener("paste", blockSuppressedNativePaste, true);
@@ -895,9 +873,8 @@ export function TerminalPanel({
     sessionIdRef.current = null;
     setSessionId(null);
     setStatus("重新连接中");
-    clearPendingTerminalOutputSchedule(pendingOutputFrameRef, pendingOutputTimerRef);
+    terminalOutputQueueRef.current?.clear();
     clearPendingTerminalResizeSync(pendingResizeTimerRef);
-    pendingOutputBufferRef.current = "";
     startupOutputBufferRef.current = "";
     startupOutputBufferingRef.current = false;
     osc7BufferRef.current = "";
@@ -1365,20 +1342,6 @@ function scheduleFitAndSyncTerminalSize(
     }
     syncTerminalSize(terminal, activeSessionId, terminal.cols, terminal.rows, lastSyncedSizeRef);
   }, TERMINAL_RESIZE_SYNC_DEBOUNCE_MS);
-}
-
-function clearPendingTerminalOutputSchedule(
-  pendingOutputFrameRef: { current: number | null },
-  pendingOutputTimerRef: { current: number | null },
-) {
-  if (pendingOutputFrameRef.current !== null) {
-    window.cancelAnimationFrame(pendingOutputFrameRef.current);
-    pendingOutputFrameRef.current = null;
-  }
-  if (pendingOutputTimerRef.current !== null) {
-    window.clearTimeout(pendingOutputTimerRef.current);
-    pendingOutputTimerRef.current = null;
-  }
 }
 
 function syncTerminalSize(

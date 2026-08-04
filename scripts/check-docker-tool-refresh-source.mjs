@@ -52,6 +52,7 @@ const requiredDockerPanelSnippets = [
   "const [logsStreamId, setLogsStreamId] = useState<string | null>(null);",
   "const [logsPaused, setLogsPaused] = useState(false);",
   "const [followLogs, setFollowLogs] = useState(true);",
+  "const logsContentBufferRef = useRef<BufferedTextFlush | null>(null);",
   "const [detailTarget, setDetailTarget] = useState<DockerContainerSummary | null>(null);",
   "const [containerDetail, setContainerDetail] = useState<DockerContainerDetail | null>(null);",
   "const logOutputRef = useRef<HTMLPreElement | null>(null);",
@@ -70,6 +71,9 @@ const requiredDockerPanelSnippets = [
   "downloadBrowserTextFile(fileName, logsContent)",
   "onDownload={() => void downloadLogs()}",
   'stripAnsiControlCodes(event.content || "")',
+  "logsContentBufferRef.current?.append(chunk);",
+  "logsContentBufferRef.current?.flush();",
+  "logsContentBufferRef.current?.discard();",
   "setFollowLogs(false);",
   "暂停实时",
   "启用实时",
@@ -309,7 +313,6 @@ const requiredLogCssSnippets = [
   ".docker-log-live.active",
   ".docker-log-follow",
   ".docker-log-follow.paused",
-  ".docker-log-output.is-following",
   "height: min(760px, calc(100vh - 72px));",
   "width: min(980px, calc(100vw - 80px));",
 ];
@@ -318,6 +321,10 @@ for (const snippet of requiredLogCssSnippets) {
   if (!appCssSource.includes(snippet)) {
     throw new Error(`Docker log dialog streaming styles are missing: ${snippet}`);
   }
+}
+
+if (/\.docker-log-output(?:\.is-following)?\s*\{[^}]*scroll-behavior:\s*smooth/s.test(appCssSource)) {
+  throw new Error("Docker live logs must not continuously animate follow-tail scrolling.");
 }
 
 console.log("Docker tool refresh source check passed.");

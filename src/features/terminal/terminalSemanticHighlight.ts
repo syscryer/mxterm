@@ -115,7 +115,7 @@ export function createTerminalSemanticHighlighter(
   const lineDecorations = new Map<number, DecoratedLine>();
   let activePalette = palette;
   let disposed = false;
-  let refreshQueued = false;
+  let refreshTimer: number | null = null;
 
   const disposeDecoratedLine = (lineIndex: number) => {
     const decoratedLine = lineDecorations.get(lineIndex);
@@ -259,14 +259,13 @@ export function createTerminalSemanticHighlighter(
   };
 
   const scheduleRefresh = () => {
-    if (refreshQueued || disposed) {
+    if (refreshTimer !== null || disposed) {
       return;
     }
-    refreshQueued = true;
-    window.queueMicrotask(() => {
-      refreshQueued = false;
+    refreshTimer = window.setTimeout(() => {
+      refreshTimer = null;
       refresh();
-    });
+    }, 80);
   };
 
   const writeDisposable = terminal.onWriteParsed(scheduleRefresh);
@@ -278,6 +277,10 @@ export function createTerminalSemanticHighlighter(
   return {
     dispose: () => {
       disposed = true;
+      if (refreshTimer !== null) {
+        window.clearTimeout(refreshTimer);
+        refreshTimer = null;
+      }
       writeDisposable.dispose();
       resizeDisposable.dispose();
       scrollDisposable.dispose();
