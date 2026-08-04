@@ -8,8 +8,8 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 34
-- **Last Active**: 2026-08-01
+- **Total Sessions**: 35
+- **Last Active**: 2026-08-04
 <!-- @@@/auto:current-status -->
 
 ---
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~1150 | Active |
+| `journal-1.md` | ~1186 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 35 | 2026-08-04 | 修复高频终端与 Docker 日志卡顿 | `57efd4a` | `master` |
 | 34 | 2026-08-01 | 清理 Trellis 任务与规范状态 | `d092fd2` | `master` |
 | 33 | 2026-08-01 | 增强远程文件悬浮信息 | `47d9b7f` | `master` |
 | 32 | 2026-07-30 | 统一 Acrylic 材质表现 | `6750d50` | `-` |
