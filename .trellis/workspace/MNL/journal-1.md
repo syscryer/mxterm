@@ -1184,3 +1184,36 @@ Added remote MCP supervision and logs, unified MCP SFTP transfers with resumable
 ### Next Steps
 
 - None - task complete
+
+
+## Session 36: 实现复制连接
+
+**Date**: 2026-08-09
+**Task**: 实现复制连接
+**Branch**: `master`
+
+### Summary
+
+新增左侧连接树复制入口、可编辑副本弹窗与安全凭据复制，修复副本来源字段在前端规范化时丢失，并完成构建和回归检查。
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `5e8148e` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
