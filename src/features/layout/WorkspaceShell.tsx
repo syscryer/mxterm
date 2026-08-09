@@ -887,6 +887,7 @@ export function WorkspaceShell() {
   const [connectionSearchOpen, setConnectionSearchOpen] = useState(false);
   const [connectionSearchQuery, setConnectionSearchQuery] = useState("");
   const [editingConnection, setEditingConnection] = useState<ConnectionProfile | null>(null);
+  const [duplicatingConnection, setDuplicatingConnection] = useState(false);
   const [selectedConnectionId, setSelectedConnectionId] = useState<string | null>(null);
   const [terminalTabs, setTerminalTabs] = useState<TerminalTab[]>([]);
   const terminalTabsRef = useRef<TerminalTab[]>([]);
@@ -4217,6 +4218,7 @@ export function WorkspaceShell() {
     setLeftPaneCollapsed(false);
     setPendingConnectionGroupName(groupName || null);
     setEditingConnection(null);
+    setDuplicatingConnection(false);
     await ensureConnectionDialogLoaded();
     setDialogOpen(true);
   }
@@ -4231,6 +4233,15 @@ export function WorkspaceShell() {
   async function editConnection(connection: ConnectionProfile) {
     setPendingConnectionGroupName(null);
     setEditingConnection(connection);
+    setDuplicatingConnection(false);
+    await ensureConnectionDialogLoaded();
+    setDialogOpen(true);
+  }
+
+  async function duplicateConnection(connection: ConnectionProfile) {
+    setPendingConnectionGroupName(null);
+    setEditingConnection(connection);
+    setDuplicatingConnection(true);
     await ensureConnectionDialogLoaded();
     setDialogOpen(true);
   }
@@ -8795,6 +8806,7 @@ export function WorkspaceShell() {
           onConnect={openConnectionSession}
           onCreate={createConnection}
           onDelete={deleteConnection}
+          onDuplicate={duplicateConnection}
           onEdit={editConnection}
           onGroupCatalogChange={setConnectionGroupCatalog}
           onMoveConnectionToGroup={moveConnectionToGroup}
@@ -9743,6 +9755,7 @@ export function WorkspaceShell() {
             connections={connections}
             credentials={credentials}
             defaultGroup={pendingConnectionGroupName}
+            duplicate={duplicatingConnection}
             groups={connectionGroupCatalog.groups}
             onClose={closeConnectionDialog}
             onDelete={deleteConnection}
@@ -9760,6 +9773,7 @@ export function WorkspaceShell() {
               connections={connections}
               credentials={credentials}
               defaultGroup={pendingConnectionGroupName}
+              duplicate={duplicatingConnection}
               groups={connectionGroupCatalog.groups}
               onClose={closeConnectionDialog}
               onDelete={deleteConnection}
@@ -10443,6 +10457,7 @@ export function WorkspaceShell() {
   function closeConnectionDialog() {
     setDialogOpen(false);
     setPendingConnectionGroupName(null);
+    setDuplicatingConnection(false);
   }
 }
 

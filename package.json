@@ -9,6 +9,7 @@
     "build:mcp-sidecar": "cargo build --manifest-path src-tauri/Cargo.toml --release --bin mxterm-mcp",
     "check": "tsc --noEmit",
     "check:connection-transfer": "node scripts/check-connection-transfer-source.mjs",
+    "check:duplicate-connection": "node scripts/check-duplicate-connection-source.mjs",
     "package:win": "node scripts/build-platform.mjs win-x64",
     "package:mac-arm64": "node scripts/build-platform.mjs mac-arm64",
     "package:linux": "node scripts/build-platform.mjs linux-x64",

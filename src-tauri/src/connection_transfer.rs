@@ -1359,6 +1359,7 @@ mod tests {
         repo.connection_upsert(
             ConnectionProfileInput {
                 id: Some("conn-inline".to_string()),
+                source_connection_id: None,
                 protocol: ConnectionProtocol::Ssh,
                 name: Some(connection_name.to_string()),
                 group: Some("Production".to_string()),

@@ -89,6 +89,7 @@ interface ConnectionDialogProps {
   connections: ConnectionProfile[];
   credentials: CredentialProfile[];
   defaultGroup?: string | null;
+  duplicate?: boolean;
   groups: ConnectionDialogGroup[];
   allowPasswordReveal: boolean;
   open: boolean;
@@ -306,6 +307,7 @@ export function ConnectionDialog({
   connections,
   credentials,
   defaultGroup,
+  duplicate = false,
   groups,
   allowPasswordReveal,
   open,
@@ -404,10 +406,12 @@ export function ConnectionDialog({
     setDeleteConfirmOpen(false);
     setForm(
       connection
-        ? formFromConnection(connection, groups)
+        ? duplicate
+          ? duplicateFormFromConnection(connection, connections, groups)
+          : formFromConnection(connection, groups)
         : { ...emptyForm, group: normalizeGroupName(defaultGroup) },
     );
-  }, [connection, defaultGroup, groups, open]);
+  }, [connection, connections, defaultGroup, duplicate, groups, open]);
 
   useEffect(() => {
     if (!open || protocol !== "serial") {
@@ -727,7 +731,7 @@ export function ConnectionDialog({
               <header className="dialog-head">
                 <div className="dialog-title-group">
                   <Dialog.Title asChild>
-                    <strong>{connection ? "编辑连接" : "新增连接"}</strong>
+                    <strong>{duplicate ? "复制连接" : connection ? "编辑连接" : "新增连接"}</strong>
                   </Dialog.Title>
                   <Dialog.Description className="dialog-subtitle">
                     {form.host
@@ -876,7 +880,7 @@ export function ConnectionDialog({
 
               <footer className="dialog-actions connection-dialog-actions">
                 <div className="dialog-action-left">
-                  {connection ? (
+                  {connection && !duplicate ? (
                     <button
                       className="danger-button"
                       disabled={busy}
@@ -902,7 +906,7 @@ export function ConnectionDialog({
                     </button>
                   </Dialog.Close>
                   <button className="primary-button" disabled={busy} type="submit">
-                    {connection ? "保存连接" : "创建连接"}
+                    {duplicate ? "创建副本" : connection ? "保存连接" : "创建连接"}
                   </button>
                 </div>
               </footer>
@@ -911,7 +915,7 @@ export function ConnectionDialog({
         </Dialog.Portal>
       </Dialog.Root>
 
-      {connection ? (
+      {connection && !duplicate ? (
         <ConfirmDialog
           confirmLabel="删除"
           description={`确认删除连接“${connection.name}”吗？这个操作无法撤销。`}
@@ -2872,6 +2876,37 @@ function formFromConnection(
     remote_os_name: connection.remote_os_name || "",
     remote_os_version: connection.remote_os_version || "",
   };
+}
+
+function duplicateFormFromConnection(
+  connection: ConnectionProfile,
+  connections: ConnectionProfile[],
+  groups: ConnectionDialogGroup[] = [],
+): ConnectionProfileInput {
+  return {
+    ...formFromConnection(connection, groups),
+    id: undefined,
+    source_connection_id: connection.id,
+    name: nextDuplicateConnectionName(connection.name, connections),
+    is_favorite: false,
+    last_connected_at: undefined,
+    remote_os_id: undefined,
+    remote_os_name: undefined,
+    remote_os_version: undefined,
+  };
+}
+
+function nextDuplicateConnectionName(name: string, connections: ConnectionProfile[]) {
+  const names = new Set(connections.map((connection) => connection.name.trim().toLocaleLowerCase()));
+  const baseName = `${name.trim()} - 副本`;
+  if (!names.has(baseName.toLocaleLowerCase())) {
+    return baseName;
+  }
+  let suffix = 2;
+  while (names.has(`${baseName} (${suffix.toString()})`.toLocaleLowerCase())) {
+    suffix += 1;
+  }
+  return `${baseName} (${suffix.toString()})`;
 }
 
 function normalizeForSubmit(

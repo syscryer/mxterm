@@ -38,6 +38,7 @@
 
 ```rust
 id: Option<String>
+source_connection_id: Option<String> // create-only source for connection duplication
 name: Option<String>
 group: Option<String>
 host: String
@@ -218,7 +219,10 @@ reachable: bool
 - `credential_mode=saved` requires `credential_id` and clears inline secrets.
 - `credential_mode=inline` requires inline password or inline private key path depending on `inline_auth_kind`.
 - Existing inline connection edits use `inline_password_touched` / `inline_private_key_passphrase_touched` to distinguish "field not touched, preserve old vault reference" from "field touched, replace or validate the new secret". Reveal-only values must not force a replacement unless the user edits the field.
+- Connection duplication reuses `connection_upsert` with `id=None` and `source_connection_id=Some(existing_id)`. The source id is request-only and must not be persisted. Untouched inline secrets are read from the source vault slot and written to a new slot keyed by the new connection id; saved credentials keep their `credential_id`, and prompt mode stores no secret.
+- A duplication request must fail when the source connection or required source vault secret is missing. Supplying both `id` and `source_connection_id` is invalid. Never preserve the source secret reference directly, because deleting or editing one connection would then affect the other.
 - `connection_test_profile` may receive an existing connection `id` with an untouched blank inline secret. It must resolve the transient test by reading the existing inline vault secret, without persisting the profile or returning that secret through the profile payload.
+- `connection_test_profile` may also receive a duplication draft with `source_connection_id`; it must resolve untouched inline secrets from that source without creating the duplicate.
 - `credential_mode=prompt` stores no password or private key passphrase; runtime prompt credentials must be supplied by `TerminalConnectRequest` or `ConnectionRuntimeCredentialRequest`.
 - Password auth clears private-key fields; private-key auth clears password fields.
 - Credential edits use `password_touched` / `private_key_passphrase_touched` to preserve existing vault references when the user did not modify the secret. Account management is the only UI surface that may call `credential_reveal_secret`.
@@ -263,6 +267,9 @@ reachable: bool
 | `credential_mode == saved` and credential id is unknown | `credential_missing` | false |
 | `credential_mode == inline`, password auth, and password is blank | `connection_password_missing` | true |
 | `credential_mode == inline`, private-key auth, and private key path is blank | `connection_private_key_missing` | true |
+| Duplication request supplies both `id` and `source_connection_id` | `connection_duplicate_source_invalid` | true |
+| Duplication source connection is missing | `connection_missing` | false |
+| Duplication source requires an inline secret that is missing | `secret_missing` | true |
 | Reveal inline secret for non-inline connection | `connection_inline_secret_unavailable` | true |
 | Reveal or resolve a missing vault secret | `secret_missing` | true |
 | Proxy mode requires proxy target but host is blank | `connection_proxy_host_missing` | true |
@@ -309,12 +316,13 @@ reachable: bool
 
 - Good: `connection_upsert` receives inline password auth, trims `host` and `username`, defaults `name`, clears private-key fields, persists the JSON store, and returns the saved profile.
 - Good: editing an existing inline-password connection sends `inline_password_touched=false` with no password; Rust preserves the existing vault `secret_ref`, and `connection_test_profile` can still test with the old secret.
+- Good: duplicating an inline-password connection sends `id=None`, `source_connection_id=<source>`, and an untouched blank password; Rust creates a new connection id, copies the secret into that id's vault slot, and later editing or deleting either connection does not affect the other.
 - Good: `connection_reveal_inline_secret` returns the inline password for an inline connection, while a saved-credential connection must be opened through account management and `credential_reveal_secret`.
 - Good: `connection_test_profile` receives the unsaved dialog form, validates it, resolves inline or saved credential material, opens and closes a test SSH session, and leaves `connections.json` unchanged.
 - Good: `terminal_connect` receives `connection_id` for a saved-credential connection plus stale frontend host fields; Rust loads the saved profile, resolves the credential, verifies the host key, carries the proxy/jump/timeout settings, and uses the saved values.
 - Good: 10,000 small SSH stdout chunks are emitted in ordered batches no larger than 32 KiB, with the final partial batch flushed before the close/state event.
 - Base: `connection_test` receives prompt credentials, resolves the saved connection with those runtime credentials, opens a reusable exec session, closes it, and returns `{ ok: true }`.
-- Bad: `credential_delete` deletes a credential referenced by an existing connection, a dialog test calls `ConnectionStore::upsert` before connecting, or a command handler accepts frontend-supplied raw credentials for remote-file commands.
+- Bad: duplication reuses the source vault reference, creates a blank-password fallback when source secret lookup fails, persists `source_connection_id`, or creates a row before the user confirms the duplicate dialog.
 
 ### 6. Tests Required
 
@@ -324,6 +332,7 @@ reachable: bool
 - Unit-test `TerminalOutputBatcher` for ordered high-volume input, the 32 KiB ceiling, a deadline anchored to the first pending chunk, and final partial flush.
 - Unit-test credential validation for blank name, missing password, missing private key, auth-field clearing, and JSON store round-trip/delete.
 - Unit-test untouched inline connection and credential secret preservation, reveal command behavior, and transient connection tests that reuse existing inline secrets without persisting.
+- Unit-test connection duplication for independent inline password/private-key-passphrase slots, missing sources, invalid edit-plus-source requests, saved credential references, prompt mode, and transient duplicate tests.
 - Unit-test known-host store behavior for unknown, trusted, and changed fingerprints.
 - Unit-test saved connection resolution for saved, inline, prompt, missing credential, proxy, SSH jump round-trip, and advanced timeout behavior.
 - Unit-test shared JSON store behavior for missing primary files, atomic write backup creation, and `.bak` recovery when the primary JSON is corrupt.
@@ -350,6 +359,20 @@ fs::write(path, serde_json::to_string(&profile)?)?;
 ```rust
 let mut store = ConnectionStore::load(connection_store_path(&app)?)?;
 let profile = store.upsert(request, &now_timestamp()?)?;
+```
+
+#### Wrong
+
+```rust
+// Both rows now own the same secret reference.
+let duplicate_secret_ref = source_secret_ref;
+```
+
+#### Correct
+
+```rust
+let duplicate_ref = SecretReference::connection(&duplicate_id, source_secret_ref.kind);
+secret_store.set_secret(&duplicate_ref, &secret_store.get_secret(&source_secret_ref)?)?;
 ```
 
 #### Wrong
