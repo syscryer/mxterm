@@ -703,7 +703,16 @@ impl StorageRepository {
         input: ConnectionProfileInput,
         now: &str,
     ) -> Result<ConnectionProfile, AppError> {
+        let source_connection_id = trim_optional(input.source_connection_id.as_ref());
         let validated = validate_profile_input(&input)?;
+        if validated.id.is_some() && source_connection_id.is_some() {
+            return Err(AppError::new(
+                "connection_duplicate_source_invalid",
+                "复制连接请求无效。",
+                "id and source_connection_id cannot both be set",
+                true,
+            ));
+        }
         let id = validated
             .id
             .clone()
@@ -756,8 +765,16 @@ impl StorageRepository {
         };
 
         let existing_stored_connection = self.stored_connection_optional(&id)?;
-        let (inline_secret_ref, inline_secret_slot_id) =
-            self.prepare_inline_secret(&id, &validated, existing_stored_connection.as_ref())?;
+        let duplicate_source = source_connection_id
+            .as_deref()
+            .map(|source_id| self.stored_connection(source_id))
+            .transpose()?;
+        let (inline_secret_ref, inline_secret_slot_id) = self.prepare_inline_secret(
+            &id,
+            &validated,
+            existing_stored_connection.as_ref(),
+            duplicate_source.as_ref(),
+        )?;
 
         let proxy_json = serde_json::to_string(&validated.proxy).map_err(sqlite_serialize_error)?;
         let jump_json = serde_json::to_string(&validated.jump).map_err(sqlite_serialize_error)?;
@@ -1446,6 +1463,7 @@ impl StorageRepository {
         &self,
         input: ConnectionProfileInput,
     ) -> Result<ResolvedSshConfig, AppError> {
+        let source_connection_id = trim_optional(input.source_connection_id.as_ref());
         let validated = validate_profile_input(&input)?;
         if validated.protocol != ConnectionProtocol::Ssh {
             return Err(connection_protocol_unsupported(
@@ -1456,7 +1474,7 @@ impl StorageRepository {
                 &validated.protocol,
             ));
         }
-        let preserved_inline_connection_id = validated.id.clone();
+        let preserved_inline_connection_id = validated.id.clone().or(source_connection_id);
         let inline_password_touched = validated.inline_password_touched;
         let inline_private_key_passphrase_touched = validated.inline_private_key_passphrase_touched;
         let mut profile = ConnectionProfile {
@@ -1773,6 +1791,7 @@ impl StorageRepository {
         id: &str,
         validated: &crate::connections::ValidatedConnectionProfileInput,
         existing: Option<&(ConnectionProfile, Option<SecretReference>)>,
+        duplicate_source: Option<&(ConnectionProfile, Option<SecretReference>)>,
     ) -> Result<(Option<String>, Option<String>), AppError> {
         match validated.inline_auth_kind.as_ref() {
             Some(ConnectionAuthKind::Password) => {
@@ -1783,7 +1802,11 @@ impl StorageRepository {
                         Ok((Some(reference.account), Some(reference.slot_id)))
                     }
                     None if !validated.inline_password_touched => {
-                        preserve_inline_secret(existing, &ConnectionAuthKind::Password)
+                        if let Some(source) = duplicate_source {
+                            self.copy_inline_secret(id, source, &ConnectionAuthKind::Password)
+                        } else {
+                            preserve_inline_secret(existing, &ConnectionAuthKind::Password)
+                        }
                     }
                     None => Err(AppError::new(
                         "connection_password_missing",
@@ -1802,13 +1825,54 @@ impl StorageRepository {
                         Ok((Some(reference.account), Some(reference.slot_id)))
                     }
                     None if !validated.inline_private_key_passphrase_touched => {
-                        preserve_inline_secret(existing, &ConnectionAuthKind::PrivateKey)
+                        if let Some(source) = duplicate_source {
+                            self.copy_inline_secret(id, source, &ConnectionAuthKind::PrivateKey)
+                        } else {
+                            preserve_inline_secret(existing, &ConnectionAuthKind::PrivateKey)
+                        }
                     }
                     None => Ok((None, None)),
                 }
             }
             None => Ok((None, None)),
         }
+    }
+
+    fn copy_inline_secret(
+        &self,
+        id: &str,
+        source: &(ConnectionProfile, Option<SecretReference>),
+        auth_kind: &ConnectionAuthKind,
+    ) -> Result<(Option<String>, Option<String>), AppError> {
+        let (source_profile, source_reference) = source;
+        if source_profile.credential_mode != ConnectionCredentialMode::Inline
+            || source_profile.inline_auth_kind.as_ref() != Some(auth_kind)
+        {
+            return missing_inline_secret_for_preserve(auth_kind);
+        }
+        let Some(source_reference) = source_reference else {
+            return if *auth_kind == ConnectionAuthKind::PrivateKey {
+                Ok((None, None))
+            } else {
+                Err(AppError::new(
+                    "secret_missing",
+                    "加密保险库中不存在该凭据。",
+                    format!("connection_id={}", source_profile.id),
+                    true,
+                ))
+            };
+        };
+        let target_kind = match auth_kind {
+            ConnectionAuthKind::Password => SecretKind::InlinePassword,
+            ConnectionAuthKind::PrivateKey => SecretKind::InlinePrivateKeyPassphrase,
+        };
+        let target_reference = SecretReference::connection(id, target_kind);
+        let secret = self.secret_store.get_secret(source_reference)?;
+        self.secret_store.set_secret(&target_reference, &secret)?;
+        Ok((
+            Some(target_reference.account),
+            Some(target_reference.slot_id),
+        ))
     }
 
     pub fn known_host_trust(
@@ -2912,6 +2976,138 @@ mod tests {
     }
 
     #[test]
+    fn connection_upsert_duplicates_inline_password_into_an_independent_secret() {
+        let (repo, _db_path, _secrets) = temp_repository("inline-password-duplicate");
+        let source = repo
+            .connection_upsert(password_connection_input(), "2026-06-20T00:00:00+08:00")
+            .unwrap();
+
+        let duplicate = repo
+            .connection_upsert(
+                ConnectionProfileInput {
+                    id: None,
+                    source_connection_id: Some(source.id.clone()),
+                    name: Some("生产 - 副本".to_string()),
+                    inline_password: None,
+                    inline_password_touched: false,
+                    is_favorite: Some(false),
+                    last_connected_at: None,
+                    remote_os_id: None,
+                    remote_os_name: None,
+                    remote_os_version: None,
+                    ..password_connection_input()
+                },
+                "2026-06-20T00:01:00+08:00",
+            )
+            .unwrap();
+
+        repo.connection_upsert(
+            ConnectionProfileInput {
+                id: Some(duplicate.id.clone()),
+                source_connection_id: None,
+                inline_password: Some("changed".to_string()),
+                inline_password_touched: true,
+                ..password_connection_input()
+            },
+            "2026-06-20T00:02:00+08:00",
+        )
+        .unwrap();
+
+        assert_ne!(duplicate.id, source.id);
+        assert_eq!(
+            repo.resolve_saved_connection(&source.id, None)
+                .unwrap()
+                .password,
+            Some("secret".to_string())
+        );
+        assert_eq!(
+            repo.resolve_saved_connection(&duplicate.id, None)
+                .unwrap()
+                .password,
+            Some("changed".to_string())
+        );
+    }
+
+    #[test]
+    fn connection_upsert_duplicates_inline_private_key_passphrase() {
+        let (repo, _db_path, _secrets) = temp_repository("inline-private-key-duplicate");
+        let source = repo
+            .connection_upsert(
+                ConnectionProfileInput {
+                    inline_auth_kind: Some(ConnectionAuthKind::PrivateKey),
+                    inline_password: None,
+                    inline_password_touched: false,
+                    inline_private_key_path: Some("~/.ssh/id_ed25519".to_string()),
+                    inline_private_key_passphrase: Some("key-secret".to_string()),
+                    inline_private_key_passphrase_touched: true,
+                    ..password_connection_input()
+                },
+                "2026-06-20T00:00:00+08:00",
+            )
+            .unwrap();
+
+        let duplicate = repo
+            .connection_upsert(
+                ConnectionProfileInput {
+                    id: None,
+                    source_connection_id: Some(source.id),
+                    inline_auth_kind: Some(ConnectionAuthKind::PrivateKey),
+                    inline_password: None,
+                    inline_password_touched: false,
+                    inline_private_key_path: Some("~/.ssh/id_ed25519".to_string()),
+                    inline_private_key_passphrase: None,
+                    inline_private_key_passphrase_touched: false,
+                    ..password_connection_input()
+                },
+                "2026-06-20T00:01:00+08:00",
+            )
+            .unwrap();
+        let resolved = repo.resolve_saved_connection(&duplicate.id, None).unwrap();
+
+        assert_eq!(
+            resolved.private_key_passphrase,
+            Some("key-secret".to_string())
+        );
+    }
+
+    #[test]
+    fn connection_upsert_rejects_missing_duplicate_source() {
+        let (repo, _db_path, _secrets) = temp_repository("duplicate-source-missing");
+
+        let error = repo
+            .connection_upsert(
+                ConnectionProfileInput {
+                    id: None,
+                    source_connection_id: Some("missing".to_string()),
+                    inline_password: None,
+                    inline_password_touched: false,
+                    ..password_connection_input()
+                },
+                "2026-06-20T00:00:00+08:00",
+            )
+            .unwrap_err();
+
+        assert_eq!(error.code, "connection_missing");
+    }
+
+    #[test]
+    fn connection_upsert_rejects_duplicate_source_while_editing() {
+        let (repo, _db_path, _secrets) = temp_repository("duplicate-source-edit");
+
+        let error = repo
+            .connection_upsert(
+                ConnectionProfileInput {
+                    source_connection_id: Some("conn-source".to_string()),
+                    ..password_connection_input()
+                },
+                "2026-06-20T00:00:00+08:00",
+            )
+            .unwrap_err();
+
+        assert_eq!(error.code, "connection_duplicate_source_invalid");
+    }
+
+    #[test]
     fn transient_connection_test_reuses_untouched_inline_password() {
         let (repo, _db_path, _secrets) = temp_repository("inline-password-transient-preserve");
         let saved = repo
@@ -2929,6 +3125,26 @@ mod tests {
             .unwrap();
 
         assert_eq!(resolved.connection_id, "__transient_connection_test__");
+        assert_eq!(resolved.password, Some("secret".to_string()));
+    }
+
+    #[test]
+    fn transient_duplicate_test_reuses_source_inline_password() {
+        let (repo, _db_path, _secrets) = temp_repository("inline-password-duplicate-test");
+        let source = repo
+            .connection_upsert(password_connection_input(), "2026-06-20T00:00:00+08:00")
+            .unwrap();
+
+        let resolved = repo
+            .resolve_transient_connection(ConnectionProfileInput {
+                id: None,
+                source_connection_id: Some(source.id),
+                inline_password: None,
+                inline_password_touched: false,
+                ..password_connection_input()
+            })
+            .unwrap();
+
         assert_eq!(resolved.password, Some("secret".to_string()));
     }
 
@@ -3543,6 +3759,7 @@ mod tests {
     fn password_connection_input() -> ConnectionProfileInput {
         ConnectionProfileInput {
             id: Some("conn-001".to_string()),
+            source_connection_id: None,
             protocol: ConnectionProtocol::Ssh,
             name: Some("生产".to_string()),
             group: Some("默认".to_string()),

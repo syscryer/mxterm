@@ -13,6 +13,7 @@ import {
 import {
   Check,
   Clock3,
+  Copy,
   Folder,
   FolderPlus,
   Pencil,
@@ -40,6 +41,7 @@ interface ConnectionPaneProps {
   onCreate: (groupName?: string) => void;
   onConnect: (connection: ConnectionProfile) => void;
   onDelete: (connection: ConnectionProfile) => void | Promise<void>;
+  onDuplicate: (connection: ConnectionProfile) => void;
   onEdit: (connection: ConnectionProfile) => void;
   onGroupCatalogChange?: (catalog: {
     assignments: ConnectionGroupAssignments;
@@ -109,6 +111,7 @@ export function ConnectionPane({
   onCreate,
   onConnect,
   onDelete,
+  onDuplicate,
   onEdit,
   onGroupCatalogChange,
   onMoveConnectionToGroup,
@@ -263,6 +266,7 @@ export function ConnectionPane({
                 icon={folder.icon}
                 key={folder.id}
                 label={folder.label}
+                onDuplicate={onDuplicate}
                 onEdit={onEdit}
                 onOpen={onOpen}
                 onSelect={selectQuickConnection}
@@ -341,6 +345,7 @@ export function ConnectionPane({
                 onDragStart={beginConnectionDrag}
                 onMouseDragStart={beginMouseConnectionDrag}
                 onConnect={onConnect}
+                onDuplicate={onDuplicate}
                 onEdit={onEdit}
                 onOpen={onOpen}
                 onSelect={selectTreeConnection}
@@ -507,6 +512,7 @@ export function ConnectionPane({
         folderDropTargetId={folderId}
         draggingConnectionId={draggingConnectionId}
         dropTargetId={dropTargetId}
+        onDuplicate={onDuplicate}
         onEdit={onEdit}
         onOpen={onOpen}
         onSelect={selectTreeConnection}
@@ -781,6 +787,7 @@ function TreeFolder({
   label,
   draggingConnectionId,
   dropTargetId,
+  onDuplicate,
   onEdit,
   onOpen,
   onSelect,
@@ -809,6 +816,7 @@ function TreeFolder({
   label: string;
   draggingConnectionId?: string | null;
   dropTargetId?: DropTargetId | null;
+  onDuplicate: (connection: ConnectionProfile) => void;
   onEdit: (connection: ConnectionProfile) => void;
   onOpen: (connection: ConnectionProfile) => void;
   onSelect: (connection: ConnectionProfile) => void;
@@ -909,6 +917,7 @@ function TreeFolder({
               onDragStart={onConnectionDragStart}
               onMouseDragStart={onMouseConnectionDragStart}
               onConnect={onConnect}
+              onDuplicate={onDuplicate}
               onEdit={onEdit}
               onOpen={onOpen}
               onSelect={onSelect}
@@ -947,6 +956,7 @@ function ConnectionTreeLeaf({
   onDragStart,
   onMouseDragStart,
   onConnect,
+  onDuplicate,
   onEdit,
   onOpen,
   onSelect,
@@ -964,6 +974,7 @@ function ConnectionTreeLeaf({
     connection: ConnectionProfile,
   ) => void;
   onConnect: (connection: ConnectionProfile) => void;
+  onDuplicate: (connection: ConnectionProfile) => void;
   onEdit: (connection: ConnectionProfile) => void;
   onOpen: (connection: ConnectionProfile) => void;
   onSelect: (connection: ConnectionProfile) => void;
@@ -1026,6 +1037,10 @@ function ConnectionTreeLeaf({
           <ContextMenu.Item className="context-menu-item" onSelect={() => onEdit(connection)}>
             <Pencil className="ui-icon" aria-hidden="true" />
             <span>编辑连接</span>
+          </ContextMenu.Item>
+          <ContextMenu.Item className="context-menu-item" onSelect={() => onDuplicate(connection)}>
+            <Copy className="ui-icon" aria-hidden="true" />
+            <span>复制连接</span>
           </ContextMenu.Item>
           <ContextMenu.Item className="context-menu-item" onSelect={() => void onToggleFavorite(connection)}>
             <Star className="ui-icon" aria-hidden="true" />

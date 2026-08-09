@@ -269,6 +269,7 @@ export interface ConnectionProfile {
 
 export interface ConnectionProfileInput {
   id?: string;
+  source_connection_id?: string;
   protocol?: ConnectionProtocol;
   name?: string;
   group?: string;

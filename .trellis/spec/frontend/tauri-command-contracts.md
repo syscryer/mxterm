@@ -47,6 +47,8 @@ getWindowsPtyInfo(): Promise<WindowsPtyInfo | null>
 `ConnectionProfileInput` mirrors the Rust payload:
 
 ```ts
+id?: string
+source_connection_id?: string
 group?: string
 host: string
 port: number
@@ -188,6 +190,9 @@ type SerialTerminalOpenRequest = {
 - After a terminal connection succeeds, trigger `connectionProbeSystem(...)` in the background with the same runtime prompt credential payload when needed, then call `connectionMarkConnected(connection.id)` so the repository's recent views sort by real connection activity. Probe failures must not close or fail an already connected terminal. Favorite toggles must call `connectionSetFavorite(...)` and preserve repository metadata when editing or moving a connection.
 - `ConnectionDialog` must test the current form with `connectionTestProfile(input)`. It must not call `connectionUpsert`, `saveConnection`, or `connectionTest({ connection_id })` for unsaved dialog tests, because testing must not persist a profile or create a connection id. It must show validation and connection errors as dialog feedback instead of writing them into a terminal.
 - Editing an existing inline-secret connection must not prefill plaintext. The dialog shows a saved/blank placeholder, sends `inline_password_touched=false` or `inline_private_key_passphrase_touched=false` when unchanged, and calls `connectionRevealInlineSecret(id)` only when the eye button is visible and clicked.
+- Connection duplication is an explicit `ConnectionDialog` mode. It preloads the source profile, clears `id` plus favorite/recent/remote-system state, sets `source_connection_id`, and saves only after the user clicks “创建副本”. The duplicate dialog may use the source `connection.id` for the existing reveal button, but must not automatically reveal or copy plaintext into frontend state.
+- `normalizeConnectionInput` must preserve the trimmed `source_connection_id` in every protocol branch. Dropping it turns duplication into ordinary creation before `connectionUpsert`, so unchanged inline secrets incorrectly fail validation instead of being copied from the source vault slot.
+- Default duplicate names use `<source name> - 副本`, then append `(2)`, `(3)`, and so on when needed. This is a user-editable default, not a new database uniqueness rule.
 - `connectionRevealInlineSecret` is for connection-owned inline secrets only. When the connection uses saved account credentials, `ConnectionDialog` must show the credential picker and must not reveal the reusable credential secret across that boundary.
 - Editing saved account credentials in Settings must not prefill plaintext. Account management is the only UI surface that may call `credentialRevealSecret(id)`.
 - If a secret was revealed only for viewing, normalization must omit the secret value and preserve `*_touched=false` until the user actually types. Saving immediately after reveal must preserve the existing vault reference instead of rewriting or clearing the secret.
@@ -249,6 +254,9 @@ type SerialTerminalOpenRequest = {
 | Existing account credential secret is unchanged | Submit no plaintext and `*_touched=false`; do not clear or rewrite the vault entry. |
 | Reveal is disallowed by advanced security | Hide the eye button; keep secret replacement fields usable. |
 | Credential mode changes to `prompt` | Clear saved/inline secrets and collect runtime credentials only on the connection step. |
+| User cancels a duplicate connection dialog | Close the dialog without calling `connectionUpsert`; no connection row or vault slot is created. |
+| Duplicate input reaches `normalizeConnectionInput` | Preserve `source_connection_id` for SSH, RDP, VNC, Telnet, and serial before calling `connectionUpsert`. |
+| Duplicate source is missing or its vault secret cannot be read | Keep the duplicate dialog open and show the backend error; do not create a blank-secret fallback. |
 | Auth kind changes to `password` | Clear private-key fields in form state. |
 | Auth kind changes to `private_key` | Clear password in form state. |
 | Network path changes to SSH jump but no jump connection is selected | Keep the dialog open, switch to the `网络路径` tab, show inline dialog feedback, and do not save, test, or normalize the payload to direct. |
@@ -264,16 +272,19 @@ type SerialTerminalOpenRequest = {
 - Good: `ConnectionDialog` reveals only inline connection secrets; saved credential secrets remain behind account management.
 - Good: account management reveal sets the local form value for viewing, but leaves `*_touched=false` until the user types, so saving immediately preserves the old secret.
 - Good: `ConnectionDialog` tests the current unsaved form through `connectionTestProfile(input)`, leaving the connection repository unchanged until the user clicks save.
+- Good: the left connection-tree context menu opens duplicate mode, shows an editable unique default name, and submits `id=undefined` plus `source_connection_id=<source id>` only when “创建副本” is clicked.
 - Good: `SettingsView` edits saved login-account records through `useCredentials`; it asks for username plus password or private key material, and never asks for host or port in account management.
 - Good: `SettingsView` security section enables master-password protection only after vault rekey succeeds; when enabled, the section is locked until the security password is entered, then shows idle lock, allow reveal, change password, and disable protection.
 - Good: 10,000 small output chunks preserve their exact order while `TerminalOutputQueue` keeps one parser write in flight and avoids splitting a UTF-16 surrogate pair across batches.
 - Base: `ConnectionPane` displays `username@host:port`, calls `onOpen(connection)`, and does not know about Tauri details.
-- Bad: A component calls `invoke("connection_upsert", ...)` directly, tests an unsaved dialog form by saving/upserting it first, stores runtime session ids inside `ConnectionProfile`, or sends raw passwords to remote-file commands.
+- Bad: duplication adds a fourth permanent action icon to the home table, auto-reveals the source password, drops `source_connection_id` during frontend normalization, persists a copy before dialog confirmation, or falls back to an empty secret after a source lookup failure.
 
 ### 6. Tests Required
 
 - Run `pnpm check` after changing command wrappers, connection types, credential types, terminal request types, or component props that carry command payloads.
 - Run focused Rust repository/vault tests after changing reveal, touched-preserve, or vault lock wrappers because TypeScript cannot prove secret persistence semantics.
+- Run focused Rust repository tests after changing duplicate payload fields, and browser-check the left-tree menu, duplicate dialog labels/default name, and cancel-without-create behavior.
+- Run `npm run check:duplicate-connection` after changing duplicate dialog input, connection normalization, duplicate request fields, or repository source-secret handling.
 - Run `node scripts/check-connection-jump-source.mjs` after changing SSH jump profile fields, network path UI, connection normalization, or backend jump persistence.
 - Run `node scripts/check-connection-terminal-encoding-source.mjs` after changing terminal encoding profile fields, advanced-tab UI, connection normalization, or backend terminal encoding behavior.
 - Run `node scripts/check-connection-dialog-host-key-feedback.mjs` after changing `ConnectionDialog`, host-key error parsing, or connection-test feedback styles.

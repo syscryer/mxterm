@@ -694,6 +694,8 @@ pub struct ConnectionProfileInput {
     #[serde(default)]
     pub id: Option<String>,
     #[serde(default)]
+    pub source_connection_id: Option<String>,
+    #[serde(default)]
     pub protocol: ConnectionProtocol,
     #[serde(default)]
     pub name: Option<String>,
@@ -1214,7 +1216,8 @@ fn validate_ssh_profile_input(
         input.inline_private_key_passphrase_touched || inline_private_key_passphrase.is_some();
     let credential_id = trim_optional(input.credential_id.as_ref());
     let prompt_auth_kind = input.prompt_auth_kind.clone();
-    let existing_profile_id = trim_optional(input.id.as_ref());
+    let existing_profile_id = trim_optional(input.id.as_ref())
+        .or_else(|| trim_optional(input.source_connection_id.as_ref()));
 
     let (
         credential_id,
@@ -1351,7 +1354,8 @@ fn validate_rdp_profile_input(
         .or_else(|| trim_optional(input.password.as_ref()));
     let inline_password_touched = input.inline_password_touched || inline_password.is_some();
     let credential_id = trim_optional(input.credential_id.as_ref());
-    let existing_profile_id = trim_optional(input.id.as_ref());
+    let existing_profile_id = trim_optional(input.id.as_ref())
+        .or_else(|| trim_optional(input.source_connection_id.as_ref()));
     let (credential_id, inline_auth_kind, inline_password, inline_password_touched) =
         match credential_mode {
             ConnectionCredentialMode::Saved => {
@@ -1444,7 +1448,8 @@ fn validate_vnc_profile_input(
         .or_else(|| trim_optional(input.password.as_ref()));
     let inline_password_touched = input.inline_password_touched || inline_password.is_some();
     let credential_id = trim_optional(input.credential_id.as_ref());
-    let existing_profile_id = trim_optional(input.id.as_ref());
+    let existing_profile_id = trim_optional(input.id.as_ref())
+        .or_else(|| trim_optional(input.source_connection_id.as_ref()));
     let (credential_id, inline_auth_kind, inline_password, inline_password_touched) =
         match credential_mode {
             ConnectionCredentialMode::Saved => {
@@ -2274,6 +2279,7 @@ mod tests {
     fn password_input() -> ConnectionProfileInput {
         ConnectionProfileInput {
             id: None,
+            source_connection_id: None,
             protocol: ConnectionProtocol::Ssh,
             name: None,
             group: Some(" 生产 ".to_string()),

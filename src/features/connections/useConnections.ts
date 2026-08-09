@@ -394,6 +394,7 @@ export function useConnections(options: { enabled?: boolean } = {}) {
 }
 export function normalizeConnectionInput(input: ConnectionProfileInput): ConnectionProfileInput {
   const protocol = input.protocol || "ssh";
+  const sourceConnectionId = input.source_connection_id?.trim() || undefined;
   if (protocol === "rdp") {
     const trim = (value: string | undefined | null) => value?.trim() || undefined;
     const credentialMode = input.credential_mode || "prompt";
@@ -405,6 +406,7 @@ export function normalizeConnectionInput(input: ConnectionProfileInput): Connect
 
     return {
       id: trim(input.id),
+      source_connection_id: sourceConnectionId,
       protocol: "rdp",
       name: trim(input.name),
       group: trim(input.group),
@@ -448,6 +450,7 @@ export function normalizeConnectionInput(input: ConnectionProfileInput): Connect
 
     return {
       id: trim(input.id),
+      source_connection_id: sourceConnectionId,
       protocol: "vnc",
       name: trim(input.name),
       group: trim(input.group),
@@ -484,6 +487,7 @@ export function normalizeConnectionInput(input: ConnectionProfileInput): Connect
     const trim = (value: string | undefined | null) => value?.trim() || undefined;
     return {
       id: trim(input.id),
+      source_connection_id: sourceConnectionId,
       protocol: "telnet",
       name: trim(input.name),
       group: trim(input.group),
@@ -521,6 +525,7 @@ export function normalizeConnectionInput(input: ConnectionProfileInput): Connect
     const portName = serial.port_name || input.host.trim();
     return {
       id: trim(input.id),
+      source_connection_id: sourceConnectionId,
       protocol: "serial",
       name: trim(input.name),
       group: trim(input.group),
@@ -576,6 +581,7 @@ export function normalizeConnectionInput(input: ConnectionProfileInput): Connect
 
   return {
     id: trim(input.id),
+    source_connection_id: sourceConnectionId,
     protocol: "ssh",
     name: trim(input.name),
     group: trim(input.group),
