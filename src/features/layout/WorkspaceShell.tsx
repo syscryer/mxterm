@@ -300,6 +300,10 @@ import {
 } from "../shortcuts/shortcutRegistry";
 import { useShortcutManager, type ShortcutHandler } from "../shortcuts/useShortcutManager";
 import type { TerminalOutputEvent } from "../terminal/terminalTypes";
+import {
+  buildTerminalSubtabActions,
+  type TerminalSubtabMenuContext,
+} from "../terminal/tabContextMenuActions";
 import { ConfirmDialog } from "../../shared/ui/ConfirmDialog";
 import { AnchoredSurfacePortal } from "../../shared/ui/AnchoredSurfacePortal";
 import { AppSelect } from "../../shared/ui/AppSelect";
@@ -5333,102 +5337,92 @@ export function WorkspaceShell() {
 
   function renderTerminalSplitGroupSubtab() {
     const boundPaneCount = terminalSplitPanes.filter((pane) => pane.binding).length;
+    // 分屏组 subtab 复用 buildTerminalSubtabActions 时,合成一个单元素 tabs,
+    // 使 closeOthers/closeRight 天然 disabled;prepend 注入"关闭分屏组"。
+    // 分屏组本身已经是分屏,不允许再分,所以 disableSplit=true 强制禁用
+    // 向右分屏/向下分屏/四分屏三项。
+    const splitHostAnchor = { id: "terminal-split-group" };
+    const splitGroupCtx: TerminalSubtabMenuContext<typeof splitHostAnchor> = {
+      tabs: [splitHostAnchor],
+      index: 0,
+      activate: () => activateTerminalSplitTab(),
+      close: () => requestCloseTerminalSplitGroup(),
+      closeOthers: () => requestCloseTerminalSplitGroup(),
+      closeRight: () => requestCloseTerminalSplitGroup(),
+      closeAll: () => requestCloseTerminalSplitGroup(),
+      split: () => {
+        // 分屏组上"再分"无意义,强制 disabled 后不会触发。
+      },
+      fourPane: () => {
+        // 分屏组上"再分"无意义,强制 disabled 后不会触发。
+      },
+    };
+    const actions = buildTerminalSubtabActions(splitGroupCtx, terminalSplitCanAddPane, {
+      disableSplit: true,
+      hideCloseAll: true,
+      prepend: [
+        {
+          hint: "Ctrl+F4",
+          label: "关闭分屏组",
+          onSelect: () => requestCloseTerminalSplitGroup(),
+        },
+      ],
+    });
     return (
-      <div
-        className={`subtab-shell terminal-split-group-tab ${terminalSplitActive ? "active" : ""}`}
-        data-workbench-tab-active={terminalSplitActive ? "true" : undefined}
-        key="terminal-split-group"
-      >
-        <button
-          className="subtab terminal-split-group-subtab"
-          type="button"
-          aria-label={`打开分屏组，共 ${boundPaneCount.toString()} 个终端`}
-          onClick={() => activateTerminalSplitTab()}
+      <TabContextMenu key="terminal-split-group" actions={actions}>
+        <div
+          className={`subtab-shell terminal-split-group-tab ${terminalSplitActive ? "active" : ""}`}
+          data-workbench-tab-active={terminalSplitActive ? "true" : undefined}
         >
-          <PanelsTopLeft className="ui-icon" aria-hidden="true" />
-          <span>分屏</span>
-          <span className="terminal-split-group-count" aria-hidden="true">
-            {boundPaneCount.toString()}
-          </span>
-        </button>
-        <button
-          className="subtab-close"
-          type="button"
-          aria-label="关闭分屏组"
-          onClick={requestCloseTerminalSplitGroup}
-        >
-          <X className="ui-icon" aria-hidden="true" />
-        </button>
-      </div>
+          <button
+            className="subtab terminal-split-group-subtab"
+            type="button"
+            aria-label={`打开分屏组，共 ${boundPaneCount.toString()} 个终端`}
+            onClick={() => activateTerminalSplitTab()}
+          >
+            <PanelsTopLeft className="ui-icon" aria-hidden="true" />
+            <span>分屏</span>
+            <span className="terminal-split-group-count" aria-hidden="true">
+              {boundPaneCount.toString()}
+            </span>
+          </button>
+          <button
+            className="subtab-close"
+            type="button"
+            aria-label="关闭分屏组"
+            onClick={requestCloseTerminalSplitGroup}
+          >
+            <X className="ui-icon" aria-hidden="true" />
+          </button>
+        </div>
+      </TabContextMenu>
     );
   }
 
   function renderSshTerminalSubtab(tab: TerminalTab, index: number) {
+    const sshMenuCtx: TerminalSubtabMenuContext<TerminalTab> = {
+      tabs: activeConnectionTabs,
+      index,
+      activate: activateTerminalTab,
+      close: (t) => closeTerminal(t.id),
+      closeOthers: (t) => closeOtherTerminalTabs(t.id),
+      closeRight: (t) => closeTerminalTabsToRight(t.id),
+      closeAll: () => closeAllTerminalTabsForConnection(tab.connectionId),
+      split: (t, direction) =>
+        startTerminalSplitForBinding({ kind: "ssh", tabId: t.id }, direction),
+      fourPane: (t) => startTerminalFourPaneForBinding({ kind: "ssh", tabId: t.id }),
+      restoreSplit: isConnectionTerminalFileUnified(tab.connectionId)
+        ? (t) =>
+            restoreConnectionTerminalFileSplit(tab.connectionId, "terminal", {
+              connectionId: tab.connectionId,
+              id: t.id,
+              kind: "terminal",
+            })
+        : undefined,
+    };
+    const actions = buildTerminalSubtabActions(sshMenuCtx, terminalSplitCanAddPane);
     return (
-      <TabContextMenu
-        key={tab.id}
-        actions={[
-          {
-            hint: "Ctrl+F4",
-            label: "关闭",
-            onSelect: () => closeTerminal(tab.id),
-          },
-          {
-            disabled: activeConnectionTabs.length <= 1,
-            label: "关闭其他",
-            onSelect: () => closeOtherTerminalTabs(tab.id),
-          },
-          {
-            disabled: index >= activeConnectionTabs.length - 1,
-            label: "关闭右侧标签页",
-            onSelect: () => closeTerminalTabsToRight(tab.id),
-          },
-          {
-            disabled: activeConnectionTabs.length === 0,
-            hint: "Ctrl+K W",
-            label: "全部关闭",
-            onSelect: () => closeAllTerminalTabsForConnection(tab.connectionId),
-          },
-          {
-            disabled: !terminalSplitCanAddPane,
-            label: "向右分屏",
-            onSelect: () => {
-              activateTerminalTab(tab);
-              startTerminalSplitForBinding({ kind: "ssh", tabId: tab.id }, "row");
-            },
-            separatorBefore: true,
-          },
-          {
-            disabled: !terminalSplitCanAddPane,
-            label: "向下分屏",
-            onSelect: () => {
-              activateTerminalTab(tab);
-              startTerminalSplitForBinding({ kind: "ssh", tabId: tab.id }, "column");
-            },
-          },
-          {
-            label: "四分屏",
-            onSelect: () => {
-              activateTerminalTab(tab);
-              startTerminalFourPaneForBinding({ kind: "ssh", tabId: tab.id });
-            },
-          },
-          ...(isConnectionTerminalFileUnified(tab.connectionId)
-            ? [
-                {
-                  label: "恢复上下分屏",
-                  onSelect: () =>
-                    restoreConnectionTerminalFileSplit(tab.connectionId, "terminal", {
-                      connectionId: tab.connectionId,
-                      id: tab.id,
-                      kind: "terminal",
-                    }),
-                  separatorBefore: true,
-                },
-              ]
-            : []),
-        ]}
-      >
+      <TabContextMenu key={tab.id} actions={actions}>
         <div
           className={`subtab-shell ${isTerminalSubtabActive(tab) ? "active" : ""}`}
           data-workbench-tab-active={isTerminalSubtabActive(tab) ? "true" : undefined}
@@ -5483,57 +5477,21 @@ export function WorkspaceShell() {
   }
 
   function renderLocalTerminalSubtab(tab: LocalTerminalTab, index: number) {
+    const localMenuCtx: TerminalSubtabMenuContext<LocalTerminalTab> = {
+      tabs: localTerminalTabs,
+      index,
+      activate: activateLocalTerminalTab,
+      close: (t) => closeLocalTerminalSession(t),
+      closeOthers: (t) => closeOtherLocalTerminalTabs(t.id),
+      closeRight: (t) => closeLocalTerminalTabsToRight(t.id),
+      closeAll: () => closeLocalTerminalTabs(localTerminalTabs.map((item) => item.id)),
+      split: (t, direction) =>
+        startTerminalSplitForBinding({ kind: "local", tabId: t.id }, direction),
+      fourPane: (t) => startTerminalFourPaneForBinding({ kind: "local", tabId: t.id }),
+    };
+    const actions = buildTerminalSubtabActions(localMenuCtx, terminalSplitCanAddPane);
     return (
-      <TabContextMenu
-        key={tab.id}
-        actions={[
-          {
-            hint: "Ctrl+F4",
-            label: "关闭",
-            onSelect: () => closeLocalTerminalSession(tab),
-          },
-          {
-            disabled: localTerminalTabs.length <= 1,
-            label: "关闭其他",
-            onSelect: () => closeOtherLocalTerminalTabs(tab.id),
-          },
-          {
-            disabled: index >= localTerminalTabs.length - 1,
-            label: "关闭右侧标签页",
-            onSelect: () => closeLocalTerminalTabsToRight(tab.id),
-          },
-          {
-            disabled: localTerminalTabs.length === 0,
-            hint: "Ctrl+K W",
-            label: "全部关闭",
-            onSelect: () => closeLocalTerminalTabs(localTerminalTabs.map((item) => item.id)),
-          },
-          {
-            disabled: !terminalSplitCanAddPane,
-            label: "向右分屏",
-            onSelect: () => {
-              activateLocalTerminalTab(tab);
-              startTerminalSplitForBinding({ kind: "local", tabId: tab.id }, "row");
-            },
-            separatorBefore: true,
-          },
-          {
-            disabled: !terminalSplitCanAddPane,
-            label: "向下分屏",
-            onSelect: () => {
-              activateLocalTerminalTab(tab);
-              startTerminalSplitForBinding({ kind: "local", tabId: tab.id }, "column");
-            },
-          },
-          {
-            label: "四分屏",
-            onSelect: () => {
-              activateLocalTerminalTab(tab);
-              startTerminalFourPaneForBinding({ kind: "local", tabId: tab.id });
-            },
-          },
-        ]}
-      >
+      <TabContextMenu key={tab.id} actions={actions}>
         <div
           className={`subtab-shell ${!terminalSplitActive && tab.id === activeLocalTerminalTabId ? "active" : ""}`}
           data-workbench-tab-active={
