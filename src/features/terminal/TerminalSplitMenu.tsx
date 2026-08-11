@@ -112,7 +112,7 @@ export function TerminalSplitMenu({
             disabled={disabled || !canAddPane}
             onClick={() => select(onSplitRight)}
           >
-            <SquareSplitVertical className="ui-icon" aria-hidden="true" />
+            <SquareSplitHorizontal className="ui-icon" aria-hidden="true" />
             <span>向右分屏</span>
           </button>
           <button
@@ -122,7 +122,7 @@ export function TerminalSplitMenu({
             disabled={disabled || !canAddPane}
             onClick={() => select(onSplitDown)}
           >
-            <SquareSplitHorizontal className="ui-icon" aria-hidden="true" />
+            <SquareSplitVertical className="ui-icon" aria-hidden="true" />
             <span>向下分屏</span>
           </button>
           <button
