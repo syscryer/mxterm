@@ -8,8 +8,8 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 36
-- **Last Active**: 2026-08-09
+- **Total Sessions**: 37
+- **Last Active**: 2026-08-14
 <!-- @@@/auto:current-status -->
 
 ---
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~1219 | Active |
+| `journal-1.md` | ~1252 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 37 | 2026-08-14 | 优化 README 并致谢 Linux.do | `32e2250` | `master` |
 | 36 | 2026-08-09 | 实现复制连接 | `5e8148e` | `master` |
 | 35 | 2026-08-04 | 修复高频终端与 Docker 日志卡顿 | `57efd4a` | `master` |
 | 34 | 2026-08-01 | 清理 Trellis 任务与规范状态 | `d092fd2` | `master` |

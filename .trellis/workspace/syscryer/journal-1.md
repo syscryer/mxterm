@@ -1217,3 +1217,36 @@ Added remote MCP supervision and logs, unified MCP SFTP transfers with resumable
 ### Next Steps
 
 - None - task complete
+
+
+## Session 37: 优化 README 并致谢 Linux.do
+
+**Date**: 2026-08-14
+**Task**: 优化 README 并致谢 Linux.do
+**Branch**: `master`
+
+### Summary
+
+按 v0.1.16 已提交能力更新 README 项目定位与功能概览，补充 LINUX DO 社区致谢；通过 TypeScript、链接目标与 diff 检查。
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `32e2250` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
