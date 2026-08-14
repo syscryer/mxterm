@@ -36,6 +36,20 @@ Ant Design, Mantine, or similar libraries just to fix one modal or button.
   (dialog shell, confirm dialog, button variants, tooltip wrappers) in
   `src/shared/ui/`.
 
+### Closable Tab Pointer Contract
+
+- Every closable activity tab must route middle-click through
+  `createMiddleClickCloseHandler` from `src/shared/ui/tabEvents.ts` and pass the
+  same close entry point used by its visible close button. The shared handler
+  responds only to `button === 1`, prevents the browser default, and stops the
+  auxiliary click from bubbling into selection, drag, or titlebar behavior.
+- Middle-click must not duplicate or bypass feature close state. In particular,
+  remote-file tabs must call `closeRemoteFileTab(tab.id)` so unsaved-content
+  confirmation and save state remain authoritative.
+- Fixed navigation tabs and non-closing controls must not receive the handler.
+  Extend `scripts/check-middle-click-close-tabs-source.mjs` whenever a new
+  closable activity-tab type is introduced.
+
 ## Keyboard Shortcut Infrastructure
 
 - Application-level keyboard shortcuts must use `src/features/shortcuts/`.

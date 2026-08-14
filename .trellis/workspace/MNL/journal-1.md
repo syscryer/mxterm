@@ -1250,3 +1250,36 @@ Added remote MCP supervision and logs, unified MCP SFTP transfers with resumable
 ### Next Steps
 
 - None - task complete
+
+
+## Session 38: 活动标签中键关闭
+
+**Date**: 2026-08-14
+**Task**: 活动标签中键关闭
+**Branch**: `master`
+
+### Summary
+
+为所有可关闭活动标签统一增加鼠标中键关闭，复用原关闭流程并保留远程文件未保存确认；补充源码守卫、前端规范并通过类型检查、生产构建和启动边界检查。
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `fabe517` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
