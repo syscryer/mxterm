@@ -434,7 +434,14 @@ type SshConnectionProfile = ConnectionProfile & {
 const VNC_RUNNER_HOST_WINDOW_LABEL = "vnc-runner-host";
 
 type WorkbenchTabKind = "terminal" | "file";
-type WorkbenchTabDropZone = WorkbenchTabKind | "split-file" | "split-terminal";
+type WorkbenchTabDropZone =
+  | WorkbenchTabKind
+  | "split-file"
+  | "split-terminal"
+  | "subtab-before-terminal"
+  | "subtab-after-terminal"
+  | "subtab-before-local"
+  | "subtab-after-local";
 
 interface UnifiedWorkbenchTab {
   id: string;
@@ -896,6 +903,12 @@ export function WorkspaceShell() {
   const [selectedConnectionId, setSelectedConnectionId] = useState<string | null>(null);
   const [terminalTabs, setTerminalTabs] = useState<TerminalTab[]>([]);
   const terminalTabsRef = useRef<TerminalTab[]>([]);
+  const [renamingTabId, setRenamingTabId] = useState<string | null>(null);
+  const [renameDraft, setRenameDraft] = useState("");
+  const renameInputRef = useRef<HTMLInputElement | null>(null);
+  const [renamingLocalTabId, setRenamingLocalTabId] = useState<string | null>(null);
+  const [renameLocalDraft, setRenameLocalDraft] = useState("");
+  const renameLocalInputRef = useRef<HTMLInputElement | null>(null);
   const [rdpSessions, setRdpSessions] = useState<RdpSessionTab[]>([]);
   const rdpSessionsRef = useRef<RdpSessionTab[]>([]);
   const [vncSessions, setVncSessions] = useState<VncSessionTab[]>([]);
@@ -1869,7 +1882,8 @@ export function WorkspaceShell() {
 
         const dropZone = getWorkbenchTabDropZoneFromPoint(event.clientX, event.clientY);
         if (dropZone) {
-          applyWorkbenchTabMouseDrop(currentDrag.payload, dropZone);
+          const targetTabId = getWorkbenchTabDropTargetId(event.clientX, event.clientY);
+          applyWorkbenchTabMouseDrop(currentDrag.payload, dropZone, targetTabId);
           return;
         }
       }
@@ -4392,12 +4406,15 @@ export function WorkspaceShell() {
               ...tab,
               connectionStep: step,
               status: connectionStepStatusTitle(step),
-              title:
-                step.status === "error"
+              // 连接步骤的占位标题只在 tab.title 仍是默认 (terminal-N) 时覆盖,
+              // 用户已重命名或上次失败/正在连接的标题都保留。
+              title: isDefaultTerminalTitle(tab.title, tab.index)
+                ? step.status === "error"
                   ? "连接失败"
                   : step.mode === "terminal"
                     ? "连接准备"
-                    : "连接测试",
+                    : "连接测试"
+                : tab.title,
             }
           : tab,
         );
@@ -4424,7 +4441,9 @@ export function WorkspaceShell() {
               requestId,
               sessionId,
               status: "已连接",
-              title: terminalTabTitle(tab.index),
+              title: isDefaultTerminalTitle(tab.title, tab.index)
+                ? terminalTabTitle(tab.index)
+                : tab.title,
               type: "terminal" as const,
               warmupOutput,
             }
@@ -5139,6 +5158,141 @@ export function WorkspaceShell() {
     activateStandaloneTerminalTab(tab);
   }
 
+  function startRenamingSshTab(tabId: string, currentTitle: string) {
+    setRenamingTabId(tabId);
+    setRenameDraft(currentTitle);
+    setRenamingLocalTabId(null);
+    setRenameLocalDraft("");
+    window.setTimeout(() => {
+      renameInputRef.current?.focus();
+      renameInputRef.current?.select();
+    }, 0);
+  }
+
+  function cancelRenamingSshTab() {
+    setRenamingTabId(null);
+    setRenameDraft("");
+  }
+
+  function commitRenamingSshTab() {
+    if (!renamingTabId) return;
+    const trimmed = renameDraft.trim();
+    if (trimmed.length === 0 || trimmed.length > 50) {
+      setRenamingTabId(null);
+      setRenameDraft("");
+      return;
+    }
+    setTerminalTabs((tabs) => {
+      const nextTabs = tabs.map((t) =>
+        t.id === renamingTabId ? { ...t, title: trimmed } : t,
+      );
+      terminalTabsRef.current = nextTabs;
+      return nextTabs;
+    });
+    setRenamingTabId(null);
+    setRenameDraft("");
+  }
+
+  function startRenamingLocalTab(tabId: string, currentTitle: string) {
+    setRenamingLocalTabId(tabId);
+    setRenameLocalDraft(currentTitle);
+    setRenamingTabId(null);
+    setRenameDraft("");
+    window.setTimeout(() => {
+      renameLocalInputRef.current?.focus();
+      renameLocalInputRef.current?.select();
+    }, 0);
+  }
+
+  function cancelRenamingLocalTab() {
+    setRenamingLocalTabId(null);
+    setRenameLocalDraft("");
+  }
+
+  function commitRenamingLocalTab() {
+    if (!renamingLocalTabId) return;
+    const trimmed = renameLocalDraft.trim();
+    if (trimmed.length === 0 || trimmed.length > 50) {
+      setRenamingLocalTabId(null);
+      setRenameLocalDraft("");
+      return;
+    }
+    setLocalTerminalTabs((tabs) => {
+      const nextTabs = tabs.map((t) =>
+        t.id === renamingLocalTabId ? { ...t, title: trimmed } : t,
+      );
+      localTerminalTabsRef.current = nextTabs;
+      return nextTabs;
+    });
+    setRenamingLocalTabId(null);
+    setRenameLocalDraft("");
+  }
+
+  function reorderTerminalTabsInConnection(
+    sourceId: string,
+    targetId: string,
+    position: "before" | "after",
+  ): boolean {
+    if (sourceId === targetId) return false;
+    const tabs = terminalTabsRef.current;
+    const sourceTab = tabs.find((t) => t.id === sourceId);
+    const targetTab = tabs.find((t) => t.id === targetId);
+    if (!sourceTab || !targetTab) return false;
+    if (sourceTab.connectionId !== targetTab.connectionId) return false;
+    if (
+      terminalSplitMemberKeys.has(terminalPaneBindingKey({ kind: "ssh", tabId: sourceId })) ||
+      terminalSplitMemberKeys.has(terminalPaneBindingKey({ kind: "ssh", tabId: targetId }))
+    ) {
+      return false;
+    }
+    const sourceIndex = tabs.findIndex((t) => t.id === sourceId);
+    if (sourceIndex < 0) return false;
+    const next = [...tabs];
+    next.splice(sourceIndex, 1);
+    const newTargetIndex = next.findIndex((t) => t.id === targetId);
+    if (newTargetIndex < 0) return false;
+    next.splice(
+      position === "before" ? newTargetIndex : newTargetIndex + 1,
+      0,
+      sourceTab,
+    );
+    setTerminalTabs(next);
+    terminalTabsRef.current = next;
+    return true;
+  }
+
+  function reorderLocalTerminalTabs(
+    sourceId: string,
+    targetId: string,
+    position: "before" | "after",
+  ): boolean {
+    if (sourceId === targetId) return false;
+    const tabs = localTerminalTabsRef.current;
+    const sourceTab = tabs.find((t) => t.id === sourceId);
+    const targetTab = tabs.find((t) => t.id === targetId);
+    if (!sourceTab || !targetTab) return false;
+    if (
+      terminalSplitMemberKeys.has(terminalPaneBindingKey({ kind: "local", tabId: sourceId })) ||
+      terminalSplitMemberKeys.has(terminalPaneBindingKey({ kind: "local", tabId: targetId }))
+    ) {
+      return false;
+    }
+    const sourceIndex = tabs.findIndex((t) => t.id === sourceId);
+    if (sourceIndex < 0) return false;
+    const next = [...tabs];
+    next.splice(sourceIndex, 1);
+    const newTargetIndex = next.findIndex((t) => t.id === targetId);
+    if (newTargetIndex < 0) return false;
+    next.splice(
+      position === "before" ? newTargetIndex : newTargetIndex + 1,
+      0,
+      sourceTab,
+    );
+    setLocalTerminalTabs(next);
+    localTerminalTabsRef.current = next;
+    return true;
+  }
+
   function handleWorkbenchTabMouseDown(
     event: ReactMouseEvent<HTMLElement>,
     payload: WorkbenchTabDragPayload,
@@ -5188,8 +5342,31 @@ export function WorkspaceShell() {
   function applyWorkbenchTabMouseDrop(
     payload: WorkbenchTabDragPayload,
     dropZone: WorkbenchTabDropZone,
+    targetTabId: string | null = null,
   ) {
-    if (dropZone === "split-file" || dropZone === "split-terminal") {
+    if (
+      dropZone === "subtab-before-terminal" ||
+      dropZone === "subtab-after-terminal"
+    ) {
+      if (payload.kind === "terminal" && targetTabId) {
+        reorderTerminalTabsInConnection(
+          payload.id,
+          targetTabId,
+          dropZone === "subtab-before-terminal" ? "before" : "after",
+        );
+      }
+    } else if (
+      dropZone === "subtab-before-local" ||
+      dropZone === "subtab-after-local"
+    ) {
+      if (payload.kind === "terminal" && targetTabId) {
+        reorderLocalTerminalTabs(
+          payload.id,
+          targetTabId,
+          dropZone === "subtab-before-local" ? "before" : "after",
+        );
+      }
+    } else if (dropZone === "split-file" || dropZone === "split-terminal") {
       restoreConnectionTerminalFileSplit(
         payload.connectionId,
         dropZone === "split-file" ? "file" : "terminal",
@@ -5423,35 +5600,88 @@ export function WorkspaceShell() {
         : undefined,
     };
     const actions = buildTerminalSubtabActions(sshMenuCtx, terminalSplitCanAddPane);
+    const isRenaming = renamingTabId === tab.id;
+    const isSplitMember = terminalSplitMemberKeys.has(
+      terminalPaneBindingKey({ kind: "ssh", tabId: tab.id }),
+    );
     return (
       <TabContextMenu key={tab.id} actions={actions}>
         <div
           className={`subtab-shell ${isTerminalSubtabActive(tab) ? "active" : ""}`}
           data-workbench-tab-active={isTerminalSubtabActive(tab) ? "true" : undefined}
+          data-workbench-tab-drop-zone={isSplitMember ? undefined : "subtab-before-terminal"}
+          data-workbench-tab-after-zone={isSplitMember ? undefined : "subtab-after-terminal"}
+          data-workbench-tab-id={isSplitMember ? undefined : tab.id}
+          data-workbench-tab-kind={isSplitMember ? undefined : "terminal"}
+          data-workbench-tab-drop-active={
+            !isSplitMember &&
+            (workbenchTabDropZone === "subtab-before-terminal" ||
+              workbenchTabDropZone === "subtab-after-terminal")
+              ? workbenchTabDropZone === "subtab-before-terminal"
+                ? "before"
+                : "after"
+              : undefined
+          }
           onAuxClick={createMiddleClickCloseHandler(() => closeTerminal(tab.id))}
         >
-          <button
-            className="subtab workbench-draggable-tab"
-            type="button"
-            onClick={(event) => handleTerminalSubtabClick(event, tab)}
-            onMouseDown={(event) =>
-              handleWorkbenchTabMouseDown(event, {
-                connectionId: tab.connectionId,
-                id: tab.id,
-                kind: "terminal",
-              })
-            }
-          >
-            <span>{tab.title}</span>
-          </button>
-          <button
-            className="subtab-close"
-            type="button"
-            aria-label={`关闭 ${tab.title}`}
-            onClick={() => closeTerminal(tab.id)}
-          >
-            <X className="ui-icon" aria-hidden="true" />
-          </button>
+          {isRenaming ? (
+            <input
+              ref={renameInputRef}
+              className="subtab-rename-input"
+              type="text"
+              value={renameDraft}
+              maxLength={50}
+              autoComplete="off"
+              spellCheck={false}
+              aria-label={`重命名标签 ${tab.title}`}
+              onChange={(event) => setRenameDraft(event.target.value)}
+              onKeyDown={(e) => {
+                // IME 中文输入时 Enter 用于候选词上屏,不应触发 commit。
+                if (e.nativeEvent.isComposing) return;
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  commitRenamingSshTab();
+                } else if (e.key === "Escape") {
+                  e.preventDefault();
+                  cancelRenamingSshTab();
+                }
+                e.stopPropagation();
+              }}
+              onBlur={() => commitRenamingSshTab()}
+              onClick={(e) => e.stopPropagation()}
+              onMouseDown={(e) => e.stopPropagation()}
+            />
+          ) : (
+            <>
+              <button
+                className="subtab workbench-draggable-tab"
+                type="button"
+                onClick={(event) => handleTerminalSubtabClick(event, tab)}
+                onDoubleClick={(event) => {
+                  event.preventDefault();
+                  if (isSplitMember) return;
+                  startRenamingSshTab(tab.id, tab.title);
+                }}
+                onMouseDown={(event) =>
+                  handleWorkbenchTabMouseDown(event, {
+                    connectionId: tab.connectionId,
+                    id: tab.id,
+                    kind: "terminal",
+                  })
+                }
+              >
+                <span>{tab.title}</span>
+              </button>
+              <button
+                className="subtab-close"
+                type="button"
+                aria-label={`关闭 ${tab.title}`}
+                onClick={() => closeTerminal(tab.id)}
+              >
+                <X className="ui-icon" aria-hidden="true" />
+              </button>
+            </>
+          )}
         </div>
       </TabContextMenu>
     );
@@ -5493,6 +5723,10 @@ export function WorkspaceShell() {
       fourPane: (t) => startTerminalFourPaneForBinding({ kind: "local", tabId: t.id }),
     };
     const actions = buildTerminalSubtabActions(localMenuCtx, terminalSplitCanAddPane);
+    const isRenaming = renamingLocalTabId === tab.id;
+    const isSplitMember = terminalSplitMemberKeys.has(
+      terminalPaneBindingKey({ kind: "local", tabId: tab.id }),
+    );
     return (
       <TabContextMenu key={tab.id} actions={actions}>
         <div
@@ -5500,25 +5734,80 @@ export function WorkspaceShell() {
           data-workbench-tab-active={
             !terminalSplitActive && tab.id === activeLocalTerminalTabId ? "true" : undefined
           }
+          data-workbench-tab-drop-zone={isSplitMember ? undefined : "subtab-before-local"}
+          data-workbench-tab-after-zone={isSplitMember ? undefined : "subtab-after-local"}
+          data-workbench-tab-id={isSplitMember ? undefined : tab.id}
+          data-workbench-tab-kind={isSplitMember ? undefined : "terminal"}
+          data-workbench-tab-drop-active={
+            !isSplitMember &&
+            (workbenchTabDropZone === "subtab-before-local" ||
+              workbenchTabDropZone === "subtab-after-local")
+              ? workbenchTabDropZone === "subtab-before-local"
+                ? "before"
+                : "after"
+              : undefined
+          }
           onAuxClick={createMiddleClickCloseHandler(() => closeLocalTerminalSession(tab))}
         >
-          <button
-            className="subtab local-terminal-subtab"
-            type="button"
-            title={`${tab.title} · ${tab.status}`}
-            onClick={() => activateLocalTerminalTab(tab)}
-          >
-            <LocalTerminalIcon className="ui-icon" kind={tab.profileKind} title={tab.title} />
-            <span>{tab.title}</span>
-          </button>
-          <button
-            className="subtab-close"
-            type="button"
-            aria-label={`关闭 ${tab.title}`}
-            onClick={() => closeLocalTerminalSession(tab)}
-          >
-            <X className="ui-icon" aria-hidden="true" />
-          </button>
+          {isRenaming ? (
+            <input
+              ref={renameLocalInputRef}
+              className="subtab-rename-input"
+              type="text"
+              value={renameLocalDraft}
+              maxLength={50}
+              autoComplete="off"
+              spellCheck={false}
+              aria-label={`重命名标签 ${tab.title}`}
+              onChange={(event) => setRenameLocalDraft(event.target.value)}
+              onKeyDown={(e) => {
+                if (e.nativeEvent.isComposing) return;
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  commitRenamingLocalTab();
+                } else if (e.key === "Escape") {
+                  e.preventDefault();
+                  cancelRenamingLocalTab();
+                }
+                e.stopPropagation();
+              }}
+              onBlur={() => commitRenamingLocalTab()}
+              onClick={(e) => e.stopPropagation()}
+              onMouseDown={(e) => e.stopPropagation()}
+            />
+          ) : (
+            <>
+              <button
+                className="subtab local-terminal-subtab"
+                type="button"
+                title={`${tab.title} · ${tab.status}`}
+                onClick={() => activateLocalTerminalTab(tab)}
+                onMouseDown={(event) =>
+                  handleWorkbenchTabMouseDown(event, {
+                    connectionId: "local",
+                    id: tab.id,
+                    kind: "terminal",
+                  })
+                }
+                onDoubleClick={(event) => {
+                  event.preventDefault();
+                  if (isSplitMember) return;
+                  startRenamingLocalTab(tab.id, tab.title);
+                }}
+              >
+                <LocalTerminalIcon className="ui-icon" kind={tab.profileKind} title={tab.title} />
+                <span>{tab.title}</span>
+              </button>
+              <button
+                className="subtab-close"
+                type="button"
+                aria-label={`关闭 ${tab.title}`}
+                onClick={() => closeLocalTerminalSession(tab)}
+              >
+                <X className="ui-icon" aria-hidden="true" />
+              </button>
+            </>
+          )}
         </div>
       </TabContextMenu>
     );
@@ -12326,6 +12615,15 @@ function terminalTabTitle(index: number) {
   return index === 0 ? "终端" : `终端 ${index.toString()}`;
 }
 
+// 判断 tab.title 是否仍是占位默认值 ("终端" / "终端 N" / "连接准备" / "连接测试" / "连接失败")。
+// 用于连接步骤推进与 reconnect 时区分"用户没改过名"和"用户已重命名",避免覆盖用户输入。
+function isDefaultTerminalTitle(title: string | undefined, index: number): boolean {
+  if (!title) return true;
+  if (title === terminalTabTitle(index)) return true;
+  if (title === "连接准备" || title === "连接测试" || title === "连接失败") return true;
+  return false;
+}
+
 function shortDockerRuntimeId(id: string) {
   return id.replace(/^sha256:/, "").slice(0, 12) || id;
 }
@@ -13742,13 +14040,37 @@ function getWorkbenchTabDropZoneFromPoint(x: number, y: number): WorkbenchTabDro
   const target = document
     .elementFromPoint(x, y)
     ?.closest<HTMLElement>("[data-workbench-tab-drop-zone]");
-  const zone = target?.dataset.workbenchTabDropZone;
-  return zone === "terminal" ||
-    zone === "file" ||
-    zone === "split-file" ||
-    zone === "split-terminal"
-    ? zone
-    : null;
+  if (!target) return null;
+  const primary = target.dataset.workbenchTabDropZone;
+  const after = target.dataset.workbenchTabAfterZone;
+  const directZones: WorkbenchTabDropZone[] = [
+    "terminal",
+    "file",
+    "split-file",
+    "split-terminal",
+  ];
+  if (primary && (directZones as string[]).includes(primary)) {
+    return primary as WorkbenchTabDropZone;
+  }
+  if (
+    primary &&
+    after &&
+    primary.startsWith("subtab-before-") &&
+    after.startsWith("subtab-after-")
+  ) {
+    const rect = target.getBoundingClientRect();
+    return x - rect.left < rect.width / 2
+      ? (primary as WorkbenchTabDropZone)
+      : (after as WorkbenchTabDropZone);
+  }
+  return null;
+}
+
+function getWorkbenchTabDropTargetId(x: number, y: number): string | null {
+  const target = document
+    .elementFromPoint(x, y)
+    ?.closest<HTMLElement>("[data-workbench-tab-id]");
+  return target?.dataset.workbenchTabId ?? null;
 }
 
 function isCommandSenderRisky(command: string) {

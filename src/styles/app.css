@@ -6160,6 +6160,7 @@ button {
   transition:
     background 120ms ease,
     color 120ms ease;
+  position: relative;
 }
 
 .subtab-shell:hover {
@@ -6225,6 +6226,40 @@ button {
 .add-subtab:hover {
   color: var(--mx-text);
   background: rgb(148 163 184 / 14%);
+}
+
+.subtab-rename-input {
+  flex: 1;
+  min-width: 60px;
+  height: 20px;
+  padding: 2px 6px;
+  margin: 0 4px;
+  border: 1px solid var(--accent-color, #4a9eff);
+  border-radius: 3px;
+  background: #1a1a1a;
+  color: inherit;
+  font: inherit;
+  outline: none;
+}
+
+.subtab-shell[data-workbench-tab-drop-active="before"]::before,
+.subtab-shell[data-workbench-tab-drop-active="after"]::after {
+  content: "";
+  position: absolute;
+  top: 4px;
+  bottom: 4px;
+  width: 2px;
+  background: var(--accent-color, #4a9eff);
+  pointer-events: none;
+  border-radius: 1px;
+}
+
+.subtab-shell[data-workbench-tab-drop-active="before"]::before {
+  left: -2px;
+}
+
+.subtab-shell[data-workbench-tab-drop-active="after"]::after {
+  right: -2px;
 }
 
 .workbench-tab-scroll-controls {
