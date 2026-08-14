@@ -19,6 +19,7 @@ import { ConnectionSystemLogo } from "../connections/ConnectionSystemLogo";
 import { buildConnectionSearchEntries } from "../connections/connectionSearch";
 import { TabContextMenu } from "../../shared/ui/TabContextMenu";
 import { Tooltip } from "../../shared/ui/Tooltip";
+import { createMiddleClickCloseHandler } from "../../shared/ui/tabEvents";
 import { hasTauriRuntime } from "../../shared/tauri/runtime";
 import type { ConnectionProfile } from "../connections/connectionTypes";
 import { LocalTerminalWorkspaceIcon } from "../terminal/LocalTerminalIcons";
@@ -234,6 +235,9 @@ export function AppTitlebar({
                     ? "active"
                     : ""
                 }`}
+                onAuxClick={createMiddleClickCloseHandler(() =>
+                  onCloseConnectionSession(session.connectionId),
+                )}
               >
                 <button
                   className="tab"
