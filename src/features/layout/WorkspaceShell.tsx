@@ -84,6 +84,7 @@ import {
 } from "../connections/connectionTypes";
 import { connectionTimestampOf, sortConnectionsByRecent } from "../connections/connectionSearch";
 import { connectionInfoFromVncProfile } from "../connections/vncConnectionInfo";
+import { createMiddleClickCloseHandler } from "../../shared/ui/tabEvents";
 // RemoteFileEditor 内部静态 import 了 monaco-editor（主体约 4MB）及其 5 个 worker
 // （合计约 10MB）。用 React.lazy 延迟到真正打开远程文件编辑标签时才加载，
 // 避免在应用启动时解析 monaco 导致 release 构建下首屏卡顿和全局卡顿。
@@ -5338,6 +5339,7 @@ export function WorkspaceShell() {
         className={`subtab-shell terminal-split-group-tab ${terminalSplitActive ? "active" : ""}`}
         data-workbench-tab-active={terminalSplitActive ? "true" : undefined}
         key="terminal-split-group"
+        onAuxClick={createMiddleClickCloseHandler(requestCloseTerminalSplitGroup)}
       >
         <button
           className="subtab terminal-split-group-subtab"
@@ -5432,6 +5434,7 @@ export function WorkspaceShell() {
         <div
           className={`subtab-shell ${isTerminalSubtabActive(tab) ? "active" : ""}`}
           data-workbench-tab-active={isTerminalSubtabActive(tab) ? "true" : undefined}
+          onAuxClick={createMiddleClickCloseHandler(() => closeTerminal(tab.id))}
         >
           <button
             className="subtab workbench-draggable-tab"
@@ -5539,6 +5542,7 @@ export function WorkspaceShell() {
           data-workbench-tab-active={
             !terminalSplitActive && tab.id === activeLocalTerminalTabId ? "true" : undefined
           }
+          onAuxClick={createMiddleClickCloseHandler(() => closeLocalTerminalSession(tab))}
         >
           <button
             className="subtab local-terminal-subtab"
@@ -5674,6 +5678,7 @@ export function WorkspaceShell() {
         <div
           className={`subtab-shell file-tab ${active ? "active" : ""}`}
           data-workbench-tab-active={active ? "true" : undefined}
+          onAuxClick={createMiddleClickCloseHandler(() => closeRemoteFileTab(tab.id))}
         >
           <button
             className="subtab workbench-draggable-tab"

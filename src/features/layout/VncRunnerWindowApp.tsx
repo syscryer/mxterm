@@ -30,6 +30,7 @@ import {
   listenVncRunnerWindowPayload,
 } from "../../shared/tauri/events";
 import { hasTauriRuntime } from "../../shared/tauri/runtime";
+import { createMiddleClickCloseHandler } from "../../shared/ui/tabEvents";
 import {
   getPlatformCapabilities,
   resolveDesktopPlatform,
@@ -378,6 +379,7 @@ export function VncRunnerWindowApp() {
                 <div
                   className={`vnc-runner-tab ${active ? "active" : ""} ${session.error ? "error" : ""}`}
                   key={workspaceSessionId}
+                  onAuxClick={createMiddleClickCloseHandler(() => closeSession(workspaceSessionId))}
                 >
                   <button
                     type="button"
