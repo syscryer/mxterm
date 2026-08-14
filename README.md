@@ -3,9 +3,9 @@
 [![Release](https://img.shields.io/github/v/release/syscryer/mxterm?label=release)](https://github.com/syscryer/mxterm/releases)
 [![GitHub Release](https://img.shields.io/github/actions/workflow/status/syscryer/mxterm/release.yml?label=release)](https://github.com/syscryer/mxterm/actions/workflows/release.yml)
 
-mXterm 是一个基于 Tauri v2、React 和 Rust 的个人桌面运维客户端，目标是把 SSH 终端、SFTP 文件管理、传输队列、远程文件编辑、连接仓库和主机监控放到一个轻量的本地应用里。
+mXterm 是一个基于 Tauri v2、React 和 Rust 的本地优先、跨平台终端与远程运维工作区，面向需要同时管理本地 Shell、SSH、RDP、VNC、Telnet、串口和服务器工具的开发者与运维人员。
 
-项目运行时不依赖 Node/Express 本地服务，也不做 `with-node` / `no-node` 分发分支。前端负责桌面交互，SSH、SFTP、本地存储和跨平台能力由 Rust/Tauri 承载。
+项目把终端、远程桌面、SFTP 文件管理、Docker、端口隧道、主机监控、远程任务、AI 助手和 MCP 能力整合在一个轻量桌面应用中。运行时不依赖 Node/Express 本地服务；前端负责桌面交互，连接协议、本地存储和跨平台能力由 Rust/Tauri 承载。
 
 ## 截图
 
@@ -31,14 +31,16 @@ mXterm 是一个基于 Tauri v2、React 和 Rust 的个人桌面运维客户端�
 
 ## 功能概览
 
-- 连接管理：本地 SSH 连接仓库、最近连接、收藏、搜索和快速启动。
-- SSH 终端：多连接、多标签、xterm.js 渲染、基础终端配置和断线状态保留。
+- 连接管理：统一管理 SSH、RDP、VNC、Telnet 和串口连接，支持分组、最近连接、收藏、搜索、复制配置和快速启动。
+- 终端工作区：支持 SSH、本地 Shell、Telnet 和串口字符会话，以及多标签、横向/纵向/四分屏、xterm.js 渲染、终端配置和断线重连。
+- 远程桌面：支持 RDP 与 VNC 连接；VNC 可使用内嵌 noVNC、独立 runner 窗口或外部 viewer。
 - SFTP 文件：远程目录浏览、上传下载、拖拽上传、重命名、删除和目录操作。
 - 传输队列：上传下载进度、速度、状态、取消、失败重试和完成清理。
 - 远程编辑：面向文本文件的 Monaco 编辑器、未保存提示、保存冲突检查和查找替换。
-- 工作区工具：主机监控、端口隧道、命令工具、文件工具和传输状态入口。
-- AI 助手：结合终端输出、连接信息、命令草稿和最近命令进行问答，生成可复制、可发送或可保存的命令建议，并对高风险命令给出提示。
-- 应用设置：外观密度、窗口材质、强调色、字体、快捷键、本地终端和同步配置。
+- 运维工具：主机监控、SSH 端口隧道、Docker 容器/镜像/日志管理、网络诊断、远端定时任务、命令库、文件工具和传输状态入口。
+- AI 与 MCP：AI 终端助手可结合终端输出、连接信息、命令草稿和最近命令生成建议并提示高风险命令；MCP 可按授权范围向 Agent 工具提供连接信息和 SSH 操作。
+- 数据迁移与同步：支持用密码加密导入导出连接、分组、账号和已保存凭据，并可通过 WebDAV 手动同步连接、账号、隧道和安全快照。
+- 应用设置：外观密度、窗口材质、强调色、字体、快捷键、本地终端、AI、MCP 和同步配置。
 - 自动更新：GitHub Release 上的 Tauri updater metadata，桌面安装版可在应用内检查更新。
 
 ## 下载
@@ -139,3 +141,7 @@ Codex hooks 需要用户级 `~/.codex/config.toml` 启用 `features.hooks = true
 ## 许可
 
 本项目采用 [MIT License](LICENSE) 开源。
+
+## 致谢
+
+感谢 [LINUX DO](https://linux.do/) 社区的支持与反馈。
