@@ -244,6 +244,11 @@ export function AppTitlebar({
                   type="button"
                   onClick={() => onSelectConnectionSession(session.connectionId)}
                 >
+                  <ConnectionSystemLogo
+                    compact
+                    connection={connectionById.get(session.connectionId)}
+                    decorative
+                  />
                   <span className="tab-label">
                     {connectionName(session.connectionId, connectionById)}
                   </span>
@@ -795,7 +800,7 @@ function estimateTitlebarSessionWidth(
 ) {
   const connection = connectionById.get(session.connectionId);
   const labelLength = (connection?.name || "连接已删除").trim().length;
-  return Math.min(160, Math.max(96, 58 + labelLength * 5.2));
+  return Math.min(182, Math.max(118, 80 + labelLength * 5.2));
 }
 
 function calculateTitlebarSessionsWidth(

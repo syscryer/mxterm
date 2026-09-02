@@ -45,7 +45,7 @@ try {
   }
 
   const systemLogo = await import(
-    pathToFileURL(join(outDir, "ConnectionSystemLogo.js")).href
+    pathToFileURL(join(outDir, "connections", "ConnectionSystemLogo.js")).href
   );
   const { getConnectionSystemLabel, inferConnectionSystemKind } = systemLogo;
 
@@ -110,6 +110,9 @@ try {
   const connectionPaneSource = readFileSync("src/features/connections/ConnectionPane.tsx", "utf8");
   assert.match(connectionPaneSource, /ConnectionSystemLogo/);
   assert.doesNotMatch(connectionPaneSource, /<Server className="ui-icon connection-server-icon"/);
+
+  const appTitlebarSource = readFileSync("src/features/layout/AppTitlebar.tsx", "utf8");
+  assert.match(appTitlebarSource, /<ConnectionSystemLogo\s+compact\s+connection=\{connectionById\.get\(session\.connectionId\)\}\s+decorative\s+\/>/);
 
   const connectionTypesSource = readFileSync("src/features/connections/connectionTypes.ts", "utf8");
   assert.match(connectionTypesSource, /remote_os_id\?: string/);
