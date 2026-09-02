@@ -6096,7 +6096,8 @@ button {
   height: 26px;
   min-width: 0;
   display: grid;
-  grid-template-columns: minmax(0, 1fr);
+  grid-template-columns: 18px minmax(0, 1fr);
+  column-gap: 4px;
   align-items: center;
   padding: 0 0 0 8px;
   color: inherit;
