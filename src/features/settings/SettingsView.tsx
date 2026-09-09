@@ -2795,6 +2795,17 @@ function BasicSettingsSection({
           />
         </SettingsRow>
         <SettingsRow
+          icon={Power}
+          title="关闭窗口时最小化到系统托盘"
+          description="关闭主窗口后继续在后台运行，可从托盘恢复或退出 MXterm。"
+        >
+          <SettingsToggle
+            checked={settings.closeWindowToTray}
+            label="关闭窗口时最小化到系统托盘"
+            onChange={(closeWindowToTray) => onUpdate({ closeWindowToTray })}
+          />
+        </SettingsRow>
+        <SettingsRow
           icon={Server}
           title="保留失败页"
           description="连接失败时保留当前会话页，方便查看原因、重试或编辑连接。"

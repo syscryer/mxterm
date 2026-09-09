@@ -25,6 +25,7 @@ pub mod storage_sqlite;
 pub mod storage_vault;
 pub mod sync_snapshot;
 mod terminal;
+mod tray;
 mod tunnels;
 mod vnc;
 mod webdav;
@@ -52,7 +53,25 @@ pub fn run() {
         .manage(webdav_sync::WebDavSyncManager::default())
         .manage(mcp::McpRemoteServiceManager::default())
         .manage(VaultState::default())
+        .manage(tray::TrayRuntimeState::default())
+        .on_window_event(|window, event| {
+            if window.label() != "main" {
+                return;
+            }
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                let tray_state = window.app_handle().state::<tray::TrayRuntimeState>();
+                if tray_state.should_close_to_tray() {
+                    api.prevent_close();
+                    if let Err(error) = window.hide() {
+                        eprintln!("[tray] hide main window failed: {error}");
+                    }
+                }
+            }
+        })
         .setup(|app| {
+            if let Err(error) = tray::initialize(app.handle()) {
+                eprintln!("[tray] initialization failed: {}", error.raw_message);
+            }
             #[cfg(windows)]
             {
                 let app_handle = app.handle().clone();
@@ -132,6 +151,7 @@ pub fn run() {
             commands::terminal_close,
             commands::get_supported_window_materials,
             commands::set_window_material,
+            tray::set_close_to_tray_enabled,
             commands::remote_file_list,
             commands::remote_file_read,
             commands::remote_file_write,

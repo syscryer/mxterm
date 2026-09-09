@@ -573,6 +573,10 @@ export function setWindowMaterialCommand(material: number) {
   });
 }
 
+export function setCloseToTrayEnabledCommand(enabled: boolean) {
+  return invoke<void>("set_close_to_tray_enabled", { enabled });
+}
+
 export function remoteFileList(connectionId: string, path?: string) {
   return invoke<RemoteFileEntry[]>("remote_file_list", {
     request: {

@@ -3154,3 +3154,67 @@ apply_bundle(repository, &bundle, password, strategy)?;
 ```
 
 Import revalidates the exact file before any persistent mutation.
+
+## Scenario: Main Window Close-to-Tray Capability
+
+### 1. Scope / Trigger
+
+- Trigger: the Basic settings close-to-tray switch or a main-window close request.
+- Source files: `src-tauri/src/tray.rs`, `src-tauri/src/lib.rs`, `src/features/settings/settingsTypes.ts`, and `src/features/layout/WorkspaceShell.tsx`.
+
+### 2. Signatures
+
+- `set_close_to_tray_enabled(enabled: boolean) -> Result<(), AppError>` synchronizes the persisted frontend setting to the native runtime state.
+- `initialize(app: &AppHandle) -> Result<(), AppError>` creates the retained tray handle during Tauri setup.
+
+### 3. Contracts
+
+- The tray is created once during Tauri setup and its handle is retained in managed state for the process lifetime.
+- The native `CloseRequested` event is the only close-to-tray interception point for the `main` window. When the tray is ready and the switch is enabled, it calls `prevent_close()` before hiding the window. When disabled, it does not prevent the event.
+- Tray left click and `显示 MXterm` both call `show`, `unminimize`, and `set_focus` on the `main` window. `退出 MXterm` calls `app.exit(0)`.
+- VNC/RDP runner windows do not use the main-window close policy.
+
+### 4. Validation & Error Matrix
+
+| Condition | Error / observation | Result |
+| --- | --- | --- |
+| Tray initialization fails | native `[tray] initialization failed` log | close-to-tray stays inactive; main close remains normal |
+| Enable requested before tray is ready | `tray_unavailable` | setting sync fails; main window remains visible |
+| Main window hide/show/focus fails | native `[tray]` log with structured error | no successful hidden/restored state is claimed |
+
+### 5. Good / Base / Bad Cases
+
+- Good: the tray initialized, the setting is enabled, and a main-window close request prevents normal close then hides the existing window. Left click or `显示 MXterm` restores, unminimizes, and focuses that same window.
+- Base: the setting is disabled after application startup; a main-window close request is not prevented and follows the regular application exit path.
+- Bad: handling close in a frontend `onCloseRequested` listener that asynchronously creates a tray and hides the window. The listener races native close dispatch and can leave the application interactive surface blocked or the close request in an invalid state.
+
+### 6. Tests Required
+
+- `cargo check --manifest-path src-tauri/Cargo.toml` and `cargo fmt --manifest-path src-tauri/Cargo.toml -- --check` must pass.
+- Frontend check/build and startup-boundary checks must remain green.
+- Desktop acceptance must verify title-bar close, OS close/Alt+F4, tray left-click/menu restore, explicit tray exit, setting-off normal exit, and unchanged VNC/RDP close behavior using the real `main` window handle.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```typescript
+currentWindow.onCloseRequested(async (event) => {
+  event.preventDefault();
+  await createTray();
+  await currentWindow.hide();
+});
+```
+
+The asynchronous frontend listener competes with native close dispatch and makes window lifecycle depend on a loaded WebView.
+
+#### Correct
+
+```rust
+if tray_state.should_close_to_tray() {
+    api.prevent_close();
+    window.hide()?;
+}
+```
+
+The native close event makes the lifecycle decision synchronously; the frontend only syncs the persisted preference.
