@@ -54,6 +54,7 @@ export type RemoteFileOpenMode = "split" | "unified";
 
 export interface BasicSettings {
   autoCheckAppUpdate: boolean;
+  closeWindowToTray: boolean;
   filePanelFollowsActiveConnection: boolean;
   keepFailedTerminalTabs: boolean;
   reopenLastTerminal: boolean;
@@ -211,6 +212,7 @@ export const terminalFontPresets: Array<{
 export const defaultSettings: MxtermSettings = {
   basic: {
     autoCheckAppUpdate: true,
+    closeWindowToTray: true,
     filePanelFollowsActiveConnection: true,
     keepFailedTerminalTabs: true,
     reopenLastTerminal: false,
@@ -286,6 +288,10 @@ export function normalizeSettings(value: unknown): MxtermSettings {
       autoCheckAppUpdate: normalizeBoolean(
         basic.autoCheckAppUpdate,
         defaultSettings.basic.autoCheckAppUpdate,
+      ),
+      closeWindowToTray: normalizeBoolean(
+        basic.closeWindowToTray,
+        defaultSettings.basic.closeWindowToTray,
       ),
       filePanelFollowsActiveConnection: normalizeBoolean(
         basic.filePanelFollowsActiveConnection,

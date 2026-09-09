@@ -354,6 +354,7 @@ import {
   terminalConnect,
   terminalWrite,
   serialTerminalOpen,
+  setCloseToTrayEnabledCommand,
   telnetTerminalOpen,
   tunnelAutostart,
 } from "../../shared/tauri/commands";
@@ -848,6 +849,15 @@ export function WorkspaceShell() {
     updateShortcuts,
     updateTerminalTheme,
   } = useSettings();
+
+  useEffect(() => {
+    if (!hasTauriRuntime()) {
+      return;
+    }
+    void setCloseToTrayEnabledCommand(settings.basic.closeWindowToTray).catch((error) => {
+      console.error("无法同步关闭到托盘设置", error);
+    });
+  }, [settings.basic.closeWindowToTray]);
   const appUpdate = useAppUpdate({
     autoCheckEnabled: settings.basic.autoCheckAppUpdate,
   });
