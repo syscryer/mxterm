@@ -9,7 +9,7 @@ use russh::keys::{load_secret_key, PrivateKeyWithHashAlg};
 use russh::{Channel, ChannelMsg, ChannelReadHalf, ChannelStream, ChannelWriteHalf, Disconnect};
 use russh_sftp::client::{Config as SftpConfig, SftpSession};
 use std::future::Future;
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Emitter, Manager};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::sync::{Mutex, RwLock};
@@ -28,6 +28,8 @@ use crate::ssh_config::{
 };
 use crate::storage_repository::StorageRepository;
 use crate::storage_vault::{SecretStore, VaultState};
+
+use super::x11::{X11Forwarder, X11Session};
 
 const REMOTE_EXEC_TRANSFER_CHUNK_BYTES: usize = 256 * 1024;
 const TERMINAL_OUTPUT_BATCH_MAX_BYTES: usize = 32 * 1024;
@@ -97,6 +99,8 @@ struct KnownHostClient {
     app_data_dir: std::path::PathBuf,
     secret_store: Arc<dyn SecretStore>,
     remote_forward: RemoteForwardState,
+    x11: Option<Arc<X11Forwarder>>,
+    x11_error: Option<Arc<dyn Fn(AppError) + Send + Sync>>,
 }
 
 #[derive(Clone, Debug)]
@@ -158,6 +162,32 @@ impl client::Handler for KnownHostClient {
             tauri::async_runtime::spawn(async move {
                 remote_forward.handle_forwarded_tcpip(channel).await;
             });
+            Ok(())
+        }
+    }
+
+    fn server_channel_open_x11(
+        &mut self,
+        channel: Channel<client::Msg>,
+        _originator_address: &str,
+        _originator_port: u32,
+        _session: &mut client::Session,
+    ) -> impl Future<Output = Result<(), Self::Error>> + Send {
+        let x11 = self.x11.clone();
+        let report = self.x11_error.clone();
+        async move {
+            if let Some(x11) = x11 {
+                tauri::async_runtime::spawn(async move {
+                    if let Err(error) = x11.forward(channel.into_stream()).await {
+                        if let Some(report) = report {
+                            report(error);
+                        }
+                    }
+                });
+            } else {
+                // Never accept server-initiated X11 access on exec, SFTP or jump sessions.
+                channel.close().await?;
+            }
             Ok(())
         }
     }
@@ -306,6 +336,7 @@ pub struct TerminalSession {
     client: SshHandle,
     jump_client: Option<SshHandle>,
     writer: Mutex<ChannelWriter>,
+    x11_session: Option<X11Session>,
 }
 
 pub struct ExecOutput {
@@ -365,12 +396,37 @@ impl TerminalSession {
             ..<_>::default()
         });
         let context = SshConnectionContext::from_app(&app)?;
+        let id = Uuid::new_v4().to_string();
+        if config.advanced.x11_forwarding.enabled {
+            emit_progress(
+                &progress,
+                "x11_preparing",
+                "正在检查本地 X Server 和 X11 认证...",
+            );
+        }
+        let x11_session = X11Session::prepare(&config.advanced.x11_forwarding).await?;
+        let error_app = app.clone();
+        let error_session_id = id.clone();
+        let error_request_id = request.request_id.clone();
+        let report_x11_error = Arc::new(move |error: AppError| {
+            // Use the existing terminal output handoff, including early request_id capture.
+            let _ = error_app.emit(
+                crate::events::TERMINAL_OUTPUT,
+                crate::events::TerminalOutputEvent {
+                    session_id: error_session_id.clone(),
+                    request_id: error_request_id.clone(),
+                    data: format!("\r\n[X11 {}] {}\r\n", error.code, error.message).into_bytes(),
+                },
+            );
+        });
         let host_key_handler = KnownHostClient {
             host: host.clone(),
             port,
             app_data_dir: context.app_data_dir.clone(),
             secret_store: Arc::clone(&context.secret_store),
             remote_forward: RemoteForwardState::default(),
+            x11: x11_session.as_ref().map(|session| session.0.clone()),
+            x11_error: Some(report_x11_error),
         };
 
         emit_progress(&progress, "tcp_connecting", "正在建立 SSH TCP 连接...");
@@ -405,7 +461,7 @@ impl TerminalSession {
             client.channel_open_session(),
         )
         .await;
-        let channel = channel?.map_err(|error| {
+        let mut channel = channel?.map_err(|error| {
             AppError::new(
                 "terminal_channel_open_failed",
                 "SSH 终端通道打开失败。",
@@ -413,6 +469,12 @@ impl TerminalSession {
                 true,
             )
         })?;
+
+        if let Some(x11) = &x11_session {
+            emit_progress(&progress, "x11_requesting", "正在请求 SSH X11 转发...");
+            x11.0.request(&mut channel).await?;
+            emit_progress(&progress, "x11_ready", "SSH 服务端已接受 X11 转发。");
+        }
 
         emit_progress(&progress, "pty_requesting", "正在初始化远程 PTY...");
         let pty_result = run_with_timeout(
@@ -457,7 +519,7 @@ impl TerminalSession {
 
         Ok((
             Self {
-                id: Uuid::new_v4().to_string(),
+                id,
                 host,
                 port,
                 username,
@@ -465,6 +527,7 @@ impl TerminalSession {
                 client,
                 jump_client,
                 writer: Mutex::new(writer),
+                x11_session,
             },
             reader,
         ))
@@ -493,6 +556,9 @@ impl TerminalSession {
     }
 
     pub async fn close(&self) -> Result<(), AppError> {
+        if let Some(x11) = &self.x11_session {
+            x11.0.stop();
+        }
         let writer = self.writer.lock().await;
         let _ = writer.close().await;
         self.client
@@ -553,6 +619,8 @@ impl ReusableExecSession {
             app_data_dir: context.app_data_dir.clone(),
             secret_store: Arc::clone(&context.secret_store),
             remote_forward: RemoteForwardState::default(),
+            x11: None,
+            x11_error: None,
         };
 
         let (mut client, jump_client) = run_with_timeout(
@@ -893,6 +961,8 @@ impl ReusableForwardSession {
             app_data_dir: context.app_data_dir.clone(),
             secret_store: Arc::clone(&context.secret_store),
             remote_forward: remote_forward.clone(),
+            x11: None,
+            x11_error: None,
         };
 
         let (mut client, jump_client) = run_with_timeout(
@@ -1096,6 +1166,8 @@ impl ReusableSftpSession {
             app_data_dir: context.app_data_dir.clone(),
             secret_store: Arc::clone(&context.secret_store),
             remote_forward: RemoteForwardState::default(),
+            x11: None,
+            x11_error: None,
         };
 
         let (mut client, jump_client) = run_with_timeout(
@@ -1321,6 +1393,8 @@ async fn connect_target_client(
                 app_data_dir: context.app_data_dir.clone(),
                 secret_store: Arc::clone(&context.secret_store),
                 remote_forward: RemoteForwardState::default(),
+                x11: None,
+                x11_error: None,
             };
 
             let mut jump_client = run_with_timeout(

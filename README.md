@@ -112,6 +112,7 @@ Release workflow 会构建 Windows x64、macOS Apple Silicon 和 Linux x64，并
 
 ## 项目文档
 
+- [X11 Forwarding 使用说明](docs/usage/x11-forwarding.md)
 - [需求文档](docs/requirements/m-xterm-requirements.md)
 - [宽松协议开源项目参考](docs/research/permissive-open-source-references.md)
 - [MVP 工程基座与 SSH Spike 计划](docs/plans/2026-06-05-mxterm-mvp-foundation-and-ssh-spike.md)

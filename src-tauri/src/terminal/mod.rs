@@ -5,3 +5,4 @@ pub mod pty;
 pub mod serial;
 pub mod session;
 pub mod telnet;
+pub(crate) mod x11;

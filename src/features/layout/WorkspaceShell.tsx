@@ -83,6 +83,14 @@ import {
   formatVncRunnerKind,
 } from "../connections/connectionTypes";
 import { connectionTimestampOf, sortConnectionsByRecent } from "../connections/connectionSearch";
+import {
+  connectionErrorStage,
+  connectionErrorSuggestion,
+  connectionErrorSummary,
+  connectionStepErrorIndex,
+  connectionProgressIndex,
+  connectionX11Step,
+} from "../connections/connectionStepPresentation";
 import { connectionInfoFromVncProfile } from "../connections/vncConnectionInfo";
 import { createMiddleClickCloseHandler } from "../../shared/ui/tabEvents";
 // RemoteFileEditor 内部静态 import 了 monaco-editor（主体约 4MB）及其 5 个 worker
@@ -364,6 +372,7 @@ import {
   emitVncRunnerWindowPayload,
   listenRdpSessionClosed,
   listenTerminalOutput,
+  listenTerminalConnectProgress,
   listenVncRunnerWindowClosed,
   listenVncRunnerWindowError,
   listenVncRunnerWindowMessage,
@@ -569,6 +578,7 @@ type ConnectionStepMode = "test" | "terminal";
 type ConnectionStepStatus = "idle" | "running" | "waiting_host_key" | "prompt" | "success" | "error";
 
 interface ConnectionStepState {
+  progressStage?: string | null;
   activeStepIndex?: number | null;
   authKind: ConnectionAuthKind;
   connection: ConnectionProfile;
@@ -8094,14 +8104,15 @@ export function WorkspaceShell() {
   }
 
   async function runConnectionStep(tabId: string, step: ConnectionStepState) {
-    const runningStep: ConnectionStepState = {
+    let runningStep: ConnectionStepState = {
       ...step,
-      activeStepIndex: 1,
+      activeStepIndex: step.mode === "terminal" ? 0 : 1,
+      progressStage: null,
       errorDetail: null,
       error: null,
       hostKey: null,
       hostKeyDecision: null,
-      logs: [...step.logs, "读取连接配置", "建立网络连接"],
+      logs: [...step.logs, "读取连接配置"],
       oldHostKeyFingerprint: null,
       sessionId: null,
       status: "running",
@@ -8127,10 +8138,12 @@ export function WorkspaceShell() {
       return;
     }
 
-    const prepareRequestId = `prepare-${step.id.toString()}`;
+    const prepareRequestId = `prepare-${step.id.toString()}-${crypto.randomUUID()}`;
     const warmupOutput: number[] = [];
     let stopWarmupCapture: (() => void) | null = null;
     let handoffComplete = false;
+    let stopProgressCapture: (() => void) | null = null;
+    let progressFinished = false;
 
     try {
       if (step.mode === "terminal") {
@@ -8144,7 +8157,22 @@ export function WorkspaceShell() {
           }
           warmupOutput.push(...event.data);
         });
+        stopProgressCapture = await listenTerminalConnectProgress((event) => {
+          if (progressFinished || event.request_id !== prepareRequestId || !connectingTabExists(tabId)) {
+            return;
+          }
+          runningStep = {
+            ...runningStep,
+            progressStage: event.stage,
+            activeStepIndex: connectionProgressIndex(event.stage) ?? runningStep.activeStepIndex,
+            logs: [...runningStep.logs, event.message],
+          };
+          updateConnectingTabStep(tabId, runningStep);
+        });
         setTerminalWarmupCaptureStop(tabId, () => {
+          progressFinished = true;
+          stopProgressCapture?.();
+          stopProgressCapture = null;
           stopWarmupCapture?.();
           stopWarmupCapture = null;
         });
@@ -8164,6 +8192,10 @@ export function WorkspaceShell() {
         return;
       }
 
+      if (!connectingTabExists(tabId)) {
+        stopTerminalWarmupCapture(tabId);
+        return;
+      }
       const sessionId = await terminalConnect({
         auth_kind: step.connection.credential_mode === "prompt" ? step.authKind : undefined,
         cols: 80,
@@ -8177,6 +8209,7 @@ export function WorkspaceShell() {
         rows: 24,
         username: step.connection.username,
       });
+      progressFinished = true;
       if (!connectingTabExists(tabId)) {
         stopTerminalWarmupCapture(tabId);
         await terminalClose(sessionId).catch(() => {});
@@ -8189,6 +8222,9 @@ export function WorkspaceShell() {
         stopTerminalWarmupCapture(tabId);
       }, 3000);
     } catch (nextError) {
+      progressFinished = true;
+      stopWarmupCapture?.();
+      stopWarmupCapture = null;
       stopTerminalWarmupCapture(tabId);
       if (!connectingTabExists(tabId)) {
         return;
@@ -8219,6 +8255,9 @@ export function WorkspaceShell() {
         ]),
         status: "error",
       });
+    } finally {
+      progressFinished = true;
+      stopProgressCapture?.();
     }
   }
 
@@ -11292,6 +11331,10 @@ function ConnectionStepPanel({
       label: step.mode === "terminal" ? "打开终端" : "完成测试",
     },
   ];
+  const x11Step = connectionX11Step(step.progressStage, step.errorDetail?.code);
+  if (x11Step) {
+    stepItems[x11Step.index] = { label: x11Step.label, description: x11Step.description };
+  }
 
   return (
     <section
@@ -11561,6 +11604,7 @@ function resetConnectionStepForRetry(step: ConnectionStepState): ConnectionStepS
   return {
     ...step,
     activeStepIndex: 1,
+    progressStage: null,
     error: null,
     errorDetail: null,
     hostKey: null,
@@ -11570,39 +11614,6 @@ function resetConnectionStepForRetry(step: ConnectionStepState): ConnectionStepS
     sessionId: null,
     status: "idle",
   };
-}
-
-function connectionStepErrorIndex(code: string) {
-  if (
-    code === "terminal_tcp_connect_failed" ||
-    code === "terminal_connect_failed" ||
-    code === "terminal_connect_timeout" ||
-    code.startsWith("proxy_")
-  ) {
-    return 1;
-  }
-  if (code === "host_key_unknown" || code === "host_key_changed") {
-    return 2;
-  }
-  if (
-    code === "terminal_auth_failed" ||
-    code === "terminal_auth_rejected" ||
-    code === "terminal_auth_timeout" ||
-    code === "terminal_auth_missing" ||
-    code === "terminal_private_key_invalid" ||
-    code.startsWith("credential_") ||
-    code.startsWith("connection_credential_")
-  ) {
-    return 3;
-  }
-  if (
-    code === "terminal_channel_open_failed" ||
-    code === "terminal_pty_failed" ||
-    code === "terminal_shell_failed"
-  ) {
-    return 4;
-  }
-  return 1;
 }
 
 type ConnectionStepItemState = "active" | "done" | "error" | "pending";
@@ -12490,108 +12501,6 @@ function normalizeErrorText(value: unknown) {
     .replace(/^Error:\s*/i, "")
     .replace(/\s+/g, " ")
     .trim();
-}
-
-function connectionErrorStage(code: string, rawMessage: string) {
-  const raw = rawMessage.toLowerCase();
-  if (isConnectionTimeoutError(code, raw)) {
-    return "网络连接超时";
-  }
-  if (
-    code === "terminal_connect_failed" ||
-    code === "terminal_tcp_connect_failed" ||
-    code === "remote_exec_connect_failed" ||
-    code.startsWith("proxy_") ||
-    raw.includes("connection refused") ||
-    raw.includes("actively refused") ||
-    raw.includes("no route") ||
-    raw.includes("unreachable") ||
-    raw.includes("reset")
-  ) {
-    return "网络连接阶段";
-  }
-  if (code === "host_key_unknown" || code === "host_key_changed") {
-    return "主机密钥阶段";
-  }
-  if (
-    code === "terminal_auth_failed" ||
-    code === "terminal_auth_rejected" ||
-    code === "terminal_auth_timeout" ||
-    code === "terminal_private_key_invalid" ||
-    code.startsWith("credential_")
-  ) {
-    return "用户认证阶段";
-  }
-  if (
-    code === "terminal_channel_open_failed" ||
-    code === "terminal_pty_failed" ||
-    code === "terminal_shell_failed"
-  ) {
-    return "远程终端初始化阶段";
-  }
-  return "连接阶段";
-}
-
-function connectionErrorSuggestion(code: string, rawMessage: string) {
-  const raw = rawMessage.toLowerCase();
-  if (isConnectionTimeoutError(code, raw)) {
-    return "检查主机 IP、端口、防火墙和网络连通性；确认目标 SSH 服务可以从本机访问。";
-  }
-  if (raw.includes("connection refused") || raw.includes("actively refused")) {
-    return "目标主机可达但端口拒绝连接，确认 SSH 服务已启动、端口填写正确，或安全组允许访问。";
-  }
-  if (raw.includes("no route") || raw.includes("unreachable")) {
-    return "本机到目标主机没有可用路由，检查 VPN、网段、网关或代理配置。";
-  }
-  if (raw.includes("reset")) {
-    return "连接被对端重置，检查 SSH 服务策略、代理链路或中间防火墙。";
-  }
-  if (code.startsWith("proxy_")) {
-    return "检查代理类型、代理地址端口以及代理用户名密码。";
-  }
-  if (code === "terminal_auth_rejected") {
-    return "主机已响应但认证被拒绝，检查用户名、密码或私钥是否匹配。";
-  }
-  if (code === "terminal_private_key_invalid") {
-    return "检查私钥路径、文件格式和私钥口令。";
-  }
-  if (code === "terminal_auth_failed" || code === "terminal_auth_timeout") {
-    return "检查认证方式、用户名、密码或私钥；如果服务器禁用该方式，需要换用允许的认证方式。";
-  }
-  if (code === "host_key_changed") {
-    return "确认目标主机是否重装或变更过；只有确认安全后再更新信任。";
-  }
-  if (code === "host_key_unknown") {
-    return "核对主机指纹，确认无误后信任并继续连接。";
-  }
-  if (code === "terminal_pty_failed" || code === "terminal_shell_failed") {
-    return "SSH 已登录但远程终端初始化失败，检查服务器是否允许分配 PTY 和启动默认 Shell。";
-  }
-  return "查看底层原因后重试；如果配置有误，点击编辑连接调整主机、端口、代理或认证信息。";
-}
-
-function connectionErrorSummary(code: string, rawMessage: string, fallback: string) {
-  const raw = rawMessage.toLowerCase();
-  if (isConnectionTimeoutError(code, raw)) {
-    return "连接超时";
-  }
-  if (raw.includes("connection refused") || raw.includes("actively refused")) {
-    return "端口无法连接";
-  }
-  if (raw.includes("no route") || raw.includes("unreachable")) {
-    return "主机不可达";
-  }
-  return fallback;
-}
-
-function isConnectionTimeoutError(code: string, raw: string) {
-  return (
-    code.includes("connect_timeout") ||
-    code === "terminal_tcp_connect_timeout" ||
-    raw.includes("timeout") ||
-    raw.includes("timed out") ||
-    raw.includes("operation timed out")
-  );
 }
 
 function connectionToInput(connection: ConnectionProfile): ConnectionProfileInput {

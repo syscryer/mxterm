@@ -62,6 +62,14 @@ export interface ConnectionAdvancedConfig {
   auth_timeout_ms: number;
   keepalive_interval_ms: number;
   terminal_encoding: ConnectionTerminalEncoding;
+  x11_forwarding?: X11ForwardingConfig;
+}
+
+export interface X11ForwardingConfig {
+  enabled: boolean;
+  trusted: boolean;
+  display?: string | null;
+  xauth_path?: string | null;
 }
 
 export interface RdpDisplayConfig {
@@ -513,12 +521,29 @@ export const defaultJumpConfig: ConnectionJumpConfig = {
   jump_connection_id: "",
 };
 
-export const defaultAdvancedConfig: ConnectionAdvancedConfig = {
+export const defaultAdvancedConfig = {
   auth_timeout_ms: 45000,
   connect_timeout_ms: 30000,
   keepalive_interval_ms: 20000,
   terminal_encoding: "utf-8",
-};
+  x11_forwarding: {
+    enabled: false,
+    trusted: false,
+    display: "",
+    xauth_path: "",
+  },
+} satisfies ConnectionAdvancedConfig;
+
+export function normalizeX11ForwardingConfig(
+  value?: Partial<X11ForwardingConfig> | null,
+): X11ForwardingConfig {
+  return {
+    enabled: value?.enabled === true,
+    trusted: value?.trusted === true,
+    display: value?.display?.trim() || undefined,
+    xauth_path: value?.xauth_path?.trim() || undefined,
+  };
+}
 
 export const defaultRdpConfig: RdpConnectionConfig = {
   domain: "",

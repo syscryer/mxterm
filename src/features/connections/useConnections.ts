@@ -20,6 +20,7 @@ import {
   defaultTelnetConfig,
   defaultVncConfig,
   normalizeTerminalEncoding,
+  normalizeX11ForwardingConfig,
   type ConnectionProfile,
   type ConnectionProfileInput,
   type ConnectionRuntimeCredentialRequest,
@@ -634,6 +635,7 @@ export function normalizeConnectionInput(input: ConnectionProfileInput): Connect
         Number(input.advanced?.keepalive_interval_ms) ||
         defaultAdvancedConfig.keepalive_interval_ms,
       terminal_encoding: normalizeTerminalEncoding(input.advanced?.terminal_encoding),
+      x11_forwarding: normalizeX11ForwardingConfig(input.advanced?.x11_forwarding),
     },
     rdp: undefined,
     vnc: undefined,

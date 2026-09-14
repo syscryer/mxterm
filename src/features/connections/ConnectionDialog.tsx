@@ -65,6 +65,7 @@ import {
   formatRdpRunnerKind,
   formatVncRunnerKind,
   normalizeTerminalEncoding,
+  normalizeX11ForwardingConfig,
   rdpExternalModeLabelForPlatform,
   rdpExternalModeNoteForPlatform,
   terminalEncodingOptions,
@@ -2578,6 +2579,101 @@ export function ConnectionDialog({
             />
           </label>
         </div>
+        <div className="connection-dialog-checks">
+          <label>
+            <input
+              type="checkbox"
+              checked={advanced.x11_forwarding?.enabled === true}
+              onChange={(event) =>
+                setForm({
+                  ...form,
+                  advanced: {
+                    ...advanced,
+                    x11_forwarding: {
+                      ...(advanced.x11_forwarding || defaultAdvancedConfig.x11_forwarding),
+                      enabled: event.target.checked,
+                    },
+                  },
+                })
+              }
+            />
+            <span>启用 X11 Forwarding</span>
+          </label>
+        </div>
+        {advanced.x11_forwarding?.enabled ? (
+          <div className="form-grid form-grid-wide">
+            <label>
+              <span>X11 访问权限</span>
+              <AppSelect
+                ariaLabel="X11 访问权限"
+                value={advanced.x11_forwarding.trusted ? "trusted" : "untrusted"}
+                options={[
+                  { label: "非信任（-X）", value: "untrusted" },
+                  { label: "信任（-Y）", value: "trusted" },
+                ]}
+                onChange={(value) =>
+                  setForm({
+                    ...form,
+                    advanced: {
+                      ...advanced,
+                      x11_forwarding: {
+                        ...advanced.x11_forwarding,
+                        enabled: true,
+                        trusted: value === "trusted",
+                      },
+                    },
+                  })
+                }
+              />
+            </label>
+            <label>
+              <span>本地 X11 Display</span>
+              <input
+                placeholder="自动检测，例如 127.0.0.1:0 或 :0"
+                value={advanced.x11_forwarding.display || ""}
+                onChange={(event) =>
+                  setForm({
+                    ...form,
+                    advanced: {
+                      ...advanced,
+                      x11_forwarding: {
+                        ...(advanced.x11_forwarding || defaultAdvancedConfig.x11_forwarding),
+                        display: event.target.value,
+                      },
+                    },
+                  })
+                }
+              />
+            </label>
+            <label>
+              <span>xauth 路径（可选）</span>
+              <input
+                placeholder="自动查找 xauth"
+                value={advanced.x11_forwarding.xauth_path || ""}
+                onChange={(event) =>
+                  setForm({
+                    ...form,
+                    advanced: {
+                      ...advanced,
+                      x11_forwarding: {
+                        ...(advanced.x11_forwarding || defaultAdvancedConfig.x11_forwarding),
+                        xauth_path: event.target.value,
+                      },
+                    },
+                  })
+                }
+              />
+            </label>
+          </div>
+        ) : null}
+        {advanced.x11_forwarding?.enabled ? (
+          <p className="connection-dialog-note">
+            需要本机运行 X Server 并配置 xauth，图形窗口在本机桌面打开。
+            {advanced.x11_forwarding.trusted
+              ? "信任模式允许远端程序访问本地 X 会话，请仅用于可信主机。"
+              : "非信任模式需要 X Server 支持 SECURITY 扩展，20 分钟后启动新的图形程序需重新连接。"}
+          </p>
+        ) : null}
       </section>
     );
   }
@@ -3072,6 +3168,7 @@ function normalizeForSubmit(
         Number(form.advanced.keepalive_interval_ms) ||
         defaultAdvancedConfig.keepalive_interval_ms,
       terminal_encoding: normalizeTerminalEncoding(form.advanced.terminal_encoding),
+      x11_forwarding: normalizeX11ForwardingConfig(form.advanced.x11_forwarding),
     },
     rdp: undefined,
     vnc: undefined,
@@ -3271,7 +3368,8 @@ function tabForError(error: unknown): ConnectionDialogTab {
     code === "connection_connect_timeout_invalid" ||
     code === "connection_auth_timeout_invalid" ||
     code === "connection_keepalive_invalid" ||
-    code === "connection_terminal_encoding_invalid"
+    code === "connection_terminal_encoding_invalid" ||
+    code.startsWith("x11_")
   ) {
     return "advanced";
   }

@@ -2927,6 +2927,37 @@ mod tests {
     }
 
     #[test]
+    fn x11_settings_survive_repository_and_runtime_resolution() {
+        let (repo, _db_path, _secrets) = temp_repository("x11-round-trip");
+        let mut input = password_connection_input();
+        input.advanced.x11_forwarding = crate::connections::X11ForwardingConfig {
+            enabled: true,
+            trusted: true,
+            display: Some("127.0.0.1:1.2".into()),
+            xauth_path: Some("C:/Program Files/VcXsrv/xauth.exe".into()),
+        };
+        let expected = input.advanced.x11_forwarding.clone();
+        let saved = repo
+            .connection_upsert(input, "2026-09-14T00:00:00+08:00")
+            .unwrap();
+        assert_eq!(
+            repo.connection_get(&saved.id)
+                .unwrap()
+                .unwrap()
+                .advanced
+                .x11_forwarding,
+            expected
+        );
+        assert_eq!(
+            repo.resolve_saved_connection(&saved.id, None)
+                .unwrap()
+                .advanced
+                .x11_forwarding,
+            expected
+        );
+    }
+
+    #[test]
     fn resolve_saved_connection_reads_saved_credential_secret_from_store() {
         let (repo, _db_path, _secrets) = temp_repository("saved-credential");
         let credential = repo

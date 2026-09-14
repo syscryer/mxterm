@@ -636,6 +636,27 @@ pub struct ConnectionAdvancedConfig {
     pub keepalive_interval_ms: u64,
     #[serde(default = "default_terminal_encoding")]
     pub terminal_encoding: String,
+    #[serde(default, skip_serializing_if = "X11ForwardingConfig::is_default")]
+    pub x11_forwarding: X11ForwardingConfig,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Eq, Serialize)]
+pub struct X11ForwardingConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub trusted: bool,
+    #[serde(default)]
+    pub display: Option<String>,
+    #[serde(default)]
+    pub xauth_path: Option<String>,
+}
+
+impl X11ForwardingConfig {
+    // Transfer bundles hash serialized metadata. Preserve the old representation when absent.
+    fn is_default(&self) -> bool {
+        self == &Self::default()
+    }
 }
 
 impl Default for ConnectionAdvancedConfig {
@@ -645,6 +666,7 @@ impl Default for ConnectionAdvancedConfig {
             auth_timeout_ms: 45_000,
             keepalive_interval_ms: 20_000,
             terminal_encoding: default_terminal_encoding(),
+            x11_forwarding: X11ForwardingConfig::default(),
         }
     }
 }
@@ -2086,6 +2108,7 @@ fn validate_advanced_config(
         auth_timeout_ms: input.auth_timeout_ms,
         keepalive_interval_ms: input.keepalive_interval_ms,
         terminal_encoding,
+        x11_forwarding: crate::terminal::x11::validate_config(&input.x11_forwarding)?,
     })
 }
 
@@ -2272,6 +2295,7 @@ mod tests {
         ConnectionProfileInput, ConnectionProtocol, ConnectionProxyConfig, ConnectionProxyKind,
         ConnectionRemoteSystemInfo, ConnectionStore, RdpConnectionConfig, RdpGatewayConfig,
         RdpGatewayMode, SerialConnectionConfig, TelnetConnectionConfig, VncConnectionConfig,
+        X11ForwardingConfig,
     };
     use crate::terminal::serial::{SerialBackspaceMode, SerialDataBits};
     use crate::terminal::telnet::{TelnetBackspaceMode, TelnetEnterMode};
@@ -2445,6 +2469,7 @@ mod tests {
                 auth_timeout_ms: 20_000,
                 keepalive_interval_ms: 30_000,
                 terminal_encoding: "gbk".to_string(),
+                x11_forwarding: X11ForwardingConfig::default(),
             },
             ..password_input()
         };

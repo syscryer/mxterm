@@ -1036,6 +1036,64 @@ mod tests {
     }
 
     #[test]
+    fn legacy_bundle_without_x11_keeps_integrity_hash() {
+        let source = temp_repository("x11-legacy-source");
+        seed_secret_profiles(&source);
+        let bundle =
+            export_repository_bundle(&source, "export-password", "2026-08-01T00:00:00+08:00")
+                .unwrap();
+        let serialized = serde_json::to_string(&bundle).unwrap();
+        // This is the pre-X11 representation covered by the stored metadata hash.
+        assert!(!serialized.contains("x11_forwarding"));
+        let restored = serde_json::from_str(&serialized).unwrap();
+        let target = temp_repository("x11-legacy-target");
+        preview_bundle(&target, &restored, "export-password").unwrap();
+        assert!(!restored.data.connections[0].advanced.x11_forwarding.enabled);
+    }
+
+    #[test]
+    fn x11_settings_survive_encrypted_transfer_and_runtime_resolution() {
+        let source = temp_repository("x11-transfer-source");
+        seed_secret_profiles(&source);
+        let bundle =
+            export_repository_bundle(&source, "export-password", "2026-09-14T00:00:00+08:00")
+                .unwrap();
+        let secrets = decrypt_bundle(&bundle, "export-password").unwrap();
+        let mut data = bundle.data;
+        let expected = crate::connections::X11ForwardingConfig {
+            enabled: true,
+            trusted: false,
+            display: Some("127.0.0.1:1.2".into()),
+            xauth_path: Some("C:/Program Files/VcXsrv/xauth.exe".into()),
+        };
+        data.connections[0].advanced.x11_forwarding = expected.clone();
+        let bundle = build_bundle(
+            data,
+            &secrets,
+            "export-password",
+            "2026-09-14T00:00:00+08:00",
+        )
+        .unwrap();
+        let restored = serde_json::from_slice(&serde_json::to_vec(&bundle).unwrap()).unwrap();
+        let mut target = temp_repository("x11-transfer-target");
+        apply_bundle(
+            &mut target,
+            &restored,
+            "export-password",
+            ConnectionTransferConflictStrategy::Skip,
+        )
+        .unwrap();
+        assert_eq!(
+            target
+                .resolve_saved_connection("conn-inline", None)
+                .unwrap()
+                .advanced
+                .x11_forwarding,
+            expected
+        );
+    }
+
+    #[test]
     fn bundle_rejects_wrong_password() {
         let bundle = build_bundle(
             ConnectionTransferData::default(),

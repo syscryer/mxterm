@@ -3218,3 +3218,19 @@ if tray_state.should_close_to_tray() {
 ```
 
 The native close event makes the lifecycle decision synchronously; the frontend only syncs the persisted preference.
+
+## Scenario: SSH X11 Forwarding
+
+- `ConnectionAdvancedConfig.x11_forwarding` owns `enabled`, `trusted`, optional `display` and `xauth_path`. Old profiles default to disabled and untrusted. Omit the default object during serialization so existing connection-transfer metadata hashes remain valid; the frontend wire type must allow omission.
+- Interactive SSH sessions prepare X11 through `terminal/x11.rs` and the existing proxy/jump connection path. Exec, SFTP, ordinary tunnel and jump-host handlers do not accept X11 forwarding.
+- Send `x11-req` before PTY/shell requests and await the server's actual `ChannelMsg::Success`. Enqueuing the request is not acknowledgement. Refusal, disconnect or timeout fails terminal opening with a structured `x11_*` error.
+- Authenticate each incoming X11 setup before opening a local socket. Check byte order, protocol version, bounded lengths, `MIT-MAGIC-COOKIE-1` and the session's random fake Cookie, then replace it with the local Cookie. Never forward unverified setup bytes or send the local Cookie to the SSH server.
+- Default to non-trusted authorization generated through xauth SECURITY in a private temporary authority file (0700 directory on Unix). Do not overwrite the user's authority file or downgrade failed non-trusted authorization to trusted access. Cookies never enter configuration, logs or process arguments; subprocesses have output limits, timeouts and cleanup.
+- On Windows, xauth authority resolution must prefer an explicit `XAUTHORITY`, otherwise use an absolute `HOME` or `USERPROFILE` path plus `.Xauthority`; reject drive-less or relative inferred paths instead of silently resolving against the current working drive. When a file is selected, pass it both as `-f` and as the child `XAUTHORITY` environment because VcXsrv may use the environment while querying SECURITY. xauth failures may expose only a classified structural reason, exit status, selected authority source/path and stderr byte count; never return raw stderr.
+- Limit each session to 32 X11 streams. Enforce the 20-minute deadline for new non-trusted streams and cancel all streams when the SSH session closes or its owner drops.
+- Local preparation errors fail terminal opening and are shown in the local X11 preparation step. Later errors use the existing terminal-output handoff with both `session_id` and `request_id`; an X11 stream failure does not imply SSH session failure. Connection progress must map `x11_preparing` before network connection and `x11_requesting`/`x11_ready` after channel setup.
+- Regression coverage: fragmented/both-endian setup, bad-cookie rejection before local connect, binary TCP bridge, local auth rejection, server ACK/refusal, cancellation, expiry/limits, SQLite/runtime roundtrip, encrypted connection transfer and legacy metadata hashes. Real X Server/xauth/GUI acceptance is tracked separately; see `docs/usage/x11-forwarding.md`.
+
+### Windows Rust test runtime
+
+If a compiled library test executable exits with `0xc0000139` before reporting any assertions, check its activation manifest. Tauri's Windows dependencies can import `TaskDialogIndirect`, which requires Microsoft.Windows.Common-Controls v6. The test harness may lack the application's manifest. Embedding a Common Controls v6 manifest into only the generated test executable (RT_MANIFEST 24, resource ID 1) allows these tests to run. Do not report the loader exit as a test failure or replace system DLLs; recompilation may replace the patched test artifact.
