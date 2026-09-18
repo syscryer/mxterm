@@ -395,11 +395,13 @@ export function connectionTestProfile(request: ConnectionProfileInput) {
   return invoke<ConnectionStepResult>("connection_test_profile", { request });
 }
 
-export function rdpLaunchConnection(connectionId: string, bounds?: RdpEmbeddedBounds | null) {
+export async function rdpLaunchConnection(connectionId: string, bounds?: RdpEmbeddedBounds | null) {
+  const { readNativeAppearance } = await import("../ui/nativeAppearance");
   return invoke<RdpLaunchResult>("rdp_launch_connection", {
     request: {
       connection_id: connectionId,
       bounds: bounds ?? undefined,
+      appearance: readNativeAppearance(),
     },
   });
 }

@@ -18,11 +18,31 @@ use crate::connections::{
 };
 use crate::storage_repository::StorageRepository;
 
+#[cfg(windows)]
+mod connection_events;
+#[cfg(windows)]
+mod connection_feedback;
+#[cfg(any(windows, test))]
+mod connection_state;
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct NativeRdpAppearance {
+    pub panel: u32,
+    pub text: u32,
+    pub muted: u32,
+    pub line: u32,
+    pub primary: u32,
+    pub danger: u32,
+    pub reduced_motion: bool,
+}
+
 #[derive(Clone, Debug, Deserialize)]
 pub struct RdpConnectionRequest {
     pub connection_id: String,
     #[serde(default)]
     pub bounds: Option<RdpEmbeddedBounds>,
+    #[serde(default)]
+    pub appearance: Option<NativeRdpAppearance>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -493,6 +513,7 @@ pub async fn launch_connection(
             session_id.clone(),
             &resolved,
             requested_bounds.as_ref(),
+            request.appearance,
         )
         .await
         {
@@ -1546,6 +1567,7 @@ struct HostedRdpSession {
 #[cfg(windows)]
 #[derive(Clone)]
 struct ActiveXRdpConfig {
+    appearance: Option<NativeRdpAppearance>,
     title: String,
     host: String,
     port: u16,
@@ -1596,6 +1618,7 @@ impl ActiveXRdpConfig {
         let rdp_file_content = serialize_rdp_file(&resolved.profile, &rdp_for_host)?;
 
         Ok(Self {
+            appearance: None,
             title: format!(
                 "MXterm RDP - {}",
                 if resolved.profile.name.trim().is_empty() {
@@ -1673,9 +1696,11 @@ async fn host_activex_session(
     session_id: String,
     resolved: &ResolvedRdpConnection,
     bounds: Option<&RdpEmbeddedBounds>,
+    appearance: Option<NativeRdpAppearance>,
 ) -> Result<HostedRdpSession, AppError> {
     let owner = main_window_hwnd(app)?;
-    let config = ActiveXRdpConfig::from_resolved(resolved, bounds)?;
+    let mut config = ActiveXRdpConfig::from_resolved(resolved, bounds)?;
+    config.appearance = appearance;
     let bounds = native_session_window_bounds(owner, &config, bounds);
     let owner_hwnd = owner.0 as isize;
 
@@ -1778,6 +1803,7 @@ async fn host_activex_session(
     _session_id: String,
     _resolved: &ResolvedRdpConnection,
     _bounds: Option<&RdpEmbeddedBounds>,
+    _appearance: Option<NativeRdpAppearance>,
 ) -> Result<HostedRdpSession, AppError> {
     Err(AppError::new(
         "rdp_embedded_unsupported",
@@ -2054,6 +2080,9 @@ enum NativeHostResizeGripKind {
 
 #[cfg(windows)]
 struct ActiveXHostSession {
+    subscription: Option<connection_events::Subscription>,
+    feedback: connection_feedback::FeedbackPanel,
+    connection: connection_state::ConnectionState,
     session_id: String,
     title: String,
     control_hwnd: windows::Win32::Foundation::HWND,
@@ -2196,8 +2225,29 @@ fn add_activex_host_session(
     let (width, height) = rdp_content_size_for_window(hwnd).unwrap_or((800, 600));
     prepare_activex_config_for_viewport(hwnd, &mut config, width, height);
     let control = create_configured_activex_control(atl, hwnd, width, height, &config)?;
+    let feedback = (|| {
+        let subscription = connection_events::Subscription::new(&control.client, hwnd)?;
+        let panel = connection_feedback::FeedbackPanel::new(hwnd, config.appearance.clone())?;
+        Ok::<_, windows::core::Error>((subscription, panel))
+    })();
+    let (subscription, feedback) = match feedback {
+        Ok(feedback) => feedback,
+        Err(error) => {
+            unsafe {
+                let _ = DestroyWindow(control.hwnd);
+            }
+            return Err(activex_error(
+                "rdp_connection_feedback_failed",
+                "无法监听远程桌面连接状态。",
+                error,
+            ));
+        }
+    };
     install_activex_resize_subclasses(control.hwnd, hwnd);
-    let session = ActiveXHostSession {
+    let mut session = ActiveXHostSession {
+        subscription: Some(subscription),
+        feedback,
+        connection: connection_state::ConnectionState::new(),
         session_id: session_id.clone(),
         title: rdp_tab_title(&config),
         control_hwnd: control.hwnd,
@@ -2208,6 +2258,7 @@ fn add_activex_host_session(
         last_scale_factor: 0,
     };
     if let Err(error) = connect_activex_client(&session.client) {
+        session.subscription.take();
         unsafe {
             remove_activex_resize_subclasses(control.hwnd);
             let _ = DestroyWindow(control.hwnd);
@@ -2221,6 +2272,7 @@ fn add_activex_host_session(
     update_native_host_title(hwnd, state);
     invalidate_activex_host_window(hwnd);
     schedule_activex_login_resize(hwnd, state);
+    process_activex_connection_events(hwnd, state);
 
     Ok(HostedRdpSession {
         hwnd: hwnd.0 as isize,
@@ -2248,9 +2300,10 @@ fn close_activex_host_session(
     else {
         return;
     };
-    let session = state.sessions.remove(index);
+    let mut session = state.sessions.remove(index);
     let closed_session_id = session.session_id.clone();
     let previous_active_index = state.active_index;
+    session.subscription.take();
     let _ = disconnect_activex_client(&session.client);
     unsafe {
         remove_activex_resize_subclasses(session.control_hwnd);
@@ -2270,6 +2323,7 @@ fn close_activex_host_session(
         invalidate_activex_host_window(hwnd);
     }
     if state.sessions.is_empty() {
+        refresh_activex_connection_feedback(hwnd, state);
         update_native_host_title(hwnd, state);
         invalidate_activex_host_window(hwnd);
         if emit_closed {
@@ -2343,6 +2397,106 @@ fn layout_activex_host_sessions(
     }
     layout_native_host_resize_grips(hwnd, &state.resize_grips);
     update_native_host_title(hwnd, state);
+    refresh_activex_connection_feedback(hwnd, state);
+}
+
+#[cfg(windows)]
+fn refresh_activex_connection_feedback(
+    hwnd: windows::Win32::Foundation::HWND,
+    state: &mut ActiveXHostWindowState,
+) {
+    use windows::Win32::UI::WindowsAndMessaging::{KillTimer, SetTimer};
+    let mut interval = None;
+    for (index, session) in state.sessions.iter_mut().enumerate() {
+        let active = index == state.active_index;
+        session.feedback.update(hwnd, &session.connection, active);
+        if active && session.connection.visible() && session.connection.waiting() {
+            interval = Some(if session.feedback.reduced_motion() {
+                1000
+            } else {
+                100
+            });
+        }
+    }
+    unsafe {
+        if let Some(interval) = interval {
+            SetTimer(
+                Some(hwnd),
+                connection_feedback::ANIMATION_TIMER,
+                interval,
+                None,
+            );
+        } else {
+            let _ = KillTimer(Some(hwnd), connection_feedback::ANIMATION_TIMER);
+        }
+    }
+}
+
+#[cfg(windows)]
+fn process_activex_connection_events(
+    hwnd: windows::Win32::Foundation::HWND,
+    state: &mut ActiveXHostWindowState,
+) {
+    use connection_state::ConnectionEvent;
+    let mut logged_in = false;
+    for session in &mut state.sessions {
+        if let Some(subscription) = &session.subscription {
+            while let Ok(event) = subscription.events.try_recv() {
+                // No endpoint, username, credentials or server-provided text in these logs.
+                eprintln!("[rdp] {} connection event: {event:?}", session.session_id);
+                logged_in |= matches!(
+                    event,
+                    ConnectionEvent::LoginComplete | ConnectionEvent::Reconnected
+                );
+                session.connection.apply(event);
+            }
+        }
+    }
+    // Login may finish after the initial resize retry window has elapsed.
+    if logged_in {
+        schedule_activex_login_resize(hwnd, state);
+    }
+    refresh_activex_connection_feedback(hwnd, state);
+}
+
+#[cfg(windows)]
+fn retry_activex_connection(
+    hwnd: windows::Win32::Foundation::HWND,
+    state: &mut ActiveXHostWindowState,
+    panel: isize,
+) {
+    let Some(session) = state
+        .sessions
+        .iter_mut()
+        .find(|session| session.feedback.hwnd.0 as isize == panel)
+    else {
+        return;
+    };
+    if !matches!(
+        session.connection.phase,
+        connection_state::Phase::Stopped(_)
+    ) {
+        return;
+    }
+    // A new subscription discards events queued by the previous attempt before reconnecting.
+    session.subscription.take();
+    let result = (|| {
+        session.subscription = Some(
+            connection_events::Subscription::new(&session.client, hwnd).map_err(|error| {
+                activex_error("rdp_event_subscribe_failed", "无法监听连接状态。", error)
+            })?,
+        );
+        session.connection = connection_state::ConnectionState::new();
+        session.last_width = 0;
+        session.last_height = 0;
+        connect_activex_client(&session.client)
+    })();
+    if let Err(error) = result {
+        eprintln!("[rdp] reconnect failed: {}", error.raw_message);
+        session.subscription.take();
+        session.connection.phase = connection_state::Phase::Stopped(error.message);
+    }
+    process_activex_connection_events(hwnd, state);
 }
 
 #[cfg(windows)]
@@ -2521,7 +2675,21 @@ fn run_activex_host(
             );
         }
 
-        let hosted = add_activex_host_session(hwnd, state.as_mut(), &atl, session_id, config)?;
+        let hosted = match add_activex_host_session(hwnd, state.as_mut(), &atl, session_id, config)
+        {
+            Ok(hosted) => hosted,
+            Err(error) => {
+                unsafe {
+                    SetWindowLongPtrW(
+                        hwnd,
+                        windows::Win32::UI::WindowsAndMessaging::GWLP_USERDATA,
+                        0,
+                    );
+                    let _ = DestroyWindow(hwnd);
+                }
+                return Err(error);
+            }
+        };
         let _ = started.send(Ok(HostedRdpSession {
             hwnd: hwnd.0 as isize,
             session_hwnd: hosted.session_hwnd,
@@ -2541,6 +2709,13 @@ fn run_activex_host(
             );
             let mut message = windows::Win32::UI::WindowsAndMessaging::MSG::default();
             while GetMessageW(&mut message, None, 0, 0).as_bool() {
+                if state
+                    .sessions
+                    .get(state.active_index)
+                    .is_some_and(|session| session.feedback.handle_keyboard(&message))
+                {
+                    continue;
+                }
                 let _ = TranslateMessage(&message);
                 DispatchMessageW(&message);
             }
@@ -2549,7 +2724,8 @@ fn run_activex_host(
                 .iter()
                 .map(|session| session.session_id.clone())
                 .collect::<Vec<_>>();
-            for session in &state.sessions {
+            for session in &mut state.sessions {
+                session.subscription.take();
                 let _ = disconnect_activex_client(&session.client);
                 let _ = DestroyWindow(session.control_hwnd);
             }
@@ -2713,6 +2889,26 @@ unsafe extern "system" fn rdp_activex_host_wndproc(
             toggle_native_host_maximize(hwnd);
             return windows::Win32::Foundation::LRESULT(0);
         }
+    } else if message == connection_events::EVENTS_MESSAGE
+        || message == connection_feedback::RETRY_MESSAGE
+    {
+        let state = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut ActiveXHostWindowState;
+        if !state.is_null() {
+            if message == connection_events::EVENTS_MESSAGE {
+                process_activex_connection_events(hwnd, &mut *state);
+            } else {
+                retry_activex_connection(hwnd, &mut *state, lparam.0);
+            }
+        }
+        return windows::Win32::Foundation::LRESULT(0);
+    } else if message == WM_TIMER && wparam.0 == connection_feedback::ANIMATION_TIMER {
+        let state = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut ActiveXHostWindowState;
+        if !state.is_null() {
+            if let Some(session) = (&mut *state).sessions.get_mut((*state).active_index) {
+                session.feedback.tick(&session.connection);
+            }
+        }
+        return windows::Win32::Foundation::LRESULT(0);
     } else if message == WM_TIMER && wparam.0 == MX_RDP_LOGIN_RESIZE_TIMER_ID {
         let state = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut ActiveXHostWindowState;
         if !state.is_null() {
@@ -2733,6 +2929,13 @@ unsafe extern "system" fn rdp_activex_host_wndproc(
         if !state.is_null() {
             paint_native_host_window(hwnd, &*state);
             return windows::Win32::Foundation::LRESULT(0);
+        }
+    } else if message == windows::Win32::UI::WindowsAndMessaging::WM_CLOSE {
+        let state = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut ActiveXHostWindowState;
+        if !state.is_null() {
+            for session in &mut (*state).sessions {
+                session.subscription.take();
+            }
         }
     } else if message == WM_NCDESTROY {
         let state = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut ActiveXHostWindowState;
@@ -3762,7 +3965,9 @@ fn sync_activex_session_display(
     session: &mut ActiveXHostSession,
     force: bool,
 ) {
-    if !session.dynamic_resize {
+    // The transport can report Connected while the server is still negotiating
+    // logon/display capabilities. MSTSC rejects display updates in that phase.
+    if !session.dynamic_resize || !session.connection.display_ready() {
         return;
     }
     let Some((width, height)) = rdp_content_size_for_window(hwnd) else {
