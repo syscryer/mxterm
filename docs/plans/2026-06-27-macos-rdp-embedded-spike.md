@@ -105,7 +105,7 @@ macOS embedded 进入产品前必须满足：
 - Windows 生产路径：保留 `mstsc_activex` 内嵌宿主和 `mstsc.exe` 外部启动，不改名、不迁移、不改变默认选择。
 - 平台能力：`supportsEmbeddedRdp` 仍仅 Windows 为 true；macOS / Linux 只暴露 external RDP。
 - UI 边界：macOS 不展示 RDP 内置宿主选项；已有 Windows embedded 偏好跨平台运行时不会写回或污染保存配置。
-- 依赖边界：IronRDP 仍在 `.trellis/.runtime` 隔离原型中验证，未进入生产 `src-tauri/Cargo.toml`。
+- 依赖边界：IronRDP 仍在 `.tmp-dev` 隔离原型中验证，未进入生产 `src-tauri/Cargo.toml`。
 
 本机已完成的收口检查：
 

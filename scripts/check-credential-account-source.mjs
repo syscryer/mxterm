@@ -5,8 +5,8 @@ const connectionTypes = readFileSync("src/features/connections/connectionTypes.t
 const settingsView = readFileSync("src/features/settings/SettingsView.tsx", "utf8");
 const styles = readFileSync("src/styles/app.css", "utf8");
 const dialog = readFileSync("src/shared/tauri/dialog.ts", "utf8");
-const frontendContract = readFileSync(".trellis/spec/frontend/tauri-command-contracts.md", "utf8");
-const backendContract = readFileSync(".trellis/spec/backend/tauri-command-contracts.md", "utf8");
+const frontendContract = readFileSync("docs/spec/frontend/tauri-command-contracts.md", "utf8");
+const backendContract = readFileSync("docs/spec/backend/tauri-command-contracts.md", "utf8");
 const credentialsRs = readFileSync("src-tauri/src/credentials/mod.rs", "utf8");
 
 const normalizeMatch = useCredentials.match(

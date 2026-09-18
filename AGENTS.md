@@ -1,13 +1,8 @@
 # mXterm Agent 规则
 
 - 所有回答使用中文。
-- **动手前先对齐**：遇到需求不明确、有多种合理实现方案、或涉及 UI 布局/交互入口/数据模型归属的决策时，必须先和用户对齐（列选项、给推荐、说明取舍），不要一上来就开干。只有需求明确、实现唯一的情况才直接做。涉及写代码的实现类任务，按下方 Trellis 流程登记任务后再动手。
-- 后续项目开发使用 trytrellis.app 的 Trellis 管理。
-- 进入仓库后先查看 `.trellis/workflow.md`、`.trellis/config.yaml` 和当前任务上下文。
-- 使用 `trellis` CLI，不使用 `trellis-ctl`。
-- 开发前优先通过 `python ./.trellis/scripts/task.py list`、`current --source`、`create`、`start` 管理任务。
-- 实现前使用 `.agents/skills/trellis-before-dev` 读取 `.trellis/spec/` 规范。
-- `.trellis/`、`.codex/`、`.agents/` 是 Trellis 项目文件，应随项目维护；不要提交 `.trellis/.runtime/`、`.trellis/.developer`、Python 缓存或敏感配置。
+- **动手前先对齐**：遇到需求不明确、有多种合理实现方案、或涉及 UI 布局/交互入口/数据模型归属的决策时，必须先和用户对齐（列选项、给推荐、说明取舍），不要一上来就开干。只有需求明确、实现唯一的情况才直接做。
+- 实现前先阅读 `docs/spec/` 下的前后端开发规范；规范与实际代码冲突时，先和用户确认再动手。
 - 不要提交 `.superpowers/`、`.learnings/` 或敏感配置文件。
 - 调研其他项目时，内部可以参考产品思路、交互流程和实现结构，但提交到仓库的文档、注释和用户可见文案中不要明显写“借鉴/参考某某项目”这类表述；确实需要保留调研记录时，使用中性描述并避免给人直接复制外部产品的观感。
 - 复用外部代码前必须注意开源协议：MIT、Apache-2.0、BSD 等宽松协议代码可以在遵守原协议、保留必要许可信息的前提下复用；GPL、AGPL、LGPL 等强 copyleft 或协议不清晰的项目不要直接复制代码，只能吸收思路、交互和架构经验后自行实现。
@@ -22,7 +17,7 @@
 - 下拉/菜单必须使用项目共享下拉和全局浮层样式：优先使用 `src/shared/ui/AppSelect.tsx`、Radix 菜单能力以及 `select-menu-content` / `select-menu-item` 等共享类；不要直接使用原生 `<select>` 做业务下拉，也不要在 feature 内手写一套下拉浮层样式。
 - 同类 UI 组件或交互在项目中出现两次及以上时，必须抽到 `src/shared/ui/` 或全局共享样式中复用；不要复制粘贴两份 feature 私有组件/样式。复用前先搜索现有实现，缺少通用能力时先补共享组件，再接入业务。
 - 涉及 UI 结构、视觉风格、颜色、布局、交互状态、弹窗/菜单/表单等设计改动时，必须先使用 `ui-ux-pro-max` 做设计/审查，并把结论落实到现有 mXterm 风格与全局 token 上；不要引入与当前桌面工具风格不一致的独立视觉体系。
-- 新增 UI 交互前先检查 `src/shared/ui/` 和 `.trellis/spec/frontend/`；缺少通用能力时先补共享组件/规范，再在业务组件中使用。
+- 新增 UI 交互前先检查 `src/shared/ui/` 和 `docs/spec/frontend/`；缺少通用能力时先补共享组件/规范，再在业务组件中使用。
 - 首页/主窗口启动性能是长期约束：`main.tsx` 和 `App.tsx` 必须保持轻量，先恢复启动主题与记忆窗口状态，再显示轻量 App 壳；不要在入口或 `WorkspaceShell` 顶层静态引入非首屏重模块。`TerminalPanel`/xterm、设置页、Docker、远程文件、VNC/noVNC、监控、隧道、命令库、连接弹窗、快速搜索、Monaco/编辑器和大型静态数据必须通过 `React.lazy`、动态 import 或 idle 预热按需加载。涉及启动路径、首页、工作区首屏、设置/终端配色/工具面板等改动后，必须运行 `node scripts/check-startup-module-boundary-source.mjs`，并确认 `npm run build` 产物没有把重模块合回首屏 chunk。
 - 后续做前端功能原型或交互探索时，默认基于 `prototype/light-neutral/mxterm-empty-session.html` 继续迭代；先在该 HTML 中实现可点击的伪功能、假数据状态、弹窗/菜单/筛选/搜索等交互动线，确认体验后再迁移到真实 React/Radix 项目实现。除非用户明确要求直接改项目，不要另起一份无关原型或跳过该原型母版。
 - 修 bug 时不要用“虚假兜底”掩盖根因：例如用列表去重隐藏重复数据、静默截断/改写用户输入、只在 UI 层隐藏异常状态。必须先定位导致错误写入、重复事件、错误状态流转或错误命令调用的根因，从数据/命令/事件源头修复；确实需要兼容历史脏数据时，要明确标注为迁移/清理逻辑并说明原因。

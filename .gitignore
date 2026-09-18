@@ -4,6 +4,7 @@
 .playwright-cli/
 .idea/
 logs/
+.tmp-dev/
 prototype/light-theme/
 node_modules/
 dist/

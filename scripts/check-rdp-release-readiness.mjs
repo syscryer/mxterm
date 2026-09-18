@@ -6,9 +6,9 @@ import process from "node:process";
 import { fileURLToPath } from "node:url";
 
 const root = fileURLToPath(new URL("../", import.meta.url));
-const ironRdpWorkdir = ".trellis/.runtime/ironrdp-macos-prototype";
+const ironRdpWorkdir = ".tmp-dev/ironrdp-macos-prototype";
 const ironRdpRepoDir = resolve(root, ironRdpWorkdir, "IronRDP");
-const safeRdpPath = resolve(root, ".trellis/.runtime/rdp-release-readiness/safe-smoke.rdp");
+const safeRdpPath = resolve(root, ".tmp-dev/rdp-release-readiness/safe-smoke.rdp");
 
 function read(path) {
   return readFileSync(resolve(root, path), "utf8");

@@ -84,15 +84,3 @@ mXterm 首版可以把能力聚焦为：
 - Monaco Editor 负责文本编辑。
 
 SSH/SFTP 后端需要进一步在 `russh` 和 `ssh2-rs` 之间做验证。`russh` 更偏纯 Rust，`ssh2-rs` 工程成熟度和 SFTP 支持需要重点评估。
-
-### 6.3 后续 Trellis 管理建议
-
-后续接入 Trellis 后，建议至少维护这些项目入口：
-
-- `.trellis/tasks/`：按阶段维护工程基座、SSH Spike、连接管理、SFTP、传输队列、远程编辑等任务。
-- `.trellis/spec/`：维护前端、后端、跨层设计和质量规范。
-- `.agents/skills/`：提醒后续 agents 使用 Trellis 任务流和规范。
-- `package.json` scripts：维护 `dev`、`check`、`test`、`package-windows`。
-- `scripts/trellis/docs-check.ps1`：保留文档占位词检查。
-
-当前仓库使用 trytrellis.app 的 Trellis，入口是 `trellis` CLI 和 `.trellis/` 项目目录，不使用 `trellis-ctl`。

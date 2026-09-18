@@ -48,7 +48,7 @@ Saved RDP profile
 ### Phase 0：环境与依赖验证
 
 - 使用独立 Git checkout 或临时 vendor 构建 `ironrdp-viewer`。
-- 通过 `pnpm prototype:ironrdp-viewer status|prepare|build|smoke|run` 管理隔离 checkout，默认位置是 `.trellis/.runtime/ironrdp-macos-prototype`。
+- 通过 `pnpm prototype:ironrdp-viewer status|prepare|build|smoke|run` 管理隔离 checkout，默认位置是 `.tmp-dev/ironrdp-macos-prototype`。
 - 网络较慢时使用 `--proxy http://127.0.0.1:7890`，脚本会把代理传给 Cargo/Git 下载阶段。
 - 使用 `pnpm prototype:ironrdp-viewer write-rdp --host <host> --username <name>` 生成不含密码的测试 `.rdp` 模板。
 - 使用 `pnpm prototype:ironrdp-viewer smoke --rdp-file <path>` 在连接前确认本地 viewer binary、`--rdp-file`、用户名、CredSSP/NLA、剪贴板和桌面尺寸参数可用。
@@ -128,7 +128,7 @@ pnpm prototype:ironrdp-viewer status
 - 主应用 Cargo 依赖没有直接引入未发布的 IronRDP client/viewer crates。
 - 原型文档保留 `publish = false`、`RdpOutputEvent` 和生产隔离边界。
 - 在 macOS 上能发现基础开发工具链。
-- viewer 原型脚本默认使用 `.trellis/.runtime`，并拒绝命令行或 `.rdp` 明文密码。
+- viewer 原型脚本默认使用 `.tmp-dev`，并拒绝命令行或 `.rdp` 明文密码。
 - `write-rdp` 只生成 IronRDP 支持的基础字段，不写入任何密码字段。
 - `smoke` 会运行已构建的 `ironrdp-viewer --help`，确认 `.rdp`、用户名、CredSSP/NLA、剪贴板和桌面尺寸能力仍可见。
 - `write-report` 会生成标准化连接实测记录，避免只凭主观印象推进到 Phase 1。
@@ -140,8 +140,8 @@ pnpm prototype:ironrdp-viewer status
 - `pnpm prototype:ironrdp-viewer prepare` 成功，checkout revision 为 `9d206a3d`。
 - 直接构建受 crates.io/GitHub 网络速度影响，10 分钟内未完成下载。
 - 使用 `--toolchain stable --proxy http://127.0.0.1:7890 --timeout-ms 1800000` 后，`ironrdp-viewer` debug 构建成功。
-- 生成的 debug binary 位于 `.trellis/.runtime/ironrdp-macos-prototype/IronRDP/target/debug/ironrdp-viewer`，大小约 23 MB。
-- 隔离原型目录当前约 2.3 GB，仍由 `.trellis/.gitignore` 排除，不进入仓库。
+- 生成的 debug binary 位于 `.tmp-dev/ironrdp-macos-prototype/IronRDP/target/debug/ironrdp-viewer`，大小约 23 MB。
+- 隔离原型目录当前约 2.3 GB，由根 `.gitignore` 的 `.tmp-dev/` 排除，不进入仓库。
 - `ironrdp-viewer --help` 确认支持 `--rdp-file`、`--username`、`--password`、CredSSP/NLA、clipboard、desktop size 等参数；mXterm 原型脚本会继续拒绝明文密码参数，只允许交互输入或安全凭据桥后续再接入。
 
 可复现命令：

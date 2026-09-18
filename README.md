@@ -117,27 +117,7 @@ Release workflow 会构建 Windows x64、macOS Apple Silicon 和 Linux x64，并
 - [宽松协议开源项目参考](docs/research/permissive-open-source-references.md)
 - [MVP 工程基座与 SSH Spike 计划](docs/plans/2026-06-05-mxterm-mvp-foundation-and-ssh-spike.md)
 - [Storage / Security / Sync Foundation 计划](docs/plans/2026-06-20-storage-security-sync-foundation.md)
-
-## Trellis
-
-后续项目开发使用 [Trellis](https://docs.trytrellis.app/zh) 管理。
-
-当前仓库已通过 `trellis init --codex -u syscryer --yes --skip-existing --workflow native` 初始化：
-
-- `.trellis/`：共享工作流、规范、任务和项目记忆。
-- `.codex/`：Codex hooks 和 Trellis agent 配置。
-- `.agents/skills/`：Trellis 技能说明，供 Codex、Cursor、Gemini CLI 等工具读取。
-
-常用命令：
-
-```powershell
-trellis --version
-python ./.trellis/scripts/task.py list
-python ./.trellis/scripts/task.py current --source
-python ./.trellis/scripts/get_context.py --mode packages
-```
-
-Codex hooks 需要用户级 `~/.codex/config.toml` 启用 `features.hooks = true`，并将本项目设置为 trusted。
+- [开发规范](docs/spec/)
 
 ## 许可
 

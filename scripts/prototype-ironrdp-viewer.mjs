@@ -6,7 +6,7 @@ import process from "node:process";
 import { pathToFileURL } from "node:url";
 
 const IRONRDP_REPO_URL = "https://github.com/Devolutions/IronRDP.git";
-const DEFAULT_WORKDIR = ".trellis/.runtime/ironrdp-macos-prototype";
+const DEFAULT_WORKDIR = ".tmp-dev/ironrdp-macos-prototype";
 const DEFAULT_REV = "master";
 const DEFAULT_TIMEOUT_MS = 10 * 60 * 1000;
 const FORBIDDEN_VIEWER_ARGS = new Set([

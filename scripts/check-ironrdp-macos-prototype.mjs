@@ -103,7 +103,7 @@ assertIncludes(
 );
 
 for (const snippet of [
-  ".trellis/.runtime/ironrdp-macos-prototype",
+  ".tmp-dev/ironrdp-macos-prototype",
   "ClearTextPassword:s:",
   "GatewayPassword:s:",
   "-p",
