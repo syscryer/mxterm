@@ -1076,6 +1076,11 @@ fn serialize_rdp_file(
     if let Some(height) = rdp.display.height {
         lines.push(format!("desktopheight:i:{height}"));
     }
+    if rdp.display.dynamic_resize {
+        // mstsc.exe 不会调用 ActiveX 的 UpdateSessionDisplaySettings；
+        // smart sizing 让外部客户端至少将远端画面缩放到当前窗口内。
+        lines.push("smart sizing:i:1".to_string());
+    }
     lines.push(format!(
         "use multimon:i:{}",
         if rdp.display.use_multimon { 1 } else { 0 }
@@ -2711,7 +2716,8 @@ unsafe extern "system" fn rdp_activex_host_wndproc(
     } else if message == WM_TIMER && wparam.0 == MX_RDP_LOGIN_RESIZE_TIMER_ID {
         let state = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut ActiveXHostWindowState;
         if !state.is_null() {
-            layout_activex_host_sessions(hwnd, &mut *state, true);
+            // Retry pending display updates, without renegotiating a successful one.
+            layout_activex_host_sessions(hwnd, &mut *state, false);
             if (*state).login_resize_ticks_remaining > 0 {
                 (*state).login_resize_ticks_remaining -= 1;
             }
@@ -2765,6 +2771,34 @@ windows::core::imp::define_interface!(
 
 #[cfg(windows)]
 windows::core::imp::interface_hierarchy!(IMsTscNonScriptable, windows::core::IUnknown);
+
+#[cfg(windows)]
+windows::core::imp::define_interface!(
+    IMsRdpExtendedSettings,
+    IMsRdpExtendedSettings_Vtbl,
+    0x302d8188_0052_4807_806a_362b628f9ac5
+);
+
+#[cfg(windows)]
+windows::core::imp::interface_hierarchy!(IMsRdpExtendedSettings, windows::core::IUnknown);
+
+#[cfg(windows)]
+#[repr(C)]
+#[doc(hidden)]
+#[allow(non_snake_case)]
+pub struct IMsRdpExtendedSettings_Vtbl {
+    pub base__: windows::core::IUnknown_Vtbl,
+    pub PutProperty: unsafe extern "system" fn(
+        *mut std::ffi::c_void,
+        *mut std::ffi::c_void,
+        *const windows::Win32::System::Variant::VARIANT,
+    ) -> windows::core::HRESULT,
+    pub GetProperty: unsafe extern "system" fn(
+        *mut std::ffi::c_void,
+        *mut std::ffi::c_void,
+        *mut windows::Win32::System::Variant::VARIANT,
+    ) -> windows::core::HRESULT,
+}
 
 #[cfg(windows)]
 windows::core::imp::define_interface!(
@@ -3544,7 +3578,7 @@ fn configure_classic_activex_client(
         13,
         safe_i32(config.height).into(),
     )?;
-    configure_classic_activex_scale(dispatch, config.desktop_scale_factor);
+    configure_classic_activex_scale(dispatch, config.desktop_scale_factor)?;
     let experience = rdp_experience_settings(&config.performance);
     put_activex_property_id_optional(
         dispatch,
@@ -3678,18 +3712,48 @@ fn configure_classic_activex_client(
 fn configure_classic_activex_scale(
     dispatch: &windows::Win32::System::Com::IDispatch,
     desktop_scale_factor: u32,
-) {
-    let desktop_scale_factor = normalize_desktop_scale_factor(desktop_scale_factor);
-    let _ = invoke_activex_method_by_name(
-        dispatch,
-        "SetExtendedProperty",
-        vec![desktop_scale_factor.into(), "DesktopScaleFactor".into()],
-    );
-    let _ = invoke_activex_method_by_name(
-        dispatch,
-        "SetExtendedProperty",
-        vec![100u32.into(), "DeviceScaleFactor".into()],
-    );
+) -> Result<(), AppError> {
+    use windows::core::{Interface, BSTR};
+    use windows::Win32::System::Variant::VARIANT;
+
+    // Classic MSTSC exposes these through IUnknown, not IDispatch methods.
+    // Both properties must be set before Connect(); runtime changes use
+    // UpdateSessionDisplaySettings instead.
+    let settings = dispatch.cast::<IMsRdpExtendedSettings>().map_err(|error| {
+        AppError::new(
+            "rdp_activex_scale_failed",
+            "RDP ActiveX 缩放配置失败。",
+            format!("IMsRdpExtendedSettings: {error}"),
+            true,
+        )
+    })?;
+    for (name, value) in [
+        (
+            "DesktopScaleFactor",
+            normalize_desktop_scale_factor(desktop_scale_factor),
+        ),
+        ("DeviceScaleFactor", 100),
+    ] {
+        let property = BSTR::from(name);
+        let value = VARIANT::from(value);
+        unsafe {
+            (settings.vtable().PutProperty)(
+                settings.as_raw(),
+                std::mem::transmute_copy(&property),
+                &value,
+            )
+            .ok()
+        }
+        .map_err(|error| {
+            AppError::new(
+                "rdp_activex_scale_failed",
+                "RDP ActiveX 缩放配置失败。",
+                format!("{name}: {error}"),
+                true,
+            )
+        })?;
+    }
+    Ok(())
 }
 
 #[cfg(windows)]
@@ -3730,21 +3794,37 @@ fn sync_activex_session_display(
             })
         }
         HostedActiveXClient::Classic(dispatch) => {
-            configure_classic_activex_scale(dispatch, scale_factor);
-            put_activex_property_id_optional(dispatch, "DesktopWidth", 12, safe_i32(width).into());
-            put_activex_property_id_optional(
-                dispatch,
-                "DesktopHeight",
-                13,
-                safe_i32(height).into(),
-            );
-            invoke_activex_method_by_name(
+            // Connect() is asynchronous. Do not cache an update made before
+            // the session is connected: it may return success without applying.
+            match get_activex_property_id(dispatch, "Connected", 6).and_then(|value| {
+                i32::try_from(&value).map_err(|error| {
+                    AppError::new(
+                        "rdp_activex_connection_state_failed",
+                        "RDP ActiveX 连接状态读取失败。",
+                        error.to_string(),
+                        true,
+                    )
+                })
+            }) {
+                Ok(value) if value != 0 => {}
+                Ok(_) => return,
+                Err(error) => {
+                    eprintln!("[rdp] display sync state: {}", error.raw_message);
+                    return;
+                }
+            }
+            // Stable DISPID from IMsRdpClient9 in the MSTSC type library.
+            invoke_activex_method_id_with_args(
                 dispatch,
                 "UpdateSessionDisplaySettings",
+                802,
                 vec![
+                    // IDispatch receives arguments in reverse declaration order:
+                    // device scale, desktop scale, orientation, physical H/W,
+                    // then desktop H/W.
                     100u32.into(),
                     scale_factor.into(),
-                    0i32.into(),
+                    0u32.into(),
                     height.into(),
                     width.into(),
                     height.into(),
@@ -3754,10 +3834,18 @@ fn sync_activex_session_display(
         }
     };
 
-    if result.is_ok() {
-        session.last_width = width;
-        session.last_height = height;
-        session.last_scale_factor = scale_factor;
+    match result {
+        Ok(()) => {
+            session.last_width = width;
+            session.last_height = height;
+            session.last_scale_factor = scale_factor;
+        }
+        Err(error) => {
+            eprintln!(
+                "[rdp] display sync {width}x{height} @{scale_factor}%: {}",
+                error.raw_message
+            );
+        }
     }
 }
 
@@ -5576,34 +5664,15 @@ fn invoke_activex_method_id(
 }
 
 #[cfg(windows)]
-fn invoke_activex_method_by_name(
+fn invoke_activex_method_id_with_args(
     dispatch: &windows::Win32::System::Com::IDispatch,
     name: &str,
+    dispid: i32,
     mut args: Vec<windows::Win32::System::Variant::VARIANT>,
 ) -> Result<(), AppError> {
-    use windows::core::PCWSTR;
     use windows::Win32::System::Com::{DISPATCH_METHOD, DISPPARAMS};
 
-    let wide_name = to_wide_null(name);
-    let name_ptr = PCWSTR(wide_name.as_ptr());
-    let mut dispid = 0;
     unsafe {
-        dispatch
-            .GetIDsOfNames(
-                &windows::core::GUID::zeroed(),
-                &name_ptr,
-                1,
-                0x0409,
-                &mut dispid,
-            )
-            .map_err(|error| {
-                AppError::new(
-                    "rdp_activex_method_failed",
-                    "RDP ActiveX 方法查找失败。",
-                    format!("{name}: {error}"),
-                    true,
-                )
-            })?;
         let params = DISPPARAMS {
             rgvarg: args.as_mut_ptr(),
             rgdispidNamedArgs: std::ptr::null_mut(),
@@ -5772,6 +5841,7 @@ mod tests {
     fn rdp_default_experience_enables_desktop_composition() {
         let content = serialize_rdp_file(&rdp_profile(), &RdpConnectionConfig::default()).unwrap();
 
+        assert!(content.contains("smart sizing:i:1\r\n"));
         assert!(content.contains("session bpp:i:32\r\n"));
         assert!(content.contains("connection type:i:7\r\n"));
         assert!(content.contains("allow font smoothing:i:1\r\n"));
@@ -5799,6 +5869,78 @@ mod tests {
         assert!(content.contains("allow desktop composition:i:0\r\n"));
         assert!(content.contains("disable themes:i:1\r\n"));
         assert!(content.contains("disable cursor setting:i:1\r\n"));
+    }
+
+    #[test]
+    fn rdp_fixed_resolution_does_not_enable_smart_sizing() {
+        let content = serialize_rdp_file(
+            &rdp_profile(),
+            &RdpConnectionConfig {
+                display: crate::connections::RdpDisplayConfig {
+                    dynamic_resize: false,
+                    ..RdpConnectionConfig::default().display
+                },
+                ..RdpConnectionConfig::default()
+            },
+        )
+        .unwrap();
+
+        assert!(!content.contains("smart sizing:i:1\r\n"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    #[ignore = "requires the installed Windows MSTSC ActiveX control"]
+    fn classic_activex_scale_round_trips_before_connect() {
+        use super::{
+            configure_classic_activex_scale, get_activex_property_id, IMsRdpExtendedSettings,
+        };
+        use windows::core::{Interface, BSTR, GUID};
+        use windows::Win32::System::Com::{
+            CoCreateInstance, CoInitializeEx, CoUninitialize, IDispatch, CLSCTX_INPROC_SERVER,
+            COINIT_APARTMENTTHREADED,
+        };
+        use windows::Win32::System::Variant::VARIANT;
+
+        unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) }
+            .ok()
+            .unwrap();
+        struct Apartment;
+        impl Drop for Apartment {
+            fn drop(&mut self) {
+                unsafe { CoUninitialize() };
+            }
+        }
+        let _apartment = Apartment;
+        // MsRdpClient9NotSafeForScripting: create only, never connect to a server.
+        let dispatch: IDispatch = unsafe {
+            CoCreateInstance(
+                &GUID::from_u128(0x8b918b82_7985_4c24_89df_c33ad2bbfbcd),
+                None,
+                CLSCTX_INPROC_SERVER,
+            )
+        }
+        .unwrap();
+        let settings = dispatch.cast::<IMsRdpExtendedSettings>().unwrap();
+        for scale in [100u32, 150, 200] {
+            configure_classic_activex_scale(&dispatch, scale).unwrap();
+            for (name, expected) in [("DesktopScaleFactor", scale), ("DeviceScaleFactor", 100)] {
+                let property = BSTR::from(name);
+                let mut value = VARIANT::default();
+                unsafe {
+                    (settings.vtable().GetProperty)(
+                        settings.as_raw(),
+                        std::mem::transmute_copy(&property),
+                        &mut value,
+                    )
+                    .ok()
+                    .unwrap();
+                }
+                assert_eq!(u32::try_from(&value).unwrap(), expected, "{name}");
+            }
+        }
+        let connected = get_activex_property_id(&dispatch, "Connected", 6).unwrap();
+        assert_eq!(i32::try_from(&connected).unwrap(), 0);
     }
 
     #[test]
