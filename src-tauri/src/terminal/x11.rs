@@ -183,7 +183,7 @@ impl DisplayTarget {
                     "local socket connect timed out",
                 )
             })?
-            .map_err(|e| {
+            .map_err(|e: std::io::Error| {
                 error(
                     "x11_local_connect_failed",
                     "无法连接本地 X Server，请先启动 X Server 并检查 Display。",
