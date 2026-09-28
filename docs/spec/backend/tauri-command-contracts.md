@@ -3032,7 +3032,8 @@ Colon-separated events and `stream_id` matching keep the UI stream-safe.
 ### 3. Contracts
 
 - `McpRemoteServiceManager` is the only owner of the managed HTTP sidecar child.
-- The supervisor probes loopback `/health` every 15 seconds and restarts only after three consecutive failures.
+- The supervisor probes `/health` every 15 seconds and restarts only after three consecutive failures. The probe must target the configured `remote_host`: unspecified listen addresses map to loopback (`0.0.0.0` → `127.0.0.1`, `::` → `::1`), while a specific IP or hostname is probed as-is, because a service bound to one LAN address is not reachable on loopback.
+- The supervisor only stores the remote token SHA-256 hash, so the sidecar must route `GET /health` before bearer-token authentication. `/health` must stay token-free and return only non-sensitive liveness data (`{"ok":true,"transport":"mcp-http"}`); every MCP endpoint (`/mcp`, `/sse`, `/messages`) must still require the token.
 - Sidecar stdout/stderr and supervisor lifecycle events use `<app-data>/logs/mcp-remote.log`; logs must exclude tokens, Authorization headers, passwords, private keys, and complete tool arguments.
 - MCP file and directory transfers delegate to the shared SFTP transfer primitives so `.mxpart`, 256 KiB chunks, resume offsets, completion checks, and upload-confirm errors remain consistent with desktop transfers.
 - Windows update preparation must suspend supervisor recovery before stopping the managed child and terminating remaining `mxterm-mcp.exe` processes.

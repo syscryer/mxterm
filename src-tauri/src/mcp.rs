@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
-use std::net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, UdpSocket};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -2270,13 +2270,25 @@ fn append_remote_log(app: &AppHandle, level: &str, message: &str) {
     let _ = writeln!(file, "{timestamp} {level} supervisor {safe_message}");
 }
 
-async fn remote_service_health_check(port: u16) -> bool {
+fn remote_health_probe_host(host: &str) -> String {
+    let host = host.trim();
+    match host.parse::<IpAddr>() {
+        Ok(IpAddr::V4(ip)) if ip.is_unspecified() => Ipv4Addr::LOCALHOST.to_string(),
+        Ok(IpAddr::V6(ip)) if ip.is_unspecified() => Ipv6Addr::LOCALHOST.to_string(),
+        _ => host.to_string(),
+    }
+}
+
+async fn remote_service_health_check(host: &str, port: u16) -> bool {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpStream;
 
-    let address = format!("127.0.0.1:{port}");
-    let Ok(Ok(mut stream)) =
-        tokio::time::timeout(Duration::from_secs(3), TcpStream::connect(address)).await
+    let probe_host = remote_health_probe_host(host);
+    let Ok(Ok(mut stream)) = tokio::time::timeout(
+        Duration::from_secs(3),
+        TcpStream::connect((probe_host.as_str(), port)),
+    )
+    .await
     else {
         return false;
     };
@@ -2337,7 +2349,8 @@ pub fn start_remote_service_supervisor(app: AppHandle) {
             }
 
             let status = manager.status(&settings);
-            let healthy = status.running && remote_service_health_check(settings.remote_port).await;
+            let healthy = status.running
+                && remote_service_health_check(&settings.remote_host, settings.remote_port).await;
             if manager.is_update_preparing() {
                 continue;
             }
@@ -2817,6 +2830,16 @@ mod tests {
         let error = validate_timeout(Some(1801), MAX_ASYNC_TIMEOUT_SECONDS)
             .expect_err("timeout should be rejected");
         assert_eq!(error.code, "mcp_timeout_out_of_range");
+    }
+
+    #[test]
+    fn remote_health_probe_uses_configured_listen_address() {
+        assert_eq!(remote_health_probe_host("0.0.0.0"), "127.0.0.1");
+        assert_eq!(remote_health_probe_host(" :: "), "::1");
+        assert_eq!(remote_health_probe_host("10.0.0.8"), "10.0.0.8");
+        assert_eq!(remote_health_probe_host("127.0.0.1"), "127.0.0.1");
+        assert_eq!(remote_health_probe_host("::1"), "::1");
+        assert_eq!(remote_health_probe_host("localhost"), "localhost");
     }
 
     #[test]

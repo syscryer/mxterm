@@ -333,6 +333,20 @@ async fn handle_http_connection(mut stream: TcpStream, state: HttpState) -> io::
         .await;
     }
 
+    if request.method == "GET" && request.path == "/health" {
+        return write_http_response(
+            &mut stream,
+            200,
+            "OK",
+            "application/json",
+            json!({ "ok": true, "transport": "mcp-http" })
+                .to_string()
+                .into_bytes(),
+            cors_headers(&request),
+        )
+        .await;
+    }
+
     if !request_authorized(&request, &state.token_hash) {
         return write_http_response(
             &mut stream,
@@ -346,19 +360,6 @@ async fn handle_http_connection(mut stream: TcpStream, state: HttpState) -> io::
     }
 
     match (request.method.as_str(), request.path.as_str()) {
-        ("GET", "/health") => {
-            write_http_response(
-                &mut stream,
-                200,
-                "OK",
-                "application/json",
-                json!({ "ok": true, "transport": "mcp-http" })
-                    .to_string()
-                    .into_bytes(),
-                cors_headers(&request),
-            )
-            .await
-        }
         ("POST", "/mcp") => handle_streamable_http_post(&mut stream, request, state).await,
         ("GET", "/mcp") => handle_streamable_http_sse(&mut stream, &request).await,
         ("GET", "/sse") => handle_legacy_sse(&mut stream, &request, state).await,
@@ -1084,5 +1085,48 @@ mod tests {
             body: Vec::new(),
         };
         assert!(!request_authorized(&wrong_request, &token_hash));
+    }
+
+    async fn raw_http_status_line(state: HttpState, request: &[u8]) -> String {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            handle_http_connection(stream, state).await.unwrap();
+        });
+        let mut client = TcpStream::connect(address).await.unwrap();
+        client.write_all(request).await.unwrap();
+        let mut response = Vec::new();
+        client.read_to_end(&mut response).await.unwrap();
+        server.await.unwrap();
+        String::from_utf8_lossy(&response)
+            .lines()
+            .next()
+            .unwrap_or_default()
+            .to_string()
+    }
+
+    #[test]
+    fn http_health_is_reachable_without_token_but_mcp_is_not() {
+        let state = HttpState {
+            data_dir: PathBuf::from("."),
+            token_hash: mcp::hash_remote_token("mx_remote_token"),
+            sse_sessions: Arc::new(Mutex::new(HashMap::new())),
+        };
+        tauri::async_runtime::block_on(async move {
+            let health = raw_http_status_line(
+                state.clone(),
+                b"GET /health HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+            )
+            .await;
+            assert!(health.starts_with("HTTP/1.1 200 "), "{health}");
+
+            let mcp = raw_http_status_line(
+                state,
+                b"POST /mcp HTTP/1.1\r\nHost: localhost\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}",
+            )
+            .await;
+            assert!(mcp.starts_with("HTTP/1.1 401 "), "{mcp}");
+        });
     }
 }
