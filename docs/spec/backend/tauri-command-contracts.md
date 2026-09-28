@@ -2714,6 +2714,10 @@ ip_addresses: Vec<String>
 - `get_connection`
 - `test_connection`
 - `execute_command`
+- `execute_command_async`
+- `get_task_status`
+- `get_task_output`
+- `cancel_task`
 - `server_monitor`
 - `upload_file`
 - `download_file`
@@ -2743,7 +2747,9 @@ mxterm-mcp serve --host <host> --port <port> --token-sha256 <sha256> [--data-dir
 - `mcp_local_network_info` may infer the primary LAN-facing IP by connecting an unbound UDP socket to well-known external IPv4 targets and reading the local socket address. It must filter loopback, unspecified, broadcast, and IPv4 link-local addresses before returning values for client snippets.
 - Metadata-only MCP reads must open `StorageRepository::open_root(...)` with the in-memory secret store. Read-only MCP listing must not unlock the local vault or reveal secrets.
 - SSH-capable MCP tools must resolve saved connections through the normal vault-backed repository path and must not accept dynamic plaintext credential fields.
-- MCP exec-capable tools (`test_connection`, `execute_command`, and `server_monitor`) use a process-local `RemoteExecSessionPool` keyed by saved connection id and `ResolvedSshConfig::signature()`. A command timeout must invalidate the cached connection before returning `mcp_command_timeout`. SFTP transfer tools intentionally keep one operation-scoped `ReusableSftpSession` per transfer until a dedicated SFTP pooling contract exists.
+- MCP synchronous exec tools (`test_connection`, `execute_command`, `execute_script`, and `server_monitor`) use a process-local `RemoteExecSessionPool` keyed by saved connection id and `ResolvedSshConfig::signature()`. Commands on one pooled session are serialized. A command timeout must remove the cached connection from the pool before returning `mcp_command_timeout`; closing that session happens in the background so the timeout response is not blocked by another in-flight command on the same session. SFTP transfer tools intentionally keep one operation-scoped `ReusableSftpSession` per transfer until a dedicated SFTP pooling contract exists.
+- `execute_command` is intended for short commands. Agents should select `execute_command_async` when a command may exceed the MCP client's tool-call timeout, then poll `get_task_status` or `get_task_output` and use `cancel_task` when needed. `execute_command_async` must validate the same SSH exposure, dangerous-command, output-limit, and timeout rules, resolve the saved connection before returning, create a process-local task, and return a `task_id` without waiting for remote command completion. Each async task opens its own task-owned `ReusableExecSession` instead of using `RemoteExecSessionPool`, so a long-running task never blocks pooled synchronous commands and cancelling or timing out one task never disconnects another task or pooled session. The async timeout covers connect, authentication, and command execution; the task-owned session is always closed when the task finishes. `get_task_status` returns task metadata and the final `McpCommandResult` or `AppError`; `get_task_output` returns only task output/error fields; `cancel_task` aborts a queued or running task and closes only that task's SSH session. Cancellation is best effort: disconnecting SSH gives a remote command a chance to stop, but does not guarantee that a child process already detached on the host has exited. Async task records are not persisted across sidecar restarts. Finished task records expire 30 minutes after completion, and the registry keeps at most 64 records; when it is full, the oldest finished record is evicted, and if every record is still queued/running, starting another task returns `mcp_task_limit_reached`.
+- MCP command timeouts default to 30 seconds. Synchronous tools (`execute_command`, `execute_script`) accept 1 through 300 seconds; `execute_command_async` accepts 1 through 1800 seconds. Values outside the tool's range must return `mcp_timeout_out_of_range`, and a `timeout_seconds` value that is present but not a non-negative integer must return `mcp_timeout_invalid`; neither case may be silently clamped or replaced with the default.
 - MCP upload/download tools write to `.mxterm-mcp-transfer-*` temporary files next to the final target and only rename after the copy and flush complete. Failed transfers must clean the temporary file when cleanup is possible; partial final files should not replace an existing target.
 - MCP transfer responses include `bytes_transferred` and `duration_ms` for files and directories. Directory values are the sum of transferred child file bytes for that operation.
 - `reject_plaintext_credential_args(...)` must reject argument keys such as `host`, `user`, `username`, `password`, `passphrase`, `private_key`, and `private_key_content` before tool dispatch.
@@ -2771,6 +2777,9 @@ mxterm-mcp serve --host <host> --port <port> --token-sha256 <sha256> [--data-dir
 | `connection_exposure_mode = custom` and id not in `exposed_connection_ids` | `mcp_connection_not_exposed` | true |
 | Connection profile protocol is not `ssh` | Hide it from MCP metadata list/search/get results | true |
 | MCP tool args include plaintext credential fields | `mcp_plaintext_credential_arguments_forbidden` | true |
+| Async task registry is full of queued/running tasks | `mcp_task_limit_reached` | true |
+| `timeout_seconds` is outside the tool's allowed range | `mcp_timeout_out_of_range` | true |
+| `timeout_seconds` is present but not a non-negative integer | `mcp_timeout_invalid` | true |
 | Unknown tool name | `mcp_tool_unknown` | false |
 | `--data-dir` flag is provided without a value | `mcp_data_dir_missing` | true |
 | `serve` mode is missing `--token-sha256` | `mcp_remote_token_missing` | true |

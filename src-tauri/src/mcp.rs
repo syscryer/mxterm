@@ -13,6 +13,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use tauri::{AppHandle, Manager, State};
+use tokio::sync::Mutex as TokioMutex;
+use tokio::task::AbortHandle;
 
 use crate::app_error::AppError;
 use crate::connections::{
@@ -31,7 +33,9 @@ use crate::storage_vault::{SecretStore, VaultState};
 use crate::terminal::serial::{
     SerialBackspaceMode, SerialDataBits, SerialFlowControl, SerialParity, SerialStopBits,
 };
-use crate::terminal::session::{ReusableSftpSession, SshConnectionContext};
+use crate::terminal::session::{
+    ExecOutput, ReusableExecSession, ReusableSftpSession, SshConnectionContext,
+};
 use crate::terminal::telnet::{TelnetBackspaceMode, TelnetEnterMode};
 use crate::webdav_sync::WebDavSyncService;
 
@@ -42,7 +46,10 @@ pub const MCP_SETTINGS_KEY: &str = "mcp.default";
 pub const DEFAULT_REMOTE_HOST: &str = "0.0.0.0";
 pub const DEFAULT_REMOTE_PORT: u16 = 8765;
 const DEFAULT_TIMEOUT_SECONDS: u64 = 30;
-const MAX_TIMEOUT_SECONDS: u64 = 300;
+const MAX_SYNC_TIMEOUT_SECONDS: u64 = 300;
+const MAX_ASYNC_TIMEOUT_SECONDS: u64 = 1800;
+const MAX_COMMAND_TASKS: usize = 64;
+const FINISHED_COMMAND_TASK_TTL_MS: u128 = 30 * 60 * 1000;
 const DEFAULT_OUTPUT_BYTES: usize = 64 * 1024;
 const MAX_OUTPUT_BYTES: usize = 1024 * 1024;
 const REMOTE_LOG_MAX_BYTES: u64 = 2 * 1024 * 1024;
@@ -53,6 +60,7 @@ const REMOTE_HEALTH_FAILURE_THRESHOLD: u32 = 3;
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 
 static MCP_EXEC_SESSION_POOL: OnceLock<RemoteExecSessionPool> = OnceLock::new();
+static MCP_COMMAND_TASKS: OnceLock<CommandTaskRegistry> = OnceLock::new();
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct McpSettings {
@@ -305,6 +313,25 @@ pub struct McpCommandResult {
 }
 
 #[derive(Clone, Debug, Serialize)]
+pub struct McpTaskRecord {
+    pub task_id: String,
+    pub connection_id: String,
+    pub command: String,
+    pub status: String,
+    pub created_at_ms: u128,
+    pub started_at_ms: Option<u128>,
+    pub finished_at_ms: Option<u128>,
+    pub result: Option<McpCommandResult>,
+    pub error: Option<AppError>,
+}
+
+struct McpTaskEntry {
+    record: McpTaskRecord,
+    abort_handle: Option<AbortHandle>,
+    session: Option<Arc<ReusableExecSession>>,
+}
+
+#[derive(Clone, Debug, Serialize)]
 pub struct McpTransferResult {
     pub connection_id: String,
     pub local_path: String,
@@ -540,6 +567,10 @@ pub fn status(settings: &McpSettings) -> McpStatus {
         tools.extend([
             "test_connection",
             "execute_command",
+            "execute_command_async",
+            "get_task_status",
+            "get_task_output",
+            "cancel_task",
             "server_monitor",
             "upload_file",
             "download_file",
@@ -877,12 +908,17 @@ pub fn detect_dangerous_command(command: &str) -> Option<DangerousCommand> {
         .map(|(_, reason)| DangerousCommand { reason })
 }
 
-pub fn normalize_timeout(seconds: Option<u64>) -> Duration {
-    Duration::from_secs(
-        seconds
-            .unwrap_or(DEFAULT_TIMEOUT_SECONDS)
-            .clamp(1, MAX_TIMEOUT_SECONDS),
-    )
+fn validate_timeout(seconds: Option<u64>, max_seconds: u64) -> Result<Duration, AppError> {
+    let seconds = seconds.unwrap_or(DEFAULT_TIMEOUT_SECONDS);
+    if !(1..=max_seconds).contains(&seconds) {
+        return Err(AppError::new(
+            "mcp_timeout_out_of_range",
+            &format!("MCP 命令超时必须在 1 到 {max_seconds} 秒之间。"),
+            format!("requested_timeout_seconds={seconds}, max_timeout_seconds={max_seconds}"),
+            true,
+        ));
+    }
+    Ok(Duration::from_secs(seconds))
 }
 
 pub fn normalize_output_limit(limit: Option<usize>) -> usize {
@@ -904,6 +940,41 @@ pub async fn execute_command(
     confirm_dangerous: bool,
     settings: &McpSettings,
 ) -> Result<McpCommandResult, AppError> {
+    let command = authorize_command(settings, connection_id, command, confirm_dangerous)?;
+    let timeout = validate_timeout(timeout_seconds, MAX_SYNC_TIMEOUT_SECONDS)?;
+    let started = now_millis();
+    let (config, context) = resolve_ssh(root, connection_id)?;
+    let pool = mcp_exec_session_pool();
+    let result = tokio::time::timeout(
+        timeout,
+        pool.exec_with_context(&context, &config, command, RemoteExecRetry::ReconnectOnce),
+    )
+    .await;
+    let output = match result {
+        Ok(output) => output?,
+        Err(_) => {
+            pool.invalidate_connection_detached(&config.connection_id)
+                .await;
+            return Err(command_timeout_error(timeout));
+        }
+    };
+    Ok(finish_command_result(
+        root,
+        "execute_command",
+        config.connection_id,
+        command,
+        output,
+        max_output_bytes,
+        started,
+    ))
+}
+
+fn authorize_command<'a>(
+    settings: &McpSettings,
+    connection_id: &str,
+    command: &'a str,
+    confirm_dangerous: bool,
+) -> Result<&'a str, AppError> {
     ensure_ssh_enabled(settings)?;
     ensure_connection_exposed(settings, connection_id)?;
     let command = require_command(command)?;
@@ -917,32 +988,32 @@ pub async fn execute_command(
             ));
         }
     }
-    let started = now_millis();
-    let (config, context) = resolve_ssh(root, connection_id)?;
-    let timeout = normalize_timeout(timeout_seconds);
-    let pool = mcp_exec_session_pool();
-    let result = tokio::time::timeout(
-        timeout,
-        pool.exec_with_context(&context, &config, command, RemoteExecRetry::ReconnectOnce),
+    Ok(command)
+}
+
+fn command_timeout_error(timeout: Duration) -> AppError {
+    AppError::new(
+        "mcp_command_timeout",
+        "MCP SSH 命令执行超时。",
+        format!("timeout_seconds={}", timeout.as_secs()),
+        true,
     )
-    .await;
-    let output = match result {
-        Ok(output) => output?,
-        Err(_) => {
-            pool.invalidate_connection(&config.connection_id).await;
-            return Err(AppError::new(
-                "mcp_command_timeout",
-                "MCP SSH 命令执行超时。",
-                format!("timeout_seconds={}", timeout.as_secs()),
-                true,
-            ));
-        }
-    };
+}
+
+fn finish_command_result(
+    root: &Path,
+    operation: &str,
+    connection_id: String,
+    command: &str,
+    output: ExecOutput,
+    max_output_bytes: Option<usize>,
+    started: u128,
+) -> McpCommandResult {
     let limit = normalize_output_limit(max_output_bytes);
     let (stdout, stdout_truncated) = bytes_to_limited_string(&output.stdout, limit);
     let (stderr, stderr_truncated) = bytes_to_limited_string(&output.stderr, limit);
     let result = McpCommandResult {
-        connection_id: config.connection_id,
+        connection_id,
         command: command.to_string(),
         exit_status: output.exit_status,
         stdout,
@@ -953,7 +1024,7 @@ pub async fn execute_command(
     };
     audit(
         root,
-        "execute_command",
+        operation,
         &result.connection_id,
         true,
         json!({
@@ -962,7 +1033,286 @@ pub async fn execute_command(
             "duration_ms": result.duration_ms,
         }),
     );
-    Ok(result)
+    result
+}
+
+type CommandTaskRegistry = Arc<TokioMutex<BTreeMap<String, McpTaskEntry>>>;
+
+fn command_task_registry() -> &'static CommandTaskRegistry {
+    MCP_COMMAND_TASKS.get_or_init(|| Arc::new(TokioMutex::new(BTreeMap::new())))
+}
+
+fn task_record_summary(record: &McpTaskRecord) -> Value {
+    serde_json::to_value(record).unwrap_or_else(|_| {
+        json!({
+            "task_id": record.task_id,
+            "status": record.status,
+        })
+    })
+}
+
+fn is_terminal_task_status(status: &str) -> bool {
+    matches!(status, "succeeded" | "failed" | "timed_out" | "cancelled")
+}
+
+fn is_expired_command_task(record: &McpTaskRecord, now_ms: u128) -> bool {
+    is_terminal_task_status(&record.status)
+        && record.finished_at_ms.is_some_and(|finished_at_ms| {
+            now_ms.saturating_sub(finished_at_ms) >= FINISHED_COMMAND_TASK_TTL_MS
+        })
+}
+
+fn prune_expired_command_tasks(tasks: &mut BTreeMap<String, McpTaskEntry>, now_ms: u128) {
+    tasks.retain(|_, entry| !is_expired_command_task(&entry.record, now_ms));
+}
+
+fn trim_command_tasks(tasks: &mut BTreeMap<String, McpTaskEntry>, now_ms: u128) {
+    prune_expired_command_tasks(tasks, now_ms);
+    while tasks.len() >= MAX_COMMAND_TASKS {
+        let Some(task_id) = tasks
+            .iter()
+            .filter(|(_, entry)| is_terminal_task_status(&entry.record.status))
+            .min_by_key(|(_, entry)| entry.record.created_at_ms)
+            .map(|(task_id, _)| task_id.clone())
+        else {
+            break;
+        };
+        tasks.remove(&task_id);
+    }
+}
+
+pub async fn start_command_task(
+    root: &Path,
+    connection_id: &str,
+    command: &str,
+    timeout_seconds: Option<u64>,
+    max_output_bytes: Option<usize>,
+    confirm_dangerous: bool,
+    settings: &McpSettings,
+) -> Result<Value, AppError> {
+    let command = authorize_command(settings, connection_id, command, confirm_dangerous)?;
+    let timeout = validate_timeout(timeout_seconds, MAX_ASYNC_TIMEOUT_SECONDS)?;
+    let (config, context) = resolve_ssh(root, connection_id)?;
+    let task_id = uuid::Uuid::new_v4().to_string();
+    let record = McpTaskRecord {
+        task_id: task_id.clone(),
+        connection_id: config.connection_id.clone(),
+        command: command.to_string(),
+        status: "queued".to_string(),
+        created_at_ms: now_millis(),
+        started_at_ms: None,
+        finished_at_ms: None,
+        result: None,
+        error: None,
+    };
+    let registry = Arc::clone(command_task_registry());
+    let mut tasks = registry.lock().await;
+    trim_command_tasks(&mut tasks, now_millis());
+    if tasks.len() >= MAX_COMMAND_TASKS {
+        return Err(AppError::new(
+            "mcp_task_limit_reached",
+            "MCP 异步任务数量已达到上限，请等待现有任务完成后重试。",
+            format!("max_tasks={MAX_COMMAND_TASKS}"),
+            true,
+        ));
+    }
+    tasks.insert(
+        task_id.clone(),
+        McpTaskEntry {
+            record,
+            abort_handle: None,
+            session: None,
+        },
+    );
+    let worker = tokio::spawn(run_command_task(
+        Arc::clone(&registry),
+        task_id.clone(),
+        root.to_path_buf(),
+        config,
+        context,
+        command.to_string(),
+        timeout,
+        max_output_bytes,
+    ));
+    if let Some(entry) = tasks.get_mut(&task_id) {
+        entry.abort_handle = Some(worker.abort_handle());
+    }
+    drop(tasks);
+    Ok(json!({
+        "task_id": task_id,
+        "status": "queued",
+        "timeout_seconds": timeout.as_secs(),
+    }))
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn run_command_task(
+    registry: CommandTaskRegistry,
+    task_id: String,
+    root: PathBuf,
+    config: ResolvedSshConfig,
+    context: SshConnectionContext,
+    command: String,
+    timeout: Duration,
+    max_output_bytes: Option<usize>,
+) {
+    if !mark_command_task_running(&registry, &task_id).await {
+        return;
+    }
+    let started = now_millis();
+    let output = tokio::time::timeout(timeout, async {
+        let session =
+            Arc::new(ReusableExecSession::connect_resolved_with_context(&context, &config).await?);
+        if !attach_command_task_session(&registry, &task_id, &session).await {
+            session.close().await;
+            return Err(AppError::new(
+                "mcp_task_cancelled",
+                "MCP 异步任务已取消。",
+                format!("task_id={task_id}"),
+                true,
+            ));
+        }
+        session.exec(&command).await
+    })
+    .await;
+    let session = registry
+        .lock()
+        .await
+        .get_mut(&task_id)
+        .and_then(|entry| entry.session.take());
+    if let Some(session) = session {
+        session.close().await;
+    }
+    let result = match output {
+        Ok(Ok(output)) => Ok(finish_command_result(
+            &root,
+            "execute_command_async",
+            config.connection_id.clone(),
+            &command,
+            output,
+            max_output_bytes,
+            started,
+        )),
+        Ok(Err(error)) => Err(error),
+        Err(_) => Err(command_timeout_error(timeout)),
+    };
+    finish_command_task(&registry, &task_id, result).await;
+}
+
+async fn mark_command_task_running(registry: &CommandTaskRegistry, task_id: &str) -> bool {
+    let mut tasks = registry.lock().await;
+    let Some(entry) = tasks.get_mut(task_id) else {
+        return false;
+    };
+    if entry.record.status != "queued" {
+        return false;
+    }
+    entry.record.status = "running".to_string();
+    entry.record.started_at_ms = Some(now_millis());
+    true
+}
+
+async fn attach_command_task_session(
+    registry: &CommandTaskRegistry,
+    task_id: &str,
+    session: &Arc<ReusableExecSession>,
+) -> bool {
+    let mut tasks = registry.lock().await;
+    match tasks.get_mut(task_id) {
+        Some(entry) if entry.record.status == "running" => {
+            entry.session = Some(Arc::clone(session));
+            true
+        }
+        _ => false,
+    }
+}
+
+async fn finish_command_task(
+    registry: &CommandTaskRegistry,
+    task_id: &str,
+    result: Result<McpCommandResult, AppError>,
+) {
+    let mut tasks = registry.lock().await;
+    let Some(entry) = tasks.get_mut(task_id) else {
+        return;
+    };
+    entry.abort_handle = None;
+    if entry.record.status != "running" {
+        return;
+    }
+    entry.record.finished_at_ms = Some(now_millis());
+    match result {
+        Ok(result) => {
+            entry.record.status = "succeeded".to_string();
+            entry.record.result = Some(result);
+        }
+        Err(error) => {
+            entry.record.status = if error.code == "mcp_command_timeout" {
+                "timed_out".to_string()
+            } else {
+                "failed".to_string()
+            };
+            entry.record.error = Some(error);
+        }
+    }
+}
+
+pub async fn get_command_task(task_id: &str) -> Result<Value, AppError> {
+    let mut tasks = command_task_registry().lock().await;
+    prune_expired_command_tasks(&mut tasks, now_millis());
+    tasks
+        .get(task_id.trim())
+        .map(|entry| task_record_summary(&entry.record))
+        .ok_or_else(|| {
+            AppError::new(
+                "mcp_task_not_found",
+                "MCP 任务不存在或已过期。",
+                format!("task_id={task_id}"),
+                true,
+            )
+        })
+}
+
+pub async fn get_command_task_output(task_id: &str) -> Result<Value, AppError> {
+    let task = get_command_task(task_id).await?;
+    Ok(json!({
+        "task_id": task.get("task_id").cloned().unwrap_or(Value::Null),
+        "status": task.get("status").cloned().unwrap_or(Value::Null),
+        "result": task.get("result").cloned().unwrap_or(Value::Null),
+        "error": task.get("error").cloned().unwrap_or(Value::Null),
+    }))
+}
+
+pub async fn cancel_command_task(task_id: &str) -> Result<Value, AppError> {
+    let mut tasks = command_task_registry().lock().await;
+    let entry = tasks.get_mut(task_id.trim()).ok_or_else(|| {
+        AppError::new(
+            "mcp_task_not_found",
+            "MCP 任务不存在或已过期。",
+            format!("task_id={task_id}"),
+            true,
+        )
+    })?;
+    if is_terminal_task_status(&entry.record.status) {
+        return Ok(task_record_summary(&entry.record));
+    }
+    let abort_handle = entry.abort_handle.take();
+    let session = entry.session.take();
+    entry.record.status = "cancelled".to_string();
+    entry.record.finished_at_ms = Some(now_millis());
+    let summary = task_record_summary(&entry.record);
+    drop(tasks);
+    if let Some(abort_handle) = abort_handle {
+        abort_handle.abort();
+    }
+    // Closing the task-owned SSH session gives a running remote command a chance
+    // to receive the disconnect instead of leaving it detached on the host.
+    if let Some(session) = session {
+        tokio::spawn(async move {
+            session.close().await;
+        });
+    }
+    Ok(summary)
 }
 
 pub async fn test_connection(
@@ -1155,6 +1505,7 @@ pub async fn execute_script(
     max_output_bytes: Option<usize>,
     settings: &McpSettings,
 ) -> Result<McpCommandResult, AppError> {
+    let timeout = validate_timeout(timeout_seconds, MAX_SYNC_TIMEOUT_SECONDS)?;
     validate_local_read_path(script_path, false)?;
     let name = script_path
         .file_name()
@@ -1177,7 +1528,7 @@ pub async fn execute_script(
         root,
         connection_id,
         &command,
-        timeout_seconds,
+        Some(timeout.as_secs()),
         max_output_bytes,
         true,
         settings,
@@ -2263,8 +2614,28 @@ pub fn tool_schemas() -> Vec<Value> {
         ),
         tool(
             "execute_command",
-            "Execute a controlled SSH command on a saved connection.",
-            json!({ "type": "object", "properties": { "connection_id": { "type": "string" }, "command": { "type": "string" }, "timeout_seconds": { "type": "integer" }, "max_output_bytes": { "type": "integer" }, "confirm_dangerous": { "type": "boolean" } }, "required": ["connection_id", "command"] }),
+            "Execute a short-lived controlled SSH command on a saved connection. For commands that may exceed the MCP client's tool-call timeout, use execute_command_async.",
+            json!({ "type": "object", "properties": { "connection_id": { "type": "string" }, "command": { "type": "string" }, "timeout_seconds": { "type": "integer", "minimum": 1, "maximum": MAX_SYNC_TIMEOUT_SECONDS }, "max_output_bytes": { "type": "integer" }, "confirm_dangerous": { "type": "boolean" } }, "required": ["connection_id", "command"] }),
+        ),
+        tool(
+            "execute_command_async",
+            "Start a long-running controlled SSH command and return a task id immediately. Use this when a command may exceed the MCP client's tool-call timeout; poll get_task_status or get_task_output, and use cancel_task when needed.",
+            json!({ "type": "object", "properties": { "connection_id": { "type": "string" }, "command": { "type": "string" }, "timeout_seconds": { "type": "integer", "minimum": 1, "maximum": MAX_ASYNC_TIMEOUT_SECONDS }, "max_output_bytes": { "type": "integer" }, "confirm_dangerous": { "type": "boolean" } }, "required": ["connection_id", "command"] }),
+        ),
+        tool(
+            "get_task_status",
+            "Get the status and final result of an asynchronous SSH command.",
+            json!({ "type": "object", "properties": { "task_id": { "type": "string" } }, "required": ["task_id"] }),
+        ),
+        tool(
+            "get_task_output",
+            "Get the output and error of an asynchronous SSH command.",
+            json!({ "type": "object", "properties": { "task_id": { "type": "string" } }, "required": ["task_id"] }),
+        ),
+        tool(
+            "cancel_task",
+            "Cancel an asynchronous SSH command that is still running.",
+            json!({ "type": "object", "properties": { "task_id": { "type": "string" } }, "required": ["task_id"] }),
         ),
         tool(
             "server_monitor",
@@ -2294,7 +2665,7 @@ pub fn tool_schemas() -> Vec<Value> {
         tool(
             "execute_script",
             "Upload and execute a local script.",
-            json!({ "type": "object", "properties": { "connection_id": { "type": "string" }, "script_path": { "type": "string" }, "interpreter": { "type": "string" }, "args": { "type": "string" }, "timeout_seconds": { "type": "integer" }, "max_output_bytes": { "type": "integer" } }, "required": ["connection_id", "script_path"] }),
+            json!({ "type": "object", "properties": { "connection_id": { "type": "string" }, "script_path": { "type": "string" }, "interpreter": { "type": "string" }, "args": { "type": "string" }, "timeout_seconds": { "type": "integer", "minimum": 1, "maximum": MAX_SYNC_TIMEOUT_SECONDS }, "max_output_bytes": { "type": "integer" } }, "required": ["connection_id", "script_path"] }),
         ),
     ]
 }
@@ -2328,8 +2699,18 @@ pub fn value_get_str<'a>(arguments: &'a Value, key: &str) -> Result<&'a str, App
         .ok_or_else(|| AppError::new("mcp_argument_missing", "MCP 参数缺失。", key, true))
 }
 
-pub fn value_get_u64(arguments: &Value, key: &str) -> Option<u64> {
-    arguments.get(key).and_then(Value::as_u64)
+pub fn value_get_timeout_seconds(arguments: &Value) -> Result<Option<u64>, AppError> {
+    match arguments.get("timeout_seconds") {
+        None | Some(Value::Null) => Ok(None),
+        Some(value) => value.as_u64().map(Some).ok_or_else(|| {
+            AppError::new(
+                "mcp_timeout_invalid",
+                "MCP 命令超时必须是正整数秒。",
+                format!("timeout_seconds={value}"),
+                true,
+            )
+        }),
+    }
 }
 
 pub fn value_get_usize(arguments: &Value, key: &str) -> Option<usize> {
@@ -2403,8 +2784,112 @@ mod tests {
         assert!(tool_names.contains(&"list_connections".to_string()));
         assert!(tool_names.contains(&"get_connection".to_string()));
         assert!(tool_names.contains(&"execute_command".to_string()));
+        assert!(tool_names.contains(&"execute_command_async".to_string()));
+        assert!(tool_names.contains(&"get_task_status".to_string()));
+        assert!(tool_names.contains(&"get_task_output".to_string()));
+        assert!(tool_names.contains(&"cancel_task".to_string()));
         assert!(tool_names.contains(&"upload_directory".to_string()));
         assert_eq!(tool_names.len(), status(&settings).tools.len());
+    }
+
+    #[test]
+    fn timeout_validation_rejects_values_above_server_limit() {
+        assert_eq!(
+            validate_timeout(None, MAX_SYNC_TIMEOUT_SECONDS)
+                .unwrap()
+                .as_secs(),
+            30
+        );
+        assert!(validate_timeout(Some(300), MAX_SYNC_TIMEOUT_SECONDS).is_ok());
+        assert_eq!(
+            validate_timeout(Some(301), MAX_SYNC_TIMEOUT_SECONDS)
+                .unwrap_err()
+                .code,
+            "mcp_timeout_out_of_range"
+        );
+        assert!(validate_timeout(Some(1800), MAX_ASYNC_TIMEOUT_SECONDS).is_ok());
+        assert_eq!(
+            validate_timeout(Some(0), MAX_ASYNC_TIMEOUT_SECONDS)
+                .unwrap_err()
+                .code,
+            "mcp_timeout_out_of_range"
+        );
+        let error = validate_timeout(Some(1801), MAX_ASYNC_TIMEOUT_SECONDS)
+            .expect_err("timeout should be rejected");
+        assert_eq!(error.code, "mcp_timeout_out_of_range");
+    }
+
+    #[test]
+    fn timeout_argument_rejects_non_integer_values() {
+        assert_eq!(value_get_timeout_seconds(&json!({})).unwrap(), None);
+        assert_eq!(
+            value_get_timeout_seconds(&json!({ "timeout_seconds": null })).unwrap(),
+            None
+        );
+        assert_eq!(
+            value_get_timeout_seconds(&json!({ "timeout_seconds": 60 })).unwrap(),
+            Some(60)
+        );
+        for value in [json!(-5), json!("60"), json!(60.5)] {
+            let error = value_get_timeout_seconds(&json!({ "timeout_seconds": value }))
+                .expect_err("invalid timeout should be rejected");
+            assert_eq!(error.code, "mcp_timeout_invalid");
+        }
+    }
+
+    fn task_entry(task_id: &str, status: &str, created_at_ms: u128) -> McpTaskEntry {
+        McpTaskEntry {
+            record: McpTaskRecord {
+                task_id: task_id.to_string(),
+                connection_id: "conn".to_string(),
+                command: "true".to_string(),
+                status: status.to_string(),
+                created_at_ms,
+                started_at_ms: None,
+                finished_at_ms: is_terminal_task_status(status).then_some(created_at_ms),
+                result: None,
+                error: None,
+            },
+            abort_handle: None,
+            session: None,
+        }
+    }
+
+    #[test]
+    fn command_task_trim_drops_expired_and_oldest_finished_tasks_only() {
+        let now_ms = FINISHED_COMMAND_TASK_TTL_MS * 2;
+        let mut tasks = BTreeMap::new();
+        tasks.insert("expired".to_string(), task_entry("expired", "succeeded", 0));
+        tasks.insert(
+            "old-running".to_string(),
+            task_entry("old-running", "running", 0),
+        );
+        prune_expired_command_tasks(&mut tasks, now_ms);
+        assert!(!tasks.contains_key("expired"));
+        assert!(tasks.contains_key("old-running"));
+
+        for index in 1..MAX_COMMAND_TASKS {
+            let task_id = format!("done-{index:03}");
+            tasks.insert(
+                task_id.clone(),
+                task_entry(&task_id, "failed", now_ms - index as u128),
+            );
+        }
+        assert_eq!(tasks.len(), MAX_COMMAND_TASKS);
+        trim_command_tasks(&mut tasks, now_ms);
+        assert_eq!(tasks.len(), MAX_COMMAND_TASKS - 1);
+        assert!(tasks.contains_key("old-running"));
+        assert!(!tasks.contains_key(&format!("done-{:03}", MAX_COMMAND_TASKS - 1)));
+    }
+
+    #[test]
+    fn terminal_task_statuses_are_not_restarted_or_counted_as_active() {
+        for status in ["succeeded", "failed", "timed_out", "cancelled"] {
+            assert!(is_terminal_task_status(status));
+        }
+        for status in ["queued", "running"] {
+            assert!(!is_terminal_task_status(status));
+        }
     }
 
     #[test]

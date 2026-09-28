@@ -863,13 +863,37 @@ async fn call_tool(
                 data_dir,
                 mcp::value_get_str(&arguments, "connection_id")?,
                 mcp::value_get_str(&arguments, "command")?,
-                mcp::value_get_u64(&arguments, "timeout_seconds"),
+                mcp::value_get_timeout_seconds(&arguments)?,
                 mcp::value_get_usize(&arguments, "max_output_bytes"),
                 mcp::value_get_bool(&arguments, "confirm_dangerous"),
                 &settings,
             )
             .await?
         )),
+        "execute_command_async" => {
+            mcp::start_command_task(
+                data_dir,
+                mcp::value_get_str(&arguments, "connection_id")?,
+                mcp::value_get_str(&arguments, "command")?,
+                mcp::value_get_timeout_seconds(&arguments)?,
+                mcp::value_get_usize(&arguments, "max_output_bytes"),
+                mcp::value_get_bool(&arguments, "confirm_dangerous"),
+                &settings,
+            )
+            .await
+        }
+        "get_task_status" => {
+            mcp::ensure_ssh_enabled(&settings)?;
+            mcp::get_command_task(mcp::value_get_str(&arguments, "task_id")?).await
+        }
+        "get_task_output" => {
+            mcp::ensure_ssh_enabled(&settings)?;
+            mcp::get_command_task_output(mcp::value_get_str(&arguments, "task_id")?).await
+        }
+        "cancel_task" => {
+            mcp::ensure_ssh_enabled(&settings)?;
+            mcp::cancel_command_task(mcp::value_get_str(&arguments, "task_id")?).await
+        }
         "server_monitor" => Ok(json!(
             mcp::server_monitor(
                 data_dir,
@@ -925,7 +949,7 @@ async fn call_tool(
                 Path::new(mcp::value_get_str(&arguments, "script_path")?),
                 arguments.get("interpreter").and_then(Value::as_str),
                 arguments.get("args").and_then(Value::as_str),
-                mcp::value_get_u64(&arguments, "timeout_seconds"),
+                mcp::value_get_timeout_seconds(&arguments)?,
                 mcp::value_get_usize(&arguments, "max_output_bytes"),
                 &settings,
             )

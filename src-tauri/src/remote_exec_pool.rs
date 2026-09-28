@@ -123,6 +123,16 @@ impl RemoteExecSessionPool {
         }
     }
 
+    pub(crate) async fn invalidate_connection_detached(&self, connection_id: &str) {
+        let removed = self.sessions.lock().await.remove(connection_id);
+        if let Some(handle) = removed {
+            let pool = self.clone();
+            tokio::spawn(async move {
+                pool.close_handle(handle).await;
+            });
+        }
+    }
+
     pub(crate) async fn exec_with_stdout_chunks(
         &self,
         app: &AppHandle,
