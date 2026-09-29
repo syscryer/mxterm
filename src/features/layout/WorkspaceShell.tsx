@@ -690,7 +690,7 @@ interface DownloadTransferRunOptions {
 const defaultLeftPaneWidth = 336;
 const minLeftPaneWidth = 248;
 const maxLeftPaneWidth = 520;
-const defaultRightPaneWidth = 360;
+const defaultRightPaneWidth = 384;
 const minRightPaneWidth = 300;
 const maxRightPaneWidth = 560;
 const minCenterPaneWidth = 520;
@@ -2291,6 +2291,7 @@ export function WorkspaceShell() {
         active={showWorkspaceToolPane && !rightPaneCollapsed && rightTool === "ai"}
         commandDraft={commandSenderInput}
         connection={activeWorkspaceMode === "ssh" ? activeConnection : null}
+        connections={connections}
         contextRequestKey={aiContextRequestKey}
         initialContexts={aiInitialContexts}
         recentCommands={commandHistoryEntries}

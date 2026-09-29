@@ -1,3 +1,4 @@
+mod ai_agent;
 mod ai_assistant;
 pub mod app_error;
 mod command_library;
@@ -232,6 +233,7 @@ pub fn run() {
             ai_assistant::ai_chat_session_clear,
             ai_assistant::ai_chat_stream_start,
             ai_assistant::ai_chat_stream_stop,
+            ai_assistant::ai_chat_tool_decision,
             ai_assistant::ai_command_assess,
         ])
         .run(tauri::generate_context!())

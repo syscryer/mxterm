@@ -2150,12 +2150,14 @@ aiProviderConfigList(): Promise<AiProviderConfig[]>
 aiProviderConfigSave(request: AiProviderConfigInput): Promise<AiProviderConfig>
 aiProviderConfigDelete(id: string): Promise<void>
 aiProviderConfigRevealApiKey(id: string): Promise<{ api_key: string }>
+aiProviderModelsList(request: AiProviderConfigInput): Promise<AiProviderModelOption[]>
 aiChatSessionList(): Promise<AiChatSessionSummary[]>
 aiChatSessionGet(sessionId: string): Promise<AiChatSession>
 aiChatSessionDelete(sessionId: string): Promise<void>
 aiChatSessionClear(sessionId: string): Promise<AiChatSession>
 aiChatStreamStart(request: AiChatStreamStartRequest): Promise<AiChatStreamStartResponse>
 aiChatStreamStop(streamId: string): Promise<void>
+aiChatToolDecision(streamId: string, toolCallId: string, approved: boolean): Promise<void>
 aiCommandAssess(command: string): Promise<AiCommandAssessment>
 listenAiChatStream(handler: (event: AiChatStreamEvent) => void): Promise<UnlistenFn>
 ```
@@ -2164,8 +2166,22 @@ Core payload fields:
 
 ```ts
 type AiProviderKind = "openai" | "claude"
-type AiApiFormat = "openai_compatible" | "anthropic"
+type AiApiFormat = "openai_compatible" | "anthropic" | "responses"
 type AiCommandRisk = "safe" | "dangerous"
+
+type AiModelConfig = {
+  id: string
+  context_window: number
+  max_output_tokens?: number | null
+  enabled: boolean
+}
+
+type AiProviderConfig = {
+  // model remains the compatibility default; models is the configured catalog.
+  model: string
+  models: AiModelConfig[]
+  // other provider metadata omitted here
+}
 
 type AiContextBlock = {
   id: string
@@ -2176,7 +2192,44 @@ type AiContextBlock = {
   line_count: number
   char_count: number
 }
+
+type AiAgentRequest = {
+  connection_id: string
+  mode?: "assist" | "execute" | "full"
+  working_directory?: string | null
+  terminal_output?: string | null
+}
+
+type AiToolCallStatus = "pending_approval" | "running" | "completed" | "failed" | "rejected" | "cancelled"
+
+type AiToolCallRecord = {
+  id: string
+  name: "run_command" | "server_monitor" | "read_terminal_output" | string
+  command?: string | null
+  status: AiToolCallStatus | string
+  risk?: AiCommandRisk | null
+  reasons: string[]
+  exit_status?: number | null
+  output: string
+  output_truncated: boolean
+  duration_ms?: number | null
+  error?: string | null
+  text_offset: number
+}
 ```
+
+`AiChatMessage.tool_calls`, `AiChatStreamStartRequest.agent`, and `AiChatStreamEvent.tool_call` (with `kind = "tool_call"`) carry these payloads.
+
+Compose footer control contract:
+
+- The textarea and footer share one bordered compose container. The left group contains the AI execution-mode select (chat, assist, execute, and full-access); full-access uses the warning token. The right group contains the SSH status, provider+model picker, reasoning select, and stop/send actions. Picker, mode, and reasoning triggers remain borderless inside the compose box.
+- `AiModelPicker` renders one trigger showing the current model label and opens a two-level menu: provider rows (`select-menu-item ai-model-picker-provider`, check icon on the active provider) open a flyout submenu (`ai-model-picker-sub`) listing only that provider's enabled configured models; a bottom 管理模型 item calls `onOpenSettings`. It does not fetch the remote catalog while opening the chat picker. The settings page owns `aiProviderModelsList(...)`, displays every returned model without filtering by the model input, and lets the user add selected entries to the provider's configured model list.
+- 模型 selection is session-local (`selectedModel`, not persisted); provider selection keeps `localStorage` persistence. Switching provider through the picker must not let the provider-change reset effect overwrite the just-chosen model (skip flag).
+- The 思考等级 dropdown is driven by the selected model's effective capability metadata. When the provider/model does not declare custom levels, the built-in default is `disabled | enabled`, with `enabled` selected initially; for declared levels without an explicit default, the last level is selected like ZCode. The dropdown is disabled and forced to null when the selected provider has `thinking_mode === "off"`.
+- Picker, execution-mode, and reasoning dropdowns are disabled while a stream is running.
+- `AiChatStreamStartRequest.model` carries the selected model id or null; the backend trims it and, when non-empty, overrides the stored config model for that request only (never persisted). Blank or whitespace is treated as not sent.
+- `AiChatStreamStartRequest.host_scope` carries `user@host:port` derived from the active SSH `ConnectionProfile` and `connection_id` carries `connection.id`; both are null when no SSH connection is active. The backend stores them on the session row only at creation and exposes them back through `AiChatSessionSummary`.
+- The history popup (`ai-history-menu`) header includes an `AppSelect` scope filter; the choice is panel state, not persisted. Options are flat and grouped by connection: SSH `ConnectionProfile`s that have at least one session (sidebar order, labeled by profile `name` — falling back to `user@host:port` when the name is blank, suffixed with the scope in parentheses when names collide, and ` · 当前` on the active connection, which is always listed even with zero sessions and is the default selection), then 未绑定 for every session that does not resolve to a live connection profile (legacy rows, sessions started with no SSH connection, or deleted connections), then 全部会话 last. The chooser is an inline expandable section inside the popup (toggle button `ai-history-scope-toggle` + `ai-history-scope-panel`), never a floating overlay — options must not occlude the session list; the option list scrolls at max-height 148px and option rows reuse the shared `app-select-item` + `select-menu-item` and `app-select-search-*` styles so they render flat menu rows, not bordered buttons. When more than 8 options exist an inline search input (placeholder 搜索连接) filters live. If the chosen value disappears from the options the filter falls back to 全部会话. The header count and empty state text must reflect the filtered list.
 
 ### 3. Contracts
 
@@ -2190,9 +2243,17 @@ type AiContextBlock = {
 - Visible context blocks must show source and size metadata and be removable before send. Connection context must be redacted metadata only; do not include passwords, private keys, tokens, or full hidden connection config.
 - If a user-visible context block contains sensitive-looking text such as `Authorization: Bearer`, `api_key=`, `password=`, private-key headers, or `sk-` style keys, the AI panel must mark that context chip with a warning and keep the removable pre-send state. The warning does not silently redact or block user-selected content because complete visible context is persisted by design.
 - AI provider settings must use `AppSelect`, existing settings rows, project token styles, and the `api_key_touched` convention. Existing saved API keys are never prefilled during ordinary config loads, but the eye button may call `aiProviderConfigRevealApiKey(...)` on demand. Reveal-only values must keep `api_key_touched=false` until the user edits the field.
+- `AiProviderConfig` keeps a compatibility `model` default id and a `models` array. Each model stores `id`, positive `context_window`, optional positive `max_output_tokens`, and `enabled`; the settings page edits one model at a time and never treats the remote catalog as an implicit chat model.
 - Assistant command suggestions may be copied, inserted into Command Sender, saved as snippets, or sent to the active terminal. Only direct terminal sends for commands assessed as `dangerous` require `ConfirmDialog`; copy, insert, and save must not be interrupted by confirmation.
 - Direct terminal sends must reuse the existing Command Sender write path so target selection, delivery status, and command history remain consistent.
 - Browser preview or non-Tauri runtime must show stable unavailable states and must not fake persistence or model calls.
+- The "执行命令" toggle lives in the compose footer as an `ai-mini-button` with `aria-pressed` and the shared `.active` state. It defaults to off, is not persisted, is disabled while a stream is running, and is only available when the panel receives an SSH `connection`; local terminals and disconnected panes stay in plain chat.
+- When the toggle is on, `sendMessage` passes `agent = { connection_id, working_directory, terminal_output }` with the current SSH connection id, tracked terminal directory, and the last 20000 chars of recent terminal output. When it is off, `agent` must be `null` so the backend never advertises tools.
+- Messages render as a flat flow, not cards: `.ai-message` has no border/background; user messages are a right-aligned `ai-message-bubble` (max-width 88%, primary-tinted) holding context chips + markdown content; assistant messages are full-width markdown content. The message header only appears while status is not `complete` (streaming / stopped / error) and shows just the status text — no role label. Hovering or focusing a message reveals `ai-message-meta` under it: a copy button (`copyTextToClipboard` on raw content) and the `HH:MM` local time parsed from `created_at` (epoch millis string; seconds and ISO strings are tolerated). The meta row reserves space and only changes opacity.
+- `tool_call` stream events upsert records by `id` into the matching assistant message; they must be matched by `stream_id` like chunks. Assistant messages with `tool_calls` render text segments and tool cards interleaved by `text_offset` (split with `Array.from(content)` to match Rust char counts).
+- Tool cards render as a single collapsed row by default (no chevron; the whole row is the toggle): tool icon, tool title, the command collapsed to one line with ellipsis (or a short description for non-command tools), and a status pill. Clicking the row (`aria-expanded`) expands the full command, danger reasons, errors, and output with exit code / duration / truncation metadata. `pending_approval` cards default to expanded so the reasons and approval buttons are visible; user toggles are kept per tool call id.
+- Assistant Markdown supports GFM pipe tables (header row + `---` separator, `:` alignment, `\|` escapes, pipes inside inline code) rendered as `ai-md-table` inside a horizontally scrollable wrapper, and inline `**bold**` that wraps inline code. Table cells are not scanned for command suggestions.
+- Only `pending_approval` cards show inline `拒绝` / `执行` buttons that call `aiChatToolDecision(...)`; buttons disable while the decision is in flight and the card state changes only from backend events. Do not auto-approve or re-run commands from the frontend.
 
 ### 4. Validation & Error Matrix
 
@@ -2211,6 +2272,10 @@ type AiContextBlock = {
 | Dangerous command direct-send | Show `ConfirmDialog` before `terminalWrite`. |
 | Safe command direct-send | Send without confirmation. |
 | Copy / insert / save dangerous command | Do not show the dangerous-send confirmation. |
+| No SSH connection in the active pane | Disable the "执行命令" toggle and send plain chat requests. |
+| Agent tool call is `pending_approval` | Show inline reject/execute buttons on the tool card; keep "停止" available. |
+| Agent tool decision fails to send | Re-enable the card buttons and show the inline error. |
+| Stream stops or errors during tool calls | Show backend-settled `cancelled` records and keep partial text. |
 
 ### 5. Good / Base / Bad Cases
 
@@ -2236,6 +2301,7 @@ type AiContextBlock = {
 - Cross-check TypeScript request/response fields against Rust structs in `src-tauri/src/ai_assistant.rs`.
 - Check stream lifecycle changes for first-chunk races by ensuring `streamStateRef.current` is set before any event handler can process returned stream events.
 - Manual or automated desktop checks should cover no-config state, provider switching, streaming reply, stop, retry, session delete/clear, terminal-selection context, sensitive-context warning, command copy/insert/save/send, dangerous-send confirmation, and dark theme contrast.
+- For agent mode also cover: toggle disabled without SSH, read-only command auto-run, dangerous command approve and reject, stop while a tool is running or pending, reopening a session with persisted tool cards, and tool status colors in light, dark, and system-dark themes.
 
 ### 7. Wrong vs Correct
 
@@ -2255,6 +2321,7 @@ const response = await aiChatStreamStart({
   session_id: activeSessionId,
   content,
   contexts,
+  model: selectedModel || null,
 });
 ```
 

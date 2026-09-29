@@ -24,3 +24,4 @@
 - 不自动提交或推送 git；所有更改先暂存并等待人工审核。
 - 本仓库对外开源：提交身份统一使用 `syscryer <syscryer@live.cn>`；新克隆仓库先用 `git config user.name` / `user.email` 固定身份，不要使用公司邮箱或真实姓名提交。
 - 提交前必须检查 `git status --short` 和 staged diff，确认无客户标识、内网地址、凭据等敏感信息。
+- Windows 上 `cargo test --lib` 的测试程序若启动即报 `0xc0000139`（STATUS_ENTRYPOINT_NOT_FOUND），是库测试 exe 缺少 Common-Controls v6 清单；在 `src-tauri` 下用 `cargo rustc --lib --profile test -- -C link-arg=/MANIFEST:EMBED -C "link-arg=/MANIFESTINPUT:<含 Microsoft.Windows.Common-Controls 6.0.0.0 依赖的清单路径>"` 重新链接后，直接运行 `target/debug/deps/m_xterm_lib-*.exe <过滤词>`。`terminal::local::tests::local_session_accepts_input_and_returns_output` 依赖本机 shell 启动速度，超时失败属环境问题。

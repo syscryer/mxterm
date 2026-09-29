@@ -2864,7 +2864,7 @@ Metadata reads stay redacted and do not depend on unlocking the local vault.
 ### 1. Scope / Trigger
 
 - Trigger: backend code adds or changes the built-in AI chat assistant, AI provider configuration persistence, chat history tables, command-risk assessment, or `ai:chat_stream` events.
-- Source files: `src-tauri/src/ai_assistant.rs`, `src-tauri/src/events.rs`, `src-tauri/src/lib.rs`, `src-tauri/src/storage_sqlite.rs`, `src-tauri/src/storage_repository.rs`, `src/shared/tauri/commands.ts`, and `src/shared/tauri/events.ts`.
+- Source files: `src-tauri/src/ai_assistant.rs`, `src-tauri/src/ai_agent.rs`, `src-tauri/src/events.rs`, `src-tauri/src/lib.rs`, `src-tauri/src/storage_sqlite.rs`, `src-tauri/src/storage_repository.rs`, `src/shared/tauri/commands.ts`, and `src/shared/tauri/events.ts`.
 - This is a cross-layer command contract because Rust owns API key storage, provider request protocols, streaming events, local chat persistence, and authoritative command-risk assessment while React owns visible context selection and command suggestion actions.
 
 ### 2. Signatures
@@ -2880,14 +2880,46 @@ ai_chat_session_delete(app: AppHandle, request: AiChatSessionIdRequest) -> Resul
 ai_chat_session_clear(app: AppHandle, request: AiChatSessionIdRequest) -> Result<AiChatSession, AppError>
 ai_chat_stream_start(app: AppHandle, manager: State<AiChatStreamManager>, request: AiChatStreamStartRequest) -> Result<AiChatStreamStartResponse, AppError>
 ai_chat_stream_stop(app: AppHandle, manager: State<AiChatStreamManager>, request: AiChatStreamStopRequest) -> Result<(), AppError>
+ai_chat_tool_decision(manager: State<AiChatStreamManager>, request: AiChatToolDecisionRequest) -> Result<(), AppError>
 ai_command_assess(request: AiCommandAssessRequest) -> Result<AiCommandAssessment, AppError>
 ```
+
+Agent-mode payloads:
+
+```rust
+AiChatStreamStartRequest { ..., agent: Option<AiAgentRequest>, reasoning_level: Option<String>, model: Option<String>, host_scope: Option<String> }
+AiAgentRequest { connection_id: String, mode: Option<String>, working_directory: Option<String>, terminal_output: Option<String> }
+AiChatToolDecisionRequest { stream_id: String, tool_call_id: String, approved: bool }
+AiToolCallRecord { id, name, command, status, risk, reasons, exit_status, output, output_truncated, duration_ms, error, text_offset }
+```
+
+Agent execution modes are `assist`, `execute`, and `full`. Assist rejects dangerous commands, execute keeps the existing per-command approval flow, and full executes dangerous commands without an approval pause.
+
+Reasoning level contract:
+
+- `reasoning_level` accepts the configured model value. The built-in default is `disabled | enabled` with `enabled` selected by default; models that explicitly declare other levels keep those values. Blank or absent means no thinking fields are sent.
+- Provider configs carry `thinking_mode: auto | off`. `off` force-clears the effective level server-side; the panel hides the toggle for such providers.
+- OpenAI-compatible requests map `disabled` to `thinking.type=disabled`, `enable_thinking=false`, and `reasoning_effort=none`; `enabled` maps to the enabled/high form. Other declared levels pass through as the effort value.
+- Anthropic requests map `disabled` to `thinking.type=disabled` and `enabled` to the ZCode-compatible adaptive/high form. Legacy `low | medium | high` values continue to use the budget form (2048/8192/16384) and lift `max_tokens` above the thinking budget.
+- Invalid levels or modes fail closed with `ai_reasoning_level_invalid` / `ai_thinking_mode_invalid`; connectivity tests always send no thinking fields.
+
+Model override contract:
+
+- `AiChatStreamStartRequest.model` is `Option<String>`; the trimmed value overrides the loaded provider config's model for that single request (including the agent path, which shares the same resolved config) and is never written back to stored configs or chat rows.
+- Blank or whitespace-only values are treated as not sent and keep the stored config model. Model names are free-form: no whitelist validation is applied, and provider errors surface through the normal stream error path.
+- The compose footer 模型 dropdown supplies this field from session-local frontend state; `ai_provider_models_list` remains the only model-discovery command and needs no `api_key` when the request carries the saved config `id`.
+
+Host scope contract:
+
+- `AiChatStreamStartRequest.host_scope` is `Option<String>` describing which host the conversation belongs to (frontend sends `user@host:port` of the active SSH connection), and `connection_id` carries the originating `ConnectionProfile.id`. Blank or whitespace-only values are treated as absent; values longer than 256 characters are rejected with `ai_host_scope_invalid` / `ai_connection_id_invalid`.
+- Both tags are captured once at session creation and stored on the `ai_chat_sessions` row; they are never updated on later turns, so opening a session while connected to a different host does not re-scope it.
+- `AiChatSessionSummary.host_scope` and `connection_id` expose the stored values to the frontend history filter; `NULL` marks legacy/global sessions created before the columns existed. `connection_id` is the grouping key (one option per connection profile); `host_scope` is a display snapshot used when the connection profile no longer exists.
 
 Persistent tables:
 
 ```sql
-ai_chat_sessions(id, title, provider_config_id, created_at, updated_at)
-ai_chat_messages(id, session_id, role, content, contexts_json, commands_json, status, created_at, updated_at)
+ai_chat_sessions(id, title, provider_config_id, created_at, updated_at, host_scope, connection_id)
+ai_chat_messages(id, session_id, role, content, contexts_json, commands_json, status, created_at, updated_at, tool_calls_json)
 ```
 
 Event:
@@ -2901,9 +2933,10 @@ const AI_CHAT_STREAM_EVENT: &str = "ai:chat_stream";
 - Provider config metadata is stored under the app-settings key `ai.provider_configs.v1`; API keys must be stored only through the vault using a stable `ai:{config_id}:api_key` slot id.
 - `AiProviderConfigInput` uses `api_key_touched` to distinguish preserve vs replace/delete. If `api_key_touched=false`, backend must preserve the existing vault entry even when `api_key` is absent or blank. If `api_key_touched=true` and the trimmed key is blank, backend deletes the vault secret.
 - `ai_provider_config_reveal_api_key` is the only command that may return a provider API key. It must load the saved config, read only that config's vault slot, and must not write the revealed key into app settings, SQLite chat tables, logs, or config list responses.
-- `provider` is a display/category value (`openai` or `claude`); `api_format` is the actual protocol (`openai_compatible` or `anthropic`) and must drive request shape.
+- `provider` is a display/category value (`openai` or `claude`); `api_format` is the actual protocol (`openai_compatible`, `anthropic`, or `responses`) and must drive request shape. Provider config keeps a compatibility default `model` id plus a `models` array containing `id`, `context_window`, optional `max_output_tokens`, and `enabled`.
 - OpenAI-compatible requests use chat completions shape with bearer auth and streamed `choices[0].delta.content`.
 - Anthropic requests use Messages API shape with `x-api-key`, `anthropic-version`, `max_tokens`, and streamed `content_block_delta` text. Base endpoints may be normalized by appending `/v1/messages`.
+- Responses requests use the `/responses` endpoint with bearer auth, streamed `response.output_text.delta` events, and the configured model's input message list. Base endpoints may be normalized by appending `/v1/responses`.
 - Chat history stores complete visible user messages, assistant content, visible context blocks, extracted command suggestions, and message status. Do not store API keys or hidden connection secrets in chat tables.
 - AI message ordering must not rely on UUID lexical order. User messages and assistant placeholders can share the same timestamp, so session reads and previews must order messages by numeric timestamp plus SQLite insertion order (`rowid`) to keep the user message before the matching assistant reply.
 - `ai_chat_stream_start` must insert the user message plus a streaming assistant placeholder before returning `stream_id`, `session_id`, `user_message_id`, and `assistant_message_id`.
@@ -2914,11 +2947,27 @@ const AI_CHAT_STREAM_EVENT: &str = "ai:chat_stream";
 - Provider stream parsers should accept common compatibility sentinels such as `[DONE]` when a gateway emits them, even for Anthropic-format streams.
 - SSE reading must buffer raw bytes and decode only complete SSE events. Do not decode each network chunk with lossy UTF-8 conversion, because providers can split multibyte Chinese or emoji characters across chunks.
 - Provider request and HTTP error raw messages must redact or suppress bodies that contain sensitive-looking fields such as `authorization`, `x-api-key`, `api_key`, bearer tokens, passwords, or `sk-` keys.
+- Agent mode ("执行命令") is opt-in per request: only a request with `agent` set may send provider `tools`. Requests without `agent` keep the plain chat path and must not execute anything.
+- `ai_chat_stream_start` must resolve the agent connection through `resolve_saved_connection(app, connection_id, None)` before inserting chat rows, so non-SSH profiles or connections without saved credentials fail fast without leaving orphan messages.
+- Agent tools are fixed in `ai_agent.rs`: `run_command { command, timeout_seconds? }`, `server_monitor {}`, and `read_terminal_output { max_chars? }`. `read_terminal_output` only returns the snapshot sent with the request; it must not claim to be live.
+- `run_command` and `server_monitor` execute through the stream manager's own `RemoteExecSessionPool` (a background SSH exec channel), never by writing into the user's interactive terminal. When `working_directory` is known the script is prefixed with `cd <dir> || exit 1`; `~` and `~/...` keep home expansion while the rest of the path is POSIX-quoted.
+- Tool argument validation must not clamp or silently default invalid values: blank commands, commands over 8000 chars, `timeout_seconds` outside 1..=300 (default 60), and `max_chars` outside 200..=20000 (default 6000) return a tool error to the model and mark the record `failed`.
+- Approval policy: every `run_command` is assessed with the same `assess_command` rules as direct terminal sends. `dangerous` commands must emit a `pending_approval` record and wait on `ai_chat_tool_decision`; rejection is returned to the model as a normal tool result so it can choose another approach. `safe` commands and `server_monitor` run without confirmation.
+- `ai_chat_tool_decision` is idempotent: unknown streams or tool calls that are no longer pending return `Ok(())` without side effects.
+- A command timeout must invalidate the pooled connection in the background (`invalidate_connection_detached`) and report a failed tool record; stopping a stream aborts the loop, and running or pending records are settled as `cancelled` before persistence. Remote processes that ignore the dropped channel may keep running on the host.
+- Tool-call streaming must accumulate OpenAI `delta.tool_calls[].function.arguments` fragments by `index`, and Anthropic `tool_use` blocks plus `input_json_delta` fragments by block `index`. Missing tool call ids are replaced with generated `call_*` ids; empty arguments become `{}`.
+- Replayed tool turns must use each provider's native shape: OpenAI `assistant.tool_calls` + `role = "tool"` messages; Anthropic `tool_use` content blocks + a `user` message with `tool_result` blocks (`is_error` set for failures).
+- Each agent reply is limited to 16 tool rounds. Model-visible command output keeps the last 12000 chars of stdout/stderr each; `AiToolCallRecord.output` keeps the last 4000 chars for UI and persistence.
+- `AiChatStreamEvent` adds `kind = "tool_call"` with `tool_call` set; the same record id is re-emitted on every status change (`pending_approval`, `running`, `completed`, `failed`, `rejected`, `cancelled`). `text_offset` is the assistant content length in Unicode scalar values when the call started, so React can interleave text and tool cards.
+- The final assistant row stores all records in `tool_calls_json`. When rebuilding model history, assistant messages append a compact `[本轮工具调用记录]` summary (command, exit status or outcome, first 300 output chars) instead of replaying raw tool output; assistant rows with only tool calls are kept in history.
 
 ### 4. Validation & Error Matrix
 
 | Condition | Error code | Recoverable |
 | --- | --- | --- |
+| Agent request has a blank connection id | `ai_agent_connection_missing` | true |
+| Agent connection is not a saved SSH profile or lacks saved credentials | error from `resolve_saved_connection` | true |
+| Blank tool call id in a decision | `ai_tool_call_missing` | true |
 | Blank provider config name | `ai_provider_name_missing` | true |
 | Blank endpoint | `ai_provider_endpoint_missing` | true |
 | Endpoint is not a valid URL | `ai_provider_endpoint_invalid` | true |
@@ -2965,6 +3014,11 @@ const AI_CHAT_STREAM_EVENT: &str = "ai:chat_stream";
   - Same-timestamp chat messages read back in insertion order.
   - OpenAI-compatible request message construction includes the default system prompt.
   - SSE event extraction preserves multibyte UTF-8 content split across byte chunks.
+  - OpenAI split tool-call arguments and Anthropic `input_json_delta` fragments accumulate into complete tool calls.
+  - Tool turns replay in OpenAI and Anthropic native shapes.
+  - Tool argument validation rejects out-of-range timeout / `max_chars` values instead of clamping.
+  - `tool_calls_json` persists, legacy `ai_chat_messages` tables gain the column, and history rebuild appends the tool summary.
+- Run `cargo test --manifest-path src-tauri/Cargo.toml ai_agent --lib` after changing agent tools, stream accumulation, or approval flow.
 - Run the full Rust suite when practical; document unrelated environment-sensitive PTY failures separately instead of hiding them in AI tests.
 
 ### 7. Wrong vs Correct

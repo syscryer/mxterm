@@ -77,4 +77,5 @@ pub struct AiChatStreamEvent {
     pub delta: Option<String>,
     pub content: Option<String>,
     pub error: Option<String>,
+    pub tool_call: Option<crate::ai_assistant::AiToolCallRecord>,
 }

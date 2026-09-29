@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type FormEvent } from "react";
+import * as Dialog from "@radix-ui/react-dialog";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import {
   Archive,
@@ -20,6 +21,7 @@ import {
   Keyboard,
   KeyRound,
   Layers,
+  Boxes,
   Loader2,
   LockKeyhole,
   Monitor,
@@ -27,6 +29,7 @@ import {
   Palette,
   PanelLeft,
   Plus,
+  Pencil,
   Power,
   RefreshCw,
   RotateCcw,
@@ -47,7 +50,6 @@ import {
 } from "lucide-react";
 
 import { AppSelect } from "../../shared/ui/AppSelect";
-import { AppCombobox } from "../../shared/ui/AppCombobox";
 import { Tooltip } from "../../shared/ui/Tooltip";
 import { ConfirmDialog } from "../../shared/ui/ConfirmDialog";
 import { usernameInputAttributes } from "../../shared/ui/inputAttributes";
@@ -146,6 +148,7 @@ import type {
   AiProviderConfigInput,
   AiProviderKind,
   AiProviderModelOption,
+  AiModelConfig,
 } from "../ai/aiTypes";
 
 interface SettingsViewProps {
@@ -363,13 +366,22 @@ interface AiProviderDraft {
   api_format: AiApiFormat;
   endpoint: string;
   model: string;
+  models: AiModelConfig[];
   api_key: string;
   api_key_touched: boolean;
 }
 
+interface AiModelEditorDraft {
+  id: string;
+  context_window: string;
+  max_output_tokens: string;
+  enabled: boolean;
+}
+
 const aiAccessModeOptions: Array<{ label: string; value: AiApiFormat }> = [
-  { label: "Claude Messages（原生）", value: "anthropic" },
-  { label: "OpenAI Chat Completions（兼容）", value: "openai_compatible" },
+  { label: "Anthropic Messages（/v1/messages）", value: "anthropic" },
+  { label: "Chat Completions（/chat/completions）", value: "openai_compatible" },
+  { label: "Responses（/responses）", value: "responses" },
 ];
 
 function AiSettingsSection() {
@@ -385,6 +397,9 @@ function AiSettingsSection() {
   const [error, setError] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [modelOptions, setModelOptions] = useState<AiProviderModelOption[]>([]);
+  const [modelEditorOpen, setModelEditorOpen] = useState(false);
+  const [modelEditorIndex, setModelEditorIndex] = useState<number | null>(null);
+  const [modelEditorDraft, setModelEditorDraft] = useState<AiModelEditorDraft>(() => emptyAiModelEditorDraft());
   const [showApiKey, setShowApiKey] = useState(false);
   const [apiKeyRevealBusy, setApiKeyRevealBusy] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<AiProviderConfig | null>(null);
@@ -410,11 +425,7 @@ function AiSettingsSection() {
     draft.api_key_touched ? draft.api_key.trim() : selectedConfig?.api_key_saved ? "__saved__" : "",
   ].join("|");
   const modelSourceKeyRef = useRef(modelSourceKey);
-  const modelSelectOptions = modelOptions.map((option) => ({
-    label: renderAiModelOption(option),
-    searchText: [option.id, option.display_name || "", option.subtitle || ""].join(" "),
-    value: option.id,
-  }));
+  const configuredModelIds = new Set(draft.models.map((model) => model.id));
 
   useEffect(() => {
     selectedIdRef.current = selectedId;
@@ -503,6 +514,73 @@ function AiSettingsSection() {
     setModelOptions([]);
     setError(null);
     setMessage(null);
+  }
+
+  function openModelEditor(index: number | null, presetId = "") {
+    const model = index === null ? null : draft.models[index];
+    setModelEditorIndex(index);
+    setModelEditorDraft(
+      model
+        ? {
+            id: model.id,
+            context_window: String(model.context_window),
+            max_output_tokens: model.max_output_tokens ? String(model.max_output_tokens) : "",
+            enabled: model.enabled,
+          }
+        : { ...emptyAiModelEditorDraft(), id: presetId },
+    );
+    setModelEditorOpen(true);
+  }
+
+  function commitModelEditor() {
+    const id = modelEditorDraft.id.trim();
+    const contextWindow = Number(modelEditorDraft.context_window.trim());
+    const maxOutput = modelEditorDraft.max_output_tokens.trim()
+      ? Number(modelEditorDraft.max_output_tokens.trim())
+      : null;
+    if (!id || !Number.isInteger(contextWindow) || contextWindow <= 0) {
+      setError("模型 ID 和上下文窗口必须填写正整数。");
+      return;
+    }
+    if (maxOutput !== null && (!Number.isInteger(maxOutput) || maxOutput <= 0)) {
+      setError("最大输出 Token 必须是正整数。");
+      return;
+    }
+    if (draft.models.some((model, index) => index !== modelEditorIndex && model.id === id)) {
+      setError("模型 ID 已存在，请直接编辑已有模型。");
+      return;
+    }
+    const nextModel: AiModelConfig = {
+      id,
+      context_window: contextWindow,
+      max_output_tokens: maxOutput,
+      enabled: modelEditorDraft.enabled,
+    };
+    setDraft((current) => {
+      const models = [...current.models];
+      if (modelEditorIndex === null) models.push(nextModel);
+      else models[modelEditorIndex] = nextModel;
+      return { ...current, models, model: current.model || id };
+    });
+    setModelEditorOpen(false);
+    setError(null);
+  }
+
+  function removeModel(index: number) {
+    setDraft((current) => {
+      const models = current.models.filter((_, modelIndex) => modelIndex !== index);
+      const model = current.model === current.models[index]?.id ? models[0]?.id || "" : current.model;
+      return { ...current, models, model };
+    });
+  }
+
+  function toggleModel(index: number, enabled: boolean) {
+    setDraft((current) => ({
+      ...current,
+      models: current.models.map((model, modelIndex) =>
+        modelIndex === index ? { ...model, enabled } : model,
+      ),
+    }));
   }
 
   async function reloadConfigs(selectId?: string) {
@@ -647,15 +725,15 @@ function AiSettingsSection() {
   return (
     <section className="settings-page-section">
       <header className="settings-section-head">
-        <h1>AI</h1>
-        <p>维护对话模型配置；名称用于显示，API Key 只保存到本机 vault。</p>
+        <h1>模型设置</h1>
+        <p>管理自定义模型供应商，配置后可在聊天时选择使用。</p>
       </header>
 
       <div className="ai-settings-layout">
         <section className="settings-panel ai-settings-list-panel" aria-label="AI 配置列表">
           <header className="ai-settings-list-head">
             <span>
-              <strong>模型配置</strong>
+                <strong>供应商</strong>
               <small>{aiConfigSummary(configs.length, savedApiKeyCount)}</small>
             </span>
             <button
@@ -743,7 +821,7 @@ function AiSettingsSection() {
             <SettingsRow
               className="ai-provider-row-field"
               icon={Server}
-              title="请求地址"
+              title="Base URL"
               description="可填写官方 API、代理或企业网关地址。"
             >
               <input
@@ -765,8 +843,8 @@ function AiSettingsSection() {
             <SettingsRow
               className="ai-provider-row-field"
               icon={Layers}
-              title="接入模式"
-              description="选择实际请求协议；国内兼容服务通常使用 OpenAI Chat Completions。"
+              title="API 格式"
+              description="选择供应商实际使用的请求协议。"
             >
               <AppSelect
                 ariaLabel="AI 配置接入模式"
@@ -824,39 +902,65 @@ function AiSettingsSection() {
             </SettingsRow>
             <SettingsRow
               className="ai-provider-row-field ai-model-row-field"
-              icon={FileKey}
-              title="模型"
-              description="可手工填写模型 id，也可通过接口自动获取后选择。"
+              icon={Boxes}
+              title="模型列表"
+              description="一个供应商可以配置多个模型；模型参数单独编辑。"
             >
-              <div className="ai-model-field">
-                <div className="ai-model-input-row">
-                  <AppCombobox
-                    ariaLabel="AI 模型"
-                    className="ai-model-combobox"
-                    disabled={loading || saving || testing || modelsLoading || !desktopRuntime}
-                    emptyText="没有匹配的已获取模型"
-                    menuMinWidth={420}
-                    options={modelSelectOptions}
-                    placeholder="例如 gpt-4.1-mini / claude-sonnet-4 / MiniMax-M3"
-                    value={draft.model}
-                    onChange={(value) => {
-                      setDraft((current) => ({ ...current, model: value }));
-                    }}
-                  />
-                  <button
-                    className="settings-action-button"
-                    type="button"
-                    disabled={loading || saving || testing || modelsLoading || !desktopRuntime}
-                    onClick={() => void fetchModels()}
-                  >
-                    {modelsLoading ? (
-                      <Loader2 className="ui-icon spin" aria-hidden="true" />
-                    ) : (
-                      <RefreshCw className="ui-icon" aria-hidden="true" />
-                    )}
-                    <span>{modelsLoading ? "获取中" : "获取模型"}</span>
-                  </button>
+              <div className="ai-model-field ai-zcode-model-field">
+                <div className="ai-model-list-head">
+                  <span>{draft.models.length.toString()} 个已配置模型</span>
+                  <div className="ai-model-list-actions">
+                    <button className="settings-action-button" type="button" disabled={loading || saving || testing || modelsLoading || !desktopRuntime} onClick={() => openModelEditor(null)}>
+                      <Plus className="ui-icon" aria-hidden="true" />
+                      <span>添加模型</span>
+                    </button>
+                    <button className="settings-action-button" type="button" disabled={loading || saving || testing || modelsLoading || !desktopRuntime} onClick={() => void fetchModels()}>
+                      {modelsLoading ? <Loader2 className="ui-icon spin" aria-hidden="true" /> : <RefreshCw className="ui-icon" aria-hidden="true" />}
+                      <span>{modelsLoading ? "获取中" : "获取模型"}</span>
+                    </button>
+                  </div>
                 </div>
+                <div className="ai-configured-model-list">
+                  {draft.models.length === 0 ? (
+                    <div className="ai-model-empty">当前没有配置模型，添加模型后可在聊天中使用。</div>
+                  ) : (
+                    draft.models.map((model, index) => (
+                      <div className={`ai-configured-model-row ${model.enabled ? "" : "is-disabled"}`} key={`${model.id}-${index.toString()}`}>
+                        <span className="ai-configured-model-main">
+                          <strong>{model.id}</strong>
+                          <span>
+                            <small>{formatTokenCount(model.context_window)} 上下文</small>
+                            {model.max_output_tokens ? <small>{formatTokenCount(model.max_output_tokens)} 输出</small> : null}
+                            {draft.model === model.id ? <small className="ai-model-default-badge">默认</small> : null}
+                          </span>
+                        </span>
+                        <span className="ai-configured-model-actions">
+                          <button type="button" className="repository-icon-button" aria-label={`设为默认模型 ${model.id}`} title="设为默认模型" onClick={() => setDraft((current) => ({ ...current, model: model.id }))}>
+                            <Check className={`ui-icon ${draft.model === model.id ? "is-active" : ""}`} aria-hidden="true" />
+                          </button>
+                          <button type="button" className="repository-icon-button" aria-label={`编辑模型 ${model.id}`} title="编辑模型" onClick={() => openModelEditor(index)}>
+                            <Pencil className="ui-icon" aria-hidden="true" />
+                          </button>
+                          <button type="button" className="repository-icon-button danger" aria-label={`删除模型 ${model.id}`} title="删除模型" onClick={() => removeModel(index)}>
+                            <Trash2 className="ui-icon" aria-hidden="true" />
+                          </button>
+                          <SettingsToggle checked={model.enabled} label={`启用模型 ${model.id}`} onChange={(enabled) => toggleModel(index, enabled)} />
+                        </span>
+                      </div>
+                    ))
+                  )}
+                </div>
+                {modelOptions.length > 0 ? (
+                  <div className="ai-fetched-model-list" aria-label="接口返回的模型">
+                    <div className="ai-model-list-subhead">接口返回的全部模型</div>
+                    {modelOptions.map((option) => (
+                      <button key={option.id} type="button" className="ai-fetched-model-option" disabled={configuredModelIds.has(option.id)} onClick={() => openModelEditor(null, option.id)}>
+                        <span><strong>{option.display_name?.trim() || option.id}</strong>{option.subtitle ? <small>{option.subtitle}</small> : null}</span>
+                        <span>{configuredModelIds.has(option.id) ? "已添加" : "添加"}</span>
+                      </button>
+                    ))}
+                  </div>
+                ) : null}
               </div>
             </SettingsRow>
           </div>
@@ -864,8 +968,8 @@ function AiSettingsSection() {
           {!desktopRuntime ? (
             <p className="settings-note">浏览器预览不能保存 AI 配置，请在桌面端操作。</p>
           ) : null}
-          {error ? <p className="settings-path-error" role="alert">{error}</p> : null}
-          {message ? <p className="settings-note" role="status">{message}</p> : null}
+          {error ? <p className="ai-provider-feedback is-error" role="alert">{error}</p> : null}
+          {message ? <p className="ai-provider-feedback is-success" role="status">{message}</p> : null}
 
           <footer className="ai-provider-form-actions">
             <div>
@@ -913,6 +1017,43 @@ function AiSettingsSection() {
           </footer>
         </form>
       </div>
+
+      {modelEditorOpen ? (
+        <Dialog.Root open={modelEditorOpen} onOpenChange={setModelEditorOpen}>
+          <Dialog.Portal>
+            <Dialog.Overlay className="dialog-backdrop ai-model-editor-backdrop" />
+            <Dialog.Content className="ai-model-editor">
+              <header>
+                <div>
+                  <Dialog.Title>{modelEditorIndex === null ? "添加模型" : "编辑模型配置"}</Dialog.Title>
+                  <Dialog.Description>设置模型的上下文容量和输出上限。</Dialog.Description>
+                </div>
+                <Dialog.Close asChild>
+                  <button type="button" className="repository-icon-button" aria-label="关闭">
+                    <X className="ui-icon" aria-hidden="true" />
+                  </button>
+                </Dialog.Close>
+              </header>
+              <label>
+                <span>模型 ID</span>
+                <input value={modelEditorDraft.id} spellCheck={false} autoFocus onChange={(event) => setModelEditorDraft((current) => ({ ...current, id: event.target.value }))} />
+              </label>
+              <label>
+                <span>上下文窗口</span>
+                <input inputMode="numeric" value={modelEditorDraft.context_window} onChange={(event) => setModelEditorDraft((current) => ({ ...current, context_window: event.target.value }))} />
+              </label>
+              <label>
+                <span>最大输出 Token</span>
+                <input inputMode="numeric" placeholder="可选" value={modelEditorDraft.max_output_tokens} onChange={(event) => setModelEditorDraft((current) => ({ ...current, max_output_tokens: event.target.value }))} />
+              </label>
+              <footer>
+                <button type="button" onClick={() => setModelEditorOpen(false)}>取消</button>
+                <button type="button" className="primary-button" onClick={commitModelEditor}>保存</button>
+              </footer>
+            </Dialog.Content>
+          </Dialog.Portal>
+        </Dialog.Root>
+      ) : null}
 
       <ConfirmDialog
         open={Boolean(deleteTarget)}
@@ -2587,8 +2728,18 @@ function emptyAiProviderDraft(): AiProviderDraft {
     api_format: "openai_compatible",
     endpoint: "",
     model: "",
+    models: [],
     api_key: "",
     api_key_touched: false,
+  };
+}
+
+function emptyAiModelEditorDraft(): AiModelEditorDraft {
+  return {
+    id: "",
+    context_window: "200000",
+    max_output_tokens: "",
+    enabled: true,
   };
 }
 
@@ -2603,6 +2754,7 @@ function draftFromConfig(config: AiProviderConfig | null): AiProviderDraft {
     api_format: config.api_format,
     endpoint: config.endpoint,
     model: config.model,
+    models: config.models?.map((model) => ({ ...model })) || (config.model ? [{ id: config.model, context_window: 200000, max_output_tokens: null, enabled: true }] : []),
     api_key: "",
     api_key_touched: false,
   };
@@ -2616,22 +2768,16 @@ function buildAiProviderConfigInput(draft: AiProviderDraft): AiProviderConfigInp
     api_format: draft.api_format,
     endpoint: draft.endpoint,
     model: draft.model,
+    models: draft.models,
     api_key: draft.api_key_touched ? draft.api_key : draft.api_key || undefined,
     api_key_touched: draft.api_key_touched,
   };
 }
 
-function renderAiModelOption(option: AiProviderModelOption) {
-  const title = option.display_name?.trim() || option.id;
-  const subtitle = option.display_name?.trim()
-    ? option.subtitle?.trim() || option.id
-    : option.subtitle?.trim() || null;
-  return (
-    <span className="ai-model-option">
-      <strong>{title}</strong>
-      {subtitle ? <small>{subtitle}</small> : null}
-    </span>
-  );
+function formatTokenCount(value: number) {
+  if (value >= 1_000_000) return `${Math.round(value / 100_000) / 10}M`;
+  if (value >= 1_000) return `${Math.round(value / 100) / 10}K`;
+  return value.toString();
 }
 
 function providerFromAiApiFormat(apiFormat: AiApiFormat): AiProviderKind {
@@ -2639,7 +2785,9 @@ function providerFromAiApiFormat(apiFormat: AiApiFormat): AiProviderKind {
 }
 
 function formatAiAccessModeLabel(apiFormat: AiApiFormat) {
-  return apiFormat === "anthropic" ? "Claude Messages" : "OpenAI Chat Completions";
+  if (apiFormat === "anthropic") return "Anthropic Messages";
+  if (apiFormat === "responses") return "Responses";
+  return "Chat Completions";
 }
 
 function aiConfigSummary(total: number, savedApiKeyCount: number) {

@@ -167,6 +167,8 @@ CREATE TABLE IF NOT EXISTS ai_chat_sessions (
     id TEXT PRIMARY KEY,
     title TEXT NOT NULL,
     provider_config_id TEXT,
+    host_scope TEXT,
+    connection_id TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
@@ -184,6 +186,7 @@ CREATE TABLE IF NOT EXISTS ai_chat_messages (
     status TEXT NOT NULL,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
+    tool_calls_json TEXT NOT NULL DEFAULT '[]',
     FOREIGN KEY(session_id) REFERENCES ai_chat_sessions(id) ON DELETE CASCADE
 );
 
@@ -236,6 +239,22 @@ impl SqliteStore {
         self.ensure_command_snippet_group_column()?;
         self.ensure_command_history_scope_columns()?;
         self.ensure_connection_protocol_columns()?;
+        self.add_column_if_missing(
+            "ai_chat_messages",
+            "tool_calls_json",
+            "ALTER TABLE ai_chat_messages
+             ADD COLUMN tool_calls_json TEXT NOT NULL DEFAULT '[]'",
+        )?;
+        self.add_column_if_missing(
+            "ai_chat_sessions",
+            "host_scope",
+            "ALTER TABLE ai_chat_sessions ADD COLUMN host_scope TEXT",
+        )?;
+        self.add_column_if_missing(
+            "ai_chat_sessions",
+            "connection_id",
+            "ALTER TABLE ai_chat_sessions ADD COLUMN connection_id TEXT",
+        )?;
         self.connection
             .execute(
                 "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (?1, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",
@@ -606,6 +625,97 @@ mod tests {
         let columns = store.table_columns("command_snippets").unwrap();
         assert!(columns.iter().any(|column| column == "group_name"));
         assert!(store.index_exists("idx_command_snippets_group").unwrap());
+    }
+
+    #[test]
+    fn initialize_migrates_legacy_ai_chat_messages_without_tool_calls_column() {
+        let store = open_temp_store("legacy-ai-chat-messages");
+        store
+            .connection
+            .execute_batch(
+                r#"
+                CREATE TABLE ai_chat_sessions (
+                    id TEXT PRIMARY KEY,
+                    title TEXT NOT NULL,
+                    provider_config_id TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+
+                CREATE TABLE ai_chat_messages (
+                    id TEXT PRIMARY KEY,
+                    session_id TEXT NOT NULL,
+                    role TEXT NOT NULL,
+                    content TEXT NOT NULL,
+                    contexts_json TEXT NOT NULL DEFAULT '[]',
+                    commands_json TEXT NOT NULL DEFAULT '[]',
+                    status TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY(session_id) REFERENCES ai_chat_sessions(id) ON DELETE CASCADE
+                );
+
+                INSERT INTO ai_chat_sessions (id, title, provider_config_id, created_at, updated_at)
+                VALUES ('session-1', '旧会话', NULL, '1000', '1000');
+
+                INSERT INTO ai_chat_messages (
+                    id, session_id, role, content, status, created_at, updated_at
+                ) VALUES ('message-1', 'session-1', 'assistant', '旧回复', 'complete', '1001', '1001');
+                "#,
+            )
+            .unwrap();
+
+        store.initialize().unwrap();
+
+        let columns = store.table_columns("ai_chat_messages").unwrap();
+        assert!(columns.iter().any(|column| column == "tool_calls_json"));
+        let tool_calls_json: String = store
+            .connection
+            .query_row(
+                "SELECT tool_calls_json FROM ai_chat_messages WHERE id = 'message-1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(tool_calls_json, "[]");
+    }
+
+    #[test]
+    fn initialize_migrates_legacy_ai_chat_sessions_without_scope_columns() {
+        let store = open_temp_store("legacy-ai-chat-sessions");
+        store
+            .connection
+            .execute_batch(
+                r#"
+                CREATE TABLE ai_chat_sessions (
+                    id TEXT PRIMARY KEY,
+                    title TEXT NOT NULL,
+                    provider_config_id TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+
+                INSERT INTO ai_chat_sessions (id, title, provider_config_id, created_at, updated_at)
+                VALUES ('session-1', '旧会话', NULL, '1000', '1000');
+                "#,
+            )
+            .unwrap();
+
+        store.initialize().unwrap();
+
+        let columns = store.table_columns("ai_chat_sessions").unwrap();
+        assert!(columns.iter().any(|column| column == "host_scope"));
+        assert!(columns.iter().any(|column| column == "connection_id"));
+        let (host_scope, connection_id): (Option<String>, Option<String>) = store
+            .connection
+            .query_row(
+                "SELECT host_scope, connection_id FROM ai_chat_sessions WHERE id = 'session-1'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(host_scope, None);
+        assert_eq!(connection_id, None);
     }
 
     #[test]

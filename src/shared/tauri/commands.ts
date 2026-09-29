@@ -379,6 +379,16 @@ export function aiChatStreamStop(streamId: string) {
   });
 }
 
+export function aiChatToolDecision(streamId: string, toolCallId: string, approved: boolean) {
+  return invoke<void>("ai_chat_tool_decision", {
+    request: {
+      stream_id: streamId,
+      tool_call_id: toolCallId,
+      approved,
+    },
+  });
+}
+
 export function aiCommandAssess(command: string) {
   return invoke<AiCommandAssessment>("ai_command_assess", {
     request: {

@@ -14,13 +14,28 @@ use tokio::task::JoinHandle;
 use tokio::time::{timeout, Duration};
 use uuid::Uuid;
 
+use crate::ai_agent::{
+    self, AgentRun, PendingApprovals, PreparedAgent, TOOL_RUN_COMMAND, TOOL_STATUS_CANCELLED,
+    TOOL_STATUS_PENDING_APPROVAL, TOOL_STATUS_RUNNING,
+};
 use crate::app_error::AppError;
 use crate::events::{AiChatStreamEvent, AI_CHAT_STREAM_EVENT};
+use crate::remote_exec_pool::RemoteExecSessionPool;
+use crate::ssh_config::resolve_saved_connection;
 use crate::storage_repository::StorageRepository;
 use crate::storage_vault::{SecretKind, SecretReference, VAULT_SERVICE};
 
 const AI_PROVIDER_CONFIGS_KEY: &str = "ai.provider_configs.v1";
-const DEFAULT_ANTHROPIC_VERSION: &str = "2023-06-01";
+pub(crate) const DEFAULT_ANTHROPIC_VERSION: &str = "2023-06-01";
+pub(crate) const THINKING_MODE_AUTO: &str = "auto";
+pub(crate) const THINKING_MODE_OFF: &str = "off";
+/// ZCode 的内置模型规则默认给模型提供二态思考选项；具体模型声明更细档位时再覆盖。
+pub(crate) const DEFAULT_REASONING_LEVELS: [&str; 2] = ["disabled", "enabled"];
+pub(crate) const DEFAULT_REASONING_LEVEL: &str = "enabled";
+pub(crate) const REASONING_LEVELS: [&str; 3] = ["low", "medium", "high"];
+pub(crate) const ANTHROPIC_THINKING_BUDGET_TOKENS: [u32; 3] = [2_048, 8_192, 16_384];
+const MAX_AGENT_TERMINAL_OUTPUT_CHARS: usize = 20_000;
+const MAX_HISTORY_TOOL_OUTPUT_CHARS: usize = 300;
 const MAX_CONTEXT_CHARS_PER_BLOCK: usize = 20_000;
 const MAX_SSE_ERROR_BODY_CHARS: usize = 1200;
 
@@ -36,6 +51,26 @@ pub enum AiProviderKind {
 pub enum AiApiFormat {
     OpenaiCompatible,
     Anthropic,
+    Responses,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct AiModelConfig {
+    pub id: String,
+    #[serde(default = "default_context_window")]
+    pub context_window: u32,
+    #[serde(default)]
+    pub max_output_tokens: Option<u32>,
+    #[serde(default = "default_model_enabled")]
+    pub enabled: bool,
+}
+
+fn default_context_window() -> u32 {
+    200_000
+}
+
+fn default_model_enabled() -> bool {
+    true
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -53,7 +88,11 @@ pub struct AiProviderConfig {
     pub api_format: AiApiFormat,
     pub endpoint: String,
     pub model: String,
+    #[serde(default)]
+    pub models: Vec<AiModelConfig>,
     pub api_key_saved: bool,
+    #[serde(default)]
+    pub thinking_mode: Option<String>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -67,6 +106,10 @@ pub struct AiProviderConfigInput {
     pub api_format: AiApiFormat,
     pub endpoint: String,
     pub model: String,
+    #[serde(default)]
+    pub models: Vec<AiModelConfig>,
+    #[serde(default)]
+    pub thinking_mode: Option<String>,
     #[serde(default)]
     pub api_key: Option<String>,
     #[serde(default)]
@@ -93,16 +136,25 @@ pub struct AiProviderModelOption {
     pub id: String,
     pub display_name: Option<String>,
     pub subtitle: Option<String>,
+    /// 接口明确声明的能力优先使用；未声明时由内置默认规则补为 disabled/enabled。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning_levels: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning_default_level: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
-struct StoredAiProviderConfig {
+pub(crate) struct StoredAiProviderConfig {
     id: String,
     name: String,
     provider: AiProviderKind,
-    api_format: AiApiFormat,
-    endpoint: String,
-    model: String,
+    pub(crate) api_format: AiApiFormat,
+    pub(crate) endpoint: String,
+    pub(crate) model: String,
+    #[serde(default)]
+    pub(crate) models: Vec<AiModelConfig>,
+    #[serde(default)]
+    pub(crate) thinking_mode: Option<String>,
     secret_slot_id: Option<String>,
     created_at: String,
     updated_at: String,
@@ -138,6 +190,50 @@ pub struct AiCommandAssessRequest {
     pub command: String,
 }
 
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct AiToolCallRecord {
+    pub id: String,
+    pub name: String,
+    #[serde(default)]
+    pub command: Option<String>,
+    pub status: String,
+    #[serde(default)]
+    pub risk: Option<AiCommandRisk>,
+    #[serde(default)]
+    pub reasons: Vec<String>,
+    #[serde(default)]
+    pub exit_status: Option<u32>,
+    #[serde(default)]
+    pub output: String,
+    #[serde(default)]
+    pub output_truncated: bool,
+    #[serde(default)]
+    pub duration_ms: Option<u64>,
+    #[serde(default)]
+    pub error: Option<String>,
+    #[serde(default)]
+    pub text_offset: usize,
+}
+
+impl AiToolCallRecord {
+    pub(crate) fn new(id: &str, name: &str, text_offset: usize) -> Self {
+        Self {
+            id: id.to_string(),
+            name: name.to_string(),
+            command: None,
+            status: TOOL_STATUS_RUNNING.to_string(),
+            risk: None,
+            reasons: Vec::new(),
+            exit_status: None,
+            output: String::new(),
+            output_truncated: false,
+            duration_ms: None,
+            error: None,
+            text_offset,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Serialize)]
 pub struct AiChatMessage {
     pub id: String,
@@ -146,6 +242,7 @@ pub struct AiChatMessage {
     pub content: String,
     pub contexts: Vec<AiContextBlock>,
     pub commands: Vec<AiCommandSuggestion>,
+    pub tool_calls: Vec<AiToolCallRecord>,
     pub status: String,
     pub created_at: String,
     pub updated_at: String,
@@ -156,6 +253,8 @@ pub struct AiChatSessionSummary {
     pub id: String,
     pub title: String,
     pub provider_config_id: Option<String>,
+    pub host_scope: Option<String>,
+    pub connection_id: Option<String>,
     pub message_count: usize,
     pub last_message_preview: Option<String>,
     pub created_at: String,
@@ -181,6 +280,42 @@ pub struct AiChatStreamStartRequest {
     pub content: String,
     #[serde(default)]
     pub contexts: Vec<AiContextBlock>,
+    #[serde(default)]
+    pub agent: Option<AiAgentRequest>,
+    #[serde(default)]
+    pub reasoning_level: Option<String>,
+    #[serde(default)]
+    pub model: Option<String>,
+    #[serde(default)]
+    pub host_scope: Option<String>,
+    #[serde(default)]
+    pub connection_id: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct AiAgentRequest {
+    pub connection_id: String,
+    #[serde(default)]
+    pub mode: Option<String>,
+    #[serde(default)]
+    pub working_directory: Option<String>,
+    #[serde(default)]
+    pub terminal_output: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum AiAgentMode {
+    Assist,
+    #[default]
+    Execute,
+    Full,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct AiChatToolDecisionRequest {
+    pub stream_id: String,
+    pub tool_call_id: String,
+    pub approved: bool,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -197,20 +332,24 @@ pub struct AiChatStreamStopRequest {
 }
 
 #[derive(Clone, Debug, Serialize)]
-struct AiModelMessage {
-    role: String,
-    content: String,
+pub(crate) struct AiModelMessage {
+    pub(crate) role: String,
+    pub(crate) content: String,
 }
 
 #[derive(Clone)]
 pub struct AiChatStreamManager {
     streams: Arc<AsyncMutex<HashMap<String, AiChatStreamHandle>>>,
+    exec_pool: RemoteExecSessionPool,
 }
 
 struct AiChatStreamHandle {
     session_id: String,
     message_id: String,
     content: Arc<StdMutex<String>>,
+    tool_calls: Arc<StdMutex<Vec<AiToolCallRecord>>>,
+    approvals: PendingApprovals,
+    emitter: StreamEmitter,
     stopped: Arc<AtomicBool>,
     task: JoinHandle<()>,
 }
@@ -219,7 +358,72 @@ struct PreparedAiStream {
     config: StoredAiProviderConfig,
     api_key: String,
     messages: Vec<AiModelMessage>,
+    agent: Option<PreparedAgent>,
+    reasoning_level: Option<String>,
     response: AiChatStreamStartResponse,
+}
+
+#[derive(Clone)]
+pub(crate) struct StreamEmitter {
+    app: AppHandle,
+    stream_id: String,
+    session_id: String,
+    message_id: String,
+}
+
+impl StreamEmitter {
+    fn event(&self, kind: &str) -> AiChatStreamEvent {
+        AiChatStreamEvent {
+            kind: kind.to_string(),
+            stream_id: self.stream_id.clone(),
+            session_id: self.session_id.clone(),
+            message_id: self.message_id.clone(),
+            delta: None,
+            content: None,
+            error: None,
+            tool_call: None,
+        }
+    }
+
+    fn emit(&self, event: AiChatStreamEvent) {
+        let _ = self.app.emit(AI_CHAT_STREAM_EVENT, event);
+    }
+
+    pub(crate) fn chunk(&self, delta: String) {
+        self.emit(AiChatStreamEvent {
+            delta: Some(delta),
+            ..self.event("chunk")
+        });
+    }
+
+    pub(crate) fn tool_call(&self, record: AiToolCallRecord) {
+        self.emit(AiChatStreamEvent {
+            tool_call: Some(record),
+            ..self.event("tool_call")
+        });
+    }
+
+    fn finished(&self, content: String) {
+        self.emit(AiChatStreamEvent {
+            content: Some(content),
+            ..self.event("finished")
+        });
+    }
+
+    fn stopped(&self, content: String) {
+        self.emit(AiChatStreamEvent {
+            content: Some(content),
+            ..self.event("stopped")
+        });
+    }
+
+    fn failed(&self, content: String, error: String) {
+        self.emit(AiChatStreamEvent {
+            content: Some(content),
+            error: Some(error),
+            ..self.event("error")
+        });
+    }
 }
 
 struct ValidatedAiProviderConfigInput {
@@ -229,12 +433,15 @@ struct ValidatedAiProviderConfigInput {
     api_format: AiApiFormat,
     endpoint: String,
     model: Option<String>,
+    models: Vec<AiModelConfig>,
+    thinking_mode: Option<String>,
 }
 
 impl Default for AiChatStreamManager {
     fn default() -> Self {
         Self {
             streams: Arc::new(AsyncMutex::new(HashMap::new())),
+            exec_pool: RemoteExecSessionPool::default(),
         }
     }
 }
@@ -244,96 +451,96 @@ impl AiChatStreamManager {
         let stream_id = prepared.response.stream_id.clone();
         let session_id = prepared.response.session_id.clone();
         let message_id = prepared.response.assistant_message_id.clone();
+        let emitter = StreamEmitter {
+            app: app.clone(),
+            stream_id: stream_id.clone(),
+            session_id: session_id.clone(),
+            message_id: message_id.clone(),
+        };
         let content = Arc::new(StdMutex::new(String::new()));
+        let tool_calls = Arc::new(StdMutex::new(Vec::new()));
+        let approvals: PendingApprovals = Arc::new(StdMutex::new(HashMap::new()));
         let stopped = Arc::new(AtomicBool::new(false));
         let manager = self.clone();
         let task_content = Arc::clone(&content);
+        let task_tool_calls = Arc::clone(&tool_calls);
+        let task_approvals = Arc::clone(&approvals);
         let task_stopped = Arc::clone(&stopped);
-        let task_stream_id = stream_id.clone();
-        let task_session_id = session_id.clone();
-        let task_message_id = message_id.clone();
+        let task_emitter = emitter.clone();
 
         let task = tokio::spawn(async move {
-            let result = run_provider_stream(
-                &prepared.config,
-                &prepared.api_key,
-                prepared.messages,
-                Arc::clone(&task_stopped),
-                |delta| {
-                    if delta.is_empty() {
-                        return;
-                    }
-                    if let Ok(mut current) = task_content.lock() {
-                        current.push_str(&delta);
-                    }
-                    emit_chat_stream_event(
-                        &app,
-                        AiChatStreamEvent {
-                            kind: "chunk".to_string(),
-                            stream_id: task_stream_id.clone(),
-                            session_id: task_session_id.clone(),
-                            message_id: task_message_id.clone(),
-                            delta: Some(delta),
-                            content: None,
-                            error: None,
+            let PreparedAiStream {
+                config,
+                api_key,
+                messages,
+                agent,
+                reasoning_level,
+                ..
+            } = prepared;
+            let result = match agent.as_ref() {
+                Some(agent) => {
+                    let run = AgentRun {
+                        app: &app,
+                        provider: &config,
+                        api_key: &api_key,
+                        agent,
+                        pool: &manager.exec_pool,
+                        stopped: Arc::clone(&task_stopped),
+                        content: Arc::clone(&task_content),
+                        tool_calls: Arc::clone(&task_tool_calls),
+                        approvals: Arc::clone(&task_approvals),
+                        emitter: &task_emitter,
+                        pending_separator: AtomicBool::new(false),
+                        reasoning_level: reasoning_level.as_deref(),
+                    };
+                    ai_agent::run_agent(&run, messages).await
+                }
+                None => {
+                    run_provider_stream(
+                        &config,
+                        &api_key,
+                        reasoning_level.as_deref(),
+                        messages,
+                        Arc::clone(&task_stopped),
+                        |delta| {
+                            if delta.is_empty() {
+                                return;
+                            }
+                            if let Ok(mut current) = task_content.lock() {
+                                current.push_str(&delta);
+                            }
+                            task_emitter.chunk(delta);
                         },
-                    );
-                },
-            )
-            .await;
+                    )
+                    .await
+                }
+            };
 
             if task_stopped.load(Ordering::SeqCst) {
-                manager.finish_stream(&task_stream_id).await;
+                manager.finish_stream(&task_emitter.stream_id).await;
                 return;
             }
 
             let final_content = locked_string(&task_content);
-            match result {
-                Ok(()) => {
-                    let _ = update_assistant_message(
-                        &app,
-                        &task_session_id,
-                        &task_message_id,
-                        &final_content,
-                        "complete",
-                    );
-                    emit_chat_stream_event(
-                        &app,
-                        AiChatStreamEvent {
-                            kind: "finished".to_string(),
-                            stream_id: task_stream_id.clone(),
-                            session_id: task_session_id.clone(),
-                            message_id: task_message_id.clone(),
-                            delta: None,
-                            content: Some(final_content),
-                            error: None,
-                        },
-                    );
-                }
-                Err(error) => {
-                    let _ = update_assistant_message(
-                        &app,
-                        &task_session_id,
-                        &task_message_id,
-                        &final_content,
-                        "error",
-                    );
-                    emit_chat_stream_event(
-                        &app,
-                        AiChatStreamEvent {
-                            kind: "error".to_string(),
-                            stream_id: task_stream_id.clone(),
-                            session_id: task_session_id.clone(),
-                            message_id: task_message_id.clone(),
-                            delta: None,
-                            content: Some(final_content),
-                            error: Some(error.message),
-                        },
-                    );
-                }
+            let final_tool_calls = settle_tool_calls(&task_tool_calls, &task_emitter);
+            let (status, error) = match result {
+                Ok(()) => ("complete", None),
+                Err(error) => ("error", Some(error.message)),
+            };
+            let _ = update_assistant_message(
+                &app,
+                &task_emitter.session_id,
+                &task_emitter.message_id,
+                &final_content,
+                status,
+                &final_tool_calls,
+            );
+            match error {
+                None => task_emitter.finished(final_content),
+                Some(error) => task_emitter.failed(final_content, error),
             }
 
-            manager.finish_stream(&task_stream_id).await;
+            manager.finish_stream(&task_emitter.stream_id).await;
         });
 
         let previous = {
@@ -344,6 +551,9 @@ impl AiChatStreamManager {
                     session_id,
                     message_id,
                     content,
+                    tool_calls,
+                    approvals,
+                    emitter,
                     stopped,
                     task,
                 },
@@ -351,6 +561,35 @@ impl AiChatStreamManager {
         };
         close_stream_handle(previous);
 
+        Ok(())
+    }
+
+    async fn decide_tool_call(&self, request: AiChatToolDecisionRequest) -> Result<(), AppError> {
+        let stream_id = require_non_empty(
+            &request.stream_id,
+            "ai_stream_missing",
+            "AI 生成流标识缺失。",
+        )?;
+        let tool_call_id = require_non_empty(
+            &request.tool_call_id,
+            "ai_tool_call_missing",
+            "AI 工具调用标识缺失。",
+        )?;
+        let approvals = self
+            .streams
+            .lock()
+            .await
+            .get(stream_id)
+            .map(|handle| Arc::clone(&handle.approvals));
+        let sender = approvals.and_then(|approvals| {
+            approvals
+                .lock()
+                .ok()
+                .and_then(|mut pending| pending.remove(tool_call_id))
+        });
+        if let Some(sender) = sender {
+            let _ = sender.send(request.approved);
+        }
         Ok(())
     }
 
@@ -371,25 +610,16 @@ impl AiChatStreamManager {
         handle.stopped.store(true, Ordering::SeqCst);
         handle.task.abort();
         let content = locked_string(&handle.content);
+        let tool_calls = settle_tool_calls(&handle.tool_calls, &handle.emitter);
         let _ = update_assistant_message(
             app,
             &handle.session_id,
             &handle.message_id,
             &content,
             "stopped",
+            &tool_calls,
         );
-        emit_chat_stream_event(
-            app,
-            AiChatStreamEvent {
-                kind: "stopped".to_string(),
-                stream_id: stream_id.to_string(),
-                session_id: handle.session_id,
-                message_id: handle.message_id,
-                delta: None,
-                content: Some(content),
-                error: None,
-            },
-        );
+        handle.emitter.stopped(content);
         Ok(())
     }
 
@@ -455,6 +685,8 @@ pub async fn ai_provider_config_test(
         api_format: validated.api_format,
         endpoint: validated.endpoint,
         model: validated.model.unwrap_or_default(),
+        models: validated.models.clone(),
+        thinking_mode: validated.thinking_mode,
         secret_slot_id: None,
         created_at: String::new(),
         updated_at: String::new(),
@@ -486,6 +718,8 @@ pub async fn ai_provider_models_list(
         api_format: validated.api_format,
         endpoint: validated.endpoint,
         model: validated.model.unwrap_or_default(),
+        models: validated.models.clone(),
+        thinking_mode: validated.thinking_mode,
         secret_slot_id: None,
         created_at: String::new(),
         updated_at: String::new(),
@@ -584,6 +818,14 @@ pub async fn ai_chat_stream_stop(
 }
 
 #[tauri::command]
+pub async fn ai_chat_tool_decision(
+    manager: State<'_, AiChatStreamManager>,
+    request: AiChatToolDecisionRequest,
+) -> Result<(), AppError> {
+    manager.decide_tool_call(request).await
+}
+
+#[tauri::command]
 pub fn ai_command_assess(request: AiCommandAssessRequest) -> Result<AiCommandAssessment, AppError> {
     Ok(assess_command(&request.command))
 }
@@ -612,9 +854,25 @@ fn prepare_stream(
     let user_message_id = Uuid::new_v4().to_string();
     let assistant_message_id = Uuid::new_v4().to_string();
     let repository = StorageRepository::open_app(app)?;
-    let config = load_stored_provider_config(&repository, &provider_config_id)?
+    let mut config = load_stored_provider_config(&repository, &provider_config_id)?
         .ok_or_else(ai_provider_config_missing)?;
+    apply_model_override(&mut config, request.model.as_deref());
     let api_key = api_key_for_config(&repository, &config)?;
+    let reasoning_level = effective_reasoning_level(&config, request.reasoning_level.as_deref())?;
+    let agent = request
+        .agent
+        .map(|agent| prepare_agent(app, agent))
+        .transpose()?;
+    let host_scope = validate_bounded_tag(
+        request.host_scope,
+        "ai_host_scope_invalid",
+        "会话主机标识过长。",
+    )?;
+    let session_connection_id = validate_bounded_tag(
+        request.connection_id,
+        "ai_connection_id_invalid",
+        "连接标识过长。",
+    )?;
     let session_id = match trim_optional(request.session_id).as_deref() {
         Some(existing_id) => {
             ensure_chat_session_exists(&repository, existing_id)?;
@@ -634,12 +892,14 @@ fn prepare_stream(
             repository
                 .sqlite_connection()
                 .execute(
-                    "INSERT INTO ai_chat_sessions(id, title, provider_config_id, created_at, updated_at)
-                     VALUES (?1, ?2, ?3, ?4, ?4)",
+                    "INSERT INTO ai_chat_sessions(id, title, provider_config_id, host_scope, connection_id, created_at, updated_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)",
                     params![
                         next_id,
                         chat_title_from_content(&user_content),
                         provider_config_id,
+                        host_scope,
+                        session_connection_id,
                         now,
                     ],
                 )
@@ -694,6 +954,8 @@ fn prepare_stream(
         config,
         api_key,
         messages: model_messages,
+        agent,
+        reasoning_level,
         response: AiChatStreamStartResponse {
             stream_id,
             session_id,
@@ -701,6 +963,72 @@ fn prepare_stream(
             assistant_message_id,
         },
     })
+}
+
+/// Applies a per-request model override to a stored provider config clone.
+///
+/// The override only affects the in-memory config used to build this stream
+/// (including the agent path, because `PreparedAiStream` carries the same
+/// config); it is never written back to storage. Blank or whitespace-only
+/// values are treated as "not sent" and keep the stored model.
+fn apply_model_override(config: &mut StoredAiProviderConfig, requested: Option<&str>) {
+    if let Some(model) = trim_optional(requested.map(str::to_string)) {
+        config.model = model;
+    }
+}
+
+fn prepare_agent(app: &AppHandle, request: AiAgentRequest) -> Result<PreparedAgent, AppError> {
+    let connection_id = require_non_empty(
+        &request.connection_id,
+        "ai_agent_connection_missing",
+        "执行命令模式需要当前 SSH 连接。",
+    )?;
+    let config = resolve_saved_connection(app, connection_id, None)?;
+    let terminal_output = trim_optional(request.terminal_output)
+        .map(|output| tail_chars_owned(&output, MAX_AGENT_TERMINAL_OUTPUT_CHARS));
+    let mode = match request.mode.as_deref() {
+        Some("assist") => AiAgentMode::Assist,
+        Some("full") => AiAgentMode::Full,
+        _ => AiAgentMode::Execute,
+    };
+    Ok(PreparedAgent {
+        config,
+        mode,
+        working_directory: trim_optional(request.working_directory),
+        terminal_output,
+    })
+}
+
+fn tail_chars_owned(value: &str, max_chars: usize) -> String {
+    let total = value.chars().count();
+    if total <= max_chars {
+        return value.to_string();
+    }
+    value.chars().skip(total - max_chars).collect()
+}
+
+fn settle_tool_calls(
+    tool_calls: &Arc<StdMutex<Vec<AiToolCallRecord>>>,
+    emitter: &StreamEmitter,
+) -> Vec<AiToolCallRecord> {
+    let (records, settled) = match tool_calls.lock() {
+        Ok(mut calls) => {
+            let mut settled = Vec::new();
+            for call in calls.iter_mut() {
+                if call.status == TOOL_STATUS_RUNNING || call.status == TOOL_STATUS_PENDING_APPROVAL
+                {
+                    call.status = TOOL_STATUS_CANCELLED.to_string();
+                    settled.push(call.clone());
+                }
+            }
+            (calls.clone(), settled)
+        }
+        Err(_) => (Vec::new(), Vec::new()),
+    };
+    for record in settled {
+        emitter.tool_call(record);
+    }
+    records
 }
 
 fn list_provider_configs(
@@ -717,7 +1045,7 @@ fn save_provider_config(
     request: AiProviderConfigInput,
     now: &str,
 ) -> Result<AiProviderConfig, AppError> {
-    let validated = validate_provider_config_input(&request, true, true)?;
+    let validated = validate_provider_config_input(&request, true, request.models.is_empty())?;
     let name = validated.name.unwrap_or_default();
     let endpoint = validated.endpoint;
     let model = validated.model.unwrap_or_default();
@@ -737,6 +1065,8 @@ fn save_provider_config(
         api_format: validated.api_format,
         endpoint,
         model,
+        models: validated.models,
+        thinking_mode: validated.thinking_mode,
         secret_slot_id: Some(secret_slot_id.clone()),
         created_at: existing
             .as_ref()
@@ -810,6 +1140,94 @@ fn reveal_provider_config_api_key(
     })
 }
 
+pub(crate) fn validate_thinking_mode(mode: Option<&str>) -> Result<Option<String>, AppError> {
+    let mode = trim_optional(mode.map(str::to_string));
+    match mode.as_deref() {
+        None => Ok(None),
+        Some(value) if value == THINKING_MODE_AUTO || value == THINKING_MODE_OFF => Ok(mode),
+        Some(other) => Err(AppError::new(
+            "ai_thinking_mode_invalid",
+            "思考参数模式必须是 auto 或 off。",
+            format!("thinking_mode={other}"),
+            true,
+        )),
+    }
+}
+
+pub(crate) fn validate_reasoning_level(level: Option<&str>) -> Result<Option<String>, AppError> {
+    let level = trim_optional(level.map(str::to_string));
+    match level.as_deref() {
+        None => Ok(None),
+        Some(value)
+            if value.len() <= 64
+                && value.chars().all(|character| {
+                    character.is_ascii_alphanumeric() || "_-.:".contains(character)
+                }) =>
+        {
+            Ok(level)
+        }
+        Some(other) => Err(AppError::new(
+            "ai_reasoning_level_invalid",
+            "思考等级格式无效。",
+            format!("reasoning_level={other}"),
+            true,
+        )),
+    }
+}
+
+/// provider 思考模式与请求档位组合出本次请求的有效档位；off 或未选时返回 None，不携带任何思考字段。
+pub(crate) fn effective_reasoning_level(
+    config: &StoredAiProviderConfig,
+    requested: Option<&str>,
+) -> Result<Option<String>, AppError> {
+    if config.thinking_mode.as_deref() == Some(THINKING_MODE_OFF) {
+        return Ok(None);
+    }
+    validate_reasoning_level(requested)
+}
+
+pub(crate) fn apply_openai_reasoning_fields(body: &mut Value, level: Option<&str>) {
+    if let Some(level) = level {
+        let disabled = matches!(level, "disabled" | "off" | "none");
+        let effort = if disabled {
+            "none"
+        } else if level == "enabled" {
+            "high"
+        } else {
+            level
+        };
+        body["thinking"] = json!({ "type": if disabled { "disabled" } else { "enabled" } });
+        body["enable_thinking"] = json!(!disabled);
+        body["reasoning_effort"] = json!(effort);
+        body["reasoning"] = json!({ "effort": effort });
+    }
+}
+
+pub(crate) fn apply_anthropic_reasoning_fields(
+    body: &mut Value,
+    level: Option<&str>,
+    base_max_tokens: u32,
+) {
+    if let Some(level) = level {
+        if matches!(level, "disabled" | "off" | "none") {
+            body["thinking"] = json!({ "type": "disabled" });
+            return;
+        }
+        if level == "enabled" {
+            body["thinking"] = json!({ "type": "adaptive" });
+            body["output_config"] = json!({ "effort": "high" });
+            return;
+        }
+        let index = REASONING_LEVELS
+            .iter()
+            .position(|value| *value == level)
+            .unwrap_or(1);
+        let budget = ANTHROPIC_THINKING_BUDGET_TOKENS[index];
+        body["thinking"] = json!({ "type": "enabled", "budget_tokens": budget });
+        body["max_tokens"] = json!(budget + base_max_tokens);
+    }
+}
+
 fn validate_provider_config_input(
     request: &AiProviderConfigInput,
     require_name: bool,
@@ -845,7 +1263,34 @@ fn validate_provider_config_input(
     } else {
         trim_optional(Some(request.model.clone()))
     };
+    let mut models = request
+        .models
+        .iter()
+        .filter_map(|model| {
+            let id = model.id.trim().to_string();
+            if id.is_empty() {
+                return None;
+            }
+            Some(AiModelConfig {
+                id,
+                context_window: model.context_window.max(1),
+                max_output_tokens: model.max_output_tokens.filter(|value| *value > 0),
+                enabled: model.enabled,
+            })
+        })
+        .collect::<Vec<_>>();
+    if models.is_empty() {
+        if let Some(model_id) = model.as_deref() {
+            models.push(AiModelConfig {
+                id: model_id.to_string(),
+                context_window: default_context_window(),
+                max_output_tokens: None,
+                enabled: true,
+            });
+        }
+    }
     let _ = normalize_endpoint(&endpoint, request.api_format)?;
+    let thinking_mode = validate_thinking_mode(request.thinking_mode.as_deref())?;
     Ok(ValidatedAiProviderConfigInput {
         id: trim_optional(request.id.clone()),
         name,
@@ -853,6 +1298,8 @@ fn validate_provider_config_input(
         api_format: request.api_format,
         endpoint,
         model,
+        models,
+        thinking_mode,
     })
 }
 
@@ -882,6 +1329,7 @@ async fn test_provider_config_connectivity(
         run_provider_stream(
             config,
             api_key,
+            None,
             vec![AiModelMessage {
                 role: "user".to_string(),
                 content: "请仅回复 OK。".to_string(),
@@ -909,7 +1357,9 @@ async fn list_provider_models(
     let client = Client::new();
     let models = timeout(Duration::from_secs(20), async {
         match config.api_format {
-            AiApiFormat::OpenaiCompatible => list_openai_models(&client, config, api_key).await,
+            AiApiFormat::OpenaiCompatible | AiApiFormat::Responses => {
+                list_openai_models(&client, config, api_key).await
+            }
             AiApiFormat::Anthropic => list_anthropic_models(&client, config, api_key).await,
         }
     })
@@ -985,10 +1435,13 @@ fn parse_openai_models_list(value: &Value) -> Result<Vec<AiProviderModelOption>,
             let subtitle = owned_by
                 .filter(|value| !value.is_empty())
                 .map(str::to_string);
+            let (reasoning_levels, reasoning_default_level) = reasoning_metadata(item, &id);
             Some(AiProviderModelOption {
                 id,
                 display_name: None,
                 subtitle,
+                reasoning_levels,
+                reasoning_default_level,
             })
         })
         .collect::<Vec<_>>();
@@ -1020,15 +1473,169 @@ fn parse_anthropic_models_list(value: &Value) -> Result<Vec<AiProviderModelOptio
                 .map(str::trim)
                 .filter(|value| !value.is_empty())
                 .map(str::to_string);
+            let (reasoning_levels, reasoning_default_level) = reasoning_metadata(item, &id);
             Some(AiProviderModelOption {
                 id,
                 display_name,
                 subtitle,
+                reasoning_levels,
+                reasoning_default_level,
             })
         })
         .collect::<Vec<_>>();
     sort_models(&mut models);
     Ok(models)
+}
+
+/// 不同供应商对 `/models` 能力字段的命名并不统一；按结构读取常见的
+/// OpenAI/ZCode 兼容形态，保留“未声明”和“声明为空”两种状态。
+///
+/// 部分网关只返回模型 ID，不会把能力字段透传出来。只有命中明确的
+/// 已知模型协议时才使用本地能力映射，避免给普通模型误显示思考选项。
+fn reasoning_metadata(item: &Value, model_id: &str) -> (Option<Vec<String>>, Option<String>) {
+    let option_spec = item
+        .get("config")
+        .and_then(|value| value.get("optionSpecs"))
+        .and_then(|value| value.get("reasoningLevel"));
+    let candidates = [
+        item.get("reasoning"),
+        item.get("reasoning_levels"),
+        item.get("reasoningLevels"),
+        item.get("supported_reasoning_levels"),
+        item.get("supportedReasoningLevels"),
+        item.get("reasoning_effort"),
+        option_spec,
+        item.get("optionSpecs")
+            .and_then(|value| value.get("reasoningLevel")),
+    ];
+
+    for candidate in candidates.into_iter().flatten() {
+        let (levels, default_level) = match candidate {
+            Value::Array(_) => (read_reasoning_levels(candidate), None),
+            Value::Object(object) => {
+                let levels_value = object
+                    .get("levels")
+                    .or_else(|| object.get("variants"))
+                    .or_else(|| object.get("values"))
+                    .or_else(|| object.get("supported_levels"))
+                    .or_else(|| object.get("supportedLevels"))
+                    .or_else(|| object.get("supported_values"))
+                    .or_else(|| object.get("supportedValues"))
+                    .or_else(|| object.get("efforts"));
+                let levels = levels_value.and_then(read_reasoning_levels);
+                let default_level = ["defaultLevel", "default_level", "default"]
+                    .iter()
+                    .find_map(|key| object.get(*key).and_then(Value::as_str))
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(str::to_string);
+                (levels, default_level)
+            }
+            _ => (None, None),
+        };
+        if levels.is_some() || default_level.is_some() {
+            let default_level = default_level.filter(|value| {
+                levels
+                    .as_ref()
+                    .is_none_or(|values| values.iter().any(|item| item == value))
+            });
+            return (levels, default_level);
+        }
+    }
+    if declares_reasoning_capability(item) {
+        let default_level = item
+            .get("reasoning_effort")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| REASONING_LEVELS.contains(value))
+            .map(str::to_string);
+        return (Some(known_reasoning_levels()), default_level);
+    }
+    default_reasoning_metadata(model_id).unwrap_or((None, None))
+}
+
+fn declares_reasoning_capability(item: &Value) -> bool {
+    [
+        item.get("reasoning"),
+        item.get("supports_reasoning"),
+        item.get("capabilities"),
+        item.get("supported_parameters"),
+        item.get("reasoning_effort"),
+    ]
+    .into_iter()
+    .flatten()
+    .any(value_declares_reasoning)
+}
+
+fn value_declares_reasoning(value: &Value) -> bool {
+    match value {
+        Value::Bool(value) => *value,
+        Value::String(value) => {
+            let normalized = value.trim().to_ascii_lowercase();
+            normalized.contains("reasoning") || normalized.contains("thinking")
+        }
+        Value::Array(values) => values.iter().any(value_declares_reasoning),
+        Value::Object(object) => object.iter().any(|(key, value)| {
+            let normalized = key.trim().to_ascii_lowercase();
+            normalized.contains("reasoning")
+                || normalized.contains("thinking")
+                || value_declares_reasoning(value)
+        }),
+        Value::Null | Value::Number(_) => false,
+    }
+}
+
+fn default_reasoning_metadata(_model_id: &str) -> Option<(Option<Vec<String>>, Option<String>)> {
+    Some((
+        Some(default_reasoning_levels()),
+        Some(DEFAULT_REASONING_LEVEL.to_string()),
+    ))
+}
+
+fn known_reasoning_levels() -> Vec<String> {
+    REASONING_LEVELS
+        .iter()
+        .map(|level| (*level).to_string())
+        .collect()
+}
+
+fn default_reasoning_levels() -> Vec<String> {
+    DEFAULT_REASONING_LEVELS
+        .iter()
+        .map(|level| (*level).to_string())
+        .collect()
+}
+
+fn read_reasoning_levels(value: &Value) -> Option<Vec<String>> {
+    match value {
+        Value::Array(values) => Some(
+            values
+                .iter()
+                .filter_map(|entry| {
+                    entry
+                        .as_str()
+                        .or_else(|| entry.get("value").and_then(Value::as_str))
+                        .or_else(|| entry.get("id").and_then(Value::as_str))
+                        .map(str::trim)
+                        .filter(|item| !item.is_empty())
+                        .map(str::to_string)
+                })
+                .fold(Vec::new(), |mut result, value| {
+                    if !result.iter().any(|item| item == &value) {
+                        result.push(value);
+                    }
+                    result
+                }),
+        ),
+        Value::Object(values) => Some(
+            values
+                .keys()
+                .filter(|key| !key.trim().is_empty())
+                .cloned()
+                .collect(),
+        ),
+        _ => None,
+    }
 }
 
 fn sort_models(models: &mut [AiProviderModelOption]) {
@@ -1071,17 +1678,47 @@ fn provider_config_from_stored(
         Some(slot_id) => repository.secret_exists(&ai_api_key_reference(slot_id))?,
         None => false,
     };
+    let models = normalize_stored_models(&stored.model, stored.models);
+    let default_model = stored.model.trim().to_string();
+    let model = if default_model.is_empty() {
+        models
+            .iter()
+            .find(|item| item.enabled)
+            .or_else(|| models.first())
+            .map(|item| item.id.clone())
+            .unwrap_or_default()
+    } else {
+        default_model
+    };
     Ok(AiProviderConfig {
         id: stored.id,
         name: stored.name,
         provider: stored.provider,
         api_format: stored.api_format,
         endpoint: stored.endpoint,
-        model: stored.model,
+        model,
+        models,
         api_key_saved,
+        thinking_mode: stored.thinking_mode,
         created_at: stored.created_at,
         updated_at: stored.updated_at,
     })
+}
+
+fn normalize_stored_models(model: &str, models: Vec<AiModelConfig>) -> Vec<AiModelConfig> {
+    if !models.is_empty() {
+        return models;
+    }
+    let id = model.trim();
+    if id.is_empty() {
+        return Vec::new();
+    }
+    vec![AiModelConfig {
+        id: id.to_string(),
+        context_window: default_context_window(),
+        max_output_tokens: None,
+        enabled: true,
+    }]
 }
 
 fn api_key_for_config(
@@ -1113,6 +1750,8 @@ fn list_chat_sessions(
                 s.id,
                 s.title,
                 s.provider_config_id,
+                s.host_scope,
+                s.connection_id,
                 s.created_at,
                 s.updated_at,
                 (SELECT COUNT(*) FROM ai_chat_messages m WHERE m.session_id = s.id) AS message_count,
@@ -1124,14 +1763,16 @@ fn list_chat_sessions(
     let mut rows = statement.query([]).map_err(sqlite_ai_error)?;
     let mut sessions = Vec::new();
     while let Some(row) = rows.next().map_err(sqlite_ai_error)? {
-        let count: i64 = row.get(5).map_err(sqlite_ai_error)?;
-        let preview: Option<String> = row.get(6).map_err(sqlite_ai_error)?;
+        let count: i64 = row.get(7).map_err(sqlite_ai_error)?;
+        let preview: Option<String> = row.get(8).map_err(sqlite_ai_error)?;
         sessions.push(AiChatSessionSummary {
             id: row.get(0).map_err(sqlite_ai_error)?,
             title: row.get(1).map_err(sqlite_ai_error)?,
             provider_config_id: row.get(2).map_err(sqlite_ai_error)?,
-            created_at: row.get(3).map_err(sqlite_ai_error)?,
-            updated_at: row.get(4).map_err(sqlite_ai_error)?,
+            host_scope: row.get(3).map_err(sqlite_ai_error)?,
+            connection_id: row.get(4).map_err(sqlite_ai_error)?,
+            created_at: row.get(5).map_err(sqlite_ai_error)?,
+            updated_at: row.get(6).map_err(sqlite_ai_error)?,
             message_count: count.max(0) as usize,
             last_message_preview: preview.and_then(|value| {
                 let trimmed = value.trim();
@@ -1221,7 +1862,7 @@ fn list_chat_messages(
     let mut statement = repository
         .sqlite_connection()
         .prepare(
-            "SELECT id, session_id, role, content, contexts_json, commands_json, status, created_at, updated_at
+            "SELECT id, session_id, role, content, contexts_json, commands_json, status, created_at, updated_at, tool_calls_json
              FROM ai_chat_messages
              WHERE session_id = ?1
              ORDER BY CAST(created_at AS INTEGER) ASC, rowid ASC",
@@ -1234,6 +1875,7 @@ fn list_chat_messages(
     while let Some(row) = rows.next().map_err(sqlite_ai_error)? {
         let contexts_json: String = row.get(4).map_err(sqlite_ai_error)?;
         let commands_json: String = row.get(5).map_err(sqlite_ai_error)?;
+        let tool_calls_json: String = row.get(9).map_err(sqlite_ai_error)?;
         messages.push(AiChatMessage {
             id: row.get(0).map_err(sqlite_ai_error)?,
             session_id: row.get(1).map_err(sqlite_ai_error)?,
@@ -1241,6 +1883,7 @@ fn list_chat_messages(
             content: row.get(3).map_err(sqlite_ai_error)?,
             contexts: serde_json::from_str(&contexts_json).unwrap_or_default(),
             commands: serde_json::from_str(&commands_json).unwrap_or_default(),
+            tool_calls: serde_json::from_str(&tool_calls_json).unwrap_or_default(),
             status: row.get(6).map_err(sqlite_ai_error)?,
             created_at: row.get(7).map_err(sqlite_ai_error)?,
             updated_at: row.get(8).map_err(sqlite_ai_error)?,
@@ -1255,18 +1898,38 @@ fn update_assistant_message(
     message_id: &str,
     content: &str,
     status: &str,
+    tool_calls: &[AiToolCallRecord],
 ) -> Result<(), AppError> {
     let repository = StorageRepository::open_app(app)?;
+    save_assistant_message(
+        &repository,
+        session_id,
+        message_id,
+        content,
+        status,
+        tool_calls,
+    )
+}
+
+fn save_assistant_message(
+    repository: &StorageRepository,
+    session_id: &str,
+    message_id: &str,
+    content: &str,
+    status: &str,
+    tool_calls: &[AiToolCallRecord],
+) -> Result<(), AppError> {
     let now = now_timestamp()?;
     let commands = extract_command_suggestions(content);
     let commands_json = serde_json::to_string(&commands).map_err(json_ai_error)?;
+    let tool_calls_json = serde_json::to_string(tool_calls).map_err(json_ai_error)?;
     repository
         .sqlite_connection()
         .execute(
             "UPDATE ai_chat_messages
-                SET content = ?2, commands_json = ?3, status = ?4, updated_at = ?5
+                SET content = ?2, commands_json = ?3, status = ?4, updated_at = ?5, tool_calls_json = ?6
               WHERE id = ?1 AND role = 'assistant'",
-            params![message_id, content, commands_json, status, now],
+            params![message_id, content, commands_json, status, now, tool_calls_json],
         )
         .map_err(sqlite_ai_error)?;
     repository
@@ -1286,13 +1949,16 @@ fn model_messages_from_history(messages: Vec<AiChatMessage>) -> Vec<AiModelMessa
             if message.role != "user" && message.role != "assistant" {
                 return None;
             }
-            if message.role == "assistant" && message.content.trim().is_empty() {
+            if message.role == "assistant"
+                && message.content.trim().is_empty()
+                && message.tool_calls.is_empty()
+            {
                 return None;
             }
             let content = if message.role == "user" {
                 format_user_message_for_model(&message.content, &message.contexts)
             } else {
-                message.content
+                append_tool_call_summary(message.content, &message.tool_calls)
             };
             Some(AiModelMessage {
                 role: message.role,
@@ -1302,9 +1968,51 @@ fn model_messages_from_history(messages: Vec<AiChatMessage>) -> Vec<AiModelMessa
         .collect()
 }
 
+fn append_tool_call_summary(content: String, tool_calls: &[AiToolCallRecord]) -> String {
+    if tool_calls.is_empty() {
+        return content;
+    }
+    let mut summary = String::from("[本轮工具调用记录]");
+    for call in tool_calls {
+        let target = call
+            .command
+            .as_deref()
+            .filter(|_| call.name == TOOL_RUN_COMMAND)
+            .map(|command| format!("`{}`", truncate_chars(command, 200)))
+            .unwrap_or_else(|| call.name.clone());
+        let result = match call.status.as_str() {
+            "completed" => {
+                let exit = call
+                    .exit_status
+                    .map(|value| format!("退出码 {value}"))
+                    .unwrap_or_else(|| "已完成".to_string());
+                let output = call.output.trim();
+                if output.is_empty() {
+                    exit
+                } else {
+                    format!(
+                        "{exit}，输出：{}",
+                        truncate_chars(output, MAX_HISTORY_TOOL_OUTPUT_CHARS)
+                    )
+                }
+            }
+            "rejected" => "用户拒绝执行".to_string(),
+            "cancelled" => "已取消".to_string(),
+            _ => format!("失败：{}", call.error.as_deref().unwrap_or("未知错误")),
+        };
+        summary.push_str(&format!("\n- {target} → {result}"));
+    }
+    if content.trim().is_empty() {
+        summary
+    } else {
+        format!("{content}\n\n{summary}")
+    }
+}
+
 async fn run_provider_stream<F>(
     config: &StoredAiProviderConfig,
     api_key: &str,
+    reasoning_level: Option<&str>,
     messages: Vec<AiModelMessage>,
     stopped: Arc<AtomicBool>,
     mut on_delta: F,
@@ -1315,10 +2023,40 @@ where
     let client = Client::new();
     match config.api_format {
         AiApiFormat::OpenaiCompatible => {
-            run_openai_stream(&client, config, api_key, messages, stopped, &mut on_delta).await
+            run_openai_stream(
+                &client,
+                config,
+                api_key,
+                reasoning_level,
+                messages,
+                stopped,
+                &mut on_delta,
+            )
+            .await
+        }
+        AiApiFormat::Responses => {
+            run_responses_stream(
+                &client,
+                config,
+                api_key,
+                reasoning_level,
+                messages,
+                stopped,
+                &mut on_delta,
+            )
+            .await
         }
         AiApiFormat::Anthropic => {
-            run_anthropic_stream(&client, config, api_key, messages, stopped, &mut on_delta).await
+            run_anthropic_stream(
+                &client,
+                config,
+                api_key,
+                reasoning_level,
+                messages,
+                stopped,
+                &mut on_delta,
+            )
+            .await
         }
     }
 }
@@ -1327,6 +2065,7 @@ async fn run_openai_stream<F>(
     client: &Client,
     config: &StoredAiProviderConfig,
     api_key: &str,
+    reasoning_level: Option<&str>,
     messages: Vec<AiModelMessage>,
     stopped: Arc<AtomicBool>,
     on_delta: &mut F,
@@ -1336,14 +2075,16 @@ where
 {
     let endpoint = normalize_endpoint(&config.endpoint, AiApiFormat::OpenaiCompatible)?;
     let messages = openai_messages_with_system(messages);
+    let mut body = json!({
+        "model": config.model,
+        "stream": true,
+        "messages": messages,
+    });
+    apply_openai_reasoning_fields(&mut body, reasoning_level);
     let response = client
         .post(endpoint)
         .bearer_auth(api_key)
-        .json(&json!({
-            "model": config.model,
-            "stream": true,
-            "messages": messages,
-        }))
+        .json(&body)
         .send()
         .await
         .map_err(provider_request_error)?;
@@ -1363,6 +2104,7 @@ async fn run_anthropic_stream<F>(
     client: &Client,
     config: &StoredAiProviderConfig,
     api_key: &str,
+    reasoning_level: Option<&str>,
     messages: Vec<AiModelMessage>,
     stopped: Arc<AtomicBool>,
     on_delta: &mut F,
@@ -1372,17 +2114,19 @@ where
 {
     let endpoint = normalize_endpoint(&config.endpoint, AiApiFormat::Anthropic)?;
     let (system, anthropic_messages) = split_system_message(messages);
+    let mut body = json!({
+        "model": config.model,
+        "stream": true,
+        "max_tokens": 4096,
+        "system": system,
+        "messages": anthropic_messages,
+    });
+    apply_anthropic_reasoning_fields(&mut body, reasoning_level, 4096);
     let response = client
         .post(endpoint)
         .header("x-api-key", api_key)
         .header("anthropic-version", DEFAULT_ANTHROPIC_VERSION)
-        .json(&json!({
-            "model": config.model,
-            "stream": true,
-            "max_tokens": 4096,
-            "system": system,
-            "messages": anthropic_messages,
-        }))
+        .json(&body)
         .send()
         .await
         .map_err(provider_request_error)?;
@@ -1398,7 +2142,72 @@ where
     .await
 }
 
-async fn ensure_provider_response(response: Response) -> Result<Response, AppError> {
+async fn run_responses_stream<F>(
+    client: &Client,
+    config: &StoredAiProviderConfig,
+    api_key: &str,
+    reasoning_level: Option<&str>,
+    messages: Vec<AiModelMessage>,
+    stopped: Arc<AtomicBool>,
+    on_delta: &mut F,
+) -> Result<(), AppError>
+where
+    F: FnMut(String) + Send,
+{
+    let endpoint = normalize_endpoint(&config.endpoint, AiApiFormat::Responses)?;
+    let input = messages
+        .into_iter()
+        .map(|message| {
+            json!({
+                "role": message.role,
+                "content": [{ "type": "input_text", "text": message.content }]
+            })
+        })
+        .collect::<Vec<_>>();
+    let mut body = json!({
+        "model": config.model,
+        "stream": true,
+        "input": input,
+    });
+    if let Some(level) = reasoning_level {
+        body["reasoning"] = json!({
+            "effort": if matches!(level, "disabled" | "off" | "none") {
+                "none"
+            } else if level == "enabled" {
+                "high"
+            } else {
+                level
+            }
+        });
+    }
+    let response = client
+        .post(endpoint)
+        .bearer_auth(api_key)
+        .json(&body)
+        .send()
+        .await
+        .map_err(provider_request_error)?;
+    let response = ensure_provider_response(response).await?;
+    read_sse_events(response, stopped, |data| {
+        let value: Value = serde_json::from_str(data).map_err(stream_parse_error)?;
+        match value.get("type").and_then(Value::as_str) {
+            Some("response.output_text.delta") => {
+                if let Some(delta) = value.get("delta").and_then(Value::as_str) {
+                    on_delta(delta.to_string());
+                }
+                Ok(false)
+            }
+            Some("response.completed") | Some("response.done") => Ok(true),
+            Some("response.failed") => {
+                Err(provider_stream_error(value.get("error").unwrap_or(&value)))
+            }
+            _ => Ok(false),
+        }
+    })
+    .await
+}
+
+pub(crate) async fn ensure_provider_response(response: Response) -> Result<Response, AppError> {
     if response.status().is_success() {
         return Ok(response);
     }
@@ -1420,7 +2229,7 @@ async fn ensure_provider_response(response: Response) -> Result<Response, AppErr
     ))
 }
 
-async fn read_sse_events<F>(
+pub(crate) async fn read_sse_events<F>(
     mut response: Response,
     stopped: Arc<AtomicBool>,
     mut on_data: F,
@@ -1501,12 +2310,7 @@ fn parse_openai_sse_delta(data: &str) -> Result<ParsedSseDelta, AppError> {
     }
     let value: Value = serde_json::from_str(data).map_err(stream_parse_error)?;
     if let Some(error) = value.get("error") {
-        return Err(AppError::new(
-            "ai_provider_stream_error",
-            "AI 服务返回流式错误。",
-            truncate_chars(&error.to_string(), MAX_SSE_ERROR_BODY_CHARS),
-            true,
-        ));
+        return Err(provider_stream_error(error));
     }
     let delta = value
         .get("choices")
@@ -1558,17 +2362,24 @@ fn parse_anthropic_sse_delta(data: &str) -> Result<ParsedSseDelta, AppError> {
             }
         }
         "message_stop" => Ok(ParsedSseDelta::Done),
-        "error" => Err(AppError::new(
-            "ai_provider_stream_error",
-            "AI 服务返回流式错误。",
-            truncate_chars(&value.to_string(), MAX_SSE_ERROR_BODY_CHARS),
-            true,
-        )),
+        "error" => Err(provider_stream_error(&value)),
         _ => Ok(ParsedSseDelta::None),
     }
 }
 
-fn normalize_endpoint(endpoint: &str, api_format: AiApiFormat) -> Result<String, AppError> {
+pub(crate) fn provider_stream_error(payload: &Value) -> AppError {
+    AppError::new(
+        "ai_provider_stream_error",
+        "AI 服务返回流式错误。",
+        truncate_chars(&payload.to_string(), MAX_SSE_ERROR_BODY_CHARS),
+        true,
+    )
+}
+
+pub(crate) fn normalize_endpoint(
+    endpoint: &str,
+    api_format: AiApiFormat,
+) -> Result<String, AppError> {
     let mut url = Url::parse(endpoint.trim()).map_err(|error| {
         AppError::new(
             "ai_provider_endpoint_invalid",
@@ -1596,6 +2407,16 @@ fn normalize_endpoint(endpoint: &str, api_format: AiApiFormat) -> Result<String,
                 "/v1/messages".to_string()
             } else {
                 format!("{path}/v1/messages")
+            };
+            url.set_path(&next);
+        }
+        AiApiFormat::Responses if !path.ends_with("/responses") => {
+            let next = if path.ends_with("/v1") {
+                format!("{path}/responses")
+            } else if path.is_empty() || path == "/" {
+                "/v1/responses".to_string()
+            } else {
+                format!("{path}/v1/responses")
             };
             url.set_path(&next);
         }
@@ -1632,6 +2453,19 @@ fn normalize_models_endpoint(endpoint: &str, api_format: AiApiFormat) -> Result<
             if path.ends_with("/models") {
                 path
             } else if let Some(base) = path.strip_suffix("/messages") {
+                format!("{base}/models")
+            } else if path.ends_with("/v1") {
+                format!("{path}/models")
+            } else if path.is_empty() || path == "/" {
+                "/v1/models".to_string()
+            } else {
+                format!("{path}/v1/models")
+            }
+        }
+        AiApiFormat::Responses => {
+            if path.ends_with("/models") {
+                path
+            } else if let Some(base) = path.strip_suffix("/responses") {
                 format!("{base}/models")
             } else if path.ends_with("/v1") {
                 format!("{path}/models")
@@ -1867,7 +2701,7 @@ fn shell_like_command(line: &str) -> Option<String> {
     .then(|| command.trim_matches('`').to_string())
 }
 
-fn assess_command(command: &str) -> AiCommandAssessment {
+pub(crate) fn assess_command(command: &str) -> AiCommandAssessment {
     let normalized = command.to_lowercase();
     let mut reasons = Vec::new();
     if normalized.contains("rm -rf")
@@ -1998,10 +2832,6 @@ fn locked_string(value: &Arc<StdMutex<String>>) -> String {
         .unwrap_or_default()
 }
 
-fn emit_chat_stream_event(app: &AppHandle, event: AiChatStreamEvent) {
-    let _ = app.emit(AI_CHAT_STREAM_EVENT, event);
-}
-
 fn close_stream_handle(handle: Option<AiChatStreamHandle>) {
     if let Some(handle) = handle {
         handle.stopped.store(true, Ordering::SeqCst);
@@ -2016,6 +2846,27 @@ fn require_non_empty<'a>(value: &'a str, code: &str, message: &str) -> Result<&'
     } else {
         Ok(trimmed)
     }
+}
+
+const MAX_HOST_SCOPE_CHARS: usize = 256;
+
+fn validate_bounded_tag(
+    value: Option<String>,
+    error_code: &'static str,
+    message: &'static str,
+) -> Result<Option<String>, AppError> {
+    let tag = trim_optional(value);
+    if let Some(tag) = &tag {
+        if tag.chars().count() > MAX_HOST_SCOPE_CHARS {
+            return Err(AppError::new(
+                error_code,
+                message,
+                format!("tag_len={}", tag.chars().count()),
+                true,
+            ));
+        }
+    }
+    Ok(tag)
 }
 
 fn trim_optional(value: Option<String>) -> Option<String> {
@@ -2046,7 +2897,7 @@ fn truncate_chars(value: &str, max_chars: usize) -> String {
     output
 }
 
-fn provider_request_error(error: reqwest::Error) -> AppError {
+pub(crate) fn provider_request_error(error: reqwest::Error) -> AppError {
     AppError::new(
         "ai_provider_request_failed",
         "AI 服务请求失败。",
@@ -2088,7 +2939,7 @@ fn sanitize_provider_error_body(body: &str) -> String {
     truncate_chars(body, MAX_SSE_ERROR_BODY_CHARS)
 }
 
-fn stream_parse_error(error: serde_json::Error) -> AppError {
+pub(crate) fn stream_parse_error(error: serde_json::Error) -> AppError {
     AppError::new(
         "ai_stream_parse_failed",
         "AI 流式响应解析失败。",
@@ -2154,6 +3005,154 @@ mod tests {
 
     use super::*;
     use crate::storage_vault::{InMemorySecretStore, SecretStore};
+
+    #[test]
+    fn reasoning_level_validation_accepts_interface_values() {
+        assert_eq!(validate_reasoning_level(None).unwrap(), None);
+        assert_eq!(validate_reasoning_level(Some("")).unwrap(), None);
+        assert_eq!(
+            validate_reasoning_level(Some("low")).unwrap().as_deref(),
+            Some("low")
+        );
+        for level in ["medium", "high"] {
+            assert!(validate_reasoning_level(Some(level)).is_ok());
+        }
+        for level in [Some("off"), Some("ultra"), Some("LOW")] {
+            assert!(validate_reasoning_level(level).is_ok());
+        }
+        for level in [Some("level with spaces"), Some("a/b")] {
+            assert_eq!(
+                validate_reasoning_level(level).unwrap_err().code,
+                "ai_reasoning_level_invalid"
+            );
+        }
+    }
+
+    #[test]
+    fn thinking_mode_validation_accepts_auto_and_off_only() {
+        assert_eq!(validate_thinking_mode(None).unwrap(), None);
+        assert_eq!(
+            validate_thinking_mode(Some("auto")).unwrap().as_deref(),
+            Some("auto")
+        );
+        assert_eq!(
+            validate_thinking_mode(Some("off")).unwrap().as_deref(),
+            Some("off")
+        );
+        assert_eq!(
+            validate_thinking_mode(Some("always")).unwrap_err().code,
+            "ai_thinking_mode_invalid"
+        );
+    }
+
+    fn stored_config_with_thinking(mode: Option<&str>) -> StoredAiProviderConfig {
+        StoredAiProviderConfig {
+            id: "cfg".to_string(),
+            name: "测试".to_string(),
+            provider: AiProviderKind::Openai,
+            api_format: AiApiFormat::OpenaiCompatible,
+            endpoint: "https://example.com/v1/chat/completions".to_string(),
+            model: "test-model".to_string(),
+            models: Vec::new(),
+            thinking_mode: mode.map(str::to_string),
+            secret_slot_id: None,
+            created_at: String::new(),
+            updated_at: String::new(),
+        }
+    }
+
+    #[test]
+    fn model_override_replaces_stored_model_for_request_only() {
+        let mut config = stored_config_with_thinking(None);
+        apply_model_override(&mut config, None);
+        assert_eq!(config.model, "test-model");
+
+        apply_model_override(&mut config, Some("   "));
+        assert_eq!(config.model, "test-model");
+
+        apply_model_override(&mut config, Some("  custom-model  "));
+        assert_eq!(config.model, "custom-model");
+
+        apply_model_override(&mut config, Some(""));
+        assert_eq!(config.model, "custom-model");
+    }
+
+    #[test]
+    fn effective_reasoning_level_respects_provider_off_mode() {
+        let auto = stored_config_with_thinking(Some("auto"));
+        assert_eq!(
+            effective_reasoning_level(&auto, Some("high"))
+                .unwrap()
+                .as_deref(),
+            Some("high")
+        );
+        let off = stored_config_with_thinking(Some("off"));
+        assert_eq!(effective_reasoning_level(&off, Some("high")).unwrap(), None);
+        let unset = stored_config_with_thinking(None);
+        assert_eq!(
+            effective_reasoning_level(&unset, Some("medium"))
+                .unwrap()
+                .as_deref(),
+            Some("medium")
+        );
+        assert_eq!(
+            effective_reasoning_level(&auto, Some("xhigh"))
+                .unwrap()
+                .as_deref(),
+            Some("xhigh")
+        );
+    }
+
+    #[test]
+    fn openai_reasoning_fields_write_multi_dialect_body() {
+        let mut body = json!({ "model": "m", "stream": true });
+        apply_openai_reasoning_fields(&mut body, None);
+        assert!(body.get("reasoning_effort").is_none());
+        assert!(body.get("thinking").is_none());
+
+        apply_openai_reasoning_fields(&mut body, Some("medium"));
+        assert_eq!(body["reasoning_effort"], "medium");
+        assert_eq!(body["thinking"]["type"], "enabled");
+        assert_eq!(body["enable_thinking"], true);
+
+        apply_openai_reasoning_fields(&mut body, Some("disabled"));
+        assert_eq!(body["reasoning_effort"], "none");
+        assert_eq!(body["thinking"]["type"], "disabled");
+        assert_eq!(body["enable_thinking"], false);
+
+        apply_openai_reasoning_fields(&mut body, Some("enabled"));
+        assert_eq!(body["reasoning_effort"], "high");
+        assert_eq!(body["thinking"]["type"], "enabled");
+    }
+
+    #[test]
+    fn anthropic_reasoning_fields_lift_max_tokens_above_budget() {
+        let mut body = json!({ "model": "m", "max_tokens": 4096 });
+        apply_anthropic_reasoning_fields(&mut body, None, 4096);
+        assert_eq!(body["max_tokens"], 4096);
+        assert!(body.get("thinking").is_none());
+
+        let mut body = json!({ "model": "m", "max_tokens": 4096 });
+        apply_anthropic_reasoning_fields(&mut body, Some("low"), 4096);
+        assert_eq!(body["thinking"]["type"], "enabled");
+        assert_eq!(body["thinking"]["budget_tokens"], 2048);
+        assert_eq!(body["max_tokens"], 2048 + 4096);
+
+        let mut body = json!({ "model": "m", "max_tokens": 4096 });
+        apply_anthropic_reasoning_fields(&mut body, Some("high"), 4096);
+        assert_eq!(body["thinking"]["budget_tokens"], 16384);
+        assert_eq!(body["max_tokens"], 16384 + 4096);
+
+        let mut body = json!({ "model": "m", "max_tokens": 4096 });
+        apply_anthropic_reasoning_fields(&mut body, Some("disabled"), 4096);
+        assert_eq!(body["thinking"]["type"], "disabled");
+        assert_eq!(body["max_tokens"], 4096);
+
+        let mut body = json!({ "model": "m", "max_tokens": 4096 });
+        apply_anthropic_reasoning_fields(&mut body, Some("enabled"), 4096);
+        assert_eq!(body["thinking"]["type"], "adaptive");
+        assert_eq!(body["output_config"]["effort"], "high");
+    }
 
     #[test]
     fn parses_openai_stream_delta() {
@@ -2235,6 +3234,10 @@ mod tests {
             "https://api.example.com/anthropic/v1/messages"
         );
         assert_eq!(
+            normalize_endpoint("https://api.example.com/v1", AiApiFormat::Responses).unwrap(),
+            "https://api.example.com/v1/responses"
+        );
+        assert_eq!(
             normalize_endpoint(
                 "https://api.example.com/v1/chat/completions",
                 AiApiFormat::OpenaiCompatible
@@ -2283,7 +3286,17 @@ mod tests {
         let openai = serde_json::json!({
             "object": "list",
             "data": [
-                { "id": "gpt-4.1-mini", "owned_by": "openai" },
+                {
+                    "id": "gpt-4.1-mini",
+                    "owned_by": "openai",
+                    "reasoning": {
+                        "levels": [
+                            { "value": "low", "label": "Low" },
+                            { "value": "high", "label": "High" }
+                        ],
+                        "defaultLevel": "low"
+                    }
+                },
                 { "id": "gpt-4.1", "owned_by": "openai" }
             ]
         });
@@ -2301,6 +3314,14 @@ mod tests {
         let openai_models = parse_openai_models_list(&openai).unwrap();
         assert_eq!(openai_models.len(), 2);
         assert_eq!(openai_models[0].id, "gpt-4.1");
+        assert_eq!(
+            openai_models[1].reasoning_levels.as_deref(),
+            Some(["low".to_string(), "high".to_string()].as_slice())
+        );
+        assert_eq!(
+            openai_models[1].reasoning_default_level.as_deref(),
+            Some("low")
+        );
 
         let anthropic_models = parse_anthropic_models_list(&anthropic).unwrap();
         assert_eq!(anthropic_models.len(), 1);
@@ -2308,6 +3329,28 @@ mod tests {
             anthropic_models[0].display_name.as_deref(),
             Some("Claude Sonnet 4")
         );
+    }
+
+    #[test]
+    fn reasoning_metadata_uses_explicit_capabilities_and_builtin_defaults() {
+        let (levels, default_level) = reasoning_metadata(
+            &serde_json::json!({
+                "supports_reasoning": true,
+                "reasoning_effort": "high"
+            }),
+            "gateway-model",
+        );
+        assert_eq!(levels, Some(known_reasoning_levels()));
+        assert_eq!(default_level.as_deref(), Some("high"));
+
+        let (levels, default_level) =
+            reasoning_metadata(&serde_json::json!({}), "MiniMax-M3.1-Flash-Preview");
+        assert_eq!(levels, Some(default_reasoning_levels()));
+        assert_eq!(default_level.as_deref(), Some("enabled"));
+
+        let (levels, default_level) = reasoning_metadata(&serde_json::json!({}), "gpt-4.1-mini");
+        assert_eq!(levels, Some(default_reasoning_levels()));
+        assert_eq!(default_level.as_deref(), Some("enabled"));
     }
 
     #[test]
@@ -2342,8 +3385,10 @@ mod tests {
                 api_format: AiApiFormat::Anthropic,
                 endpoint: "https://api.example.com/anthropic".to_string(),
                 model: "MiniMax-M3".to_string(),
+                models: Vec::new(),
                 api_key: Some("secret-one".to_string()),
                 api_key_touched: true,
+                thinking_mode: None,
             },
             "1000",
         )
@@ -2359,8 +3404,10 @@ mod tests {
                 api_format: AiApiFormat::Anthropic,
                 endpoint: "https://api.example.com/anthropic".to_string(),
                 model: "MiniMax-M3-latest".to_string(),
+                models: Vec::new(),
                 api_key: None,
                 api_key_touched: false,
+                thinking_mode: None,
             },
             "1001",
         )
@@ -2399,8 +3446,10 @@ mod tests {
                 api_format: AiApiFormat::Anthropic,
                 endpoint: "https://api.example.com/anthropic".to_string(),
                 model: "MiniMax-M3".to_string(),
+                models: Vec::new(),
                 api_key: Some("secret-reveal".to_string()),
                 api_key_touched: true,
+                thinking_mode: None,
             },
             "1000",
         )
@@ -2434,8 +3483,10 @@ mod tests {
                 api_format: AiApiFormat::Anthropic,
                 endpoint: "https://api.example.com/anthropic".to_string(),
                 model: "MiniMax-M3".to_string(),
+                models: Vec::new(),
                 api_key: Some("secret-test-saved".to_string()),
                 api_key_touched: true,
+                thinking_mode: None,
             },
             "1000",
         )
@@ -2450,8 +3501,10 @@ mod tests {
                 api_format: AiApiFormat::Anthropic,
                 endpoint: "https://api.example.com/anthropic".to_string(),
                 model: "MiniMax-M3".to_string(),
+                models: Vec::new(),
                 api_key: None,
                 api_key_touched: false,
+                thinking_mode: None,
             },
         )
         .unwrap();
@@ -2471,8 +3524,10 @@ mod tests {
                 api_format: AiApiFormat::OpenaiCompatible,
                 endpoint: "https://api.example.com/v1".to_string(),
                 model: "gpt-test".to_string(),
+                models: Vec::new(),
                 api_key: Some("draft-secret".to_string()),
                 api_key_touched: true,
+                thinking_mode: None,
             },
         )
         .unwrap();
@@ -2492,8 +3547,10 @@ mod tests {
                 api_format: AiApiFormat::OpenaiCompatible,
                 endpoint: "https://api.example.com/v1".to_string(),
                 model: "gpt-test".to_string(),
+                models: Vec::new(),
                 api_key: Some("secret-two".to_string()),
                 api_key_touched: true,
+                thinking_mode: None,
             },
             "1000",
         )
@@ -2508,8 +3565,10 @@ mod tests {
                 api_format: AiApiFormat::OpenaiCompatible,
                 endpoint: "https://api.example.com/v1".to_string(),
                 model: "gpt-test".to_string(),
+                models: Vec::new(),
                 api_key: Some("  ".to_string()),
                 api_key_touched: true,
+                thinking_mode: None,
             },
             "1001",
         )
@@ -2537,8 +3596,10 @@ mod tests {
                 api_format: AiApiFormat::Anthropic,
                 endpoint: "https://api.example.com".to_string(),
                 model: "claude-test".to_string(),
+                models: Vec::new(),
                 api_key: Some("secret-three".to_string()),
                 api_key_touched: true,
+                thinking_mode: None,
             },
             "1000",
         )
@@ -2628,6 +3689,81 @@ mod tests {
         assert_eq!(messages[1].id, "a-assistant");
         let summary = list_chat_sessions(&repository).unwrap().remove(0);
         assert_eq!(summary.last_message_preview.as_deref(), Some("后答"));
+    }
+
+    #[test]
+    fn assistant_tool_calls_persist_and_replay_as_history_summary() {
+        let (repository, _secrets) = temp_repository("ai-tool-calls");
+        repository
+            .sqlite_connection()
+            .execute(
+                "INSERT INTO ai_chat_sessions(id, title, provider_config_id, created_at, updated_at)
+                 VALUES (?1, ?2, NULL, ?3, ?3)",
+                params!["session-tools", "工具", "1000"],
+            )
+            .unwrap();
+        insert_chat_message(
+            &repository,
+            InsertChatMessage {
+                id: "assistant-tools",
+                session_id: "session-tools",
+                role: "assistant",
+                content: "",
+                contexts: &[],
+                commands: &[],
+                status: "streaming",
+                now: "1001",
+            },
+        )
+        .unwrap();
+        assert!(list_chat_messages(&repository, "session-tools").unwrap()[0]
+            .tool_calls
+            .is_empty());
+
+        let mut completed = AiToolCallRecord::new("call_1", TOOL_RUN_COMMAND, 0);
+        completed.command = Some("df -h".to_string());
+        completed.status = "completed".to_string();
+        completed.exit_status = Some(0);
+        completed.output = "/dev/sda1 80%".to_string();
+        let mut rejected = AiToolCallRecord::new("call_2", TOOL_RUN_COMMAND, 4);
+        rejected.command = Some("rm -rf /tmp/cache".to_string());
+        rejected.status = "rejected".to_string();
+        save_assistant_message(
+            &repository,
+            "session-tools",
+            "assistant-tools",
+            "磁盘已满",
+            "complete",
+            &[completed, rejected],
+        )
+        .unwrap();
+
+        let messages = list_chat_messages(&repository, "session-tools").unwrap();
+        assert_eq!(messages[0].tool_calls.len(), 2);
+        assert_eq!(messages[0].tool_calls[1].text_offset, 4);
+        let history = model_messages_from_history(messages);
+        assert_eq!(history.len(), 1);
+        assert!(history[0]
+            .content
+            .starts_with("磁盘已满\n\n[本轮工具调用记录]"));
+        assert!(history[0]
+            .content
+            .contains("`df -h` → 退出码 0，输出：/dev/sda1 80%"));
+        assert!(history[0]
+            .content
+            .contains("`rm -rf /tmp/cache` → 用户拒绝执行"));
+    }
+
+    #[test]
+    fn history_keeps_assistant_turns_that_only_ran_tools() {
+        let mut call = AiToolCallRecord::new("call_1", "server_monitor", 0);
+        call.status = "failed".to_string();
+        call.error = Some("连接失败".to_string());
+        let summary = append_tool_call_summary(String::new(), &[call]);
+        assert_eq!(
+            summary,
+            "[本轮工具调用记录]\n- server_monitor → 失败：连接失败"
+        );
     }
 
     fn temp_repository(name: &str) -> (StorageRepository, Arc<InMemorySecretStore>) {

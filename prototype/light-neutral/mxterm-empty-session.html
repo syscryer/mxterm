@@ -3782,6 +3782,335 @@
       }
     }
   </style>
+<style>
+  .ai-context-preview {
+    position: fixed;
+    right: 28px;
+    bottom: 28px;
+    z-index: 20;
+    width: min(560px, calc(100vw - 48px));
+    overflow: hidden;
+    border: 1px solid rgba(148, 163, 184, 0.34);
+    border-radius: 15px;
+    background: rgba(255, 255, 255, 0.96);
+    box-shadow: 0 22px 58px rgba(15, 23, 42, 0.2), 0 2px 8px rgba(15, 23, 42, 0.08);
+    color: var(--mx-text);
+    container-type: inline-size;
+    container-name: ai-context-preview;
+  }
+
+  .ai-context-preview-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 12px 14px 10px;
+    border-bottom: 1px solid var(--mx-line-soft);
+  }
+
+  .ai-context-preview-kicker {
+    display: block;
+    margin-bottom: 2px;
+    color: var(--mx-subtle);
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+
+  .ai-context-preview-head strong {
+    font-size: 13px;
+    font-weight: 680;
+  }
+
+  .ai-context-preview-close {
+    width: 26px;
+    height: 26px;
+    border: 0;
+    border-radius: 7px;
+    color: var(--mx-subtle);
+    background: transparent;
+    font-size: 18px;
+    line-height: 1;
+  }
+
+  .ai-context-preview-close:hover {
+    color: var(--mx-text);
+    background: var(--mx-panel-soft);
+  }
+
+  .ai-context-preview-message {
+    display: grid;
+    gap: 7px;
+    padding: 15px 16px 13px;
+    color: var(--mx-text);
+    font-size: 13px;
+    line-height: 1.6;
+  }
+
+  .ai-context-preview-message p {
+    margin: 0;
+  }
+
+  .ai-context-preview-message code {
+    border: 1px solid var(--mx-line);
+    border-radius: 5px;
+    padding: 1px 5px;
+    color: var(--mx-text);
+    background: var(--mx-panel-soft);
+    font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+    font-size: 11px;
+  }
+
+  .ai-context-preview-composer {
+    position: relative;
+    padding: 10px 14px 12px;
+  }
+
+  .ai-context-preview-selection {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 5px;
+    margin-bottom: 7px;
+  }
+
+  .ai-context-preview-selection[hidden] {
+    display: none;
+  }
+
+  .ai-context-preview-chip {
+    max-width: 100%;
+    overflow: hidden;
+    border: 1px solid rgba(59, 130, 246, 0.2);
+    border-radius: 6px;
+    padding: 3px 7px;
+    color: #1d4ed8;
+    background: rgba(59, 130, 246, 0.07);
+    font-size: 10px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .ai-context-preview-input {
+    width: 100%;
+    min-height: 62px;
+    resize: vertical;
+    border: 1px solid var(--mx-line);
+    border-radius: 10px;
+    padding: 10px 11px;
+    color: var(--mx-text);
+    background: var(--mx-panel);
+    font: inherit;
+    font-size: 13px;
+    outline: none;
+  }
+
+  .ai-context-preview-input:focus {
+    border-color: rgba(59, 130, 246, 0.48);
+    box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+  }
+
+  .ai-context-preview-foot {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    margin-top: 8px;
+  }
+
+  .ai-context-preview-foot-left,
+  .ai-context-preview-foot-right {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+  }
+
+  .ai-context-preview-tool {
+    width: 30px;
+    height: 30px;
+    border: 0;
+    border-radius: 8px;
+    display: inline-grid;
+    place-items: center;
+    color: var(--mx-text);
+    background: transparent;
+  }
+
+  .ai-context-preview-tool:hover {
+    background: var(--mx-panel-soft);
+  }
+
+  .ai-context-preview-tool .ui-icon,
+  .ai-context-preview-send .ui-icon {
+    width: 18px;
+    height: 18px;
+    stroke-width: 1.8;
+  }
+
+  .ai-context-preview-warning {
+    display: inline-grid;
+    place-items: center;
+    width: 18px;
+    height: 20px;
+    color: #f97316;
+  }
+
+  .ai-context-preview-warning .ui-icon {
+    width: 17px;
+    height: 17px;
+    stroke-width: 1.8;
+  }
+
+  .ai-context-preview-menu {
+    position: absolute;
+    left: 14px;
+    bottom: 52px;
+    z-index: 2;
+    width: 190px;
+    padding: 6px;
+    border: 1px solid var(--mx-line);
+    border-radius: 10px;
+    background: rgba(255, 255, 255, 0.98);
+    box-shadow: 0 14px 28px rgba(15, 23, 42, 0.15);
+  }
+
+  .ai-context-preview-menu[hidden] {
+    display: none;
+  }
+
+  .ai-context-preview-menu-title {
+    padding: 5px 7px 6px;
+    color: var(--mx-subtle);
+    font-size: 10px;
+    font-weight: 700;
+  }
+
+  .ai-context-preview-menu-action {
+    width: 100%;
+    height: 32px;
+    border: 0;
+    border-radius: 7px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 0 8px;
+    color: var(--mx-text);
+    background: transparent;
+    text-align: left;
+    font-size: 12px;
+  }
+
+  .ai-context-preview-menu-action:hover,
+  .ai-context-preview-menu-action.is-selected {
+    color: #1d4ed8;
+    background: rgba(59, 130, 246, 0.09);
+  }
+
+  .ai-context-preview-menu-action .ui-icon {
+    width: 15px;
+    height: 15px;
+    color: var(--mx-muted);
+  }
+
+  .ai-context-preview-menu-action.is-selected .ui-icon {
+    color: #2563eb;
+  }
+
+  .ai-context-preview-menu-action .check {
+    margin-left: auto;
+    opacity: 0;
+  }
+
+  .ai-context-preview-menu-action.is-selected .check {
+    opacity: 1;
+  }
+
+  .ai-context-preview-meta {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    color: var(--mx-muted);
+    font-size: 11px;
+  }
+
+  .ai-context-preview-meta strong {
+    color: var(--mx-text);
+    font-weight: 600;
+  }
+
+  .ai-context-preview-model-icon {
+    display: none;
+    place-items: center;
+    width: 18px;
+    height: 18px;
+    color: var(--mx-muted);
+  }
+
+  .ai-context-preview-model-icon .ui-icon {
+    width: 16px;
+    height: 16px;
+  }
+
+  .ai-context-preview-send {
+    width: 30px;
+    height: 30px;
+    border: 0;
+    border-radius: 8px;
+    display: inline-grid;
+    place-items: center;
+    color: white;
+    background: #78aee3;
+  }
+
+  .ai-context-preview-send:hover {
+    background: #5e98d4;
+  }
+
+  @media (max-width: 720px) {
+    .ai-context-preview {
+      right: 12px;
+      bottom: 12px;
+      width: calc(100vw - 24px);
+    }
+  }
+
+  @container ai-context-preview (max-width: 420px) {
+    .ai-context-preview {
+      border-radius: 12px;
+    }
+
+    .ai-context-preview-head,
+    .ai-context-preview-message,
+    .ai-context-preview-composer {
+      padding-left: 11px;
+      padding-right: 11px;
+    }
+
+    .ai-context-preview-message {
+      padding-top: 12px;
+      padding-bottom: 10px;
+      font-size: 12px;
+    }
+
+    .ai-context-preview-meta .ai-context-preview-model-label,
+    .ai-context-preview-meta .ai-context-preview-reasoning,
+    .ai-context-preview-meta .ai-context-preview-model-chevron {
+      display: none;
+    }
+
+    .ai-context-preview-model-icon {
+      display: inline-grid;
+    }
+
+    .ai-context-preview-foot-right {
+      gap: 3px;
+    }
+
+    .ai-context-preview-menu {
+      left: 11px;
+    }
+  }
+</style>
 </head>
 <body>
   <div class="app-shell">
@@ -6047,6 +6376,110 @@ enablecredsspsupport:i:1</textarea>
 
     updateCommandSenderState();
     renderCommandLibrary();
+  </script>
+
+  <aside class="ai-context-preview" id="aiContextPreview" aria-label="AI 输入区预览">
+    <header class="ai-context-preview-head">
+      <div>
+        <span class="ai-context-preview-kicker">AI 助手</span>
+        <strong>紧凑上下文工具栏</strong>
+      </div>
+      <button class="ai-context-preview-close" id="aiContextPreviewClose" type="button" aria-label="关闭预览">×</button>
+    </header>
+
+    <div class="ai-context-preview-message">
+      <p>磁盘空间已使用 80%，可以先查看 Docker 目录占用情况，再决定是否清理。</p>
+      <p>建议执行 <code>du -sh /var/lib/docker/*</code>，确认最大的目录后再处理。</p>
+    </div>
+
+    <div class="ai-context-preview-composer">
+      <div class="ai-context-preview-selection" id="aiContextPreviewSelection" hidden></div>
+      <textarea class="ai-context-preview-input" aria-label="输入问题" placeholder="输入问题，例如：解释这段报错，或生成排查命令"></textarea>
+      <div class="ai-context-preview-foot">
+        <div class="ai-context-preview-foot-left">
+          <button class="ai-context-preview-tool" id="aiContextPreviewPlus" type="button" aria-label="添加上下文" aria-expanded="false">
+            <svg class="ui-icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 3v10M3 8h10"/></svg>
+          </button>
+          <span class="ai-context-preview-warning" title="执行模式会先检查命令风险" aria-label="命令风险提示">
+            <svg class="ui-icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 2.4 13 12H3z"/><path d="M8 6.1v2.8M8 10.8h.01"/></svg>
+          </span>
+        </div>
+        <div class="ai-context-preview-foot-right">
+          <div class="ai-context-preview-meta">
+            <span class="ai-context-preview-model-icon" title="GPT-6 Sol · 高" aria-label="GPT-6 Sol · 高">
+              <svg class="ui-icon" viewBox="0 0 16 16" aria-hidden="true"><path d="m8 2.6 4.2 2.4v5L8 12.4l-4.2-2.4V5z"/><path d="m3.8 5 4.2 2.4L12.2 5M8 7.4v5"/></svg>
+            </span>
+            <strong class="ai-context-preview-model-label">GPT-6 Sol</strong>
+            <span class="ai-context-preview-reasoning">高</span>
+            <span class="ai-context-preview-model-chevron">⌄</span>
+          </div>
+          <button class="ai-context-preview-send" type="button" aria-label="发送">
+            <svg class="ui-icon" viewBox="0 0 16 16" aria-hidden="true"><path d="m2.8 7.8 10-4-2.4 8.4-2.2-3-3.2-1.4z"/><path d="m8.2 9.2 2.4-2.4"/></svg>
+          </button>
+        </div>
+      </div>
+      <div class="ai-context-preview-menu" id="aiContextPreviewMenu" role="menu" hidden>
+        <div class="ai-context-preview-menu-title">添加上下文</div>
+        <button class="ai-context-preview-menu-action" type="button" data-context-label="最近输出" role="menuitem">
+          <svg class="ui-icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M3.2 4.1h5.2M3.2 7.9h7.8M3.2 11.7h4.1"/><path d="m10.8 9.4 2.5 2.5M13.3 9.4l-2.5-2.5"/></svg>
+          <span>最近输出</span><span class="check">✓</span>
+        </button>
+        <button class="ai-context-preview-menu-action" type="button" data-context-label="连接信息" role="menuitem">
+          <svg class="ui-icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M6.1 9.9 9.9 6.1"/><path d="m5.1 6.1-1.2 1.2a2.1 2.1 0 0 0 3 3l1.2-1.2M10.9 9.9l1.2-1.2a2.1 2.1 0 0 0-3-3L7.9 6.9"/></svg>
+          <span>连接</span><span class="check">✓</span>
+        </button>
+        <button class="ai-context-preview-menu-action" type="button" data-context-label="最近命令" role="menuitem">
+          <svg class="ui-icon" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="5.1"/><path d="M8 5.2v3l2 1.2"/></svg>
+          <span>最近命令</span><span class="check">✓</span>
+        </button>
+      </div>
+    </div>
+  </aside>
+
+  <script>
+    const aiContextPreview = document.getElementById("aiContextPreview");
+    const aiContextPreviewClose = document.getElementById("aiContextPreviewClose");
+    const aiContextPreviewPlus = document.getElementById("aiContextPreviewPlus");
+    const aiContextPreviewMenu = document.getElementById("aiContextPreviewMenu");
+    const aiContextPreviewSelection = document.getElementById("aiContextPreviewSelection");
+    const aiContextPreviewActions = [...document.querySelectorAll(".ai-context-preview-menu-action[data-context-label]")];
+
+    function renderAiContextPreview() {
+      const selected = aiContextPreviewActions.filter((button) => button.classList.contains("is-selected"));
+      aiContextPreviewSelection.replaceChildren(
+        ...selected.map((button) => {
+          const chip = document.createElement("span");
+          chip.className = "ai-context-preview-chip";
+          chip.textContent = button.dataset.contextLabel || "上下文";
+          return chip;
+        }),
+      );
+      aiContextPreviewSelection.hidden = selected.length === 0;
+    }
+
+    aiContextPreviewActions.forEach((button) => {
+      button.addEventListener("click", () => {
+        button.classList.toggle("is-selected");
+        renderAiContextPreview();
+      });
+    });
+
+    aiContextPreviewPlus.addEventListener("click", () => {
+      const open = aiContextPreviewMenu.hidden;
+      aiContextPreviewMenu.hidden = !open;
+      aiContextPreviewPlus.setAttribute("aria-expanded", String(open));
+    });
+
+    document.addEventListener("click", (event) => {
+      if (!aiContextPreviewMenu.hidden && !aiContextPreviewMenu.contains(event.target) && !aiContextPreviewPlus.contains(event.target)) {
+        aiContextPreviewMenu.hidden = true;
+        aiContextPreviewPlus.setAttribute("aria-expanded", "false");
+      }
+    });
+
+    aiContextPreviewClose.addEventListener("click", () => {
+      aiContextPreview.hidden = true;
+    });
   </script>
 </body>
 </html>
