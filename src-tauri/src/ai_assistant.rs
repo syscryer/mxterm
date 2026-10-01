@@ -17,8 +17,8 @@ use uuid::Uuid;
 #[cfg(test)]
 use crate::ai_agent::TOOL_RUN_COMMAND;
 use crate::ai_agent::{
-    self, AgentRun, PendingApprovals, PreparedAgent, TOOL_STATUS_CANCELLED,
-    TOOL_STATUS_PENDING_APPROVAL, TOOL_STATUS_RUNNING,
+    self, AgentRun, PendingApprovals, PendingUserInputs, PreparedAgent, TOOL_STATUS_CANCELLED,
+    TOOL_STATUS_PENDING_APPROVAL, TOOL_STATUS_PENDING_USER_INPUT, TOOL_STATUS_RUNNING,
 };
 use crate::app_error::AppError;
 use crate::events::{AiChatStreamEvent, AI_CHAT_STREAM_EVENT};
@@ -194,6 +194,24 @@ pub struct AiCommandAssessRequest {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct AiUserOption {
+    pub id: String,
+    pub label: String,
+    #[serde(default)]
+    pub description: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct AiUserAnswer {
+    #[serde(default)]
+    pub option_id: Option<String>,
+    #[serde(default)]
+    pub text: Option<String>,
+    #[serde(default)]
+    pub cancelled: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct AiToolCallRecord {
     pub id: String,
     pub name: String,
@@ -230,6 +248,14 @@ pub struct AiToolCallRecord {
     pub connection_id: Option<String>,
     #[serde(default)]
     pub workspace: Option<String>,
+    #[serde(default)]
+    pub question: Option<String>,
+    #[serde(default)]
+    pub options: Vec<AiUserOption>,
+    #[serde(default = "default_allow_free_text")]
+    pub allow_free_text: bool,
+    #[serde(default)]
+    pub answer: Option<AiUserAnswer>,
 }
 
 impl AiToolCallRecord {
@@ -254,8 +280,16 @@ impl AiToolCallRecord {
             approval_decision: None,
             connection_id: None,
             workspace: None,
+            question: None,
+            options: Vec::new(),
+            allow_free_text: true,
+            answer: None,
         }
     }
+}
+
+fn default_allow_free_text() -> bool {
+    true
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -351,6 +385,18 @@ pub struct AiChatToolDecisionRequest {
     pub approved: bool,
 }
 
+#[derive(Clone, Debug, Deserialize)]
+pub struct AiChatToolAnswerRequest {
+    pub stream_id: String,
+    pub tool_call_id: String,
+    #[serde(default)]
+    pub option_id: Option<String>,
+    #[serde(default)]
+    pub text: Option<String>,
+    #[serde(default)]
+    pub cancelled: bool,
+}
+
 #[derive(Clone, Debug, Serialize)]
 pub struct AiChatStreamStartResponse {
     pub stream_id: String,
@@ -384,6 +430,7 @@ struct AiChatStreamHandle {
     thinking: Arc<StdMutex<String>>,
     tool_calls: Arc<StdMutex<Vec<AiToolCallRecord>>>,
     approvals: PendingApprovals,
+    user_inputs: PendingUserInputs,
     emitter: StreamEmitter,
     stopped: Arc<AtomicBool>,
     task: JoinHandle<()>,
@@ -511,12 +558,14 @@ impl AiChatStreamManager {
         let thinking = Arc::new(StdMutex::new(String::new()));
         let tool_calls = Arc::new(StdMutex::new(Vec::new()));
         let approvals: PendingApprovals = Arc::new(StdMutex::new(HashMap::new()));
+        let user_inputs: PendingUserInputs = Arc::new(StdMutex::new(HashMap::new()));
         let stopped = Arc::new(AtomicBool::new(false));
         let manager = self.clone();
         let task_content = Arc::clone(&content);
         let task_thinking = Arc::clone(&thinking);
         let task_tool_calls = Arc::clone(&tool_calls);
         let task_approvals = Arc::clone(&approvals);
+        let task_user_inputs = Arc::clone(&user_inputs);
         let task_stopped = Arc::clone(&stopped);
         let task_tasks = Arc::clone(&self.tasks);
         let task_emitter = emitter.clone();
@@ -543,6 +592,7 @@ impl AiChatStreamManager {
                         thinking: Arc::clone(&task_thinking),
                         tool_calls: Arc::clone(&task_tool_calls),
                         approvals: Arc::clone(&task_approvals),
+                        user_inputs: Arc::clone(&task_user_inputs),
                         emitter: &task_emitter,
                         pending_separator: AtomicBool::new(false),
                         reasoning_level: reasoning_level.as_deref(),
@@ -622,6 +672,7 @@ impl AiChatStreamManager {
                     thinking,
                     tool_calls,
                     approvals,
+                    user_inputs,
                     emitter,
                     stopped,
                     task,
@@ -658,6 +709,86 @@ impl AiChatStreamManager {
         });
         if let Some(sender) = sender {
             let _ = sender.send(request.approved);
+        }
+        Ok(())
+    }
+
+    async fn answer_tool_call(&self, request: AiChatToolAnswerRequest) -> Result<(), AppError> {
+        let stream_id = require_non_empty(
+            &request.stream_id,
+            "ai_stream_missing",
+            "AI 生成流标识缺失。",
+        )?;
+        let tool_call_id = require_non_empty(
+            &request.tool_call_id,
+            "ai_tool_call_missing",
+            "AI 工具调用标识缺失。",
+        )?;
+        let option_id = trim_optional(request.option_id);
+        let text = trim_optional(request.text);
+        let (user_inputs, tool_calls) = {
+            let streams = self.streams.lock().await;
+            let Some(handle) = streams.get(stream_id) else {
+                return Ok(());
+            };
+            (
+                Arc::clone(&handle.user_inputs),
+                Arc::clone(&handle.tool_calls),
+            )
+        };
+
+        if !request.cancelled && option_id.is_none() && text.is_none() {
+            return Err(AppError::new(
+                "ai_tool_answer_missing",
+                "请选择一个选项或填写回答。",
+                "answer is blank",
+                true,
+            ));
+        }
+
+        if !request.cancelled {
+            let call = tool_calls
+                .lock()
+                .ok()
+                .and_then(|calls| calls.iter().find(|call| call.id == tool_call_id).cloned());
+            let Some(call) = call else {
+                return Err(AppError::new(
+                    "ai_tool_missing",
+                    "AI 提问已不存在或已结束。",
+                    "tool call not found",
+                    true,
+                ));
+            };
+            if let Some(option_id) = option_id.as_deref() {
+                if !call.options.iter().any(|option| option.id == option_id) {
+                    return Err(AppError::new(
+                        "ai_tool_answer_invalid",
+                        "所选项已失效，请重新选择。",
+                        "option id is invalid",
+                        true,
+                    ));
+                }
+            }
+            if text.is_some() && !call.allow_free_text {
+                return Err(AppError::new(
+                    "ai_tool_answer_invalid",
+                    "该提问不接受补充文字，请选择一个选项。",
+                    "free text is disabled",
+                    true,
+                ));
+            }
+        }
+
+        let sender = user_inputs
+            .lock()
+            .ok()
+            .and_then(|mut pending| pending.remove(tool_call_id));
+        if let Some(sender) = sender {
+            let _ = sender.send(AiUserAnswer {
+                option_id,
+                text,
+                cancelled: request.cancelled,
+            });
         }
         Ok(())
     }
@@ -894,6 +1025,14 @@ pub async fn ai_chat_tool_decision(
     request: AiChatToolDecisionRequest,
 ) -> Result<(), AppError> {
     manager.decide_tool_call(request).await
+}
+
+#[tauri::command]
+pub async fn ai_chat_tool_answer(
+    manager: State<'_, AiChatStreamManager>,
+    request: AiChatToolAnswerRequest,
+) -> Result<(), AppError> {
+    manager.answer_tool_call(request).await
 }
 
 #[tauri::command]
@@ -1154,7 +1293,9 @@ fn settle_tool_calls(
         Ok(mut calls) => {
             let mut settled = Vec::new();
             for call in calls.iter_mut() {
-                if call.status == TOOL_STATUS_RUNNING || call.status == TOOL_STATUS_PENDING_APPROVAL
+                if call.status == TOOL_STATUS_RUNNING
+                    || call.status == TOOL_STATUS_PENDING_APPROVAL
+                    || call.status == TOOL_STATUS_PENDING_USER_INPUT
                 {
                     call.status = TOOL_STATUS_CANCELLED.to_string();
                     settled.push(call.clone());

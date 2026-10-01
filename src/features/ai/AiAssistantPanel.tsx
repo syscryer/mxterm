@@ -44,6 +44,7 @@ import {
   aiChatSessionList,
   aiChatStreamStart,
   aiChatStreamStop,
+  aiChatToolAnswer,
   aiChatToolDecision,
   aiAuditList,
   aiCommandAssess,
@@ -107,6 +108,7 @@ const selectedModelsStorageKey = "mxterm.ai.selectedModelsByProvider";
 const selectedReasoningLevelsStorageKey = "mxterm.ai.selectedReasoningLevelsByModel";
 const selectedLocalWorkspaceStorageKey = "mxterm.ai.selectedLocalWorkspace";
 const agentTerminalOutputLimit = 20000;
+const AI_MESSAGE_LIST_BOTTOM_THRESHOLD = 32;
 const HISTORY_SCOPE_CURRENT = "__current__";
 const HISTORY_SCOPE_ALL = "__all__";
 const HISTORY_SCOPE_NONE = "__none__";
@@ -198,10 +200,12 @@ export function AiAssistantPanel({
   const auditTriggerRef = useRef<HTMLButtonElement | null>(null);
   const contextTriggerRef = useRef<HTMLButtonElement | null>(null);
   const messageListRef = useRef<HTMLElement | null>(null);
+  const messageListFollowRef = useRef(true);
   const streamStateRef = useRef<StreamState | null>(null);
   const lastContextRequestKeyRef = useRef(0);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [messageListHasNewContent, setMessageListHasNewContent] = useState(false);
   const [pendingDeleteSession, setPendingDeleteSession] =
     useState<AiChatSessionSummary | null>(null);
   const [clearSessionOpen, setClearSessionOpen] = useState(false);
@@ -212,6 +216,9 @@ export function AiAssistantPanel({
     return isAiExecutionMode(stored) ? stored : "execute";
   });
   const [decidingToolCallIds, setDecidingToolCallIds] = useState<string[]>([]);
+  const [answeringToolCallIds, setAnsweringToolCallIds] = useState<string[]>([]);
+  const [selectedUserOptionIds, setSelectedUserOptionIds] = useState<Record<string, string>>({});
+  const [userInputDrafts, setUserInputDrafts] = useState<Record<string, string>>({});
   const [expandedToolCallIds, setExpandedToolCallIds] = useState<Record<string, boolean>>({});
   const [selectedModel, setSelectedModel] = useState("");
   const [reasoningLevels, setReasoningLevels] = useState<string[]>([]);
@@ -396,6 +403,38 @@ export function AiAssistantPanel({
     setStreamState(next);
   }
 
+  function resetMessageListScrollFollow() {
+    messageListFollowRef.current = true;
+    setMessageListHasNewContent(false);
+  }
+
+  function handleMessageListScroll() {
+    const list = messageListRef.current;
+    if (!list) {
+      return;
+    }
+    const distanceToBottom = list.scrollHeight - list.scrollTop - list.clientHeight;
+    if (distanceToBottom <= AI_MESSAGE_LIST_BOTTOM_THRESHOLD) {
+      messageListFollowRef.current = true;
+      setMessageListHasNewContent(false);
+      return;
+    }
+    messageListFollowRef.current = false;
+    if (streamStateRef.current) {
+      setMessageListHasNewContent(true);
+    }
+  }
+
+  function scrollMessageListToBottom() {
+    const list = messageListRef.current;
+    if (!list) {
+      return;
+    }
+    messageListFollowRef.current = true;
+    setMessageListHasNewContent(false);
+    list.scrollTop = list.scrollHeight;
+  }
+
   useEffect(() => {
     loadingRef.current = loading;
   }, [loading]);
@@ -405,7 +444,16 @@ export function AiAssistantPanel({
     if (!list) {
       return;
     }
-    list.scrollTop = list.scrollHeight;
+    if (!messageListFollowRef.current) {
+      setMessageListHasNewContent(true);
+      return;
+    }
+    const frame = window.requestAnimationFrame(() => {
+      if (messageListRef.current === list && messageListFollowRef.current) {
+        list.scrollTop = list.scrollHeight;
+      }
+    });
+    return () => window.cancelAnimationFrame(frame);
   }, [messages, streamState]);
 
   useEffect(() => {
@@ -629,6 +677,7 @@ export function AiAssistantPanel({
     setError(null);
     try {
       const session = await aiChatSessionGet(sessionId);
+      resetMessageListScrollFollow();
       setActiveSessionId(session.summary.id);
       setMessages(session.messages);
       setContextBlocks([]);
@@ -650,6 +699,7 @@ export function AiAssistantPanel({
     if (streamState) {
       return;
     }
+    resetMessageListScrollFollow();
     setActiveSessionId(null);
     setMessages([]);
     setContextBlocks([]);
@@ -686,6 +736,7 @@ export function AiAssistantPanel({
     setLoading(true);
     setError(null);
     setNotice(null);
+    resetMessageListScrollFollow();
     try {
       const terminalOutput = (recentTerminalOutput || "").trim();
       const response = await aiChatStreamStart({
@@ -782,6 +833,43 @@ export function AiAssistantPanel({
     }
   }
 
+  async function answerToolCall(call: AiToolCallRecord, cancelled = false) {
+    const current = streamStateRef.current;
+    if (!current || answeringToolCallIds.includes(call.id)) {
+      return;
+    }
+    const optionId = selectedUserOptionIds[call.id] || null;
+    const text = userInputDrafts[call.id]?.trim() || null;
+    if (!cancelled && !optionId && !text) {
+      setError("请选择一个选项，或填写补充回答。");
+      return;
+    }
+    setAnsweringToolCallIds((ids) => [...ids, call.id]);
+    setError(null);
+    try {
+      await aiChatToolAnswer(current.streamId, call.id, {
+        option_id: optionId,
+        text,
+        cancelled,
+      });
+      setExpandedToolCallIds((current) => ({ ...current, [call.id]: false }));
+      setSelectedUserOptionIds((current) => {
+        const next = { ...current };
+        delete next[call.id];
+        return next;
+      });
+      setUserInputDrafts((current) => {
+        const next = { ...current };
+        delete next[call.id];
+        return next;
+      });
+    } catch (nextError) {
+      setError(formatAiError(nextError));
+    } finally {
+      setAnsweringToolCallIds((ids) => ids.filter((id) => id !== call.id));
+    }
+  }
+
   async function stopStreaming() {
     if (!streamState) {
       return;
@@ -805,6 +893,7 @@ export function AiAssistantPanel({
       }
       await aiChatSessionDelete(pendingDeleteSession.id);
       if (activeSessionId === pendingDeleteSession.id) {
+        resetMessageListScrollFollow();
         setActiveSessionId(null);
         setMessages([]);
         setContextBlocks([]);
@@ -829,6 +918,7 @@ export function AiAssistantPanel({
     }
     try {
       const cleared = await aiChatSessionClear(activeSessionId);
+      resetMessageListScrollFollow();
       setMessages(cleared.messages);
       setContextBlocks([]);
       setPendingDangerousCommand(null);
@@ -1304,72 +1394,90 @@ export function AiAssistantPanel({
         </div>
       ) : null}
 
-      <section className="ai-message-list" aria-label="AI 对话" ref={messageListRef}>
-        {messages.length === 0 ? (
-          <div className="ai-welcome">
-            <Terminal className="ui-icon" aria-hidden="true" />
-            <strong>描述现象，或把终端输出放进上下文。</strong>
-            <span>{agentModeDescription}</span>
-          </div>
-        ) : (
-          messages.map((message) => {
-            const showStatus =
-              Boolean(message.status) &&
-              message.status !== "complete" &&
-              message.status !== "streaming";
-            const contextsNode =
-              message.contexts.length > 0 ? (
-                <div className="ai-message-contexts">
-                  {message.contexts.map((block) => (
-                    <span key={block.id}>{block.title}</span>
-                  ))}
-                </div>
-              ) : null;
-            return (
-              <article className={`ai-message ${message.role}`} key={message.id}>
-                {showStatus ? (
-                  <header>
-                    <span>{formatMessageStatus(message.status)}</span>
-                  </header>
-                ) : null}
-                {message.role === "user" ? (
-                  <div className="ai-message-bubble">
-                    {contextsNode}
-                    <div className="ai-message-content">
-                      {message.content
-                        ? renderMarkdownContent(message.content)
-                        : "..."}
-                    </div>
+      <div className="ai-message-list-shell">
+        <section
+          className="ai-message-list"
+          aria-label="AI 对话"
+          ref={messageListRef}
+          onScroll={handleMessageListScroll}
+        >
+          {messages.length === 0 ? (
+            <div className="ai-welcome">
+              <Terminal className="ui-icon" aria-hidden="true" />
+              <strong>描述现象，或把终端输出放进上下文。</strong>
+              <span>{agentModeDescription}</span>
+            </div>
+          ) : (
+            messages.map((message) => {
+              const showStatus =
+                Boolean(message.status) &&
+                message.status !== "complete" &&
+                message.status !== "streaming";
+              const contextsNode =
+                message.contexts.length > 0 ? (
+                  <div className="ai-message-contexts">
+                    {message.contexts.map((block) => (
+                      <span key={block.id}>{block.title}</span>
+                    ))}
                   </div>
-                ) : (
-                  <>
-                    {contextsNode}
-                    <AiMessageTimeline
-                      message={message}
-                      renderText={renderMarkdownContent}
-                      renderTool={renderToolCallCard}
-                    />
-                    {!agentModeEnabled ? renderCommandSuggestions(message) : null}
-                  </>
-                )}
-                <div className="ai-message-meta">
-                  <Tooltip label="复制">
-                    <button
-                      type="button"
-                      aria-label="复制消息"
-                      className="ai-message-meta-button"
-                      onClick={() => void copyMessage(message.content)}
-                    >
-                      <Copy className="ui-icon" aria-hidden="true" />
-                    </button>
-                  </Tooltip>
-                  <time>{formatMessageTime(message.created_at)}</time>
-                </div>
-              </article>
-            );
-          })
-        )}
-      </section>
+                ) : null;
+              return (
+                <article className={`ai-message ${message.role}`} key={message.id}>
+                  {showStatus ? (
+                    <header>
+                      <span>{formatMessageStatus(message.status)}</span>
+                    </header>
+                  ) : null}
+                  {message.role === "user" ? (
+                    <div className="ai-message-bubble">
+                      {contextsNode}
+                      <div className="ai-message-content">
+                        {message.content
+                          ? renderMarkdownContent(message.content)
+                          : "..."}
+                      </div>
+                    </div>
+                  ) : (
+                    <>
+                      {contextsNode}
+                      <AiMessageTimeline
+                        message={message}
+                        renderText={renderMarkdownContent}
+                        renderTool={renderToolCallCard}
+                      />
+                      {!agentModeEnabled ? renderCommandSuggestions(message) : null}
+                    </>
+                  )}
+                  <div className="ai-message-meta">
+                    <Tooltip label="复制">
+                      <button
+                        type="button"
+                        aria-label="复制消息"
+                        className="ai-message-meta-button"
+                        onClick={() => void copyMessage(message.content)}
+                      >
+                        <Copy className="ui-icon" aria-hidden="true" />
+                      </button>
+                    </Tooltip>
+                    <time>{formatMessageTime(message.created_at)}</time>
+                  </div>
+                </article>
+              );
+            })
+          )}
+        </section>
+        {messageListHasNewContent ? (
+          <button
+            className="ai-new-content-button"
+            type="button"
+            aria-label="回到底部查看新内容"
+            onClick={scrollMessageListToBottom}
+          >
+            <ChevronDown className="ui-icon" aria-hidden="true" />
+            <span>新内容</span>
+          </button>
+        ) : null}
+      </div>
 
       {error ? <p className="ai-error" role="alert">{error}</p> : null}
       {notice ? <p className="ai-notice" role="status">{notice}</p> : null}
@@ -1693,10 +1801,17 @@ export function AiAssistantPanel({
     </section>
   );
 
-  function renderToolCallCard(call: AiToolCallRecord) {
-    const pending = call.status === "pending_approval";
+  function renderToolCallCard(call: AiToolCallRecord, flowing = false) {
+    const pendingApproval = call.status === "pending_approval";
+    const pendingUserInput = call.name === "ask_user" && call.status === "pending_user_input";
+    const userInputOptions = call.options ?? [];
+    const selectedOptionId = selectedUserOptionIds[call.id] || "";
+    const answerDraft = userInputDrafts[call.id] ?? "";
+    const allowFreeText = call.allow_free_text !== false || userInputOptions.length === 0;
+    const pending = pendingApproval;
     const deciding = decidingToolCallIds.includes(call.id);
-    const danger = pending || call.risk === "dangerous";
+    const answering = answeringToolCallIds.includes(call.id);
+    const danger = pendingApproval || call.risk === "dangerous";
     const ToolIcon =
       call.name === "server_monitor"
         ? Activity
@@ -1707,8 +1822,19 @@ export function AiAssistantPanel({
             : call.name === "ask_user"
               ? Bot
               : Terminal;
-    const expanded = expandedToolCallIds[call.id] ?? pending;
+    const expanded = expandedToolCallIds[call.id] ?? (pendingApproval || pendingUserInput);
     const detailId = `ai-tool-detail-${call.id}`;
+    const answeredOption = call.answer?.option_id
+      ? userInputOptions.find((option) => option.id === call.answer?.option_id)
+      : null;
+    const answerSummary = call.answer?.cancelled
+      ? "用户取消了选择。"
+      : [
+          answeredOption?.label,
+          call.answer?.text?.trim() ? `补充：${call.answer.text.trim()}` : null,
+        ]
+          .filter(Boolean)
+          .join("；");
     const outputMeta = [
       call.exit_status !== null && call.exit_status !== undefined
         ? `退出码 ${call.exit_status.toString()}`
@@ -1718,7 +1844,7 @@ export function AiAssistantPanel({
     ].filter(Boolean);
     return (
       <article
-        className={`ai-tool-card ${expanded ? "expanded" : ""} ${danger ? "danger" : ""} ${
+        className={`ai-tool-card ${expanded ? "expanded" : ""} ${danger ? "danger" : ""} ${flowing ? "flowing" : ""} ${
           call.name === "update_plan" ? "plan" : call.name === "ask_user" ? "question" : ""
         }`}
         key={call.id}
@@ -1738,8 +1864,10 @@ export function AiAssistantPanel({
           <span className={`ai-tool-status ${toolCallStatusTone(call)}`}>
             {call.status === "running" ? (
               <LoaderCircle className="ui-icon ai-tool-spinner" aria-hidden="true" />
-            ) : pending ? (
+            ) : pendingApproval ? (
               <ShieldAlert className="ui-icon" aria-hidden="true" />
+            ) : pendingUserInput ? (
+              <Clock3 className="ui-icon" aria-hidden="true" />
             ) : null}
             {formatToolCallStatus(call)}
           </span>
@@ -1754,14 +1882,77 @@ export function AiAssistantPanel({
             ) : null}
             {call.name === "ask_user" ? (
               <div className="ai-question-content">
-                <strong>需要你的选择</strong>
-                <p>{call.output || "AI 正在等待确认。"}</p>
+                <strong>{pendingUserInput ? "需要你的选择" : call.answer ? "已记录回答" : "AI 提问"}</strong>
+                <p>{call.question || call.output || "AI 正在等待你的回答。"}</p>
+                {pendingUserInput ? (
+                  <>
+                    {userInputOptions.length > 0 ? (
+                      <div className="ai-user-options" role="radiogroup" aria-label="选择一个选项">
+                        {userInputOptions.map((option) => {
+                          const selected = selectedOptionId === option.id;
+                          return (
+                            <button
+                              aria-checked={selected}
+                              className={`ai-user-option ${selected ? "selected" : ""}`}
+                              key={option.id}
+                              role="radio"
+                              type="button"
+                              onClick={() =>
+                                setSelectedUserOptionIds((current) => ({ ...current, [call.id]: option.id }))
+                              }
+                            >
+                              <span>
+                                <strong>{option.label}</strong>
+                                {option.description ? <small>{option.description}</small> : null}
+                              </span>
+                              {selected ? <Check className="ui-icon" aria-hidden="true" /> : null}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    ) : null}
+                    {allowFreeText ? (
+                      <textarea
+                        aria-label="补充回答"
+                        className="ai-user-answer-input"
+                        placeholder={userInputOptions.length > 0 ? "也可以补充说明（可选）" : "输入你的回答"}
+                        rows={2}
+                        value={answerDraft}
+                        onChange={(event) =>
+                          setUserInputDrafts((current) => ({ ...current, [call.id]: event.currentTarget.value }))
+                        }
+                      />
+                    ) : null}
+                    <div className="ai-tool-card-actions ai-user-answer-actions">
+                      <button
+                        className="ai-mini-button"
+                        disabled={answering || !streamState}
+                        type="button"
+                        onClick={() => void answerToolCall(call, true)}
+                      >
+                        <Ban className="ui-icon" aria-hidden="true" />
+                        <span>取消</span>
+                      </button>
+                      <button
+                        className="ai-mini-button active"
+                        disabled={answering || !streamState || (!selectedOptionId && !answerDraft.trim())}
+                        type="button"
+                        onClick={() => void answerToolCall(call)}
+                      >
+                        {answering ? <LoaderCircle className="ui-icon ai-tool-spinner" aria-hidden="true" /> : <Check className="ui-icon" aria-hidden="true" />}
+                        <span>提交</span>
+                      </button>
+                    </div>
+                  </>
+                ) : answerSummary ? (
+                  <small className="ai-tool-meta">{answerSummary}</small>
+                ) : null}
               </div>
             ) : null}
             {(call.name === "run_command" || call.name === "start_task") && call.command ? <code>{call.command}</code> : null}
-            {pending && call.reasons.length > 0 ? <p>{call.reasons.join("；")}</p> : null}
+            {pendingApproval && call.reasons.length > 0 ? <p>{call.reasons.join("；")}</p> : null}
             {call.error ? <p>{call.error}</p> : null}
-            {call.output ? (
+            {call.output && call.name !== "ask_user" ? (
               <div className="ai-tool-output">
                 <small className="ai-tool-meta">{["输出", ...outputMeta].join(" · ")}</small>
                 <pre>{call.output}</pre>
@@ -2735,6 +2926,8 @@ function formatToolCallStatus(call: AiToolCallRecord) {
   switch (call.status) {
     case "pending_approval":
       return "待确认";
+    case "pending_user_input":
+      return "待选择";
     case "running":
       return "执行中";
     case "completed":
@@ -2756,6 +2949,8 @@ function formatAuditStatus(status: string) {
   switch (status) {
     case "pending_approval":
       return "待确认";
+    case "pending_user_input":
+      return "待选择";
     case "running":
       return "执行中";
     case "completed":
@@ -2780,6 +2975,9 @@ function toolCallStatusTone(call: AiToolCallRecord) {
   }
   if (call.status === "failed" || call.status === "rejected" || call.status === "pending_approval") {
     return "danger";
+  }
+  if (call.status === "pending_user_input") {
+    return "running";
   }
   return "muted";
 }

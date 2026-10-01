@@ -2881,6 +2881,7 @@ ai_chat_session_clear(app: AppHandle, request: AiChatSessionIdRequest) -> Result
 ai_chat_stream_start(app: AppHandle, manager: State<AiChatStreamManager>, request: AiChatStreamStartRequest) -> Result<AiChatStreamStartResponse, AppError>
 ai_chat_stream_stop(app: AppHandle, manager: State<AiChatStreamManager>, request: AiChatStreamStopRequest) -> Result<(), AppError>
 ai_chat_tool_decision(manager: State<AiChatStreamManager>, request: AiChatToolDecisionRequest) -> Result<(), AppError>
+ai_chat_tool_answer(manager: State<AiChatStreamManager>, request: AiChatToolAnswerRequest) -> Result<(), AppError>
 ai_command_assess(request: AiCommandAssessRequest) -> Result<AiCommandAssessment, AppError>
 ```
 
@@ -2890,7 +2891,8 @@ Agent-mode payloads:
 AiChatStreamStartRequest { ..., agent: Option<AiAgentRequest>, reasoning_level: Option<String>, model: Option<String>, host_scope: Option<String> }
 AiAgentRequest { connection_id: Option<String>, workspace_type: Option<String>, workspace_path: Option<String>, local_workspace_path: Option<String>, mode: Option<String>, working_directory: Option<String>, terminal_output: Option<String>, terminal_session_id: Option<String> }
 AiChatToolDecisionRequest { stream_id: String, tool_call_id: String, approved: bool }
-AiToolCallRecord { id, name, command, status, risk, reasons, exit_status, output, output_truncated, duration_ms, error, text_offset }
+AiChatToolAnswerRequest { stream_id: String, tool_call_id: String, option_id: Option<String>, text: Option<String>, cancelled: bool }
+AiToolCallRecord { id, name, command, status, risk, reasons, exit_status, output, output_truncated, duration_ms, error, text_offset, question, options, allow_free_text, answer }
 ```
 
 Agent execution modes are `execute` and `full`. Execute keeps the per-command approval flow for dangerous commands, and full executes dangerous commands without an approval pause.
@@ -2953,12 +2955,13 @@ const AI_CHAT_STREAM_EVENT: &str = "ai:chat_stream";
 - `run_command` and `server_monitor` execute through the stream manager's own `RemoteExecSessionPool` (a background SSH exec channel), never by writing into the user's interactive terminal. When `working_directory` is known the script is prefixed with `cd <dir> || exit 1`; `~` and `~/...` keep home expansion while the rest of the path is POSIX-quoted.
 - Tool argument validation must not clamp or silently default invalid values: blank commands, commands over 8000 chars, `timeout_seconds` outside 1..=300 (default 60), and `max_chars` outside 200..=20000 (default 6000) return a tool error to the model and mark the record `failed`.
 - Approval policy: every `run_command` is assessed with the same `assess_command` rules as direct terminal sends. `dangerous` commands must emit a `pending_approval` record and wait on `ai_chat_tool_decision`; rejection is returned to the model as a normal tool result so it can choose another approach. `safe` commands and `server_monitor` run without confirmation.
+- `ask_user` emits a `pending_user_input` record with `question`, optional `{id, label, description}` options, and `allow_free_text`. The frontend answers through `ai_chat_tool_answer`; option ids are checked against the pending record, and cancellation is returned to the model as an error tool result. This flow never uses `ai_chat_tool_decision`.
 - `ai_chat_tool_decision` is idempotent: unknown streams or tool calls that are no longer pending return `Ok(())` without side effects.
 - A command timeout must invalidate the pooled connection in the background (`invalidate_connection_detached`) and report a failed tool record; stopping a stream aborts the loop, and running or pending records are settled as `cancelled` before persistence. Remote processes that ignore the dropped channel may keep running on the host.
 - Tool-call streaming must accumulate OpenAI `delta.tool_calls[].function.arguments` fragments by `index`, and Anthropic `tool_use` blocks plus `input_json_delta` fragments by block `index`. Missing tool call ids are replaced with generated `call_*` ids; empty arguments become `{}`.
 - Replayed tool turns must use each provider's native shape: OpenAI `assistant.tool_calls` + `role = "tool"` messages; Anthropic `tool_use` content blocks + a `user` message with `tool_result` blocks (`is_error` set for failures).
-- Each agent reply is limited to 16 tool rounds. Model-visible command output keeps the last 12000 chars of stdout/stderr each; `AiToolCallRecord.output` keeps the last 4000 chars for UI and persistence.
-- `AiChatStreamEvent` adds `kind = "tool_call"` with `tool_call` set; the same record id is re-emitted on every status change (`pending_approval`, `running`, `completed`, `failed`, `rejected`, `cancelled`). `text_offset` is the assistant content length in Unicode scalar values when the call started, so React can interleave text and tool cards.
+- Each agent reply continues until the model stops requesting tools or the stream is stopped/failed. Model-visible command output keeps the last 12000 chars of stdout/stderr each; `AiToolCallRecord.output` keeps the last 4000 chars for UI and persistence.
+- `AiChatStreamEvent` adds `kind = "tool_call"` with `tool_call` set; the same record id is re-emitted on every status change (`pending_approval`, `pending_user_input`, `running`, `completed`, `failed`, `rejected`, `cancelled`). `text_offset` is the assistant content length in Unicode scalar values when the call started, so React can interleave text and tool cards.
 - The final assistant row stores all records in `tool_calls_json`. When rebuilding model history, assistant messages append a compact `[本轮工具调用记录]` summary (command, exit status or outcome, first 300 output chars) instead of replaying raw tool output; assistant rows with only tool calls are kept in history.
 
 ### 4. Validation & Error Matrix

@@ -7,7 +7,7 @@ import type { AiChatMessage, AiToolCallRecord } from "./aiTypes";
 interface AiMessageFlowProps {
   message: AiChatMessage;
   renderText: (text: string) => ReactNode;
-  renderTool: (call: AiToolCallRecord) => ReactNode;
+  renderTool: (call: AiToolCallRecord, flowing?: boolean) => ReactNode;
 }
 
 function parseTimestamp(value: string, fallback: number) {
@@ -30,6 +30,13 @@ export function AiMessageTimeline({ message, renderText, renderTool }: AiMessage
   const ended = streaming ? now : parseTimestamp(message.updated_at, now);
   const elapsed = Math.max(0, Math.floor((ended - started) / 1000));
   const items = buildAiMessageFlow(message);
+  const runningCommandIds = items
+    .filter(
+      (item): item is Extract<(typeof items)[number], { kind: "tool" }> =>
+        item.kind === "tool" && item.call.name === "run_command" && item.call.status === "running",
+    )
+    .map((item) => item.call.id);
+  const lastRunningCommandId = runningCommandIds[runningCommandIds.length - 1];
   const hasThinking = items.some(
     (item) => item.kind === "thinking" && item.block.content.trim().length > 0,
   );
@@ -51,7 +58,13 @@ export function AiMessageTimeline({ message, renderText, renderTool }: AiMessage
         />
       ) : null}
       {items.map((item) => {
-        if (item.kind === "tool") return <div key={item.id}>{renderTool(item.call)}</div>;
+        if (item.kind === "tool") {
+          return (
+            <div key={item.id}>
+              {renderTool(item.call, item.call.id === lastRunningCommandId)}
+            </div>
+          );
+        }
         if (item.kind === "text") return (
           <div className="ai-message-content" key={item.id}>{renderText(item.text)}</div>
         );
@@ -72,6 +85,15 @@ export function AiMessageTimeline({ message, renderText, renderTool }: AiMessage
           />
         );
       })}
+      {streaming ? (
+        <span className="ai-streaming-tail" role="status" aria-label="正在生成">
+          <span className="ai-streaming-spinner" aria-hidden="true">
+            {Array.from({ length: 8 }, (_, index) => (
+              <span key={index} />
+            ))}
+          </span>
+        </span>
+      ) : null}
     </div>
   );
 }

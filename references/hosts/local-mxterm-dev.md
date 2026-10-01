@@ -1,6 +1,6 @@
 name: "local-mxterm-dev"
 status: running
-last_verified: "2026-09-30 00:37 Asia/Singapore"
+last_verified: "2026-10-01 23:25 Asia/Singapore"
 source: "terminal/UI"
 owner_or_scope: "local/private"
 
@@ -50,7 +50,7 @@ operations:
 validation:
   command: "Get-Process -Name m-xterm; Get-NetTCPConnection -State Listen -LocalPort 5520"
   expected_result: "MXterm window process and localhost:5520 listener are present"
-  last_result: "passed; restarted dev PID 27296, window title MXterm, Vite listener PID 45960"
+  last_result: "passed; restarted dev PID 47244 from src-tauri/target/debug/m-xterm.exe, Vite PID 49484 listening on localhost:5520"
 
 known_failures: []
 

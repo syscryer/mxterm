@@ -6,6 +6,7 @@ export type AiExecutionMode = "chat" | AiAgentMode;
 export type AiChatStreamKind = "chunk" | "thinking" | "tool_call" | "finished" | "error" | "stopped";
 export type AiToolCallStatus =
   | "pending_approval"
+  | "pending_user_input"
   | "running"
   | "completed"
   | "failed"
@@ -111,6 +112,22 @@ export interface AiToolCallRecord {
   approval_decision?: "approved" | "rejected" | string | null;
   connection_id?: string | null;
   workspace?: string | null;
+  question?: string | null;
+  options?: AiUserOption[];
+  allow_free_text?: boolean;
+  answer?: AiUserAnswer | null;
+}
+
+export interface AiUserOption {
+  id: string;
+  label: string;
+  description?: string | null;
+}
+
+export interface AiUserAnswer {
+  option_id?: string | null;
+  text?: string | null;
+  cancelled?: boolean;
 }
 
 export interface AiAuditEvent {

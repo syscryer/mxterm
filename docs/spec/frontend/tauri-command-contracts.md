@@ -2204,7 +2204,7 @@ type AiAgentRequest = {
   terminal_session_id?: string | null
 }
 
-type AiToolCallStatus = "pending_approval" | "running" | "completed" | "failed" | "rejected" | "cancelled"
+type AiToolCallStatus = "pending_approval" | "pending_user_input" | "running" | "completed" | "failed" | "rejected" | "cancelled"
 
 type AiToolCallRecord = {
   id: string
@@ -2219,6 +2219,10 @@ type AiToolCallRecord = {
   duration_ms?: number | null
   error?: string | null
   text_offset: number
+  question?: string | null
+  options?: Array<{ id: string; label: string; description?: string | null }>
+  allow_free_text?: boolean
+  answer?: { option_id?: string | null; text?: string | null; cancelled?: boolean } | null
 }
 ```
 
@@ -2256,9 +2260,9 @@ Compose footer control contract:
 - When the toggle is on, `sendMessage` passes `agent = { connection_id, working_directory, terminal_output }` with the current SSH connection id, tracked terminal directory, and the last 20000 chars of recent terminal output. When it is off, `agent` must be `null` so the backend never advertises tools.
 - Messages render as a flat flow, not cards: `.ai-message` has no border/background; user messages are a right-aligned `ai-message-bubble` (max-width 88%, primary-tinted) holding context chips + markdown content; assistant messages are full-width markdown content. The message header only appears while status is not `complete` (streaming / stopped / error) and shows just the status text — no role label. Hovering or focusing a message reveals `ai-message-meta` under it: a copy button (`copyTextToClipboard` on raw content) and the `HH:MM` local time parsed from `created_at` (epoch millis string; seconds and ISO strings are tolerated). The meta row reserves space and only changes opacity.
 - `tool_call` stream events upsert records by `id` into the matching assistant message; they must be matched by `stream_id` like chunks. Assistant messages with `tool_calls` render text segments and tool cards interleaved by `text_offset` (split with `Array.from(content)` to match Rust char counts).
-- Tool cards render as a single collapsed row by default (no chevron; the whole row is the toggle): tool icon, tool title, the command collapsed to one line with ellipsis (or a short description for non-command tools), and a status pill. Clicking the row (`aria-expanded`) expands the full command, danger reasons, errors, and output with exit code / duration / truncation metadata. `pending_approval` cards default to expanded so the reasons and approval buttons are visible; user toggles are kept per tool call id.
+- Tool cards render as a single collapsed row by default (no chevron; the whole row is the toggle): tool icon, tool title, the command collapsed to one line with ellipsis (or a short description for non-command tools), and a status pill. Clicking the row (`aria-expanded`) expands the full command, danger reasons, errors, and output with exit code / duration / truncation metadata. `pending_approval` and `pending_user_input` cards default to expanded while waiting; once an answer is submitted the card is collapsed unless the user opens it again.
 - Assistant Markdown supports GFM pipe tables (header row + `---` separator, `:` alignment, `\|` escapes, pipes inside inline code) rendered as `ai-md-table` inside a horizontally scrollable wrapper, and inline `**bold**` that wraps inline code. Table cells are not scanned for command suggestions.
-- Only `pending_approval` cards show inline `拒绝` / `执行` buttons that call `aiChatToolDecision(...)`; buttons disable while the decision is in flight and the card state changes only from backend events. Do not auto-approve or re-run commands from the frontend.
+- Only `pending_approval` cards show inline `拒绝` / `执行` buttons that call `aiChatToolDecision(...)`; `pending_user_input` cards show accessible option buttons plus an optional free-text field and call `aiChatToolAnswer(...)`. Buttons disable while the decision or answer is in flight and the card state changes only from backend events. Do not auto-approve or re-run commands from the frontend.
 
 ### 4. Validation & Error Matrix
 

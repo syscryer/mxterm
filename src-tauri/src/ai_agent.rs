@@ -19,8 +19,8 @@ use crate::ai_assistant::{
     apply_anthropic_reasoning_fields, apply_openai_reasoning_fields, assess_command,
     ensure_provider_response, normalize_endpoint, provider_request_error, provider_stream_error,
     read_sse_events, stream_parse_error, AiAgentMode, AiApiFormat, AiCommandAssessment,
-    AiCommandRisk, AiModelMessage, AiToolCallRecord, StoredAiProviderConfig, StreamEmitter,
-    DEFAULT_ANTHROPIC_VERSION,
+    AiCommandRisk, AiModelMessage, AiToolCallRecord, AiUserAnswer, AiUserOption,
+    StoredAiProviderConfig, StreamEmitter, DEFAULT_ANTHROPIC_VERSION,
 };
 use crate::app_error::AppError;
 use crate::remote_exec_pool::{RemoteExecRetry, RemoteExecSessionPool};
@@ -28,7 +28,6 @@ use crate::remote_files::quote_posix_shell;
 use crate::ssh_config::ResolvedSshConfig;
 use crate::terminal::session::ExecOutput;
 
-const MAX_AGENT_ROUNDS: usize = 16;
 const AGENT_MAX_TOKENS: u32 = 4096;
 const DEFAULT_COMMAND_TIMEOUT_SECONDS: u64 = 60;
 const MAX_COMMAND_TIMEOUT_SECONDS: u64 = 300;
@@ -52,6 +51,7 @@ pub(crate) const TOOL_TASK_OUTPUT: &str = "task_output";
 pub(crate) const TOOL_CANCEL_TASK: &str = "cancel_task";
 
 pub(crate) const TOOL_STATUS_PENDING_APPROVAL: &str = "pending_approval";
+pub(crate) const TOOL_STATUS_PENDING_USER_INPUT: &str = "pending_user_input";
 pub(crate) const TOOL_STATUS_RUNNING: &str = "running";
 pub(crate) const TOOL_STATUS_COMPLETED: &str = "completed";
 pub(crate) const TOOL_STATUS_FAILED: &str = "failed";
@@ -59,6 +59,7 @@ pub(crate) const TOOL_STATUS_REJECTED: &str = "rejected";
 pub(crate) const TOOL_STATUS_CANCELLED: &str = "cancelled";
 
 pub(crate) type PendingApprovals = Arc<StdMutex<HashMap<String, oneshot::Sender<bool>>>>;
+pub(crate) type PendingUserInputs = Arc<StdMutex<HashMap<String, oneshot::Sender<AiUserAnswer>>>>;
 
 pub(crate) struct PreparedAgent {
     pub config: Option<ResolvedSshConfig>,
@@ -81,6 +82,7 @@ pub(crate) struct AgentRun<'a> {
     pub thinking: Arc<StdMutex<String>>,
     pub tool_calls: Arc<StdMutex<Vec<AiToolCallRecord>>>,
     pub approvals: PendingApprovals,
+    pub user_inputs: PendingUserInputs,
     pub emitter: &'a StreamEmitter,
     pub pending_separator: AtomicBool,
     pub reasoning_level: Option<&'a str>,
@@ -208,7 +210,10 @@ pub(crate) async fn run_agent(
     let client = Client::new();
     let system = agent_system_prompt(run.agent);
     let mut conversation = AgentConversation::new(run.provider.api_format, history);
-    for _ in 0..MAX_AGENT_ROUNDS {
+    loop {
+        if run.is_stopped() {
+            return Ok(());
+        }
         let turn = run_turn(
             &client,
             run.provider,
@@ -244,10 +249,6 @@ pub(crate) async fn run_agent(
         conversation.push_tool_results(&results);
         run.pending_separator.store(true, Ordering::SeqCst);
     }
-    run.push_text(format!(
-        "\n\n> 已达到单次回复最多 {MAX_AGENT_ROUNDS} 轮工具调用，如需继续排查请再次提问。"
-    ));
-    Ok(())
 }
 
 impl AgentRun<'_> {
@@ -373,19 +374,40 @@ impl AgentRun<'_> {
             }
             "ask_user" => {
                 let value = parse_tool_input(&call.arguments);
-                record.output = value["question"].as_str().unwrap_or_default().to_string();
-                if record.output.trim().is_empty() {
+                let question = value["question"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .trim()
+                    .to_string();
+                if question.is_empty() {
                     return self.fail_tool(record, "问题不能为空。".into());
                 }
-                let approved = self.request_approval(&mut record).await;
-                ToolOutcome {
-                    content: if approved {
-                        "用户选择继续。"
-                    } else {
-                        "用户拒绝继续，请停止依赖此选择的操作。"
+                record.question = Some(question.clone());
+                record.output = question;
+                record.options = parse_user_options(&value["options"]);
+                record.allow_free_text =
+                    value["allow_free_text"].as_bool().unwrap_or(true) || record.options.is_empty();
+                let answer = self.request_user_input(&mut record).await;
+                if answer.cancelled {
+                    ToolOutcome {
+                        content: "用户取消了选择，请停止依赖此选择的操作。".into(),
+                        is_error: true,
                     }
-                    .into(),
-                    is_error: !approved,
+                } else {
+                    let selected = answer
+                        .option_id
+                        .as_deref()
+                        .and_then(|id| record.options.iter().find(|option| option.id == id));
+                    let mut content = selected
+                        .map(|option| format!("用户选择了：{}。", option.label))
+                        .unwrap_or_else(|| "用户没有选择预设项。".to_string());
+                    if let Some(text) = answer.text.as_deref() {
+                        content.push_str(&format!("用户补充：{text}"));
+                    }
+                    ToolOutcome {
+                        content,
+                        is_error: false,
+                    }
                 }
             }
             TOOL_START_TASK | TOOL_TASK_STATUS | TOOL_TASK_OUTPUT | TOOL_CANCEL_TASK => {
@@ -445,6 +467,56 @@ impl AgentRun<'_> {
             audited && !self.audit_failed.load(Ordering::SeqCst),
             self.stopped.load(Ordering::SeqCst),
         )
+    }
+
+    async fn request_user_input(&self, record: &mut AiToolCallRecord) -> AiUserAnswer {
+        record.approval_required = false;
+        record.status = TOOL_STATUS_PENDING_USER_INPUT.to_string();
+        let (sender, receiver) = oneshot::channel();
+        if let Ok(mut inputs) = self.user_inputs.lock() {
+            inputs.insert(record.id.clone(), sender);
+        } else {
+            return AiUserAnswer {
+                option_id: None,
+                text: None,
+                cancelled: true,
+            };
+        }
+        if !self.upsert_tool_call(record) {
+            if let Ok(mut inputs) = self.user_inputs.lock() {
+                inputs.remove(&record.id);
+            }
+            return AiUserAnswer {
+                option_id: None,
+                text: None,
+                cancelled: true,
+            };
+        }
+        let answer = receiver.await.unwrap_or(AiUserAnswer {
+            option_id: None,
+            text: None,
+            cancelled: true,
+        });
+        if let Ok(mut inputs) = self.user_inputs.lock() {
+            inputs.remove(&record.id);
+        }
+        record.answer = Some(answer.clone());
+        record.approval_decision = Some(
+            if answer.cancelled {
+                "cancelled"
+            } else {
+                "answered"
+            }
+            .into(),
+        );
+        record.status = if answer.cancelled {
+            TOOL_STATUS_CANCELLED.to_string()
+        } else {
+            TOOL_STATUS_COMPLETED.to_string()
+        };
+        record.finished_at_ms = Some(now_millis());
+        self.upsert_tool_call(record);
+        answer
     }
 
     async fn authorize_command(
@@ -2172,7 +2244,28 @@ fn tool_specs() -> Vec<(&'static str, &'static str, Value)> {
         ("preview_file_change", "预览创建、删除或重命名文件，只有确认后才会产生副作用。", json!({"type":"object","properties":{"operation":{"type":"string","enum":["create","delete","rename"]},"path":{"type":"string"},"destination":{"type":"string"},"content":{"type":"string"}},"required":["operation","path"]})),
         ("apply_file_change", "应用已经预览的创建、删除或重命名操作，并先保存备份。", json!({"type":"object","properties":{"change_id":{"type":"string"}},"required":["change_id"]})),
         ("update_plan", "向用户展示当前编码计划和下一步。", json!({"type":"object","properties":{"plan":{"type":"string"}},"required":["plan"]})),
-        ("ask_user", "需要用户做出明确选择时提问。", json!({"type":"object","properties":{"question":{"type":"string"}},"required":["question"]})),
+        ("ask_user", "需要用户做出明确选择时提问。优先传递结构化 options；用户可选择其中一项，也可在 allow_free_text 为 true 时补充文字。不要把选项只拼在 question 文本里。", json!({
+            "type":"object",
+            "properties":{
+                "question":{"type":"string"},
+                "options":{
+                    "type":"array",
+                    "items":{
+                        "type":"object",
+                        "properties":{
+                            "id":{"type":"string"},
+                            "label":{"type":"string"},
+                            "description":{"type":"string"}
+                        },
+                        "required":["id","label"],
+                        "additionalProperties":false
+                    }
+                },
+                "allow_free_text":{"type":"boolean"}
+            },
+            "required":["question"],
+            "additionalProperties":false
+        })),
         (
             TOOL_RUN_COMMAND,
             "在当前终端对应的主机上以非交互方式执行一条 shell 命令；SSH 终端执行在当前 SSH 主机，本机终端执行在本机。命令走独立的 exec 通道，不是用户正在使用的终端，不共享其环境变量、sudo 凭据和 shell 状态。已选择的本地文件工作区不会改变命令目标。",
@@ -2278,7 +2371,8 @@ fn agent_system_prompt(agent: &PreparedAgent) -> String {
 - read_terminal_output：读取用户发送消息时终端最近输出的快照。\n\
 - read_file / glob / grep：在明确授权的文件作用域内读取、查找和搜索；有本地文件工作区时优先使用它，否则在当前 SSH 工作目录内操作；编辑前必须先 read_file。\n\
 - preview_patch / apply_patch：先展示完整 diff，用户确认后再次校验原文、备份并替换。\n\
-- start_task / task_status / task_output / cancel_task：管理有边界的后台任务；停止请求未确认时必须如实说明。\n\n\
+- start_task / task_status / task_output / cancel_task：管理有边界的后台任务；停止请求未确认时必须如实说明。\n\
+- ask_user：需要用户决定时使用结构化 options（id、label、可选 description）；不要把选项只写进 question 文本。allow_free_text 默认为 true，只有确实不接受补充说明时才设为 false。\n\n\
 执行规则：\n\
 1. 先用只读命令收集事实再下结论，不要臆测命令输出。\n\
 2. 不要运行交互式或常驻命令（vim、top、less、tail -f、watch 等），改用有限输出的写法（top -bn1、tail -n 200、journalctl -n 200 --no-pager）。\n\
@@ -2469,6 +2563,41 @@ fn parse_tool_input(arguments: &str) -> Value {
         .ok()
         .filter(Value::is_object)
         .unwrap_or_else(|| json!({}))
+}
+
+fn parse_user_options(value: &Value) -> Vec<AiUserOption> {
+    value
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|item| {
+            let (id, label, description) = if let Some(label) = item.as_str() {
+                (label.trim().to_string(), label.trim().to_string(), None)
+            } else {
+                let label = item["label"].as_str()?.trim().to_string();
+                let id = item["id"]
+                    .as_str()
+                    .map(str::trim)
+                    .filter(|id| !id.is_empty())
+                    .unwrap_or(&label)
+                    .to_string();
+                let description = item["description"]
+                    .as_str()
+                    .map(str::trim)
+                    .filter(|description| !description.is_empty())
+                    .map(ToString::to_string);
+                (id, label, description)
+            };
+            if id.is_empty() || label.is_empty() {
+                return None;
+            }
+            Some(AiUserOption {
+                id,
+                label,
+                description,
+            })
+        })
+        .collect()
 }
 
 fn command_with_working_directory(command: &str, directory: Option<&str>) -> String {
@@ -2804,6 +2933,21 @@ fn format_command_output_for_model(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn user_question_options_keep_structured_labels_and_fallback_ids() {
+        let value = serde_json::json!([
+            {"id": "ssh", "label": "检查 SSH", "description": "读取连接状态"},
+            {"label": "查看日志"},
+            "退出"
+        ]);
+        let options = parse_user_options(&value);
+        assert_eq!(options.len(), 3);
+        assert_eq!(options[0].id, "ssh");
+        assert_eq!(options[0].description.as_deref(), Some("读取连接状态"));
+        assert_eq!(options[1].id, "查看日志");
+        assert_eq!(options[2].label, "退出");
+    }
 
     #[test]
     fn remote_search_commands_prefer_rg_and_keep_shell_quoting() {

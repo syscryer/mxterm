@@ -389,6 +389,22 @@ export function aiChatToolDecision(streamId: string, toolCallId: string, approve
   });
 }
 
+export function aiChatToolAnswer(
+  streamId: string,
+  toolCallId: string,
+  answer: { option_id?: string | null; text?: string | null; cancelled?: boolean },
+) {
+  return invoke<void>("ai_chat_tool_answer", {
+    request: {
+      stream_id: streamId,
+      tool_call_id: toolCallId,
+      option_id: answer.option_id ?? null,
+      text: answer.text ?? null,
+      cancelled: answer.cancelled ?? false,
+    },
+  });
+}
+
 export function aiCommandAssess(command: string) {
   return invoke<AiCommandAssessment>("ai_command_assess", {
     request: {

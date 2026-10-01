@@ -13962,6 +13962,14 @@ body.vnc-runner-window-body {
   color: var(--mx-primary);
 }
 
+.ai-message-list-shell {
+  position: relative;
+  flex: 1 1 0;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+}
+
 .ai-message-list {
   flex: 1 1 0;
   min-width: 0;
@@ -13971,6 +13979,34 @@ body.vnc-runner-window-body {
   gap: 10px;
   overflow: auto;
   padding: 10px;
+}
+
+.ai-new-content-button {
+  position: absolute;
+  right: 12px;
+  bottom: 10px;
+  z-index: 2;
+  height: 26px;
+  border: 1px solid var(--mx-line);
+  border-radius: 999px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 8px;
+  color: var(--mx-muted);
+  background: var(--mx-panel);
+  box-shadow: 0 2px 8px color-mix(in srgb, var(--mx-text) 10%, transparent);
+  font-size: 11px;
+}
+
+.ai-new-content-button:hover {
+  color: var(--mx-text);
+  background: var(--mx-panel-soft);
+}
+
+.ai-new-content-button .ui-icon {
+  width: 13px;
+  height: 13px;
 }
 
 .ai-message {
@@ -14291,6 +14327,87 @@ body.vnc-runner-window-body {
   line-height: 1.4;
 }
 
+.ai-streaming-tail {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-start;
+  min-height: 18px;
+  padding: 1px 4px;
+  color: var(--mx-subtle);
+}
+
+.ai-streaming-spinner {
+  position: relative;
+  display: inline-block;
+  width: 16px;
+  height: 16px;
+  animation: ai-streaming-spin 900ms steps(8, end) infinite;
+}
+
+.ai-streaming-spinner > span {
+  position: absolute;
+  top: 1px;
+  left: 7px;
+  width: 2px;
+  height: 5px;
+  border-radius: 999px;
+  background: var(--mx-subtle);
+  transform-origin: 1px 7px;
+}
+
+.ai-streaming-spinner > span:nth-child(1) { opacity: 1; }
+.ai-streaming-spinner > span:nth-child(2) { opacity: .86; }
+.ai-streaming-spinner > span:nth-child(3) { opacity: .72; }
+.ai-streaming-spinner > span:nth-child(4) { opacity: .58; }
+.ai-streaming-spinner > span:nth-child(5) { opacity: .44; }
+.ai-streaming-spinner > span:nth-child(6) { opacity: .32; }
+.ai-streaming-spinner > span:nth-child(7) { opacity: .22; }
+.ai-streaming-spinner > span:nth-child(8) { opacity: .14; }
+
+.ai-streaming-spinner > span:nth-child(1) {
+  transform: rotate(0deg);
+}
+
+.ai-streaming-spinner > span:nth-child(2) {
+  transform: rotate(45deg);
+}
+
+.ai-streaming-spinner > span:nth-child(3) {
+  transform: rotate(90deg);
+}
+
+.ai-streaming-spinner > span:nth-child(4) {
+  transform: rotate(135deg);
+}
+
+.ai-streaming-spinner > span:nth-child(5) {
+  transform: rotate(180deg);
+}
+
+.ai-streaming-spinner > span:nth-child(6) {
+  transform: rotate(225deg);
+}
+
+.ai-streaming-spinner > span:nth-child(7) {
+  transform: rotate(270deg);
+}
+
+.ai-streaming-spinner > span:nth-child(8) {
+  transform: rotate(315deg);
+}
+
+@keyframes ai-streaming-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ai-streaming-spinner {
+    animation: none;
+  }
+}
+
 .stream-text-disclosure {
   min-width: 0;
   color: var(--mx-muted);
@@ -14427,6 +14544,28 @@ body.vnc-runner-window-body {
   background: var(--mx-panel-soft);
 }
 
+.ai-tool-card.flowing .ai-tool-summary {
+  background: transparent;
+}
+
+.ai-tool-card.flowing .ai-tool-summary-text {
+  color: transparent;
+  background: linear-gradient(
+    90deg,
+    var(--mx-muted) 0%,
+    var(--mx-muted) 35%,
+    var(--mx-text) 50%,
+    var(--mx-muted) 65%,
+    var(--mx-muted) 100%
+  );
+  background-size: 240% 100%;
+  background-position: 100% 0;
+  background-clip: text;
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  animation: ai-tool-text-flow 1.35s linear infinite;
+}
+
 .ai-tool-card.expanded .ai-tool-summary:hover {
   background: transparent;
 }
@@ -14500,6 +14639,15 @@ body.vnc-runner-window-body {
   animation: mx-spin 900ms linear infinite;
 }
 
+@keyframes ai-tool-text-flow {
+  from {
+    background-position: 100% 0;
+  }
+  to {
+    background-position: -100% 0;
+  }
+}
+
 .ai-tool-detail {
   min-width: 0;
   display: grid;
@@ -14535,6 +14683,89 @@ body.vnc-runner-window-body {
 
 .ai-question-content p {
   color: var(--mx-text);
+}
+
+.ai-user-options {
+  display: grid;
+  gap: 4px;
+}
+
+.ai-user-option {
+  min-width: 0;
+  border: 1px solid var(--mx-line);
+  border-radius: 7px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 8px;
+  color: var(--mx-text);
+  background: var(--mx-panel);
+  text-align: left;
+}
+
+.ai-user-option:hover {
+  border-color: color-mix(in srgb, var(--mx-primary) 42%, var(--mx-line));
+  background: var(--mx-panel-soft);
+}
+
+.ai-user-option.selected {
+  border-color: color-mix(in srgb, var(--mx-primary) 52%, var(--mx-line));
+  background: color-mix(in srgb, var(--mx-primary) 8%, var(--mx-panel));
+}
+
+.ai-user-option > span {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.ai-user-option strong {
+  overflow: hidden;
+  font-size: 11.5px;
+  font-weight: 560;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ai-user-option small {
+  overflow: hidden;
+  color: var(--mx-muted);
+  font-size: 10.5px;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ai-user-option > .ui-icon {
+  flex: 0 0 auto;
+  width: 14px;
+  height: 14px;
+  color: var(--mx-primary);
+}
+
+.ai-user-answer-input {
+  width: 100%;
+  min-height: 48px;
+  resize: vertical;
+  border: 1px solid var(--mx-line);
+  border-radius: 7px;
+  padding: 6px 8px;
+  color: var(--mx-text);
+  background: var(--mx-panel);
+  font: inherit;
+  font-size: 11.5px;
+  line-height: 1.45;
+}
+
+.ai-user-answer-input:focus {
+  border-color: color-mix(in srgb, var(--mx-primary) 52%, var(--mx-line));
+  outline: 2px solid color-mix(in srgb, var(--mx-primary) 18%, transparent);
+  outline-offset: 1px;
+}
+
+.ai-user-answer-actions {
+  margin-top: 1px;
 }
 
 .ai-tool-output {
@@ -14879,6 +15110,17 @@ body.vnc-runner-window-body {
 @media (prefers-reduced-motion: reduce) {
   .ai-tool-spinner {
     animation: none;
+  }
+
+  .ai-tool-card.flowing .ai-tool-summary {
+    background: transparent;
+  }
+
+  .ai-tool-card.flowing .ai-tool-summary-text {
+    animation: none;
+    color: var(--mx-muted);
+    background: none;
+    -webkit-text-fill-color: currentColor;
   }
 
   .ai-message-meta {
