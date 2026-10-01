@@ -14,12 +14,12 @@ use tokio::task::JoinHandle;
 use tokio::time::{timeout, Duration};
 use uuid::Uuid;
 
+#[cfg(test)]
+use crate::ai_agent::TOOL_RUN_COMMAND;
 use crate::ai_agent::{
     self, AgentRun, PendingApprovals, PreparedAgent, TOOL_STATUS_CANCELLED,
     TOOL_STATUS_PENDING_APPROVAL, TOOL_STATUS_RUNNING,
 };
-#[cfg(test)]
-use crate::ai_agent::TOOL_RUN_COMMAND;
 use crate::app_error::AppError;
 use crate::events::{AiChatStreamEvent, AI_CHAT_STREAM_EVENT};
 use crate::remote_exec_pool::RemoteExecSessionPool;
@@ -2516,7 +2516,8 @@ where
                 }
                 Ok(false)
             }
-            Some("response.reasoning_summary_text.delta") | Some("response.reasoning_text.delta") => {
+            Some("response.reasoning_summary_text.delta")
+            | Some("response.reasoning_text.delta") => {
                 if let Some(delta) = value.get("delta").and_then(Value::as_str) {
                     on_thinking(delta.to_string());
                 }
@@ -2650,7 +2651,10 @@ fn parse_openai_sse_delta(data: &str) -> Result<ParsedSseDelta, AppError> {
         .or_else(|| delta_obj.get("reasoning"))
         .and_then(Value::as_str)
         .unwrap_or_default();
-    let delta = delta_obj.get("content").and_then(Value::as_str).unwrap_or_default();
+    let delta = delta_obj
+        .get("content")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
     if !thinking.is_empty() && !delta.is_empty() {
         return Ok(ParsedSseDelta::Both {
             delta: delta.to_string(),
@@ -2679,11 +2683,24 @@ fn parse_anthropic_sse_delta(data: &str) -> Result<ParsedSseDelta, AppError> {
     {
         "content_block_delta" => {
             let delta_value = value.get("delta").unwrap_or(&Value::Null);
-            let kind = delta_value.get("type").and_then(Value::as_str).unwrap_or_default();
-            let delta = delta_value.get("text").and_then(Value::as_str).unwrap_or_default();
+            let kind = delta_value
+                .get("type")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            let delta = delta_value
+                .get("text")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
             if kind == "thinking_delta" {
-                let thinking = delta_value.get("thinking").and_then(Value::as_str).unwrap_or_default();
-                return if thinking.is_empty() { Ok(ParsedSseDelta::None) } else { Ok(ParsedSseDelta::Thinking(thinking.to_string())) };
+                let thinking = delta_value
+                    .get("thinking")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                return if thinking.is_empty() {
+                    Ok(ParsedSseDelta::None)
+                } else {
+                    Ok(ParsedSseDelta::Thinking(thinking.to_string()))
+                };
             }
             if delta.is_empty() {
                 Ok(ParsedSseDelta::None)
@@ -4136,7 +4153,9 @@ mod tests {
 
     #[test]
     fn legacy_tool_call_summary_is_removed_before_model_replay() {
-        let content = "结论\n\n[本轮工具调用记录]\n- run_command → 退出码 0\n- server_monitor → 已完成".to_string();
+        let content =
+            "结论\n\n[本轮工具调用记录]\n- run_command → 退出码 0\n- server_monitor → 已完成"
+                .to_string();
         assert_eq!(strip_tool_call_summary(content), "结论");
     }
 

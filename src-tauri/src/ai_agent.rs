@@ -280,8 +280,12 @@ impl AgentRun<'_> {
     }
 
     fn push_thinking(&self, delta: String) {
-        if delta.is_empty() { return; }
-        if let Ok(mut thinking) = self.thinking.lock() { thinking.push_str(&delta); }
+        if delta.is_empty() {
+            return;
+        }
+        if let Ok(mut thinking) = self.thinking.lock() {
+            thinking.push_str(&delta);
+        }
         self.emitter.thinking(delta);
     }
 
@@ -776,7 +780,11 @@ impl AgentRun<'_> {
             record.command = Some(command.clone());
             record.risk = Some(AiCommandRisk::Safe);
             return self
-                .exec_tool(record, command, Duration::from_secs(REMOTE_SEARCH_TIMEOUT_SECONDS))
+                .exec_tool(
+                    record,
+                    command,
+                    Duration::from_secs(REMOTE_SEARCH_TIMEOUT_SECONDS),
+                )
                 .await;
         }
         if self.agent.local_workspace.is_none()
@@ -1537,10 +1545,7 @@ impl AgentRun<'_> {
             let entry = Arc::new(BackgroundTask {
                 id: task_id.clone(),
                 session_id: self.emitter.session_id().to_string(),
-                workspace: self
-                    .agent
-                    .working_directory
-                    .clone(),
+                workspace: self.agent.working_directory.clone(),
                 command: command.clone(),
                 created_at_ms: now_millis(),
                 status: StdMutex::new("running".into()),
@@ -2095,7 +2100,7 @@ async fn run_turn<F>(
     system: &str,
     messages: &[Value],
     stopped: Arc<AtomicBool>,
-        mut on_delta: F,
+    mut on_delta: F,
     mut on_thinking: impl FnMut(String),
 ) -> Result<AgentTurn, AppError>
 where
@@ -2359,24 +2364,32 @@ fn assess_agent_command(command: &str) -> (AiCommandAssessment, bool) {
 }
 
 fn is_root_recursive_delete(command: &str) -> bool {
-    command.split([';', '|', '&', '\n', '\r'])
-        .any(|segment| {
-            let words = segment.split_whitespace().collect::<Vec<_>>();
-            let Some(rm_index) = words.iter().position(|word| {
-                *word == "rm" || word.ends_with("/rm")
-            }) else { return false; };
-            let args = &words[rm_index + 1..];
-            let recursive = args.iter().any(|arg| {
-                matches!(arg.trim_matches('\''), "-r" | "-R" | "--recursive" | "-rf" | "-fr" | "-rfd" | "-frd")
-            });
-            let force = args.iter().any(|arg| {
-                matches!(arg.trim_matches('\''), "-f" | "--force" | "-rf" | "-fr" | "-rfd" | "-frd")
-            });
-            let root_target = args.iter().any(|arg| {
-                matches!(arg.trim_matches('\''), "/" | "/*" | "--no-preserve-root")
-            });
-            recursive && force && root_target
-        })
+    command.split([';', '|', '&', '\n', '\r']).any(|segment| {
+        let words = segment.split_whitespace().collect::<Vec<_>>();
+        let Some(rm_index) = words
+            .iter()
+            .position(|word| *word == "rm" || word.ends_with("/rm"))
+        else {
+            return false;
+        };
+        let args = &words[rm_index + 1..];
+        let recursive = args.iter().any(|arg| {
+            matches!(
+                arg.trim_matches('\''),
+                "-r" | "-R" | "--recursive" | "-rf" | "-fr" | "-rfd" | "-frd"
+            )
+        });
+        let force = args.iter().any(|arg| {
+            matches!(
+                arg.trim_matches('\''),
+                "-f" | "--force" | "-rf" | "-fr" | "-rfd" | "-frd"
+            )
+        });
+        let root_target = args
+            .iter()
+            .any(|arg| matches!(arg.trim_matches('\''), "/" | "/*" | "--no-preserve-root"));
+        recursive && force && root_target
+    })
 }
 
 fn build_remote_search_command(
@@ -2801,8 +2814,7 @@ mod tests {
         assert!(glob.contains("find '/srv/app'"));
         assert!(!glob.contains("head -n"));
 
-        let grep = build_remote_search_command("grep", "/srv/app", "*.toml", Some("a'b"))
-            .unwrap();
+        let grep = build_remote_search_command("grep", "/srv/app", "*.toml", Some("a'b")).unwrap();
         assert!(grep.contains("rg --line-number --column"));
         assert!(grep.contains("--include='*.toml'"));
         assert!(grep.contains("-e 'a'\\''b'"));
