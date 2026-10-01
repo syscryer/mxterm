@@ -2070,6 +2070,20 @@ export function WorkspaceShell() {
   const activeAiRecentTerminalOutput = activeAiTerminalTab
     ? terminalRecentOutputByTabId[activeAiTerminalTab.id] || ""
     : "";
+  const activeAiTerminalDirectory = activeAiTerminalTab
+    ? terminalDirectories[activeAiTerminalTab.id] || null
+    : null;
+  const activeAiConnection = terminalSplitActive
+    ? focusedTerminalSplitBinding?.kind === "ssh"
+      ? connections.find(
+          (item) =>
+            item.id ===
+            terminalTabs.find((tab) => tab.id === focusedTerminalSplitBinding.tabId)?.connectionId,
+        ) || null
+      : null
+    : activeWorkspaceMode === "ssh"
+      ? activeConnection
+      : null;
   const activeAiTerminalTitle = activeAiTerminalTab?.title || null;
   const aiSendMessageShortcutBinding = resolveShortcutBindingById(
     settings.shortcuts.bindings,
@@ -2288,16 +2302,17 @@ export function WorkspaceShell() {
   const aiAssistantPanelNode = shouldRenderAiAssistantPanel ? (
     <Suspense fallback={<p className="file-panel-empty">正在加载 AI 面板...</p>}>
       <AiAssistantPanel
-        active={showWorkspaceToolPane && !rightPaneCollapsed && rightTool === "ai"}
+        active={activeView === "workspace" && showWorkspaceToolPane && !rightPaneCollapsed && rightTool === "ai"}
         commandDraft={commandSenderInput}
-        connection={activeWorkspaceMode === "ssh" ? activeConnection : null}
+        connection={activeAiConnection}
         connections={connections}
         contextRequestKey={aiContextRequestKey}
         initialContexts={aiInitialContexts}
         recentCommands={commandHistoryEntries}
         recentTerminalOutput={activeAiRecentTerminalOutput}
         sendShortcutBinding={aiSendMessageShortcutBinding}
-        terminalDirectory={activeWorkspaceMode === "ssh" ? activeTerminalDirectory : null}
+        terminalDirectory={activeAiTerminalDirectory}
+        terminalSessionId={activeAiTerminalTab?.sessionId ?? null}
         terminalTitle={activeAiTerminalTitle}
         onInsertCommand={insertAiCommandToSender}
         onOpenSettings={() => openSettingsSection("ai")}

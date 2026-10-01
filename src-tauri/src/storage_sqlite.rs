@@ -6,10 +6,34 @@ use tauri::{AppHandle, Manager};
 
 use crate::app_error::AppError;
 
-pub const SQLITE_SCHEMA_VERSION: i64 = 2;
+pub const SQLITE_SCHEMA_VERSION: i64 = 3;
 
 const SCHEMA_SQL: &str = r#"
+CREATE TABLE IF NOT EXISTS ai_audit_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id TEXT NOT NULL,
+    message_id TEXT NOT NULL,
+    tool_call_id TEXT NOT NULL,
+    created_at_ms TEXT NOT NULL,
+    event_json TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_ai_audit_session ON ai_audit_events(session_id,id);
 PRAGMA foreign_keys = ON;
+
+CREATE TABLE IF NOT EXISTS ai_agent_tasks (
+    id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL,
+    workspace TEXT,
+    command TEXT NOT NULL,
+    status TEXT NOT NULL,
+    output TEXT NOT NULL DEFAULT '',
+    exit_status INTEGER,
+    cancel_requested INTEGER NOT NULL DEFAULT 0,
+    created_at_ms TEXT NOT NULL,
+    updated_at_ms TEXT NOT NULL,
+    finished_at_ms TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_ai_agent_tasks_session ON ai_agent_tasks(session_id, created_at_ms DESC);
 
 CREATE TABLE IF NOT EXISTS schema_migrations (
     version INTEGER PRIMARY KEY,
@@ -187,6 +211,7 @@ CREATE TABLE IF NOT EXISTS ai_chat_messages (
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     tool_calls_json TEXT NOT NULL DEFAULT '[]',
+    thinking TEXT NOT NULL DEFAULT '',
     FOREIGN KEY(session_id) REFERENCES ai_chat_sessions(id) ON DELETE CASCADE
 );
 
@@ -244,6 +269,11 @@ impl SqliteStore {
             "tool_calls_json",
             "ALTER TABLE ai_chat_messages
              ADD COLUMN tool_calls_json TEXT NOT NULL DEFAULT '[]'",
+        )?;
+        self.add_column_if_missing(
+            "ai_chat_messages",
+            "thinking",
+            "ALTER TABLE ai_chat_messages ADD COLUMN thinking TEXT NOT NULL DEFAULT ''",
         )?;
         self.add_column_if_missing(
             "ai_chat_sessions",
@@ -508,6 +538,112 @@ pub fn sqlite_store_path(app: &AppHandle) -> Result<PathBuf, AppError> {
         )
     })?;
     Ok(app_data_dir.join("mxterm.db"))
+}
+
+#[derive(Clone, Debug)]
+pub struct AiTaskSnapshot {
+    pub id: String,
+    pub session_id: String,
+    pub workspace: Option<String>,
+    pub command: String,
+    pub status: String,
+    pub output: String,
+    pub exit_status: Option<u32>,
+    pub cancel_requested: bool,
+    pub created_at_ms: u128,
+    pub updated_at_ms: u128,
+    pub finished_at_ms: Option<u128>,
+}
+
+fn open_ai_task_connection(app: &AppHandle) -> Result<Connection, AppError> {
+    let path = sqlite_store_path(app)?;
+    let store = SqliteStore::open(&path)?;
+    store.initialize()?;
+    drop(store);
+    Connection::open(path).map_err(sqlite_query_error)
+}
+
+pub fn upsert_ai_task(app: &AppHandle, task: &AiTaskSnapshot) -> Result<(), AppError> {
+    let connection = open_ai_task_connection(app)?;
+    connection
+        .execute(
+            "INSERT INTO ai_agent_tasks
+                (id, session_id, workspace, command, status, output, exit_status,
+                 cancel_requested, created_at_ms, updated_at_ms, finished_at_ms)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+             ON CONFLICT(id) DO UPDATE SET
+                session_id = excluded.session_id,
+                workspace = excluded.workspace,
+                command = excluded.command,
+                status = excluded.status,
+                output = excluded.output,
+                exit_status = excluded.exit_status,
+                cancel_requested = excluded.cancel_requested,
+                updated_at_ms = excluded.updated_at_ms,
+                finished_at_ms = excluded.finished_at_ms",
+            params![
+                task.id,
+                task.session_id,
+                task.workspace,
+                task.command,
+                task.status,
+                task.output,
+                task.exit_status.map(i64::from),
+                i64::from(task.cancel_requested),
+                task.created_at_ms.to_string(),
+                task.updated_at_ms.to_string(),
+                task.finished_at_ms.map(|value| value.to_string()),
+            ],
+        )
+        .map_err(sqlite_query_error)?;
+    Ok(())
+}
+
+pub fn get_ai_task(app: &AppHandle, id: &str) -> Result<Option<AiTaskSnapshot>, AppError> {
+    let connection = open_ai_task_connection(app)?;
+    connection
+        .query_row(
+            "SELECT id, session_id, workspace, command, status, output, exit_status,
+                    cancel_requested, created_at_ms, updated_at_ms, finished_at_ms
+             FROM ai_agent_tasks WHERE id = ?1",
+            params![id],
+            |row| {
+                Ok(AiTaskSnapshot {
+                    id: row.get(0)?,
+                    session_id: row.get(1)?,
+                    workspace: row.get(2)?,
+                    command: row.get(3)?,
+                    status: row.get(4)?,
+                    output: row.get(5)?,
+                    exit_status: row.get::<_, Option<i64>>(6)?.map(|value| value as u32),
+                    cancel_requested: row.get::<_, i64>(7)? != 0,
+                    created_at_ms: row.get::<_, String>(8)?.parse::<u128>().unwrap_or_default(),
+                    updated_at_ms: row.get::<_, String>(9)?.parse::<u128>().unwrap_or_default(),
+                    finished_at_ms: row
+                        .get::<_, Option<String>>(10)?
+                        .and_then(|value| value.parse::<u128>().ok()),
+                })
+            },
+        )
+        .optional()
+        .map_err(sqlite_query_error)
+}
+
+pub fn mark_running_ai_tasks_interrupted(app: &AppHandle) -> Result<usize, AppError> {
+    let connection = open_ai_task_connection(app)?;
+    let now = format!("{}", crate::ai_agent::now_millis());
+    let changed = connection
+        .execute(
+            "UPDATE ai_agent_tasks
+             SET status = 'interrupted',
+                 output = CASE WHEN output = '' THEN '应用重启时任务仍在运行，进程已不可恢复。' ELSE output END,
+                 updated_at_ms = ?1,
+                 finished_at_ms = ?1
+             WHERE status IN ('running', 'stop_requested')",
+            params![now],
+        )
+        .map_err(sqlite_query_error)?;
+    Ok(changed)
 }
 
 pub fn normalize_known_host_host(host: &str) -> String {

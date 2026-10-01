@@ -1,8 +1,9 @@
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex as StdMutex};
 
 use russh::{ChannelMsg, ChannelReadHalf};
-use tauri::{AppHandle, Emitter};
+use serde::Serialize;
+use tauri::{AppHandle, Emitter, Manager};
 use tokio::sync::Mutex;
 
 use crate::app_error::AppError;
@@ -30,13 +31,124 @@ enum ManagedTerminalSession {
 }
 
 type SessionStore = Arc<Mutex<HashMap<String, ManagedTerminalSession>>>;
+const TERMINAL_RING_LIMIT: usize = 128 * 1024;
+
+#[derive(Default)]
+struct OutputStore {
+    buffers: HashMap<String, OutputBuffer>,
+}
+
+struct OutputBuffer {
+    bytes: Vec<u8>,
+    total: u64,
+    connection_id: Option<String>,
+    updated_at_ms: u128,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct TerminalRecentOutput {
+    pub session_id: String,
+    pub data: String,
+    pub total_bytes: usize,
+    pub truncated: bool,
+    pub cursor: u64,
+    pub retained_from: u64,
+    pub updated_at_ms: u128,
+}
 
 #[derive(Clone, Default)]
 pub struct TerminalManager {
     sessions: SessionStore,
+    output: Arc<StdMutex<OutputStore>>,
+}
+
+#[derive(Clone, Debug, serde::Deserialize)]
+pub struct TerminalRecentOutputRequest {
+    pub session_id: String,
+    #[serde(default)]
+    pub max_chars: Option<usize>,
+    #[serde(default)]
+    pub connection_id: Option<String>,
 }
 
 impl TerminalManager {
+    pub fn recent_output(
+        &self,
+        request: TerminalRecentOutputRequest,
+    ) -> Result<TerminalRecentOutput, AppError> {
+        let max_chars = request.max_chars.unwrap_or(20_000).clamp(200, 20_000);
+        let store = self.output.lock().map_err(|_| {
+            AppError::new(
+                "terminal_output_lock_failed",
+                "读取终端输出失败。",
+                "output lock poisoned",
+                true,
+            )
+        })?;
+        let buffer = store.buffers.get(&request.session_id).ok_or_else(|| {
+            AppError::new(
+                "terminal_session_missing",
+                "终端会话不存在或已关闭。",
+                "no live buffer",
+                true,
+            )
+        })?;
+        if buffer.connection_id != request.connection_id {
+            return Err(AppError::new(
+                "terminal_scope_mismatch",
+                "终端与 Agent 工作区不属于同一连接。",
+                "connection binding mismatch",
+                true,
+            ));
+        }
+        let bytes = &buffer.bytes;
+        let text = String::from_utf8_lossy(bytes).to_string();
+        let chars: Vec<char> = text.chars().collect();
+        let truncated = chars.len() > max_chars || buffer.total > bytes.len() as u64;
+        let data = if chars.len() > max_chars {
+            chars[chars.len() - max_chars..].iter().collect()
+        } else {
+            text
+        };
+        Ok(TerminalRecentOutput {
+            session_id: request.session_id,
+            data,
+            total_bytes: bytes.len(),
+            truncated,
+            cursor: buffer.total,
+            retained_from: buffer.total.saturating_sub(bytes.len() as u64),
+            updated_at_ms: buffer.updated_at_ms,
+        })
+    }
+
+    fn record_output(&self, session_id: &str, data: &[u8]) {
+        let Ok(mut store) = self.output.lock() else {
+            return;
+        };
+        let Some(buffer) = store.buffers.get_mut(session_id) else {
+            return;
+        };
+        buffer.total += data.len() as u64;
+        buffer.updated_at_ms = crate::ai_agent::now_millis();
+        buffer.bytes.extend_from_slice(data);
+        if buffer.bytes.len() > TERMINAL_RING_LIMIT {
+            let drop_count = buffer.bytes.len() - TERMINAL_RING_LIMIT;
+            buffer.bytes.drain(..drop_count);
+        }
+    }
+    fn register_output(&self, id: &str, connection_id: Option<String>) {
+        if let Ok(mut store) = self.output.lock() {
+            store.buffers.insert(
+                id.into(),
+                OutputBuffer {
+                    bytes: vec![],
+                    total: 0,
+                    connection_id,
+                    updated_at_ms: crate::ai_agent::now_millis(),
+                },
+            );
+        }
+    }
     pub async fn connect(
         &self,
         app: AppHandle,
@@ -62,8 +174,10 @@ impl TerminalManager {
                 );
             })
         });
+        let connection_id = request.connection_id.clone();
         let (session, reader) = TerminalSession::open(app.clone(), request, progress).await?;
         let session_id = session.id.clone();
+        self.register_output(&session_id, connection_id);
         let terminal_encoding = session.terminal_encoding().to_string();
         self.sessions.lock().await.insert(
             session_id.clone(),
@@ -92,6 +206,7 @@ impl TerminalManager {
             request_id,
         } = LocalTerminalSession::open(request)?;
         let session_id = session.id.clone();
+        self.register_output(&session_id, None);
         self.sessions.lock().await.insert(
             session_id.clone(),
             ManagedTerminalSession::Local(session.clone()),
@@ -538,6 +653,9 @@ fn emit_terminal_output(
     request_id: &Option<String>,
     data: Vec<u8>,
 ) {
+    if let Some(manager) = app.try_state::<TerminalManager>() {
+        manager.record_output(session_id, &data);
+    }
     let _ = app.emit(
         crate::events::TERMINAL_OUTPUT,
         TerminalOutputEvent {
@@ -565,6 +683,23 @@ fn emit_terminal_error(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn output_ring_keeps_only_the_bounded_tail() {
+        let manager = TerminalManager::default();
+        manager.register_output("session", None);
+        manager.record_output("session", &vec![b'a'; TERMINAL_RING_LIMIT + 10]);
+        let result = manager
+            .recent_output(TerminalRecentOutputRequest {
+                session_id: "session".to_string(),
+                max_chars: Some(200),
+                connection_id: None,
+            })
+            .unwrap();
+        assert_eq!(result.total_bytes, TERMINAL_RING_LIMIT);
+        assert!(result.truncated);
+        assert_eq!(result.data.chars().count(), 200);
+    }
 
     fn valid_request() -> TerminalConnectRequest {
         TerminalConnectRequest {

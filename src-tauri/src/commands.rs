@@ -576,6 +576,14 @@ pub async fn terminal_close(
 }
 
 #[tauri::command]
+pub fn terminal_recent_output(
+    manager: State<'_, TerminalManager>,
+    request: crate::terminal::manager::TerminalRecentOutputRequest,
+) -> Result<crate::terminal::manager::TerminalRecentOutput, AppError> {
+    manager.recent_output(request)
+}
+
+#[tauri::command]
 pub fn local_terminal_list_profiles(
     request: LocalTerminalListProfilesRequest,
 ) -> Result<Vec<LocalTerminalProfile>, AppError> {

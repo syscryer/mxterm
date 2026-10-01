@@ -1,9 +1,9 @@
 export type AiProviderKind = "openai" | "claude";
 export type AiApiFormat = "openai_compatible" | "anthropic" | "responses";
 export type AiCommandRisk = "safe" | "dangerous";
-export type AiAgentMode = "assist" | "execute" | "full";
+export type AiAgentMode = "execute" | "full";
 export type AiExecutionMode = "chat" | AiAgentMode;
-export type AiChatStreamKind = "chunk" | "tool_call" | "finished" | "error" | "stopped";
+export type AiChatStreamKind = "chunk" | "thinking" | "tool_call" | "finished" | "error" | "stopped";
 export type AiToolCallStatus =
   | "pending_approval"
   | "running"
@@ -64,7 +64,7 @@ export interface AiProviderModelOption {
   id: string;
   display_name?: string | null;
   subtitle?: string | null;
-  /** 模型生效配置的可用思考档位；缺失时使用内置默认的 disabled/enabled。 */
+  /** 模型生效配置的可用思考档位；缺失时使用内置模型目录或 disabled/enabled 默认。 */
   reasoning_levels?: string[] | null;
   reasoning_default_level?: string | null;
 }
@@ -104,6 +104,19 @@ export interface AiToolCallRecord {
   duration_ms?: number | null;
   error?: string | null;
   text_offset: number;
+  created_at_ms?: number;
+  started_at_ms?: number | null;
+  finished_at_ms?: number | null;
+  approval_required?: boolean;
+  approval_decision?: "approved" | "rejected" | string | null;
+  connection_id?: string | null;
+  workspace?: string | null;
+}
+
+export interface AiAuditEvent {
+  id: number;
+  created_at_ms: string;
+  event: AiToolCallRecord & Record<string, unknown>;
 }
 
 export interface AiChatMessage {
@@ -111,12 +124,26 @@ export interface AiChatMessage {
   session_id: string;
   role: "user" | "assistant" | string;
   content: string;
+  thinking: string;
+  thinking_blocks?: AiThinkingBlock[];
   contexts: AiContextBlock[];
   commands: AiCommandSuggestion[];
   tool_calls: AiToolCallRecord[];
   status: "complete" | "streaming" | "error" | "stopped" | string;
   created_at: string;
   updated_at: string;
+}
+
+export interface AiThinkingUpdate {
+  id: string;
+  text_offset: number;
+  tool_offset: number;
+  started_at_ms: number;
+  finished_at_ms: number | null;
+}
+
+export interface AiThinkingBlock extends AiThinkingUpdate {
+  content: string;
 }
 
 export interface AiChatSessionSummary {
@@ -149,10 +176,14 @@ export interface AiChatStreamStartRequest {
 }
 
 export interface AiAgentRequest {
-  connection_id: string;
+  connection_id?: string | null;
+  workspace_type?: "remote" | "local";
+  workspace_path?: string | null;
+  local_workspace_path?: string | null;
   mode?: AiAgentMode;
   working_directory?: string | null;
   terminal_output?: string | null;
+  terminal_session_id?: string | null;
 }
 
 export interface AiChatStreamStartResponse {
@@ -168,6 +199,8 @@ export interface AiChatStreamEvent {
   session_id: string;
   message_id: string;
   delta?: string | null;
+  thinking_delta?: string | null;
+  thinking_update?: AiThinkingUpdate | null;
   content?: string | null;
   error?: string | null;
   tool_call?: AiToolCallRecord | null;

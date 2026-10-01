@@ -3,11 +3,14 @@ import {
   Ban,
   Bot,
   Check,
+  ClipboardList,
   ChevronDown,
   Clock3,
   Copy,
+  Download,
   CornerDownLeft,
   FileText,
+  FolderOpen,
   History,
   ListPlus,
   LoaderCircle,
@@ -16,6 +19,7 @@ import {
   Save,
   Send,
   Settings,
+  Shield,
   ShieldAlert,
   Square,
   Terminal,
@@ -41,9 +45,12 @@ import {
   aiChatStreamStart,
   aiChatStreamStop,
   aiChatToolDecision,
+  aiAuditList,
   aiCommandAssess,
+  aiProviderConfigSave,
   aiProviderConfigList,
 } from "../../shared/tauri/commands";
+import { selectAiWorkspaceDirectory } from "../../shared/tauri/dialog";
 import { listenAiChatStream } from "../../shared/tauri/events";
 import { hasTauriRuntime } from "../../shared/tauri/runtime";
 import { AppSelect, type AppSelectOption } from "../../shared/ui/AppSelect";
@@ -54,9 +61,12 @@ import type { CommandHistoryEntry } from "../commands/commandLibraryTypes";
 import type { ConnectionProfile } from "../connections/connectionTypes";
 import { keyboardEventMatchesShortcut } from "../shortcuts/shortcutKeys";
 import { AiModelPicker } from "./AiModelPicker";
+import { AiMessageTimeline } from "./AiMessageTimeline";
+import { appendThinkingDelta, finishThinkingBlock } from "./aiMessageFlow";
 import type {
   AiChatMessage,
   AiChatSessionSummary,
+  AiAuditEvent,
   AiCommandAssessment,
   AiCommandSuggestion,
   AiContextBlock,
@@ -77,6 +87,7 @@ interface AiAssistantPanelProps {
   recentTerminalOutput?: string | null;
   sendShortcutBinding?: string | null;
   terminalDirectory?: string | null;
+  terminalSessionId?: string | null;
   terminalTitle?: string | null;
   onInsertCommand: (command: string) => void;
   onOpenSettings: () => void;
@@ -91,10 +102,52 @@ interface StreamState {
 }
 
 const selectedProviderStorageKey = "mxterm.ai.selectedProviderConfigId";
+const selectedAgentModeStorageKey = "mxterm.ai.selectedExecutionMode";
+const selectedModelsStorageKey = "mxterm.ai.selectedModelsByProvider";
+const selectedReasoningLevelsStorageKey = "mxterm.ai.selectedReasoningLevelsByModel";
+const selectedLocalWorkspaceStorageKey = "mxterm.ai.selectedLocalWorkspace";
 const agentTerminalOutputLimit = 20000;
 const HISTORY_SCOPE_CURRENT = "__current__";
 const HISTORY_SCOPE_ALL = "__all__";
 const HISTORY_SCOPE_NONE = "__none__";
+
+type StoredAiSelectionMap = Record<string, string>;
+
+function readStoredAiSelectionMap(storageKey: string): StoredAiSelectionMap {
+  try {
+    const parsed = JSON.parse(window.localStorage.getItem(storageKey) || "null");
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return {};
+    }
+    const selections: StoredAiSelectionMap = {};
+    for (const [key, value] of Object.entries(parsed)) {
+      if (key.trim().length > 0 && typeof value === "string" && value.trim().length > 0) {
+        selections[key] = value;
+      }
+    }
+    return selections;
+  } catch {
+    return {};
+  }
+}
+
+function writeStoredAiSelectionMap(storageKey: string, selections: StoredAiSelectionMap) {
+  window.localStorage.setItem(storageKey, JSON.stringify(selections));
+}
+
+function rememberAiSelection(storageKey: string, key: string, value: string) {
+  const selections = readStoredAiSelectionMap(storageKey);
+  if (value.trim()) {
+    selections[key] = value;
+  } else {
+    delete selections[key];
+  }
+  writeStoredAiSelectionMap(storageKey, selections);
+}
+
+function isAiExecutionMode(value: string | null): value is AiExecutionMode {
+  return value === "chat" || value === "execute" || value === "full";
+}
 
 export function AiAssistantPanel({
   active,
@@ -107,6 +160,7 @@ export function AiAssistantPanel({
   recentTerminalOutput,
   sendShortcutBinding,
   terminalDirectory,
+  terminalSessionId,
   terminalTitle,
   onInsertCommand,
   onOpenSettings,
@@ -125,6 +179,15 @@ export function AiAssistantPanel({
   const [contextBlocks, setContextBlocks] = useState<AiContextBlock[]>([]);
   const [input, setInput] = useState("");
   const [historyOpen, setHistoryOpen] = useState(false);
+  const [auditOpen, setAuditOpen] = useState(false);
+  const [auditEvents, setAuditEvents] = useState<AiAuditEvent[]>([]);
+  const [auditLoading, setAuditLoading] = useState(false);
+  const [auditLoadingMore, setAuditLoadingMore] = useState(false);
+  const [auditHasMore, setAuditHasMore] = useState(false);
+  const [auditError, setAuditError] = useState<string | null>(null);
+  const [auditExporting, setAuditExporting] = useState(false);
+  const [auditQuery, setAuditQuery] = useState("");
+  const [auditExpandedId, setAuditExpandedId] = useState<number | null>(null);
   const [historyScopeOpen, setHistoryScopeOpen] = useState(false);
   const [historyScopeQuery, setHistoryScopeQuery] = useState("");
   const [contextMenuOpen, setContextMenuOpen] = useState(false);
@@ -132,6 +195,7 @@ export function AiAssistantPanel({
   const [streamState, setStreamState] = useState<StreamState | null>(null);
   const loadingRef = useRef(false);
   const historyTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const auditTriggerRef = useRef<HTMLButtonElement | null>(null);
   const contextTriggerRef = useRef<HTMLButtonElement | null>(null);
   const messageListRef = useRef<HTMLElement | null>(null);
   const streamStateRef = useRef<StreamState | null>(null);
@@ -143,53 +207,63 @@ export function AiAssistantPanel({
   const [clearSessionOpen, setClearSessionOpen] = useState(false);
   const [pendingDangerousCommand, setPendingDangerousCommand] =
     useState<AiCommandAssessment | null>(null);
-  const [agentMode, setAgentMode] = useState<AiExecutionMode>("execute");
+  const [agentMode, setAgentMode] = useState<AiExecutionMode>(() => {
+    const stored = window.localStorage.getItem(selectedAgentModeStorageKey);
+    return isAiExecutionMode(stored) ? stored : "execute";
+  });
   const [decidingToolCallIds, setDecidingToolCallIds] = useState<string[]>([]);
   const [expandedToolCallIds, setExpandedToolCallIds] = useState<Record<string, boolean>>({});
   const [selectedModel, setSelectedModel] = useState("");
   const [reasoningLevels, setReasoningLevels] = useState<string[]>([]);
   const [selectedReasoningLevel, setSelectedReasoningLevel] = useState("");
+  const [localWorkspace, setLocalWorkspace] = useState<string | null>(() => {
+    const stored = window.localStorage.getItem(selectedLocalWorkspaceStorageKey)?.trim();
+    return stored || null;
+  });
   const skipModelResetRef = useRef(false);
 
-  const agentModeAvailable = Boolean(connection);
+  const agentModeAvailable = true;
   const effectiveAgentMode: AiExecutionMode = agentModeAvailable ? agentMode : "chat";
   const agentModeEnabled = effectiveAgentMode !== "chat" && agentModeAvailable;
   const agentModeOptions: Array<AppSelectOption<AiExecutionMode>> = [
     {
       value: "chat",
       label: "对话",
+      triggerLabel: "对话",
       icon: <Bot className="ui-icon ai-agent-mode-icon ai-agent-mode-chat" aria-hidden="true" />,
-    },
-    {
-      value: "assist",
-      label: "辅助排查",
-      icon: <Terminal className="ui-icon ai-agent-mode-icon ai-agent-mode-assist" aria-hidden="true" />,
     },
     {
       value: "execute",
       label: "执行",
+      triggerLabel: "执行",
       icon: <Zap className="ui-icon ai-agent-mode-icon ai-agent-mode-execute" aria-hidden="true" />,
     },
     {
       value: "full",
       label: "完全访问",
-      icon: (
-        <span className="ai-agent-mode-full-icons" aria-hidden="true">
-          <Plus className="ui-icon" />
-          <ShieldAlert className="ui-icon" />
-        </span>
-      ),
+      triggerLabel: "完全访问",
+      icon: <Shield className="ui-icon ai-agent-mode-icon ai-agent-mode-full-icon" aria-hidden="true" />,
     },
   ];
-  const agentModeDescription = !agentModeAvailable
-    ? "仅 SSH 会话可用：连接后可选择命令执行模式"
-    : effectiveAgentMode === "chat"
+  const agentModeOptionDescriptions: Record<AiExecutionMode, string> = {
+    chat: "仅对话和建议，不执行命令",
+    execute: "执行排查命令，高风险命令会先请你确认",
+    full: "完全访问：AI 可执行高风险命令，请确认当前终端主机",
+  };
+  const agentModeDescription = effectiveAgentMode === "chat"
       ? "仅对话和建议，不执行命令"
-      : effectiveAgentMode === "assist"
-        ? "仅执行低风险排查命令，高风险命令会拒绝"
-        : effectiveAgentMode === "full"
-          ? "完全访问：AI 可执行高风险命令，请确认当前连接"
-          : "执行排查命令，高风险命令会先请你确认";
+      : effectiveAgentMode === "full"
+        ? "完全访问：AI 可执行高风险命令，请确认当前终端主机"
+        : connection
+          ? "当前 SSH 主机执行；本地文件工作区可单独操作"
+          : localWorkspace
+            ? "当前本机终端执行；可操作本地文件"
+            : "当前本机终端执行；选择本地文件工作区后可操作文件";
+  const hostDisplay = connection
+    ? `${connection.username}@${connection.host}`
+    : terminalTitle || "本机终端";
+  const localFileDisplay = localWorkspace || "本地文件未选择";
+  const scopeDisplay = `主机：${hostDisplay}；本地文件：${localFileDisplay}`;
   const currentHostScope = connection
     ? `${connection.username}@${connection.host}:${connection.port}`
     : null;
@@ -246,6 +320,8 @@ export function AiAssistantPanel({
         : historyScopeFilter.slice(5);
     return session.connection_id === target;
   });
+  const activeSessionTitle =
+    sessions.find((session) => session.id === activeSessionId)?.title?.trim() || "新会话";
   const historyScopeLabel =
     historyScopeOptions.find((option) => option.value === historyScopeFilter)?.label ??
     "全部会话";
@@ -264,6 +340,16 @@ export function AiAssistantPanel({
   }));
   const sendDisabled =
     Boolean(streamState) || loading || !selectedProvider || input.trim().length === 0;
+  const visibleAuditEvents = auditEvents.filter((entry) => {
+    const query = auditQuery.trim().toLocaleLowerCase();
+    if (!query) {
+      return true;
+    }
+    const event = entry.event as Record<string, unknown>;
+    return [event.name, event.status, entry.id.toString()]
+      .filter((value): value is string => typeof value === "string")
+      .some((value) => value.toLocaleLowerCase().includes(query));
+  });
   useEffect(() => {
     streamStateRef.current = streamState;
   }, [streamState]);
@@ -273,6 +359,37 @@ export function AiAssistantPanel({
       setHistoryScopeQuery("");
     }
   }, [historyOpen]);
+
+  useEffect(() => {
+    if (!auditOpen || !activeSessionId || !runtimeAvailable) {
+      return;
+    }
+    let cancelled = false;
+    setAuditLoading(true);
+    setAuditError(null);
+    void aiAuditList(activeSessionId)
+      .then((events) => {
+        if (!cancelled) {
+          setAuditEvents(events);
+          setAuditHasMore(events.length === 200);
+        }
+      })
+      .catch((nextError) => {
+        if (!cancelled) {
+          setAuditEvents([]);
+          setAuditHasMore(false);
+          setAuditError(formatAiError(nextError));
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setAuditLoading(false);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [activeSessionId, auditOpen, runtimeAvailable]);
 
   function setCurrentStreamState(next: StreamState | null) {
     streamStateRef.current = next;
@@ -331,6 +448,12 @@ export function AiAssistantPanel({
       });
       setReasoningLevels(levels);
       setSelectedReasoningLevel((current) => {
+        const remembered = readStoredAiSelectionMap(selectedReasoningLevelsStorageKey)[
+          `${providerId}:${model?.id || ""}`
+        ]?.trim() || "";
+        if (remembered && levels.includes(remembered)) {
+          return remembered;
+        }
         if (current && levels.includes(current)) {
           return current;
         }
@@ -349,7 +472,16 @@ export function AiAssistantPanel({
       skipModelResetRef.current = false;
       return;
     }
-    setSelectedModel(provider?.model ?? "");
+    const rememberedModel = provider
+      ? readStoredAiSelectionMap(selectedModelsStorageKey)[provider.id]?.trim() || ""
+      : "";
+    const enabledModelIds = new Set(
+      provider?.models.filter((model) => model.enabled).map((model) => model.id) || [],
+    );
+    const restoredModel = rememberedModel && (enabledModelIds.size === 0 || enabledModelIds.has(rememberedModel))
+      ? rememberedModel
+      : provider?.model ?? "";
+    setSelectedModel(restoredModel);
   }, [providerConfigs, selectedProviderId]);
 
   useEffect(() => {
@@ -371,7 +503,12 @@ export function AiAssistantPanel({
         setMessages((items) =>
           items.map((message) =>
             message.id === event.message_id
-              ? { ...message, tool_calls: upsertToolCall(message.tool_calls, record) }
+              ? {
+                  ...(message.tool_calls.some((item) => item.id === record.id)
+                    ? message
+                    : finishThinkingBlock(message)),
+                  tool_calls: upsertToolCall(message.tool_calls, record),
+                }
               : message,
           ),
         );
@@ -382,10 +519,23 @@ export function AiAssistantPanel({
         setMessages((items) =>
           items.map((message) =>
             message.id === event.message_id
-              ? { ...message, content: `${message.content}${delta}`, status: "streaming" }
+              ? {
+                  ...finishThinkingBlock(message),
+                  content: `${message.content}${delta}`,
+                  status: "streaming",
+                }
               : message,
           ),
         );
+        return;
+      }
+      if (event.kind === "thinking") {
+        const delta = event.thinking_delta || "";
+        setMessages((items) => items.map((message) =>
+          message.id === event.message_id
+            ? { ...appendThinkingDelta(message, delta, event.thinking_update), status: "streaming" }
+            : message,
+        ));
         return;
       }
       if (event.kind === "finished" || event.kind === "stopped" || event.kind === "error") {
@@ -393,7 +543,7 @@ export function AiAssistantPanel({
           items.map((message) =>
             message.id === event.message_id
               ? {
-                  ...message,
+                  ...finishThinkingBlock(message),
                   commands: extractCommandSuggestions(event.content || message.content),
                   content: event.content ?? message.content,
                   status:
@@ -546,17 +696,18 @@ export function AiAssistantPanel({
         host_scope: currentHostScope,
         connection_id: connection?.id ?? null,
         reasoning_level: selectedReasoningLevel || null,
-        agent:
-          agentModeEnabled && connection
-            ? {
-                connection_id: connection.id,
-                mode: effectiveAgentMode,
-                working_directory: terminalDirectory || null,
-                terminal_output: terminalOutput
-                  ? tailByChars(terminalOutput, agentTerminalOutputLimit)
-                  : null,
-              }
-            : null,
+        agent: agentModeEnabled
+          ? {
+              connection_id: connection?.id ?? null,
+              workspace_type: connection ? "remote" : "local",
+              workspace_path: terminalDirectory ?? null,
+              local_workspace_path: localWorkspace,
+              mode: effectiveAgentMode,
+              working_directory: terminalDirectory ?? null,
+              terminal_output: terminalOutput ? tailByChars(terminalOutput, agentTerminalOutputLimit) : null,
+              terminal_session_id: terminalSessionId ?? null,
+            }
+          : null,
         model: selectedModel.trim() || null,
       });
       const now = Date.now().toString();
@@ -568,6 +719,7 @@ export function AiAssistantPanel({
           session_id: response.session_id,
           role: "user",
           content: normalizedContent,
+          thinking: "",
           contexts,
           commands: [],
           tool_calls: [],
@@ -580,6 +732,7 @@ export function AiAssistantPanel({
           session_id: response.session_id,
           role: "assistant",
           content: "",
+          thinking: "",
           contexts: [],
           commands: [],
           tool_calls: [],
@@ -605,6 +758,14 @@ export function AiAssistantPanel({
       setLoading(false);
     }
   }
+
+  useEffect(() => {
+    if (localWorkspace) {
+      window.localStorage.setItem(selectedLocalWorkspaceStorageKey, localWorkspace);
+    } else {
+      window.localStorage.removeItem(selectedLocalWorkspaceStorageKey);
+    }
+  }, [localWorkspace]);
 
   async function decideToolCall(call: AiToolCallRecord, approved: boolean) {
     const current = streamStateRef.current;
@@ -809,15 +970,78 @@ export function AiAssistantPanel({
     ]);
   }
 
+  async function loadMoreAuditEvents() {
+    if (!activeSessionId || auditLoading || auditLoadingMore || !auditHasMore || auditEvents.length === 0) {
+      return;
+    }
+    setAuditLoadingMore(true);
+    setAuditError(null);
+    try {
+      const lastId = auditEvents[auditEvents.length - 1]?.id;
+      const events = await aiAuditList(activeSessionId, lastId);
+      setAuditEvents((current) => [...current, ...events]);
+      setAuditHasMore(events.length === 200);
+    } catch (nextError) {
+      setAuditError(formatAiError(nextError));
+    } finally {
+      setAuditLoadingMore(false);
+    }
+  }
+
+  async function exportAuditLog() {
+    if (!activeSessionId || auditExporting || auditLoading) {
+      return;
+    }
+    setAuditExporting(true);
+    setAuditError(null);
+    try {
+      const allEvents: AiAuditEvent[] = [];
+      let beforeId: number | undefined;
+      do {
+        const page = await aiAuditList(activeSessionId, beforeId);
+        allEvents.push(...page);
+        beforeId = page.length === 200 ? page[page.length - 1]?.id : undefined;
+        if (page.length === 0) {
+          break;
+        }
+      } while (beforeId !== undefined);
+      if (allEvents.length === 0) {
+        return;
+      }
+      const payload = allEvents
+        .map((entry) => JSON.stringify({ ...entry, session_id: activeSessionId }))
+        .join("\n");
+      const url = URL.createObjectURL(new Blob([payload], { type: "application/jsonl" }));
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = `mxterm-ai-audit-${activeSessionId}.jsonl`;
+      anchor.click();
+      URL.revokeObjectURL(url);
+    } catch (nextError) {
+      setAuditError(formatAiError(nextError));
+    } finally {
+      setAuditExporting(false);
+    }
+  }
+
   return (
     <section className="ai-assistant-tool" aria-label="AI">
       <header className="ai-assistant-head">
         <div className="ai-assistant-title">
-          <Bot className="ui-icon" aria-hidden="true" />
-          <span>
-            <strong>AI</strong>
-            <small>终端排障与命令生成</small>
-          </span>
+          <strong title={activeSessionTitle}>{activeSessionTitle}</strong>
+          <Tooltip label={scopeDisplay}>
+            <div className="ai-workspace-indicator" title={scopeDisplay}>
+              <Terminal className="ui-icon ai-scope-host-icon" aria-hidden="true" />
+              <span className="ai-scope-host">{hostDisplay}</span>
+              {localWorkspace ? (
+                <>
+                  <span className="ai-scope-divider" aria-hidden="true">·</span>
+                  <FolderOpen className="ui-icon ai-scope-local-icon" aria-hidden="true" />
+                  <span className="ai-scope-local">{localFileDisplay}</span>
+                </>
+              ) : null}
+            </div>
+          </Tooltip>
         </div>
         <div className="ai-assistant-head-actions">
           <Tooltip label="新对话">
@@ -836,6 +1060,19 @@ export function AiAssistantPanel({
               onClick={() => setHistoryOpen((open) => !open)}
             >
               <History className="ui-icon" aria-hidden="true" />
+            </button>
+          </Tooltip>
+          <Tooltip label="AI 设置">
+            <button
+              ref={auditTriggerRef}
+              className={auditOpen ? "active" : ""}
+              type="button"
+              aria-label="审计日志"
+              aria-expanded={auditOpen}
+              aria-haspopup="dialog"
+              onClick={() => setAuditOpen((open) => !open)}
+            >
+              <ClipboardList className="ui-icon" aria-hidden="true" />
             </button>
           </Tooltip>
           <Tooltip label="AI 设置">
@@ -962,6 +1199,97 @@ export function AiAssistantPanel({
         </div>
       </AnchoredSurfacePortal>
 
+      <AnchoredSurfacePortal
+        align="end"
+        anchorRef={auditTriggerRef}
+        ariaLabel="审计日志"
+        className="ai-audit-menu popover-content"
+        desiredHeight={360}
+        minHeight={120}
+        open={auditOpen}
+        role="dialog"
+        width={360}
+        onOpenChange={setAuditOpen}
+      >
+        <div className="ai-history-menu-header">
+          <strong>审计日志</strong>
+          <span>{activeSessionId ? `${visibleAuditEvents.length.toString()}${auditHasMore ? "+" : ""} 条` : "暂无会话"}</span>
+          <button
+            className="ai-audit-export"
+            type="button"
+            aria-label="导出审计日志"
+            disabled={!activeSessionId || auditExporting || auditLoading}
+            onClick={exportAuditLog}
+          >
+            {auditExporting ? <LoaderCircle className="ui-icon spin" aria-hidden="true" /> : <Download className="ui-icon" aria-hidden="true" />}
+          </button>
+        </div>
+        <div className="ai-audit-menu-body">
+          <input
+            aria-label="筛选审计日志"
+            className="app-select-search-input ai-audit-search"
+            placeholder="筛选工具或状态"
+            type="search"
+            value={auditQuery}
+            onChange={(event) => setAuditQuery(event.currentTarget.value)}
+          />
+          {auditLoading ? <p className="ai-history-empty">加载中…</p> : null}
+          {!auditLoading && auditError ? <p className="ai-audit-error" role="alert">{auditError}</p> : null}
+          {!auditLoading && !auditError && visibleAuditEvents.length === 0 ? (
+            <p className="ai-history-empty">当前会话暂无审计记录。</p>
+          ) : null}
+          {!auditLoading
+            ? visibleAuditEvents.map((entry) => {
+                const event = entry.event as Record<string, unknown>;
+                const name = typeof event.name === "string" ? event.name : "工具调用";
+                const status = typeof event.status === "string" ? event.status : "unknown";
+                const statusLabel = formatAuditStatus(status);
+                const command = typeof event.command === "string" ? event.command : "";
+                return (
+                  <div className="ai-audit-item" key={entry.id}>
+                    <button
+                      className="ai-audit-item-summary"
+                      type="button"
+                      aria-expanded={auditExpandedId === entry.id}
+                      onClick={() => setAuditExpandedId((current) => (current === entry.id ? null : entry.id))}
+                    >
+                      <span className="ai-audit-item-head">
+                        <strong>{formatToolCallTitle(name)}</strong>
+                        <small className={`ai-audit-status ai-audit-status-${status}`}>{statusLabel}</small>
+                      </span>
+                      <small>
+                        {new Date(Number(entry.created_at_ms)).toLocaleString()} · #{entry.id.toString()}
+                      </small>
+                    </button>
+                    {command ? <code className="ai-audit-command">{command}</code> : null}
+                    {auditExpandedId === entry.id ? (
+                      <small className="ai-audit-detail">
+                        {[
+                          typeof event.workspace === "string" && event.workspace ? `工作区：${event.workspace}` : "",
+                          typeof event.risk === "string" && event.risk ? `风险：${event.risk}` : "",
+                          typeof event.approval_decision === "string" && event.approval_decision
+                            ? `审批：${event.approval_decision}`
+                            : "",
+                          typeof event.exit_status === "number" ? `退出：${event.exit_status}` : "",
+                          typeof event.duration_ms === "number" ? `耗时：${event.duration_ms} ms` : "",
+                          typeof event.error === "string" && event.error ? `错误：${event.error}` : "",
+                        ]
+                          .filter(Boolean)
+                          .join(" · ") || "无其他详情"}
+                      </small>
+                    ) : null}
+                  </div>
+                );
+              })
+            : null}
+          {!auditLoading && !auditError && auditHasMore ? (
+            <button className="ai-audit-load-more" type="button" disabled={auditLoadingMore} onClick={() => void loadMoreAuditEvents()}>
+              {auditLoadingMore ? "加载中…" : "加载更早记录"}
+            </button>
+          ) : null}
+        </div>
+      </AnchoredSurfacePortal>
+
       {!runtimeAvailable ? (
         <p className="ai-inline-notice">桌面端才能保存配置和调用模型。</p>
       ) : null}
@@ -986,7 +1314,9 @@ export function AiAssistantPanel({
         ) : (
           messages.map((message) => {
             const showStatus =
-              Boolean(message.status) && message.status !== "complete";
+              Boolean(message.status) &&
+              message.status !== "complete" &&
+              message.status !== "streaming";
             const contextsNode =
               message.contexts.length > 0 ? (
                 <div className="ai-message-contexts">
@@ -1014,16 +1344,12 @@ export function AiAssistantPanel({
                 ) : (
                   <>
                     {contextsNode}
-                    {message.tool_calls.length > 0 ? (
-                      renderAssistantWithToolCalls(message)
-                    ) : (
-                      <div className="ai-message-content">
-                        {message.content
-                          ? renderMarkdownContent(message.content)
-                          : "..."}
-                      </div>
-                    )}
-                    {renderCommandSuggestions(message)}
+                    <AiMessageTimeline
+                      message={message}
+                      renderText={renderMarkdownContent}
+                      renderTool={renderToolCallCard}
+                    />
+                    {!agentModeEnabled ? renderCommandSuggestions(message) : null}
                   </>
                 )}
                 <div className="ai-message-meta">
@@ -1127,13 +1453,26 @@ export function AiAssistantPanel({
                   ariaLabel="AI 执行模式"
                   className={`ai-agent-mode-select ai-agent-mode-${effectiveAgentMode}`}
                   disabled={Boolean(streamState)}
-                  menuMinWidth={172}
+                  menuMinWidth={300}
+                  menuOptionHeight={48}
                   options={agentModeOptions.map((option) => ({
                     ...option,
+                    description:
+                      option.value === "full" ? (
+                        <span className="ai-agent-mode-full-description">
+                          {agentModeOptionDescriptions[option.value]}
+                        </span>
+                      ) : (
+                        agentModeOptionDescriptions[option.value]
+                      ),
                     disabled: option.value !== "chat" && !agentModeAvailable,
                   }))}
+                  menuClassName="ai-agent-mode-menu"
                   value={effectiveAgentMode}
-                  onChange={(value) => setAgentMode(value)}
+                  onChange={(value) => {
+                    setAgentMode(value);
+                    window.localStorage.setItem(selectedAgentModeStorageKey, value);
+                  }}
                 />
               </Tooltip>
             </div>
@@ -1146,6 +1485,26 @@ export function AiAssistantPanel({
                 disabled={!providerConfigs.length || Boolean(streamState)}
                 onSelect={(providerId, model) => {
                   setSelectedModel(model);
+                  rememberAiSelection(selectedModelsStorageKey, providerId, model);
+                  const provider = providerConfigs.find((config) => config.id === providerId);
+                  if (provider && model !== provider.model) {
+                    void aiProviderConfigSave({
+                      id: provider.id,
+                      name: provider.name,
+                      provider: provider.provider,
+                      api_format: provider.api_format,
+                      endpoint: provider.endpoint,
+                      model,
+                      models: provider.models,
+                      api_key_touched: false,
+                    })
+                      .then((saved) => {
+                        setProviderConfigs((configs) =>
+                          configs.map((config) => (config.id === saved.id ? saved : config)),
+                        );
+                      })
+                      .catch((nextError) => setError(formatAiError(nextError)));
+                  }
                   if (providerId !== selectedProviderId) {
                     skipModelResetRef.current = true;
                     setSelectedProviderId(providerId);
@@ -1157,7 +1516,7 @@ export function AiAssistantPanel({
               />
             </Tooltip>
             {reasoningOptions.length > 0 ? (
-              <Tooltip label="思考等级（由模型接口提供）">
+              <Tooltip label="思考等级（由模型目录或接口提供）">
                 <AppSelect
                   ariaLabel="思考等级"
                   className="ai-reasoning-select"
@@ -1166,7 +1525,16 @@ export function AiAssistantPanel({
                   options={reasoningOptions}
                   placeholder="思考"
                   value={selectedReasoningLevel}
-                  onChange={setSelectedReasoningLevel}
+                  onChange={(value) => {
+                    setSelectedReasoningLevel(value);
+                    if (selectedProviderId && selectedModel) {
+                      rememberAiSelection(
+                        selectedReasoningLevelsStorageKey,
+                        `${selectedProviderId}:${selectedModel}`,
+                        value,
+                      );
+                    }
+                  }}
                 />
               </Tooltip>
             ) : null}
@@ -1224,6 +1592,20 @@ export function AiAssistantPanel({
         >
           <Terminal className="ui-icon" aria-hidden="true" />
           <span>最近输出</span>
+        </button>
+        <button
+          className="ai-context-menu-item"
+          role="menuitem"
+          type="button"
+          onClick={() => {
+            void selectAiWorkspaceDirectory().then((path) => {
+              if (path) { setLocalWorkspace(path); setAgentMode("execute"); setNotice(`已选择本地工作区：${path}`); }
+            });
+            setContextMenuOpen(false);
+          }}
+        >
+          <FileText className="ui-icon" aria-hidden="true" />
+          <span>{localWorkspace ? "更换本地工作区" : "选择本地工作区"}</span>
         </button>
         <button
           className="ai-context-menu-item"
@@ -1311,47 +1693,20 @@ export function AiAssistantPanel({
     </section>
   );
 
-  function renderAssistantWithToolCalls(message: AiChatMessage) {
-    const chars = Array.from(message.content);
-    const calls = [...message.tool_calls].sort((left, right) => left.text_offset - right.text_offset);
-    const nodes: ReactNode[] = [];
-    let cursor = 0;
-    calls.forEach((call) => {
-      const offset = Math.min(Math.max(call.text_offset, cursor), chars.length);
-      const text = chars.slice(cursor, offset).join("");
-      if (text.trim()) {
-        nodes.push(
-          <div className="ai-message-content" key={`text-${call.id}`}>
-            {renderMarkdownContent(text)}
-          </div>,
-        );
-      }
-      nodes.push(renderToolCallCard(call));
-      cursor = offset;
-    });
-    const rest = chars.slice(cursor).join("");
-    if (rest.trim()) {
-      nodes.push(
-        <div className="ai-message-content" key="text-rest">
-          {renderMarkdownContent(rest)}
-        </div>,
-      );
-    } else if (message.status === "streaming" && !calls.some(isToolCallActive)) {
-      nodes.push(
-        <div className="ai-message-content" key="text-pending">
-          ...
-        </div>,
-      );
-    }
-    return <div className="ai-message-flow">{nodes}</div>;
-  }
-
   function renderToolCallCard(call: AiToolCallRecord) {
     const pending = call.status === "pending_approval";
     const deciding = decidingToolCallIds.includes(call.id);
     const danger = pending || call.risk === "dangerous";
     const ToolIcon =
-      call.name === "server_monitor" ? Activity : call.name === "read_terminal_output" ? FileText : Terminal;
+      call.name === "server_monitor"
+        ? Activity
+        : call.name === "read_terminal_output"
+          ? FileText
+          : call.name === "update_plan"
+            ? ListPlus
+            : call.name === "ask_user"
+              ? Bot
+              : Terminal;
     const expanded = expandedToolCallIds[call.id] ?? pending;
     const detailId = `ai-tool-detail-${call.id}`;
     const outputMeta = [
@@ -1363,7 +1718,9 @@ export function AiAssistantPanel({
     ].filter(Boolean);
     return (
       <article
-        className={`ai-tool-card ${expanded ? "expanded" : ""} ${danger ? "danger" : ""}`}
+        className={`ai-tool-card ${expanded ? "expanded" : ""} ${danger ? "danger" : ""} ${
+          call.name === "update_plan" ? "plan" : call.name === "ask_user" ? "question" : ""
+        }`}
         key={call.id}
       >
         <button
@@ -1389,7 +1746,19 @@ export function AiAssistantPanel({
         </button>
         {expanded ? (
           <div className="ai-tool-detail" id={detailId}>
-            {call.name === "run_command" && call.command ? <code>{call.command}</code> : null}
+            {call.name === "update_plan" ? (
+              <div className="ai-plan-content">
+                <strong>当前计划</strong>
+                <pre>{formatPlanOutput(call.output)}</pre>
+              </div>
+            ) : null}
+            {call.name === "ask_user" ? (
+              <div className="ai-question-content">
+                <strong>需要你的选择</strong>
+                <p>{call.output || "AI 正在等待确认。"}</p>
+              </div>
+            ) : null}
+            {(call.name === "run_command" || call.name === "start_task") && call.command ? <code>{call.command}</code> : null}
             {pending && call.reasons.length > 0 ? <p>{call.reasons.join("；")}</p> : null}
             {call.error ? <p>{call.error}</p> : null}
             {call.output ? (
@@ -1434,25 +1803,25 @@ export function AiAssistantPanel({
       return null;
     }
     return (
-      <div className="ai-command-suggestions">
+      <div className="ai-command-suggestions ai-command-suggestions-compact">
         {suggestions.map((suggestion, index) => (
           <article
-            className={`ai-command-card ${suggestion.risk === "dangerous" ? "danger" : ""}`}
+            aria-label={`命令建议：${suggestion.command}`}
+            className={`ai-command-card ai-command-card-compact ${suggestion.risk === "dangerous" ? "danger" : ""}`}
             key={`${message.id}-${index.toString()}`}
           >
-            <header>
-              <strong>命令建议</strong>
+            <div className="ai-command-card-main">
+              <code title={suggestion.command}>{suggestion.command}</code>
               {suggestion.risk === "dangerous" ? (
-                <span>
+                <span
+                  className="ai-command-card-risk"
+                  title={suggestion.reasons.join("；") || "高风险命令"}
+                >
                   <ShieldAlert className="ui-icon" aria-hidden="true" />
                   高风险
                 </span>
               ) : null}
-            </header>
-            <code>{suggestion.command}</code>
-            {suggestion.reasons.length > 0 ? (
-              <p>{suggestion.reasons.join("；")}</p>
-            ) : null}
+            </div>
             <footer>
               <Tooltip label="复制命令">
                 <button type="button" aria-label="复制命令" onClick={() => void copyCommand(suggestion.command)}>
@@ -2307,10 +2676,6 @@ function upsertToolCall(calls: AiToolCallRecord[], record: AiToolCallRecord) {
     : [...calls, record];
 }
 
-function isToolCallActive(call: AiToolCallRecord) {
-  return call.status === "running" || call.status === "pending_approval";
-}
-
 function formatToolCallTitle(name: string) {
   if (name === "run_command") {
     return "执行命令";
@@ -2321,6 +2686,19 @@ function formatToolCallTitle(name: string) {
   if (name === "read_terminal_output") {
     return "读取终端输出";
   }
+  if (name === "read_file") return "读取文件";
+  if (name === "glob") return "查找文件";
+  if (name === "grep") return "搜索内容";
+  if (name === "preview_patch") return "预览文件修改";
+  if (name === "apply_patch") return "应用文件修改";
+  if (name === "preview_file_change") return "预览文件操作";
+  if (name === "apply_file_change") return "应用文件操作";
+  if (name === "start_task") return "启动后台任务";
+  if (name === "task_status") return "查询任务状态";
+  if (name === "task_output") return "读取任务输出";
+  if (name === "cancel_task") return "停止后台任务";
+  if (name === "update_plan") return "更新计划";
+  if (name === "ask_user") return "等待用户选择";
   return name;
 }
 
@@ -2334,7 +2712,23 @@ function formatToolCallSummary(call: AiToolCallRecord) {
   if (call.name === "read_terminal_output") {
     return "发送时的终端输出快照";
   }
+  if (call.name === "run_command" || call.name === "start_task") return (call.command || "").replace(/\s+/g, " ").trim();
+  if (call.name === "apply_patch" || call.name === "preview_patch") return call.command || "等待 diff 确认";
+  if (call.name === "update_plan") return "已更新编码计划";
+  if (call.name === "ask_user") return "等待用户选择";
   return "";
+}
+
+function formatPlanOutput(value: string) {
+  try {
+    const parsed = JSON.parse(value) as { plan?: unknown };
+    if (typeof parsed.plan === "string" && parsed.plan.trim()) {
+      return parsed.plan.trim();
+    }
+  } catch {
+    // Older records can contain the raw plan text.
+  }
+  return value || "计划尚未填写。";
 }
 
 function formatToolCallStatus(call: AiToolCallRecord) {
@@ -2355,6 +2749,25 @@ function formatToolCallStatus(call: AiToolCallRecord) {
       return "已取消";
     default:
       return call.status;
+  }
+}
+
+function formatAuditStatus(status: string) {
+  switch (status) {
+    case "pending_approval":
+      return "待确认";
+    case "running":
+      return "执行中";
+    case "completed":
+      return "完成";
+    case "failed":
+      return "失败";
+    case "rejected":
+      return "已拒绝";
+    case "cancelled":
+      return "已取消";
+    default:
+      return status;
   }
 }
 

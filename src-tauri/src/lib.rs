@@ -1,5 +1,7 @@
 mod ai_agent;
 mod ai_assistant;
+mod ai_audit;
+mod ai_workspace;
 pub mod app_error;
 mod command_library;
 mod commands;
@@ -70,6 +72,9 @@ pub fn run() {
             }
         })
         .setup(|app| {
+            if let Err(error) = storage_sqlite::mark_running_ai_tasks_interrupted(app.handle()) {
+                eprintln!("[ai-agent] task recovery failed: {}", error.raw_message);
+            }
             if let Err(error) = tray::initialize(app.handle()) {
                 eprintln!("[tray] initialization failed: {}", error.raw_message);
             }
@@ -150,6 +155,7 @@ pub fn run() {
             commands::terminal_write,
             commands::terminal_resize,
             commands::terminal_close,
+            commands::terminal_recent_output,
             commands::get_supported_window_materials,
             commands::set_window_material,
             tray::set_close_to_tray_enabled,
@@ -232,6 +238,7 @@ pub fn run() {
             ai_assistant::ai_chat_session_delete,
             ai_assistant::ai_chat_session_clear,
             ai_assistant::ai_chat_stream_start,
+            ai_audit::ai_audit_list,
             ai_assistant::ai_chat_stream_stop,
             ai_assistant::ai_chat_tool_decision,
             ai_assistant::ai_command_assess,

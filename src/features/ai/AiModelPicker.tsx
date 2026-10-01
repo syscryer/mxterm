@@ -479,18 +479,58 @@ export function AiModelPicker({
   );
 }
 
-function withDefaultModelCapabilities(
-  model: AiProviderModelOption,
-): AiProviderModelOption {
-  // /models 未提供能力时，沿用 ZCode 的内置默认二态选项；接口明确返回空数组时保持无选项。
+function withDefaultModelCapabilities(model: AiProviderModelOption): AiProviderModelOption {
+  // /models 未提供能力时，沿用内置模型目录规则；接口明确返回空数组时保持无选项。
   if (model.reasoning_levels != null) {
     return model;
+  }
+  const knownLevels = knownReasoningLevelsForModel(model.id);
+  if (knownLevels) {
+    return {
+      ...model,
+      reasoning_levels: knownLevels,
+      reasoning_default_level: "max",
+    };
   }
   return {
     ...model,
     reasoning_levels: ["disabled", "enabled"],
     reasoning_default_level: "enabled",
   };
+}
+
+function knownReasoningLevelsForModel(modelId: string): string[] | null {
+  const normalized = modelId.trim().toLocaleLowerCase();
+  const rules: Array<{ fragment: string; levels: string[] }> = [
+    { fragment: "deepseek-v4-flash", levels: ["disabled", "low", "high", "max"] },
+    { fragment: "deepseek-v4-pro", levels: ["disabled", "low", "high", "max"] },
+    { fragment: "deepseek-flash", levels: ["disabled", "low", "high", "max"] },
+    { fragment: "deepseek-v4.1-flash", levels: ["disabled", "low", "high", "max"] },
+    { fragment: "deepseek-v4-1-flash", levels: ["disabled", "low", "high", "max"] },
+    { fragment: "glm-5.3", levels: ["low", "high", "max"] },
+    { fragment: "glm-5.2", levels: ["disabled", "high", "max"] },
+    { fragment: "gpt-5.6", levels: ["none", "low", "medium", "high", "xhigh", "max"] },
+    { fragment: "gpt-5.3-codex", levels: ["low", "medium", "high", "xhigh"] },
+    { fragment: "gpt-6-astra", levels: ["low", "medium", "high", "xhigh", "max"] },
+    { fragment: "gpt-5.4-pro", levels: ["medium", "high", "xhigh"] },
+    { fragment: "gpt-5.4", levels: ["none", "low", "medium", "high", "xhigh"] },
+    { fragment: "claude-opus-5", levels: ["low", "medium", "high", "xhigh", "max"] },
+    { fragment: "claude-sonnet-5", levels: ["low", "medium", "high", "xhigh", "max"] },
+    { fragment: "claude-fable-5", levels: ["low", "medium", "high", "xhigh", "max"] },
+    { fragment: "claude-fable-5.1", levels: ["low", "medium", "high", "xhigh", "max"] },
+    { fragment: "claude-mythos-5.1", levels: ["low", "medium", "high", "xhigh", "max"] },
+    { fragment: "grok-4.6", levels: ["low", "medium", "high", "xhigh"] },
+    { fragment: "kimi-k3", levels: ["low", "high", "max"] },
+    { fragment: "kimi-k2.7-code", levels: ["enabled"] },
+    { fragment: "k3-256k", levels: ["low", "high", "max"] },
+    {
+      fragment: "qwen3.8-omni-flash",
+      levels: ["none", "minimal", "low", "medium", "high", "xhigh", "max"],
+    },
+    { fragment: "qwen3.8-max", levels: ["low", "medium", "xhigh"] },
+    { fragment: "qwen3.8-flash", levels: ["low", "medium", "xhigh"] },
+  ];
+  return rules.find((rule) => normalized.includes(rule.fragment))?.levels || null;
 }
 
 function menuStyle(position: MenuPosition): CSSProperties {

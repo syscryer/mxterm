@@ -14,10 +14,12 @@ import {
 import { createPortal } from "react-dom";
 
 export interface AppSelectOption<T extends string> {
+  description?: ReactNode;
   disabled?: boolean;
   group?: ReactNode;
   icon?: ReactNode;
   label: ReactNode;
+  triggerLabel?: ReactNode;
   searchText?: string;
   value: T;
   variant?: "action";
@@ -28,6 +30,8 @@ interface AppSelectProps<T extends string> {
   className?: string;
   disabled?: boolean;
   menuMinWidth?: number;
+  menuClassName?: string;
+  menuOptionHeight?: number;
   openRequestKey?: number;
   options: Array<AppSelectOption<T>>;
   placeholder?: ReactNode;
@@ -48,6 +52,7 @@ interface MenuPosition {
 interface MenuPositionOptions {
   groupCount: number;
   menuMinWidth?: number;
+  menuOptionHeight?: number;
   optionCount: number;
   searchable?: boolean;
 }
@@ -57,6 +62,8 @@ export function AppSelect<T extends string>({
   className,
   disabled = false,
   menuMinWidth,
+  menuClassName,
+  menuOptionHeight,
   openRequestKey = 0,
   options,
   placeholder = "请选择",
@@ -82,7 +89,7 @@ export function AppSelect<T extends string>({
     displayedOptions.findIndex((option) => option.value === value),
   );
   const [highlightedIndex, setHighlightedIndex] = useState(selectedIndex);
-  const selectLabel = selectedOption?.label || placeholder;
+  const selectLabel = selectedOption?.triggerLabel ?? selectedOption?.label ?? placeholder;
   const groupCount = countOptionGroups(displayedOptions);
 
   function setSelectOpen(nextOpen: boolean) {
@@ -112,12 +119,21 @@ export function AppSelect<T extends string>({
       readMenuPosition(triggerRef.current, {
         groupCount,
         menuMinWidth,
+        menuOptionHeight,
         optionCount: displayedOptions.length,
         searchable,
       }),
     );
     setHighlightedIndex(selectedIndex);
-  }, [displayedOptions.length, groupCount, menuMinWidth, open, searchable, selectedIndex]);
+  }, [
+    displayedOptions.length,
+    groupCount,
+    menuMinWidth,
+    menuOptionHeight,
+    open,
+    searchable,
+    selectedIndex,
+  ]);
 
   useEffect(() => {
     if (!open || !searchable) {
@@ -156,6 +172,7 @@ export function AppSelect<T extends string>({
         readMenuPosition(triggerRef.current, {
           groupCount,
           menuMinWidth,
+          menuOptionHeight,
           optionCount: displayedOptions.length,
           searchable,
         }),
@@ -171,7 +188,7 @@ export function AppSelect<T extends string>({
       window.removeEventListener("resize", updatePosition);
       window.removeEventListener("scroll", updatePosition, true);
     };
-  }, [displayedOptions.length, groupCount, menuMinWidth, open, searchable]);
+  }, [displayedOptions.length, groupCount, menuMinWidth, menuOptionHeight, open, searchable]);
 
   function chooseOption(option: AppSelectOption<T>) {
     if (option.disabled) {
@@ -264,7 +281,7 @@ export function AppSelect<T extends string>({
             <DismissableLayerBranch asChild>
               <div
                 ref={menuRef}
-                className="app-select-menu select-menu-content"
+                className={`app-select-menu select-menu-content${menuClassName ? ` ${menuClassName}` : ""}`}
                 style={
                   {
                     "--app-select-menu-left": `${position.left}px`,
@@ -345,7 +362,12 @@ export function AppSelect<T extends string>({
                         ) : (
                           <span aria-hidden="true" />
                         )}
-                        <span>{option.label}</span>
+                        <span>
+                          {option.label}
+                          {option.description ? (
+                            <small className="app-select-item-description">{option.description}</small>
+                          ) : null}
+                        </span>
                       </button>
                     </Fragment>
                   );
@@ -364,7 +386,13 @@ export function AppSelect<T extends string>({
 
 function readMenuPosition(
   trigger: HTMLButtonElement | null,
-  { groupCount, menuMinWidth = 0, optionCount, searchable = false }: MenuPositionOptions,
+  {
+    groupCount,
+    menuMinWidth = 0,
+    menuOptionHeight = 34,
+    optionCount,
+    searchable = false,
+  }: MenuPositionOptions,
 ): MenuPosition | null {
   if (!trigger) {
     return null;
@@ -373,7 +401,7 @@ function readMenuPosition(
   const rect = trigger.getBoundingClientRect();
   const viewportPadding = 12;
   const gap = 5;
-  const optionHeight = 34;
+  const optionHeight = menuOptionHeight;
   const menuPaddingY = 16;
   const menuBorderY = 2;
   const menuChromeHeight =

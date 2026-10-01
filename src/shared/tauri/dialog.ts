@@ -34,6 +34,11 @@ export async function selectLocalDownloadDirectory() {
   return normalizeSelectedPaths(selected)[0] || null;
 }
 
+export async function selectAiWorkspaceDirectory() {
+  const selected = await open({ directory: true, multiple: false, title: "选择 AI 工作目录" });
+  return normalizeSelectedPaths(selected)[0] || null;
+}
+
 export async function selectLocalPrivateKeyFile() {
   const selected = await open({
     multiple: false,

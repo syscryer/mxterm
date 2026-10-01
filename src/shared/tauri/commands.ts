@@ -397,6 +397,15 @@ export function aiCommandAssess(command: string) {
   });
 }
 
+export function aiAuditList(sessionId: string, beforeId?: number) {
+  return invoke<import("../../features/ai/aiTypes").AiAuditEvent[]>("ai_audit_list", {
+    request: {
+      session_id: sessionId,
+      before_id: beforeId,
+    },
+  });
+}
+
 export function connectionTest(request: ConnectionRuntimeCredentialRequest) {
   return invoke<ConnectionStepResult>("connection_test", { request });
 }

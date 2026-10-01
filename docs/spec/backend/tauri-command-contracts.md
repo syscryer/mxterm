@@ -2888,16 +2888,16 @@ Agent-mode payloads:
 
 ```rust
 AiChatStreamStartRequest { ..., agent: Option<AiAgentRequest>, reasoning_level: Option<String>, model: Option<String>, host_scope: Option<String> }
-AiAgentRequest { connection_id: String, mode: Option<String>, working_directory: Option<String>, terminal_output: Option<String> }
+AiAgentRequest { connection_id: Option<String>, workspace_type: Option<String>, workspace_path: Option<String>, local_workspace_path: Option<String>, mode: Option<String>, working_directory: Option<String>, terminal_output: Option<String>, terminal_session_id: Option<String> }
 AiChatToolDecisionRequest { stream_id: String, tool_call_id: String, approved: bool }
 AiToolCallRecord { id, name, command, status, risk, reasons, exit_status, output, output_truncated, duration_ms, error, text_offset }
 ```
 
-Agent execution modes are `assist`, `execute`, and `full`. Assist rejects dangerous commands, execute keeps the existing per-command approval flow, and full executes dangerous commands without an approval pause.
+Agent execution modes are `execute` and `full`. Execute keeps the per-command approval flow for dangerous commands, and full executes dangerous commands without an approval pause.
 
 Reasoning level contract:
 
-- `reasoning_level` accepts the configured model value. The built-in default is `disabled | enabled` with `enabled` selected by default; models that explicitly declare other levels keep those values. Blank or absent means no thinking fields are sent.
+- `reasoning_level` accepts the configured model value. Explicit capability fields from the model list take priority. When the endpoint only returns model IDs, the built-in model catalog applies model-specific values (for example DeepSeek V4 uses `disabled | low | high | max` with `max` selected by default); models without a specific rule use the built-in `disabled | enabled` default. Blank or absent means no thinking fields are sent.
 - Provider configs carry `thinking_mode: auto | off`. `off` force-clears the effective level server-side; the panel hides the toggle for such providers.
 - OpenAI-compatible requests map `disabled` to `thinking.type=disabled`, `enable_thinking=false`, and `reasoning_effort=none`; `enabled` maps to the enabled/high form. Other declared levels pass through as the effort value.
 - Anthropic requests map `disabled` to `thinking.type=disabled` and `enabled` to the ZCode-compatible adaptive/high form. Legacy `low | medium | high` values continue to use the budget form (2048/8192/16384) and lift `max_tokens` above the thinking budget.

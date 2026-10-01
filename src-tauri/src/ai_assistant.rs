@@ -15,9 +15,11 @@ use tokio::time::{timeout, Duration};
 use uuid::Uuid;
 
 use crate::ai_agent::{
-    self, AgentRun, PendingApprovals, PreparedAgent, TOOL_RUN_COMMAND, TOOL_STATUS_CANCELLED,
+    self, AgentRun, PendingApprovals, PreparedAgent, TOOL_STATUS_CANCELLED,
     TOOL_STATUS_PENDING_APPROVAL, TOOL_STATUS_RUNNING,
 };
+#[cfg(test)]
+use crate::ai_agent::TOOL_RUN_COMMAND;
 use crate::app_error::AppError;
 use crate::events::{AiChatStreamEvent, AI_CHAT_STREAM_EVENT};
 use crate::remote_exec_pool::RemoteExecSessionPool;
@@ -35,6 +37,7 @@ pub(crate) const DEFAULT_REASONING_LEVEL: &str = "enabled";
 pub(crate) const REASONING_LEVELS: [&str; 3] = ["low", "medium", "high"];
 pub(crate) const ANTHROPIC_THINKING_BUDGET_TOKENS: [u32; 3] = [2_048, 8_192, 16_384];
 const MAX_AGENT_TERMINAL_OUTPUT_CHARS: usize = 20_000;
+#[cfg(test)]
 const MAX_HISTORY_TOOL_OUTPUT_CHARS: usize = 300;
 const MAX_CONTEXT_CHARS_PER_BLOCK: usize = 20_000;
 const MAX_SSE_ERROR_BODY_CHARS: usize = 1200;
@@ -136,7 +139,7 @@ pub struct AiProviderModelOption {
     pub id: String,
     pub display_name: Option<String>,
     pub subtitle: Option<String>,
-    /// 接口明确声明的能力优先使用；未声明时由内置默认规则补为 disabled/enabled。
+    /// 接口明确声明的能力优先使用；未声明时按内置模型目录规则或通用二态默认补齐。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reasoning_levels: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -213,6 +216,20 @@ pub struct AiToolCallRecord {
     pub error: Option<String>,
     #[serde(default)]
     pub text_offset: usize,
+    #[serde(default)]
+    pub created_at_ms: u128,
+    #[serde(default)]
+    pub started_at_ms: Option<u128>,
+    #[serde(default)]
+    pub finished_at_ms: Option<u128>,
+    #[serde(default)]
+    pub approval_required: bool,
+    #[serde(default)]
+    pub approval_decision: Option<String>,
+    #[serde(default)]
+    pub connection_id: Option<String>,
+    #[serde(default)]
+    pub workspace: Option<String>,
 }
 
 impl AiToolCallRecord {
@@ -230,6 +247,13 @@ impl AiToolCallRecord {
             duration_ms: None,
             error: None,
             text_offset,
+            created_at_ms: 0,
+            started_at_ms: None,
+            finished_at_ms: None,
+            approval_required: false,
+            approval_decision: None,
+            connection_id: None,
+            workspace: None,
         }
     }
 }
@@ -240,6 +264,7 @@ pub struct AiChatMessage {
     pub session_id: String,
     pub role: String,
     pub content: String,
+    pub thinking: String,
     pub contexts: Vec<AiContextBlock>,
     pub commands: Vec<AiCommandSuggestion>,
     pub tool_calls: Vec<AiToolCallRecord>,
@@ -294,18 +319,26 @@ pub struct AiChatStreamStartRequest {
 
 #[derive(Clone, Debug, Deserialize)]
 pub struct AiAgentRequest {
-    pub connection_id: String,
+    #[serde(default)]
+    pub connection_id: Option<String>,
+    #[serde(default)]
+    pub workspace_type: Option<String>,
+    #[serde(default)]
+    pub workspace_path: Option<String>,
+    #[serde(default)]
+    pub local_workspace_path: Option<String>,
     #[serde(default)]
     pub mode: Option<String>,
     #[serde(default)]
     pub working_directory: Option<String>,
     #[serde(default)]
     pub terminal_output: Option<String>,
+    #[serde(default)]
+    pub terminal_session_id: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) enum AiAgentMode {
-    Assist,
     #[default]
     Execute,
     Full,
@@ -341,12 +374,14 @@ pub(crate) struct AiModelMessage {
 pub struct AiChatStreamManager {
     streams: Arc<AsyncMutex<HashMap<String, AiChatStreamHandle>>>,
     exec_pool: RemoteExecSessionPool,
+    tasks: Arc<StdMutex<HashMap<String, Arc<ai_agent::BackgroundTask>>>>,
 }
 
 struct AiChatStreamHandle {
     session_id: String,
     message_id: String,
     content: Arc<StdMutex<String>>,
+    thinking: Arc<StdMutex<String>>,
     tool_calls: Arc<StdMutex<Vec<AiToolCallRecord>>>,
     approvals: PendingApprovals,
     emitter: StreamEmitter,
@@ -372,6 +407,12 @@ pub(crate) struct StreamEmitter {
 }
 
 impl StreamEmitter {
+    pub(crate) fn audit(&self, record: &AiToolCallRecord) -> Result<(), AppError> {
+        crate::ai_audit::append(&self.app, &self.session_id, &self.message_id, record)
+    }
+    pub(crate) fn session_id(&self) -> &str {
+        &self.session_id
+    }
     fn event(&self, kind: &str) -> AiChatStreamEvent {
         AiChatStreamEvent {
             kind: kind.to_string(),
@@ -379,6 +420,7 @@ impl StreamEmitter {
             session_id: self.session_id.clone(),
             message_id: self.message_id.clone(),
             delta: None,
+            thinking_delta: None,
             content: None,
             error: None,
             tool_call: None,
@@ -393,6 +435,13 @@ impl StreamEmitter {
         self.emit(AiChatStreamEvent {
             delta: Some(delta),
             ..self.event("chunk")
+        });
+    }
+
+    pub(crate) fn thinking(&self, delta: String) {
+        self.emit(AiChatStreamEvent {
+            thinking_delta: Some(delta),
+            ..self.event("thinking")
         });
     }
 
@@ -442,6 +491,7 @@ impl Default for AiChatStreamManager {
         Self {
             streams: Arc::new(AsyncMutex::new(HashMap::new())),
             exec_pool: RemoteExecSessionPool::default(),
+            tasks: Arc::new(StdMutex::new(HashMap::new())),
         }
     }
 }
@@ -458,14 +508,17 @@ impl AiChatStreamManager {
             message_id: message_id.clone(),
         };
         let content = Arc::new(StdMutex::new(String::new()));
+        let thinking = Arc::new(StdMutex::new(String::new()));
         let tool_calls = Arc::new(StdMutex::new(Vec::new()));
         let approvals: PendingApprovals = Arc::new(StdMutex::new(HashMap::new()));
         let stopped = Arc::new(AtomicBool::new(false));
         let manager = self.clone();
         let task_content = Arc::clone(&content);
+        let task_thinking = Arc::clone(&thinking);
         let task_tool_calls = Arc::clone(&tool_calls);
         let task_approvals = Arc::clone(&approvals);
         let task_stopped = Arc::clone(&stopped);
+        let task_tasks = Arc::clone(&self.tasks);
         let task_emitter = emitter.clone();
 
         let task = tokio::spawn(async move {
@@ -487,11 +540,15 @@ impl AiChatStreamManager {
                         pool: &manager.exec_pool,
                         stopped: Arc::clone(&task_stopped),
                         content: Arc::clone(&task_content),
+                        thinking: Arc::clone(&task_thinking),
                         tool_calls: Arc::clone(&task_tool_calls),
                         approvals: Arc::clone(&task_approvals),
                         emitter: &task_emitter,
                         pending_separator: AtomicBool::new(false),
                         reasoning_level: reasoning_level.as_deref(),
+                        files: tokio::sync::Mutex::new(Default::default()),
+                        audit_failed: AtomicBool::new(false),
+                        tasks: Arc::clone(&task_tasks),
                     };
                     ai_agent::run_agent(&run, messages).await
                 }
@@ -511,6 +568,15 @@ impl AiChatStreamManager {
                             }
                             task_emitter.chunk(delta);
                         },
+                        |delta| {
+                            if delta.is_empty() {
+                                return;
+                            }
+                            if let Ok(mut current) = task_thinking.lock() {
+                                current.push_str(&delta);
+                            }
+                            task_emitter.thinking(delta);
+                        },
                     )
                     .await
                 }
@@ -521,7 +587,8 @@ impl AiChatStreamManager {
                 return;
             }
 
-            let final_content = locked_string(&task_content);
+            let final_content = strip_tool_call_summary(locked_string(&task_content));
+            let final_thinking = locked_string(&task_thinking);
             let final_tool_calls = settle_tool_calls(&task_tool_calls, &task_emitter);
             let (status, error) = match result {
                 Ok(()) => ("complete", None),
@@ -532,6 +599,7 @@ impl AiChatStreamManager {
                 &task_emitter.session_id,
                 &task_emitter.message_id,
                 &final_content,
+                &final_thinking,
                 status,
                 &final_tool_calls,
             );
@@ -551,6 +619,7 @@ impl AiChatStreamManager {
                     session_id,
                     message_id,
                     content,
+                    thinking,
                     tool_calls,
                     approvals,
                     emitter,
@@ -610,12 +679,14 @@ impl AiChatStreamManager {
         handle.stopped.store(true, Ordering::SeqCst);
         handle.task.abort();
         let content = locked_string(&handle.content);
+        let thinking = locked_string(&handle.thinking);
         let tool_calls = settle_tool_calls(&handle.tool_calls, &handle.emitter);
         let _ = update_assistant_message(
             app,
             &handle.session_id,
             &handle.message_id,
             &content,
+            &thinking,
             "stopped",
             &tool_calls,
         );
@@ -978,24 +1049,92 @@ fn apply_model_override(config: &mut StoredAiProviderConfig, requested: Option<&
 }
 
 fn prepare_agent(app: &AppHandle, request: AiAgentRequest) -> Result<PreparedAgent, AppError> {
-    let connection_id = require_non_empty(
-        &request.connection_id,
-        "ai_agent_connection_missing",
-        "执行命令模式需要当前 SSH 连接。",
-    )?;
-    let config = resolve_saved_connection(app, connection_id, None)?;
+    let workspace_type = request
+        .workspace_type
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| {
+            if request
+                .connection_id
+                .as_deref()
+                .is_some_and(|value| !value.trim().is_empty())
+            {
+                "remote"
+            } else {
+                "local"
+            }
+        });
+    if !matches!(workspace_type, "local" | "remote") {
+        return Err(AppError::new(
+            "ai_workspace_type_invalid",
+            "工作区类型无效。",
+            workspace_type,
+            true,
+        ));
+    }
+    let (config, host_local_directory, default_directory) = if workspace_type == "local" {
+        let root = if let Some(path) = trim_optional(
+            request
+                .working_directory
+                .clone()
+                .or(request.workspace_path.clone()),
+        ) {
+            crate::ai_workspace::validate_workspace_root(&path)?
+        } else {
+            let current = std::env::current_dir().map_err(|error| {
+                AppError::new(
+                    "ai_agent_workspace_unavailable",
+                    "无法获取默认本地工作目录。",
+                    error,
+                    true,
+                )
+            })?;
+            crate::ai_workspace::validate_workspace_root(&current.to_string_lossy())?
+        };
+        let directory = root.to_string_lossy().to_string();
+        (None, Some(root), Some(directory))
+    } else {
+        let connection_id = require_non_empty(
+            request.connection_id.as_deref().unwrap_or_default(),
+            "ai_agent_connection_missing",
+            "远程 Agent 需要当前 SSH 连接。",
+        )?;
+        let directory = trim_optional(request.workspace_path.clone())
+            .or_else(|| trim_optional(request.working_directory.clone()));
+        if let Some(directory) = directory.as_deref() {
+            if !directory.starts_with('/') {
+                return Err(AppError::new(
+                    "ai_workspace_path_invalid",
+                    "远程工作目录必须是绝对路径。",
+                    "absolute POSIX path required",
+                    true,
+                ));
+            }
+        }
+        (
+            Some(resolve_saved_connection(app, connection_id, None)?),
+            None,
+            directory,
+        )
+    };
+    let local_workspace = trim_optional(request.local_workspace_path)
+        .map(|path| crate::ai_workspace::validate_workspace_root(&path))
+        .transpose()?;
     let terminal_output = trim_optional(request.terminal_output)
         .map(|output| tail_chars_owned(&output, MAX_AGENT_TERMINAL_OUTPUT_CHARS));
     let mode = match request.mode.as_deref() {
-        Some("assist") => AiAgentMode::Assist,
         Some("full") => AiAgentMode::Full,
         _ => AiAgentMode::Execute,
     };
     Ok(PreparedAgent {
         config,
         mode,
-        working_directory: trim_optional(request.working_directory),
+        working_directory: default_directory,
+        host_local_directory,
+        local_workspace,
         terminal_output,
+        terminal_session_id: trim_optional(request.terminal_session_id),
     })
 }
 
@@ -1336,6 +1475,7 @@ async fn test_provider_config_connectivity(
             }],
             stopped,
             |_| {},
+            |_| {},
         ),
     )
     .await
@@ -1490,8 +1630,8 @@ fn parse_anthropic_models_list(value: &Value) -> Result<Vec<AiProviderModelOptio
 /// 不同供应商对 `/models` 能力字段的命名并不统一；按结构读取常见的
 /// OpenAI/ZCode 兼容形态，保留“未声明”和“声明为空”两种状态。
 ///
-/// 部分网关只返回模型 ID，不会把能力字段透传出来。只有命中明确的
-/// 已知模型协议时才使用本地能力映射，避免给普通模型误显示思考选项。
+/// 部分网关只返回模型 ID，不会把能力字段透传出来。已知模型会沿用本地
+/// 模型规则，其他模型才回退到通用二态默认，避免把未知模型误判成多档能力。
 fn reasoning_metadata(item: &Value, model_id: &str) -> (Option<Vec<String>>, Option<String>) {
     let option_spec = item
         .get("config")
@@ -1542,6 +1682,9 @@ fn reasoning_metadata(item: &Value, model_id: &str) -> (Option<Vec<String>>, Opt
             return (levels, default_level);
         }
     }
+    if let Some((levels, default_level)) = model_specific_reasoning_metadata(model_id) {
+        return (Some(levels), Some(default_level));
+    }
     if declares_reasoning_capability(item) {
         let default_level = item
             .get("reasoning_effort")
@@ -1585,11 +1728,138 @@ fn value_declares_reasoning(value: &Value) -> bool {
     }
 }
 
-fn default_reasoning_metadata(_model_id: &str) -> Option<(Option<Vec<String>>, Option<String>)> {
+fn default_reasoning_metadata(model_id: &str) -> Option<(Option<Vec<String>>, Option<String>)> {
+    if let Some((levels, default_level)) = model_specific_reasoning_metadata(model_id) {
+        return Some((Some(levels), Some(default_level)));
+    }
     Some((
         Some(default_reasoning_levels()),
         Some(DEFAULT_REASONING_LEVEL.to_string()),
     ))
+}
+
+struct BuiltinReasoningRule {
+    model_fragment: &'static str,
+    levels: &'static [&'static str],
+}
+
+/// 与 ZCode 内置 provider registry 的 modelConfigRules 对齐。
+///
+/// 这些规则属于应用内置模型目录，不是用户手工配置。供应商的 `/models`
+/// 返回明确能力时仍在调用方优先使用返回值；只有能力未声明时才按模型名匹配这里的规则。
+const BUILTIN_REASONING_RULES: &[BuiltinReasoningRule] = &[
+    BuiltinReasoningRule {
+        model_fragment: "deepseek-v4-flash",
+        levels: &["disabled", "low", "high", "max"],
+    },
+    BuiltinReasoningRule {
+        model_fragment: "deepseek-v4-pro",
+        levels: &["disabled", "low", "high", "max"],
+    },
+    BuiltinReasoningRule {
+        model_fragment: "deepseek-flash",
+        levels: &["disabled", "low", "high", "max"],
+    },
+    BuiltinReasoningRule {
+        model_fragment: "deepseek-v4.1-flash",
+        levels: &["disabled", "low", "high", "max"],
+    },
+    BuiltinReasoningRule {
+        model_fragment: "deepseek-v4-1-flash",
+        levels: &["disabled", "low", "high", "max"],
+    },
+    BuiltinReasoningRule {
+        model_fragment: "glm-5.3",
+        levels: &["low", "high", "max"],
+    },
+    BuiltinReasoningRule {
+        model_fragment: "glm-5.2",
+        levels: &["disabled", "high", "max"],
+    },
+    BuiltinReasoningRule {
+        model_fragment: "gpt-5.6",
+        levels: &["none", "low", "medium", "high", "xhigh", "max"],
+    },
+    BuiltinReasoningRule {
+        model_fragment: "gpt-5.3-codex",
+        levels: &["low", "medium", "high", "xhigh"],
+    },
+    BuiltinReasoningRule {
+        model_fragment: "gpt-6-astra",
+        levels: &["low", "medium", "high", "xhigh", "max"],
+    },
+    BuiltinReasoningRule {
+        model_fragment: "gpt-5.4-pro",
+        levels: &["medium", "high", "xhigh"],
+    },
+    BuiltinReasoningRule {
+        model_fragment: "gpt-5.4",
+        levels: &["none", "low", "medium", "high", "xhigh"],
+    },
+    BuiltinReasoningRule {
+        model_fragment: "claude-opus-5",
+        levels: &["low", "medium", "high", "xhigh", "max"],
+    },
+    BuiltinReasoningRule {
+        model_fragment: "claude-sonnet-5",
+        levels: &["low", "medium", "high", "xhigh", "max"],
+    },
+    BuiltinReasoningRule {
+        model_fragment: "claude-fable-5",
+        levels: &["low", "medium", "high", "xhigh", "max"],
+    },
+    BuiltinReasoningRule {
+        model_fragment: "claude-fable-5.1",
+        levels: &["low", "medium", "high", "xhigh", "max"],
+    },
+    BuiltinReasoningRule {
+        model_fragment: "claude-mythos-5.1",
+        levels: &["low", "medium", "high", "xhigh", "max"],
+    },
+    BuiltinReasoningRule {
+        model_fragment: "grok-4.6",
+        levels: &["low", "medium", "high", "xhigh"],
+    },
+    BuiltinReasoningRule {
+        model_fragment: "kimi-k3",
+        levels: &["low", "high", "max"],
+    },
+    BuiltinReasoningRule {
+        model_fragment: "kimi-k2.7-code",
+        levels: &["enabled"],
+    },
+    BuiltinReasoningRule {
+        model_fragment: "k3-256k",
+        levels: &["low", "high", "max"],
+    },
+    BuiltinReasoningRule {
+        model_fragment: "qwen3.8-omni-flash",
+        levels: &["none", "minimal", "low", "medium", "high", "xhigh", "max"],
+    },
+    BuiltinReasoningRule {
+        model_fragment: "qwen3.8-max",
+        levels: &["low", "medium", "xhigh"],
+    },
+    BuiltinReasoningRule {
+        model_fragment: "qwen3.8-flash",
+        levels: &["low", "medium", "xhigh"],
+    },
+];
+
+fn model_specific_reasoning_metadata(model_id: &str) -> Option<(Vec<String>, String)> {
+    let normalized = model_id.trim().to_ascii_lowercase();
+    BUILTIN_REASONING_RULES
+        .iter()
+        .find(|rule| normalized.contains(rule.model_fragment))
+        .map(|rule| {
+            (
+                rule.levels
+                    .iter()
+                    .map(|level| (*level).to_string())
+                    .collect(),
+                rule.levels.last().unwrap_or(&"enabled").to_string(),
+            )
+        })
 }
 
 fn known_reasoning_levels() -> Vec<String> {
@@ -1862,7 +2132,7 @@ fn list_chat_messages(
     let mut statement = repository
         .sqlite_connection()
         .prepare(
-            "SELECT id, session_id, role, content, contexts_json, commands_json, status, created_at, updated_at, tool_calls_json
+            "SELECT id, session_id, role, content, contexts_json, commands_json, status, created_at, updated_at, tool_calls_json, thinking
              FROM ai_chat_messages
              WHERE session_id = ?1
              ORDER BY CAST(created_at AS INTEGER) ASC, rowid ASC",
@@ -1876,11 +2146,13 @@ fn list_chat_messages(
         let contexts_json: String = row.get(4).map_err(sqlite_ai_error)?;
         let commands_json: String = row.get(5).map_err(sqlite_ai_error)?;
         let tool_calls_json: String = row.get(9).map_err(sqlite_ai_error)?;
+        let thinking: String = row.get(10).map_err(sqlite_ai_error)?;
         messages.push(AiChatMessage {
             id: row.get(0).map_err(sqlite_ai_error)?,
             session_id: row.get(1).map_err(sqlite_ai_error)?,
             role: row.get(2).map_err(sqlite_ai_error)?,
             content: row.get(3).map_err(sqlite_ai_error)?,
+            thinking,
             contexts: serde_json::from_str(&contexts_json).unwrap_or_default(),
             commands: serde_json::from_str(&commands_json).unwrap_or_default(),
             tool_calls: serde_json::from_str(&tool_calls_json).unwrap_or_default(),
@@ -1897,6 +2169,7 @@ fn update_assistant_message(
     session_id: &str,
     message_id: &str,
     content: &str,
+    thinking: &str,
     status: &str,
     tool_calls: &[AiToolCallRecord],
 ) -> Result<(), AppError> {
@@ -1906,6 +2179,7 @@ fn update_assistant_message(
         session_id,
         message_id,
         content,
+        thinking,
         status,
         tool_calls,
     )
@@ -1916,6 +2190,7 @@ fn save_assistant_message(
     session_id: &str,
     message_id: &str,
     content: &str,
+    thinking: &str,
     status: &str,
     tool_calls: &[AiToolCallRecord],
 ) -> Result<(), AppError> {
@@ -1927,9 +2202,9 @@ fn save_assistant_message(
         .sqlite_connection()
         .execute(
             "UPDATE ai_chat_messages
-                SET content = ?2, commands_json = ?3, status = ?4, updated_at = ?5, tool_calls_json = ?6
+                SET content = ?2, commands_json = ?3, status = ?4, updated_at = ?5, tool_calls_json = ?6, thinking = ?7
               WHERE id = ?1 AND role = 'assistant'",
-            params![message_id, content, commands_json, status, now, tool_calls_json],
+            params![message_id, content, commands_json, status, now, tool_calls_json, thinking],
         )
         .map_err(sqlite_ai_error)?;
     repository
@@ -1958,7 +2233,7 @@ fn model_messages_from_history(messages: Vec<AiChatMessage>) -> Vec<AiModelMessa
             let content = if message.role == "user" {
                 format_user_message_for_model(&message.content, &message.contexts)
             } else {
-                append_tool_call_summary(message.content, &message.tool_calls)
+                strip_tool_call_summary(message.content)
             };
             Some(AiModelMessage {
                 role: message.role,
@@ -1968,6 +2243,33 @@ fn model_messages_from_history(messages: Vec<AiChatMessage>) -> Vec<AiModelMessa
         .collect()
 }
 
+fn strip_tool_call_summary(content: String) -> String {
+    const MARKER: &str = "[本轮工具调用记录]";
+    let Some(start) = content.find(MARKER) else {
+        return content;
+    };
+
+    let prefix = content[..start].trim_end();
+    let mut trailing = Vec::new();
+    let mut in_summary = true;
+    for line in content[start + MARKER.len()..].lines() {
+        let trimmed = line.trim();
+        if in_summary && (trimmed.is_empty() || trimmed.starts_with("- ")) {
+            continue;
+        }
+        in_summary = false;
+        trailing.push(line);
+    }
+    let suffix = trailing.join("\n").trim_start().to_string();
+    match (prefix.is_empty(), suffix.is_empty()) {
+        (true, true) => String::new(),
+        (false, true) => prefix.to_string(),
+        (true, false) => suffix,
+        (false, false) => format!("{prefix}\n\n{suffix}"),
+    }
+}
+
+#[cfg(test)]
 fn append_tool_call_summary(content: String, tool_calls: &[AiToolCallRecord]) -> String {
     if tool_calls.is_empty() {
         return content;
@@ -2016,6 +2318,7 @@ async fn run_provider_stream<F>(
     messages: Vec<AiModelMessage>,
     stopped: Arc<AtomicBool>,
     mut on_delta: F,
+    mut on_thinking: impl FnMut(String) + Send,
 ) -> Result<(), AppError>
 where
     F: FnMut(String) + Send,
@@ -2031,6 +2334,7 @@ where
                 messages,
                 stopped,
                 &mut on_delta,
+                &mut on_thinking,
             )
             .await
         }
@@ -2043,6 +2347,7 @@ where
                 messages,
                 stopped,
                 &mut on_delta,
+                &mut on_thinking,
             )
             .await
         }
@@ -2055,6 +2360,7 @@ where
                 messages,
                 stopped,
                 &mut on_delta,
+                &mut on_thinking,
             )
             .await
         }
@@ -2069,6 +2375,7 @@ async fn run_openai_stream<F>(
     messages: Vec<AiModelMessage>,
     stopped: Arc<AtomicBool>,
     on_delta: &mut F,
+    on_thinking: &mut (impl FnMut(String) + Send),
 ) -> Result<(), AppError>
 where
     F: FnMut(String) + Send,
@@ -2092,6 +2399,11 @@ where
     read_sse_events(response, stopped, |data| {
         match parse_openai_sse_delta(data)? {
             ParsedSseDelta::Delta(delta) => on_delta(delta),
+            ParsedSseDelta::Thinking(delta) => on_thinking(delta),
+            ParsedSseDelta::Both { delta, thinking } => {
+                on_thinking(thinking);
+                on_delta(delta);
+            }
             ParsedSseDelta::Done => return Ok(true),
             ParsedSseDelta::None => {}
         }
@@ -2108,6 +2420,7 @@ async fn run_anthropic_stream<F>(
     messages: Vec<AiModelMessage>,
     stopped: Arc<AtomicBool>,
     on_delta: &mut F,
+    on_thinking: &mut (impl FnMut(String) + Send),
 ) -> Result<(), AppError>
 where
     F: FnMut(String) + Send,
@@ -2134,6 +2447,11 @@ where
     read_sse_events(response, stopped, |data| {
         match parse_anthropic_sse_delta(data)? {
             ParsedSseDelta::Delta(delta) => on_delta(delta),
+            ParsedSseDelta::Thinking(delta) => on_thinking(delta),
+            ParsedSseDelta::Both { delta, thinking } => {
+                on_thinking(thinking);
+                on_delta(delta);
+            }
             ParsedSseDelta::Done => return Ok(true),
             ParsedSseDelta::None => {}
         }
@@ -2150,6 +2468,7 @@ async fn run_responses_stream<F>(
     messages: Vec<AiModelMessage>,
     stopped: Arc<AtomicBool>,
     on_delta: &mut F,
+    on_thinking: &mut (impl FnMut(String) + Send),
 ) -> Result<(), AppError>
 where
     F: FnMut(String) + Send,
@@ -2194,6 +2513,12 @@ where
             Some("response.output_text.delta") => {
                 if let Some(delta) = value.get("delta").and_then(Value::as_str) {
                     on_delta(delta.to_string());
+                }
+                Ok(false)
+            }
+            Some("response.reasoning_summary_text.delta") | Some("response.reasoning_text.delta") => {
+                if let Some(delta) = value.get("delta").and_then(Value::as_str) {
+                    on_thinking(delta.to_string());
                 }
                 Ok(false)
             }
@@ -2300,6 +2625,8 @@ where
 
 enum ParsedSseDelta {
     Delta(String),
+    Thinking(String),
+    Both { delta: String, thinking: String },
     Done,
     None,
 }
@@ -2312,14 +2639,27 @@ fn parse_openai_sse_delta(data: &str) -> Result<ParsedSseDelta, AppError> {
     if let Some(error) = value.get("error") {
         return Err(provider_stream_error(error));
     }
-    let delta = value
+    let delta_obj = value
         .get("choices")
         .and_then(Value::as_array)
         .and_then(|choices| choices.first())
         .and_then(|choice| choice.get("delta"))
-        .and_then(|delta| delta.get("content"))
+        .unwrap_or(&Value::Null);
+    let thinking = delta_obj
+        .get("reasoning_content")
+        .or_else(|| delta_obj.get("reasoning"))
         .and_then(Value::as_str)
         .unwrap_or_default();
+    let delta = delta_obj.get("content").and_then(Value::as_str).unwrap_or_default();
+    if !thinking.is_empty() && !delta.is_empty() {
+        return Ok(ParsedSseDelta::Both {
+            delta: delta.to_string(),
+            thinking: thinking.to_string(),
+        });
+    }
+    if !thinking.is_empty() {
+        return Ok(ParsedSseDelta::Thinking(thinking.to_string()));
+    }
     if delta.is_empty() {
         Ok(ParsedSseDelta::None)
     } else {
@@ -2338,11 +2678,13 @@ fn parse_anthropic_sse_delta(data: &str) -> Result<ParsedSseDelta, AppError> {
         .unwrap_or_default()
     {
         "content_block_delta" => {
-            let delta = value
-                .get("delta")
-                .and_then(|delta| delta.get("text"))
-                .and_then(Value::as_str)
-                .unwrap_or_default();
+            let delta_value = value.get("delta").unwrap_or(&Value::Null);
+            let kind = delta_value.get("type").and_then(Value::as_str).unwrap_or_default();
+            let delta = delta_value.get("text").and_then(Value::as_str).unwrap_or_default();
+            if kind == "thinking_delta" {
+                let thinking = delta_value.get("thinking").and_then(Value::as_str).unwrap_or_default();
+                return if thinking.is_empty() { Ok(ParsedSseDelta::None) } else { Ok(ParsedSseDelta::Thinking(thinking.to_string())) };
+            }
             if delta.is_empty() {
                 Ok(ParsedSseDelta::None)
             } else {
@@ -3163,6 +3505,14 @@ mod tests {
             parse_openai_sse_delta("[DONE]").unwrap(),
             ParsedSseDelta::Done
         ));
+        assert!(matches!(
+            parse_openai_sse_delta(
+                r#"{"choices":[{"delta":{"content":"answer","reasoning_content":"thought"}}]}"#
+            )
+            .unwrap(),
+            ParsedSseDelta::Both { delta, thinking }
+                if delta == "answer" && thinking == "thought"
+        ));
     }
 
     #[test]
@@ -3342,6 +3692,43 @@ mod tests {
         );
         assert_eq!(levels, Some(known_reasoning_levels()));
         assert_eq!(default_level.as_deref(), Some("high"));
+
+        let (levels, default_level) =
+            reasoning_metadata(&serde_json::json!({}), "deepseek/deepseek-v4.1-flash");
+        assert_eq!(
+            levels,
+            Some(
+                ["disabled", "low", "high", "max"]
+                    .into_iter()
+                    .map(str::to_string)
+                    .collect()
+            )
+        );
+        assert_eq!(default_level.as_deref(), Some("max"));
+
+        let (levels, default_level) = reasoning_metadata(&serde_json::json!({}), "GLM-5.3-Flash");
+        assert_eq!(
+            levels,
+            Some(
+                ["low", "high", "max"]
+                    .into_iter()
+                    .map(str::to_string)
+                    .collect()
+            )
+        );
+        assert_eq!(default_level.as_deref(), Some("max"));
+
+        let (levels, default_level) = reasoning_metadata(&serde_json::json!({}), "gpt-5.4-pro");
+        assert_eq!(
+            levels,
+            Some(
+                ["medium", "high", "xhigh"]
+                    .into_iter()
+                    .map(str::to_string)
+                    .collect()
+            )
+        );
+        assert_eq!(default_level.as_deref(), Some("xhigh"));
 
         let (levels, default_level) =
             reasoning_metadata(&serde_json::json!({}), "MiniMax-M3.1-Flash-Preview");
@@ -3733,6 +4120,7 @@ mod tests {
             "session-tools",
             "assistant-tools",
             "磁盘已满",
+            "",
             "complete",
             &[completed, rejected],
         )
@@ -3743,15 +4131,13 @@ mod tests {
         assert_eq!(messages[0].tool_calls[1].text_offset, 4);
         let history = model_messages_from_history(messages);
         assert_eq!(history.len(), 1);
-        assert!(history[0]
-            .content
-            .starts_with("磁盘已满\n\n[本轮工具调用记录]"));
-        assert!(history[0]
-            .content
-            .contains("`df -h` → 退出码 0，输出：/dev/sda1 80%"));
-        assert!(history[0]
-            .content
-            .contains("`rm -rf /tmp/cache` → 用户拒绝执行"));
+        assert_eq!(history[0].content, "磁盘已满");
+    }
+
+    #[test]
+    fn legacy_tool_call_summary_is_removed_before_model_replay() {
+        let content = "结论\n\n[本轮工具调用记录]\n- run_command → 退出码 0\n- server_monitor → 已完成".to_string();
+        assert_eq!(strip_tool_call_summary(content), "结论");
     }
 
     #[test]
