@@ -421,6 +421,7 @@ pub struct AiChatStreamManager {
     streams: Arc<AsyncMutex<HashMap<String, AiChatStreamHandle>>>,
     exec_pool: RemoteExecSessionPool,
     tasks: Arc<StdMutex<HashMap<String, Arc<ai_agent::BackgroundTask>>>>,
+    workspace_states: Arc<AsyncMutex<HashMap<String, Arc<AsyncMutex<ai_agent::WorkspaceState>>>>>,
 }
 
 struct AiChatStreamHandle {
@@ -539,11 +540,18 @@ impl Default for AiChatStreamManager {
             streams: Arc::new(AsyncMutex::new(HashMap::new())),
             exec_pool: RemoteExecSessionPool::default(),
             tasks: Arc::new(StdMutex::new(HashMap::new())),
+            workspace_states: Arc::new(AsyncMutex::new(HashMap::new())),
         }
     }
 }
 
 impl AiChatStreamManager {
+    fn forget_workspace_state(&self, session_id: &str) {
+        if let Ok(mut states) = self.workspace_states.try_lock() {
+            states.remove(session_id);
+        }
+    }
+
     async fn start(&self, app: AppHandle, prepared: PreparedAiStream) -> Result<(), AppError> {
         let stream_id = prepared.response.stream_id.clone();
         let session_id = prepared.response.session_id.clone();
@@ -568,6 +576,13 @@ impl AiChatStreamManager {
         let task_user_inputs = Arc::clone(&user_inputs);
         let task_stopped = Arc::clone(&stopped);
         let task_tasks = Arc::clone(&self.tasks);
+        let task_workspace_state = {
+            let mut states = self.workspace_states.lock().await;
+            states
+                .entry(session_id.clone())
+                .or_insert_with(|| Arc::new(AsyncMutex::new(Default::default())))
+                .clone()
+        };
         let task_emitter = emitter.clone();
 
         let task = tokio::spawn(async move {
@@ -596,7 +611,7 @@ impl AiChatStreamManager {
                         emitter: &task_emitter,
                         pending_separator: AtomicBool::new(false),
                         reasoning_level: reasoning_level.as_deref(),
-                        files: tokio::sync::Mutex::new(Default::default()),
+                        files: task_workspace_state,
                         audit_failed: AtomicBool::new(false),
                         tasks: Arc::clone(&task_tasks),
                     };
@@ -947,6 +962,7 @@ pub fn ai_chat_session_get(
 #[tauri::command]
 pub fn ai_chat_session_delete(
     app: AppHandle,
+    manager: State<'_, AiChatStreamManager>,
     request: AiChatSessionIdRequest,
 ) -> Result<(), AppError> {
     let repository = StorageRepository::open_app(&app)?;
@@ -962,12 +978,14 @@ pub fn ai_chat_session_delete(
             params![session_id],
         )
         .map_err(sqlite_ai_error)?;
+    manager.forget_workspace_state(session_id);
     Ok(())
 }
 
 #[tauri::command]
 pub fn ai_chat_session_clear(
     app: AppHandle,
+    manager: State<'_, AiChatStreamManager>,
     request: AiChatSessionIdRequest,
 ) -> Result<AiChatSession, AppError> {
     let repository = StorageRepository::open_app(&app)?;
@@ -995,6 +1013,7 @@ pub fn ai_chat_session_clear(
             params![session_id],
         )
         .map_err(sqlite_ai_error)?;
+    manager.forget_workspace_state(&session_id);
     get_chat_session(&repository, &session_id)
 }
 

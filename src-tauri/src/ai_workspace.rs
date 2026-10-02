@@ -73,17 +73,24 @@ pub(crate) fn resolve_workspace_path(root: &Path, requested: &str) -> Result<Pat
             workspace_detail_error("ai_workspace_path_invalid", "文件路径无法解析。", error)
         })?
     } else {
-        let parent = candidate
-            .parent()
-            .ok_or_else(|| workspace_error("ai_workspace_path_invalid", "文件路径无法解析。"))?;
-        let parent = parent.canonicalize().map_err(|error| {
+        let mut missing = Vec::new();
+        let mut cursor = candidate.as_path();
+        while fs::symlink_metadata(cursor).is_err() {
+            let name = cursor
+                .file_name()
+                .ok_or_else(|| workspace_error("ai_workspace_path_invalid", "文件名不能为空。"))?;
+            missing.push(name.to_os_string());
+            cursor = cursor.parent().ok_or_else(|| {
+                workspace_error("ai_workspace_path_invalid", "文件所在目录无法解析。")
+            })?;
+        }
+        let mut resolved = cursor.canonicalize().map_err(|error| {
             workspace_detail_error("ai_workspace_path_invalid", "文件所在目录无法解析。", error)
         })?;
-        parent.join(
-            candidate
-                .file_name()
-                .ok_or_else(|| workspace_error("ai_workspace_path_invalid", "文件名不能为空。"))?,
-        )
+        for name in missing.iter().rev() {
+            resolved.push(name);
+        }
+        resolved
     };
     if !path_is_within(root, &resolved) {
         return Err(workspace_error(
@@ -133,6 +140,29 @@ pub(crate) fn read_local_file(
         snapshot: snapshot(&path, &metadata),
         truncated,
     })
+}
+
+/// 按行返回文件内容的一个视图。底层读取仍然使用完整内容，只有完整读取的结果
+/// 才会被工作区状态标记为可编辑，避免模型用半个文件覆盖原文件。
+pub(crate) fn slice_text_lines(
+    content: &str,
+    offset: Option<usize>,
+    limit: Option<usize>,
+) -> (String, bool, usize) {
+    let lines: Vec<&str> = content.lines().collect();
+    let total = lines.len();
+    let start = offset.unwrap_or(1).max(1).saturating_sub(1);
+    let end = limit
+        .map(|value| start.saturating_add(value.max(1)))
+        .unwrap_or(total)
+        .min(total);
+    let partial = start > 0 || end < total;
+    let value = if start >= total {
+        String::new()
+    } else {
+        lines[start..end].join("\n")
+    };
+    (value, partial, total)
 }
 
 pub(crate) fn search_local_files(root: &Path, pattern: &str) -> Result<Vec<String>, AppError> {
@@ -334,6 +364,16 @@ pub(crate) fn build_patch(
     old_string: &str,
     new_string: &str,
 ) -> Result<(String, String), AppError> {
+    build_patch_with_options(current, display_path, old_string, new_string, false)
+}
+
+pub(crate) fn build_patch_with_options(
+    current: &str,
+    display_path: &str,
+    old_string: &str,
+    new_string: &str,
+    replace_all: bool,
+) -> Result<(String, String), AppError> {
     if old_string.is_empty() {
         if current.is_empty() {
             return Ok((
@@ -347,15 +387,27 @@ pub(crate) fn build_patch(
         ));
     }
     let count = current.matches(old_string).count();
-    if count != 1 {
+    if count == 0 {
+        return Err(AppError::new(
+            "ai_workspace_patch_not_found",
+            "补丁旧内容在文件中不存在。",
+            "matches=0",
+            true,
+        ));
+    }
+    if count > 1 && !replace_all {
         return Err(AppError::new(
             "ai_workspace_patch_not_unique",
-            "补丁旧内容必须在文件中唯一匹配。",
+            "补丁旧内容必须唯一匹配；如需全部替换请设置 replace_all。",
             format!("matches={count}"),
             true,
         ));
     }
-    let updated = current.replacen(old_string, new_string, 1);
+    let updated = if replace_all {
+        current.replace(old_string, new_string)
+    } else {
+        current.replacen(old_string, new_string, 1)
+    };
     if updated.len() > MAX_SEARCH_FILE_BYTES as usize || updated == current {
         return Err(workspace_error(
             "ai_workspace_patch_invalid",
@@ -369,23 +421,63 @@ pub(crate) fn build_patch(
 }
 
 pub(crate) fn simple_diff(path: &str, before: &str, after: &str) -> String {
+    let old_lines = diff_lines(before);
+    let new_lines = diff_lines(after);
+    let mut prefix = 0;
+    while prefix < old_lines.len()
+        && prefix < new_lines.len()
+        && old_lines[prefix] == new_lines[prefix]
+    {
+        prefix += 1;
+    }
+    let mut old_end = old_lines.len();
+    let mut new_end = new_lines.len();
+    while old_end > prefix && new_end > prefix && old_lines[old_end - 1] == new_lines[new_end - 1] {
+        old_end -= 1;
+        new_end -= 1;
+    }
+
+    const CONTEXT: usize = 3;
+    let old_start = prefix.saturating_sub(CONTEXT);
+    let new_start = old_start;
+    let old_context_end = (old_end + CONTEXT).min(old_lines.len());
+    let new_context_end = (new_end + CONTEXT).min(new_lines.len());
     let mut diff = format!(
         "--- {path}\n+++ {path}\n@@ -{},{} +{},{} @@\n",
-        if before.is_empty() { 0 } else { 1 },
-        before.lines().count(),
-        if after.is_empty() { 0 } else { 1 },
-        after.lines().count()
+        old_start + 1,
+        old_context_end.saturating_sub(old_start),
+        new_start + 1,
+        new_context_end.saturating_sub(new_start),
     );
-    for (sign, content) in [('-', before), ('+', after)] {
-        for line in content.split_inclusive('\n') {
-            diff.push(sign);
-            diff.push_str(line);
-            if !line.ends_with('\n') {
-                diff.push_str("\n\\ No newline at end of file\n");
-            }
-        }
+    for line in &old_lines[old_start..prefix.min(old_context_end)] {
+        diff.push(' ');
+        diff.push_str(line);
+        diff.push('\n');
+    }
+    for line in &old_lines[prefix..old_end] {
+        diff.push('-');
+        diff.push_str(line);
+        diff.push('\n');
+    }
+    for line in &new_lines[prefix..new_end] {
+        diff.push('+');
+        diff.push_str(line);
+        diff.push('\n');
+    }
+    for line in &old_lines[old_end.min(old_lines.len())..old_context_end.min(old_lines.len())] {
+        diff.push(' ');
+        diff.push_str(line);
+        diff.push('\n');
     }
     diff
+}
+
+fn diff_lines(value: &str) -> Vec<String> {
+    let mut lines: Vec<String> = value.split('\n').map(ToString::to_string).collect();
+    if value.ends_with('\n') {
+        lines.pop();
+    }
+    lines
 }
 
 fn snapshot(path: &Path, metadata: &std::fs::Metadata) -> WorkspaceFileSnapshot {
@@ -407,6 +499,11 @@ fn display_path(root: &Path, path: &Path) -> String {
         .unwrap_or(path)
         .to_string_lossy()
         .replace('\\', "/")
+}
+
+pub(crate) fn normalize_workspace_path(root: &Path, requested: &str) -> Result<String, AppError> {
+    let path = resolve_workspace_path(root, requested)?;
+    Ok(display_path(root, &path))
 }
 
 fn path_is_within(root: &Path, path: &Path) -> bool {
@@ -523,10 +620,24 @@ pub(crate) fn write_version(
                 workspace_detail_error("ai_workspace_backup_failed", "保存备份失败。", e)
             })?;
     }
-    let mut temp = NamedTempFile::new_in(path.parent().unwrap()).map_err(|e| {
+    let content_to_write = if before.is_some()
+        && before.is_some_and(|value| value.contains("\r\n"))
+        && !after.contains("\r\n")
+    {
+        after.replace('\n', "\r\n")
+    } else {
+        after.to_string()
+    };
+    let parent = path
+        .parent()
+        .ok_or_else(|| workspace_error("ai_workspace_path_invalid", "文件所在目录无法解析。"))?;
+    fs::create_dir_all(parent).map_err(|e| {
+        workspace_detail_error("ai_workspace_write_failed", "创建文件目录失败。", e)
+    })?;
+    let mut temp = NamedTempFile::new_in(parent).map_err(|e| {
         workspace_detail_error("ai_workspace_write_failed", "创建临时文件失败。", e)
     })?;
-    temp.write_all(after.as_bytes())
+    temp.write_all(content_to_write.as_bytes())
         .and_then(|_| temp.as_file().sync_all())
         .map_err(|e| {
             workspace_detail_error("ai_workspace_write_failed", "写入临时文件失败。", e)
@@ -580,6 +691,15 @@ mod tests {
         let r = d.path().canonicalize().unwrap();
         assert!(resolve_workspace_path(&r, "../escape").is_err());
     }
+
+    #[test]
+    fn resolves_new_file_below_missing_parent_inside_workspace() {
+        let d = tempfile::tempdir().unwrap();
+        let r = d.path().canonicalize().unwrap();
+        let resolved = resolve_workspace_path(&r, "new/nested/file.txt").unwrap();
+        assert!(resolved.starts_with(&r));
+        assert!(resolved.ends_with("new/nested/file.txt"));
+    }
     #[test]
     fn checks_full_version_and_keeps_backup() {
         let d = tempfile::tempdir().unwrap();
@@ -594,5 +714,33 @@ mod tests {
     #[test]
     fn diff_has_line_markers() {
         assert!(simple_diff("a", "a\nb\n", "c\nd\n").contains("-a\n-b\n+c\n+d\n"));
+    }
+
+    #[test]
+    fn diff_keeps_context_instead_of_replacing_whole_file() {
+        let diff = simple_diff(
+            "a",
+            "one\ntwo\nthree\nfour\n",
+            "one\nchanged\nthree\nfour\n",
+        );
+        assert!(diff.contains(" one\n"));
+        assert!(diff.contains("-two\n+changed\n"));
+        assert!(diff.contains(" three\n"));
+        assert!(!diff.contains("-one\n"));
+    }
+
+    #[test]
+    fn replace_all_requires_explicit_option() {
+        assert!(build_patch("x x", "a", "x", "y").is_err());
+        let (updated, _) = build_patch_with_options("x x", "a", "x", "y", true).unwrap();
+        assert_eq!(updated, "y y");
+    }
+
+    #[test]
+    fn slices_lines_and_reports_partial_view() {
+        let (value, partial, total) = slice_text_lines("a\nb\nc\nd", Some(2), Some(2));
+        assert_eq!(value, "b\nc");
+        assert!(partial);
+        assert_eq!(total, 4);
     }
 }

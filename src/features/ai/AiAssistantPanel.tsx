@@ -11,7 +11,9 @@ import {
   CornerDownLeft,
   FileText,
   FolderOpen,
+  Globe,
   History,
+  BookOpen,
   ListPlus,
   LoaderCircle,
   Play,
@@ -1821,7 +1823,11 @@ export function AiAssistantPanel({
             ? ListPlus
             : call.name === "ask_user"
               ? Bot
-              : Terminal;
+              : call.name === "web_search"
+                ? Globe
+                : call.name === "web_fetch"
+                  ? BookOpen
+                : Terminal;
     const expanded = expandedToolCallIds[call.id] ?? (pendingApproval || pendingUserInput);
     const detailId = `ai-tool-detail-${call.id}`;
     const answeredOption = call.answer?.option_id
@@ -2890,6 +2896,8 @@ function formatToolCallTitle(name: string) {
   if (name === "cancel_task") return "停止后台任务";
   if (name === "update_plan") return "更新计划";
   if (name === "ask_user") return "等待用户选择";
+  if (name === "web_search") return "联网搜索";
+  if (name === "web_fetch") return "读取网页";
   return name;
 }
 
@@ -2904,9 +2912,19 @@ function formatToolCallSummary(call: AiToolCallRecord) {
     return "发送时的终端输出快照";
   }
   if (call.name === "run_command" || call.name === "start_task") return (call.command || "").replace(/\s+/g, " ").trim();
-  if (call.name === "apply_patch" || call.name === "preview_patch") return call.command || "等待 diff 确认";
+  if (
+    call.name === "apply_patch" ||
+    call.name === "preview_patch" ||
+    call.name === "preview_file_change" ||
+    call.name === "apply_file_change" ||
+    call.name === "rollback_patch"
+  ) {
+    return call.command || "等待文件变更确认";
+  }
   if (call.name === "update_plan") return "已更新编码计划";
   if (call.name === "ask_user") return "等待用户选择";
+  if (call.name === "web_search") return (call.command || "").replace(/\s+/g, " ").trim();
+  if (call.name === "web_fetch") return (call.command || "").replace(/\s+/g, " ").trim();
   return "";
 }
 

@@ -1,6 +1,7 @@
 mod ai_agent;
 mod ai_assistant;
 mod ai_audit;
+mod ai_web;
 mod ai_workspace;
 pub mod app_error;
 mod command_library;
