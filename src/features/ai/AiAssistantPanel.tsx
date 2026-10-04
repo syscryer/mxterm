@@ -13,6 +13,7 @@ import {
   FolderOpen,
   Globe,
   History,
+  Image as ImageIcon,
   BookOpen,
   ListPlus,
   LoaderCircle,
@@ -35,6 +36,7 @@ import {
   useRef,
   useState,
   type FormEvent,
+  type ClipboardEvent,
   type ReactNode,
 } from "react";
 
@@ -49,6 +51,7 @@ import {
   aiChatToolAnswer,
   aiChatToolDecision,
   aiAuditList,
+  aiChatAttachmentRead,
   aiCommandAssess,
   aiProviderConfigSave,
   aiProviderConfigList,
@@ -59,6 +62,7 @@ import { hasTauriRuntime } from "../../shared/tauri/runtime";
 import { AppSelect, type AppSelectOption } from "../../shared/ui/AppSelect";
 import { AnchoredSurfacePortal } from "../../shared/ui/AnchoredSurfacePortal";
 import { ConfirmDialog } from "../../shared/ui/ConfirmDialog";
+import { AttachmentPreviewDialog } from "../../shared/ui/AttachmentPreviewDialog";
 import { Tooltip } from "../../shared/ui/Tooltip";
 import type { CommandHistoryEntry } from "../commands/commandLibraryTypes";
 import type { ConnectionProfile } from "../connections/connectionTypes";
@@ -110,6 +114,15 @@ const selectedModelsStorageKey = "mxterm.ai.selectedModelsByProvider";
 const selectedReasoningLevelsStorageKey = "mxterm.ai.selectedReasoningLevelsByModel";
 const selectedLocalWorkspaceStorageKey = "mxterm.ai.selectedLocalWorkspace";
 const agentTerminalOutputLimit = 20000;
+const maxImageAttachmentBytes = 12 * 1024 * 1024;
+const maxImageAttachments = 4;
+const maxTextAttachments = 8;
+const textAttachmentExtensions = new Set([
+  "txt", "md", "markdown", "json", "yaml", "yml", "toml", "ini", "cfg", "conf",
+  "log", "csv", "tsv", "rs", "js", "jsx", "ts", "tsx", "py", "go", "java", "kt",
+  "sh", "bash", "zsh", "ps1", "sql", "html", "htm", "css", "scss", "xml", "env",
+  "gitignore", "dockerfile",
+]);
 const AI_MESSAGE_LIST_BOTTOM_THRESHOLD = 32;
 const HISTORY_SCOPE_CURRENT = "__current__";
 const HISTORY_SCOPE_ALL = "__all__";
@@ -202,11 +215,14 @@ export function AiAssistantPanel({
   const auditTriggerRef = useRef<HTMLButtonElement | null>(null);
   const contextTriggerRef = useRef<HTMLButtonElement | null>(null);
   const messageListRef = useRef<HTMLElement | null>(null);
+  const attachmentInputRef = useRef<HTMLInputElement | null>(null);
   const messageListFollowRef = useRef(true);
   const streamStateRef = useRef<StreamState | null>(null);
   const lastContextRequestKeyRef = useRef(0);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [imageAttachmentLoading, setImageAttachmentLoading] = useState(false);
+  const [previewAttachment, setPreviewAttachment] = useState<AiContextBlock | null>(null);
   const [messageListHasNewContent, setMessageListHasNewContent] = useState(false);
   const [pendingDeleteSession, setPendingDeleteSession] =
     useState<AiChatSessionSummary | null>(null);
@@ -348,7 +364,8 @@ export function AiAssistantPanel({
     searchText: level,
   }));
   const sendDisabled =
-    Boolean(streamState) || loading || !selectedProvider || input.trim().length === 0;
+    Boolean(streamState) || loading || imageAttachmentLoading || !selectedProvider ||
+    (input.trim().length === 0 && contextBlocks.length === 0);
   const visibleAuditEvents = auditEvents.filter((entry) => {
     const query = auditQuery.trim().toLocaleLowerCase();
     if (!query) {
@@ -542,7 +559,78 @@ export function AiAssistantPanel({
         return;
       }
       const current = streamStateRef.current;
-      if (!current || event.stream_id !== current.streamId) {
+      if (event.kind === "tool_output") {
+        const output = event.tool_output;
+        if (!output || !output.delta) {
+          return;
+        }
+        setMessages((items) =>
+          items.map((message) =>
+            message.id === event.message_id
+              ? {
+                  ...message,
+                  tool_calls: message.tool_calls.map((call) =>
+                    call.id === output.tool_call_id
+                      ? {
+                          ...call,
+                          output: tailByChars(
+                            `${call.status === "completed" ? "" : call.output}${output.delta}`,
+                            12_000,
+                          ),
+                          status: call.status === "pending_approval" ? call.status : "running",
+                        }
+                      : call,
+                  ),
+                }
+              : message,
+          ),
+        );
+        return;
+      }
+      if (event.kind === "background_task") {
+        const update = event.background_task;
+        if (!update) {
+          return;
+        }
+        const status =
+          update.status === "succeeded"
+            ? "completed"
+            : update.status === "cancelled"
+              ? "cancelled"
+              : update.status === "running"
+                ? "running"
+                : "failed";
+        setMessages((items) =>
+          items.map((message) =>
+            message.id === event.message_id
+              ? {
+                  ...message,
+                  tool_calls: message.tool_calls.map((call) =>
+                    call.id === update.tool_call_id
+                      ? {
+                          ...call,
+                          status,
+                          output: update.output_preview || call.output,
+                          output_artifact_id: update.output_artifact_id || call.output_artifact_id,
+                          exit_status: update.exit_status ?? call.exit_status,
+                        }
+                      : call,
+                  ),
+                }
+              : message,
+          ),
+        );
+        if (update.status !== "running") {
+          setNotice(
+            update.status === "succeeded"
+              ? "后台任务已完成。"
+              : update.status === "cancelled"
+                ? "后台任务已停止。"
+                : update.status === "stop_requested_unconfirmed"
+                  ? "后台任务已发出停止请求，但远端停止状态尚未确认。"
+                  : "后台任务执行失败。",
+          );
+        }
         return;
       }
       if (event.kind === "tool_call") {
@@ -550,6 +638,8 @@ export function AiAssistantPanel({
         if (!record) {
           return;
         }
+        // 后台任务可能在主流已结束后才完成。只要消息 ID 对得上，仍要
+        // 接收最终的完整工具记录，不能再用当前 stream_id 把它丢掉。
         setMessages((items) =>
           items.map((message) =>
             message.id === event.message_id
@@ -562,6 +652,9 @@ export function AiAssistantPanel({
               : message,
           ),
         );
+        return;
+      }
+      if (!current || event.stream_id !== current.streamId) {
         return;
       }
       if (event.kind === "chunk") {
@@ -730,8 +823,8 @@ export function AiAssistantPanel({
       setError("请先在设置中添加 AI 配置。");
       return;
     }
-    if (!normalizedContent) {
-      setError("请输入问题。");
+    if (!normalizedContent && contexts.length === 0) {
+      setError("请输入问题或添加附件。");
       return;
     }
     loadingRef.current = true;
@@ -979,6 +1072,7 @@ export function AiAssistantPanel({
       const next = [...current];
       blocks.forEach((block) => {
         if (
+          !["image", "file"].includes(block.kind) &&
           next.some(
             (item) => item.kind === block.kind && item.source === block.source && item.content === block.content,
           )
@@ -991,6 +1085,108 @@ export function AiAssistantPanel({
     });
     setError(null);
     setNotice(null);
+  }
+
+  async function openAttachmentPreview(block: AiContextBlock, sessionId?: string) {
+    setPreviewAttachment(block);
+    if (!block.artifact_id || !sessionId || !runtimeAvailable) {
+      return;
+    }
+    try {
+      const hydrated = await aiChatAttachmentRead(sessionId, block.artifact_id);
+      setPreviewAttachment({
+        ...block,
+        content: hydrated.content,
+        data_url: hydrated.data_url ?? block.data_url,
+        mime_type: hydrated.mime_type ?? block.mime_type,
+      });
+    } catch (nextError) {
+      setError(formatAiError(nextError));
+    }
+  }
+
+  async function addAttachments(files: FileList | File[]) {
+    const selected = Array.from(files);
+    if (selected.length === 0) {
+      return;
+    }
+    const existingImages = contextBlocks.filter((block) => block.kind === "image").length;
+    const existingFiles = contextBlocks.filter((block) => block.kind === "file").length;
+    const selectedImages = selected.filter((file) => isImageAttachment(file)).length;
+    const selectedFiles = selected.length - selectedImages;
+    if (existingImages + selectedImages > maxImageAttachments) {
+      setError(`一次最多添加 ${maxImageAttachments.toString()} 张图片。`);
+      return;
+    }
+    if (existingFiles + selectedFiles > maxTextAttachments) {
+      setError(`一次最多添加 ${maxTextAttachments.toString()} 个文本附件。`);
+      return;
+    }
+    setImageAttachmentLoading(true);
+    setError(null);
+    try {
+      const blocks: AiContextBlock[] = [];
+      for (const file of selected) {
+        const id = `attachment-${Date.now().toString()}-${blocks.length.toString()}`;
+        if (isImageAttachment(file)) {
+          if (file.size <= 0 || file.size > maxImageAttachmentBytes) {
+            throw new Error(`图片超过 12 MB 限制：${file.name}`);
+          }
+          const dataUrl = await readFileAsDataUrl(file);
+          blocks.push({
+            id,
+            kind: "image",
+            title: file.name || "图片附件",
+            content: `图片附件：${file.name || "未命名图片"}`,
+            source: "本地附件",
+            line_count: 1,
+            char_count: file.size,
+            data_url: dataUrl,
+          });
+          continue;
+        }
+        if (!isTextAttachment(file)) {
+          throw new Error(`不支持的附件格式：${file.name || "未命名文件"}`);
+        }
+        const content = await readFileAsText(file);
+        blocks.push({
+          id,
+          kind: "file",
+          title: file.name || "文本附件",
+          content,
+          source: "本地附件",
+          line_count: content.split(/\r?\n/).length,
+          char_count: Array.from(content).length,
+        });
+      }
+      appendContextBlocks(blocks);
+      setNotice(`已添加 ${blocks.length.toString()} 个附件。`);
+    } catch (nextError) {
+      setError(formatAiError(nextError));
+    } finally {
+      setImageAttachmentLoading(false);
+    }
+  }
+
+  function handleAttachmentPaste(event: ClipboardEvent<HTMLTextAreaElement>) {
+    const pastedFiles = Array.from(event.clipboardData.files);
+    const itemFiles = Array.from(event.clipboardData.items)
+      .filter((item) => item.kind === "file")
+      .map((item) => item.getAsFile())
+      .filter((file): file is File => Boolean(file));
+    const files = pastedFiles.length > 0 ? pastedFiles : itemFiles;
+    if (files.length === 0) {
+      return;
+    }
+    event.preventDefault();
+    void addAttachments(files.map((file, index) => {
+      if (file.name) {
+        return file;
+      }
+      return new File([file], `pasted-image-${Date.now().toString()}-${index.toString()}.png`, {
+        type: file.type || "image/png",
+      });
+    }));
   }
 
   function addRecentTerminalOutputContext() {
@@ -1419,7 +1615,20 @@ export function AiAssistantPanel({
                 message.contexts.length > 0 ? (
                   <div className="ai-message-contexts">
                     {message.contexts.map((block) => (
-                      <span key={block.id}>{block.title}</span>
+                      <button
+                        className={`ai-message-context ${block.kind === "image" ? "ai-message-context-image" : ""}`}
+                        key={block.id}
+                        title={block.title}
+                        type="button"
+                        onClick={() => void openAttachmentPreview(block, message.session_id)}
+                      >
+                        {block.kind === "image" && block.data_url ? (
+                          <img src={block.data_url} alt="" />
+                        ) : (
+                          <FileText className="ui-icon" aria-hidden="true" />
+                        )}
+                        <span>{block.title}</span>
+                      </button>
                     ))}
                   </div>
                 ) : null;
@@ -1484,6 +1693,21 @@ export function AiAssistantPanel({
       {error ? <p className="ai-error" role="alert">{error}</p> : null}
       {notice ? <p className="ai-notice" role="status">{notice}</p> : null}
 
+      <input
+        ref={attachmentInputRef}
+        className="ai-image-attachment-input"
+        type="file"
+        accept="image/png,image/jpeg,image/gif,image/webp,text/*,.txt,.md,.json,.yaml,.yml,.toml,.ini,.cfg,.conf,.log,.csv,.tsv,.rs,.js,.jsx,.ts,.tsx,.py,.go,.java,.kt,.sh,.bash,.zsh,.ps1,.sql,.html,.htm,.css,.scss,.xml,.env,.gitignore,Dockerfile"
+        multiple
+        aria-label="选择图片附件"
+        onChange={(event) => {
+          const files = event.currentTarget.files;
+          if (files) {
+            void addAttachments(files);
+          }
+          event.currentTarget.value = "";
+        }}
+      />
       <form className="ai-compose" onSubmit={(event) => void submit(event)}>
         <div className="ai-compose-box">
           {contextBlocks.length > 0 ? (
@@ -1496,9 +1720,27 @@ export function AiAssistantPanel({
                     key={block.id}
                     title={block.content}
                   >
+                    <button
+                      className="ai-compose-context-preview"
+                      type="button"
+                      aria-label={`预览附件 ${block.title}`}
+                      onClick={() => void openAttachmentPreview(block)}
+                    >
+                      {block.kind === "image" && block.data_url ? (
+                        <img className="ai-compose-context-image" src={block.data_url} alt="" />
+                      ) : (
+                        <FileText className="ui-icon" aria-hidden="true" />
+                      )}
+                    </button>
                     <span className="ai-compose-context-chip-label">
                       <strong>{block.title}</strong>
-                      <small>{block.source} · {block.line_count.toString()} 行 · {block.char_count.toString()} 字</small>
+                      <small>
+                        {block.kind === "image"
+                          ? `${block.source} · 图片附件`
+                          : block.kind === "file"
+                            ? `${block.source} · 文本附件`
+                          : `${block.source} · ${block.line_count.toString()} 行 · ${block.char_count.toString()} 字`}
+                      </small>
                     </span>
                     {sensitive ? <ShieldAlert className="ui-icon" aria-label="可能包含敏感信息" /> : null}
                     <button
@@ -1520,6 +1762,7 @@ export function AiAssistantPanel({
             value={input}
             placeholder="输入问题，例如：解释这段报错，或生成排查命令"
             spellCheck={false}
+            onPaste={handleAttachmentPaste}
             onChange={(event) => setInput(event.currentTarget.value)}
             onKeyDown={(event) => {
               if (event.nativeEvent.isComposing) {
@@ -1692,6 +1935,19 @@ export function AiAssistantPanel({
         <div className="ai-context-menu-title">添加上下文</div>
         <button
           className="ai-context-menu-item"
+          disabled={imageAttachmentLoading || Boolean(streamState)}
+          role="menuitem"
+          type="button"
+          onClick={() => {
+            attachmentInputRef.current?.click();
+            setContextMenuOpen(false);
+          }}
+        >
+          <ImageIcon className="ui-icon" aria-hidden="true" />
+          <span>{imageAttachmentLoading ? "读取附件中…" : "图片或文本附件"}</span>
+        </button>
+        <button
+          className="ai-context-menu-item"
           disabled={!recentTerminalOutput?.trim()}
           role="menuitem"
           type="button"
@@ -1800,6 +2056,15 @@ export function AiAssistantPanel({
           }
         }}
       />
+      <AttachmentPreviewDialog
+        attachment={previewAttachment}
+        open={Boolean(previewAttachment)}
+        onOpenChange={(open) => {
+          if (!open) {
+            setPreviewAttachment(null);
+          }
+        }}
+      />
     </section>
   );
 
@@ -1847,6 +2112,7 @@ export function AiAssistantPanel({
         : null,
       call.duration_ms !== null && call.duration_ms !== undefined ? formatDuration(call.duration_ms) : null,
       call.output_truncated ? "仅显示末尾" : null,
+      call.output_artifact_id ? "完整输出已保存" : null,
     ].filter(Boolean);
     return (
       <article
@@ -1878,6 +2144,11 @@ export function AiAssistantPanel({
             {formatToolCallStatus(call)}
           </span>
         </button>
+        {call.status === "running" && call.output && (call.name === "run_command" || call.name === "start_task") ? (
+          <pre className="ai-tool-live-output" aria-live="polite">
+            {tailByChars(call.output, 2_400)}
+          </pre>
+        ) : null}
         {expanded ? (
           <div className="ai-tool-detail" id={detailId}>
             {call.name === "update_plan" ? (
@@ -2088,6 +2359,49 @@ function buildContextBlock({
     line_count: normalized.split(/\r?\n/).length,
     char_count: Array.from(normalized).length,
   };
+}
+
+function readFileAsDataUrl(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.addEventListener("load", () => {
+      const value = typeof reader.result === "string" ? reader.result : "";
+      if (value) {
+        resolve(value);
+      } else {
+        reject(new Error(`读取图片失败：${file.name}`));
+      }
+    });
+    reader.addEventListener("error", () => reject(reader.error || new Error(`读取图片失败：${file.name}`)));
+    reader.readAsDataURL(file);
+  });
+}
+
+function fileExtension(fileName: string): string {
+  const normalized = fileName.trim().toLowerCase();
+  if (normalized === "dockerfile" || normalized === ".gitignore") {
+    return normalized.replace(/^\./, "");
+  }
+  return normalized.split(".").pop() || "";
+}
+
+function isImageAttachment(file: File): boolean {
+  return /^image\/(png|jpe?g|gif|webp)$/i.test(file.type) ||
+    ["png", "jpg", "jpeg", "gif", "webp"].includes(fileExtension(file.name));
+}
+
+function isTextAttachment(file: File): boolean {
+  return file.type.startsWith("text/") || textAttachmentExtensions.has(fileExtension(file.name));
+}
+
+function readFileAsText(file: File): Promise<string> {
+  return file.arrayBuffer().then((buffer) => {
+    try {
+      return new TextDecoder("utf-8", { fatal: true }).decode(buffer);
+    } catch {
+      throw new Error(`无法按 UTF-8 读取文本附件：${file.name || "未命名文件"}`);
+    }
+  });
 }
 
 type MarkdownBlock =
@@ -2890,6 +3204,9 @@ function formatToolCallTitle(name: string) {
   if (name === "apply_patch") return "应用文件修改";
   if (name === "preview_file_change") return "预览文件操作";
   if (name === "apply_file_change") return "应用文件操作";
+  if (name === "workspace_changes") return "汇总工作区变更";
+  if (name === "create_workspace_checkpoint") return "创建工作区检查点";
+  if (name === "rollback_workspace") return "整体回滚工作区";
   if (name === "start_task") return "启动后台任务";
   if (name === "task_status") return "查询任务状态";
   if (name === "task_output") return "读取任务输出";
@@ -2911,13 +3228,16 @@ function formatToolCallSummary(call: AiToolCallRecord) {
   if (call.name === "read_terminal_output") {
     return "发送时的终端输出快照";
   }
+  if (call.name === "workspace_changes") return "汇总待应用、已应用变更和检查点";
+  if (call.name === "create_workspace_checkpoint") return "保存当前多文件变更状态";
   if (call.name === "run_command" || call.name === "start_task") return (call.command || "").replace(/\s+/g, " ").trim();
   if (
     call.name === "apply_patch" ||
     call.name === "preview_patch" ||
     call.name === "preview_file_change" ||
     call.name === "apply_file_change" ||
-    call.name === "rollback_patch"
+    call.name === "rollback_patch" ||
+    call.name === "rollback_workspace"
   ) {
     return call.command || "等待文件变更确认";
   }

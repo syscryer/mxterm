@@ -69,6 +69,23 @@ pub struct RdpSessionClosedEvent {
 }
 
 #[derive(Clone, Debug, Serialize)]
+pub struct AiToolOutputEvent {
+    pub tool_call_id: String,
+    pub delta: String,
+    pub stream: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct AiBackgroundTaskEvent {
+    pub task_id: String,
+    pub tool_call_id: String,
+    pub status: String,
+    pub exit_status: Option<u32>,
+    pub output_artifact_id: Option<String>,
+    pub output_preview: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
 pub struct AiChatStreamEvent {
     pub kind: String,
     pub stream_id: String,
@@ -79,4 +96,6 @@ pub struct AiChatStreamEvent {
     pub content: Option<String>,
     pub error: Option<String>,
     pub tool_call: Option<crate::ai_assistant::AiToolCallRecord>,
+    pub tool_output: Option<AiToolOutputEvent>,
+    pub background_task: Option<AiBackgroundTaskEvent>,
 }

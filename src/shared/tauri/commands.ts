@@ -30,6 +30,7 @@ import type {
   ConnectionTransferPreviewResult,
 } from "../../features/connections/connectionTransferTypes";
 import type {
+  AiAttachmentReadResponse,
   AiChatSession,
   AiChatSessionSummary,
   AiChatStreamStartRequest,
@@ -347,6 +348,15 @@ export function aiChatSessionGet(sessionId: string) {
   return invoke<AiChatSession>("ai_chat_session_get", {
     request: {
       session_id: sessionId,
+    },
+  });
+}
+
+export function aiChatAttachmentRead(sessionId: string, attachmentId: string) {
+  return invoke<AiAttachmentReadResponse>("ai_chat_attachment_read", {
+    request: {
+      session_id: sessionId,
+      attachment_id: attachmentId,
     },
   });
 }

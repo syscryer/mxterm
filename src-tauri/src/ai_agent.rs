@@ -1,32 +1,36 @@
 use std::collections::{BTreeMap, HashMap};
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use reqwest::Client;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tauri::AppHandle;
 use tauri::Manager;
 use tokio::io::AsyncReadExt;
 use tokio::process::Command;
-use tokio::sync::{oneshot, Notify};
-use tokio::time::{timeout, Duration};
+use tokio::sync::{mpsc, oneshot, Notify};
+use tokio::time::{sleep, timeout, Duration};
 use uuid::Uuid;
 
 use crate::ai_assistant::{
     apply_anthropic_reasoning_fields, apply_openai_reasoning_fields, assess_command,
-    ensure_provider_response, normalize_endpoint, provider_request_error, provider_stream_error,
-    read_sse_events, stream_parse_error, AiAgentMode, AiApiFormat, AiCommandAssessment,
+    ensure_provider_response, normalize_endpoint, openai_message_value, provider_request_error,
+    provider_retry_delay, provider_stream_error, read_sse_events, responses_message_values,
+    should_retry_provider_error, stream_parse_error, AiAgentMode, AiApiFormat, AiCommandAssessment,
     AiCommandRisk, AiModelMessage, AiToolCallRecord, AiUserAnswer, AiUserOption,
-    StoredAiProviderConfig, StreamEmitter, DEFAULT_ANTHROPIC_VERSION,
+    StoredAiProviderConfig, StreamEmitter, DEFAULT_ANTHROPIC_VERSION, MAX_PROVIDER_RETRIES,
 };
 use crate::app_error::AppError;
 use crate::remote_exec_pool::{RemoteExecRetry, RemoteExecSessionPool};
 use crate::remote_files::quote_posix_shell;
 use crate::ssh_config::ResolvedSshConfig;
-use crate::terminal::session::ExecOutput;
+use crate::terminal::session::{ExecOutput, ExecOutputChunkCallback};
+
+type OutputChunkCallback = Arc<dyn Fn(&[u8], &str) + Send + Sync>;
 
 const AGENT_MAX_TOKENS: u32 = 4096;
 const DEFAULT_COMMAND_TIMEOUT_SECONDS: u64 = 60;
@@ -34,11 +38,22 @@ const MAX_COMMAND_TIMEOUT_SECONDS: u64 = 300;
 const MAX_COMMAND_CHARS: usize = 8_000;
 const MAX_MODEL_OUTPUT_CHARS: usize = 12_000;
 const MAX_RECORD_OUTPUT_CHARS: usize = 4_000;
+const LOCAL_OUTPUT_CHUNK_BYTES: usize = 8 * 1024;
+const MAX_CONTEXT_WINDOW_TOKENS: usize = 200_000;
+const CONTEXT_COMPACT_THRESHOLD: usize = 80;
+const CONTEXT_COMPACT_TARGET: usize = 60;
 const DEFAULT_TERMINAL_OUTPUT_CHARS: u64 = 6_000;
 const MIN_TERMINAL_OUTPUT_CHARS: u64 = 200;
 const MAX_TERMINAL_OUTPUT_CHARS: u64 = 20_000;
 const SERVER_MONITOR_TIMEOUT_SECONDS: u64 = 20;
 const REMOTE_SEARCH_TIMEOUT_SECONDS: u64 = 30;
+const REMOTE_PROJECT_CONTEXT_TIMEOUT_SECONDS: u64 = 8;
+const MAX_PROJECT_CONTEXT_CHARS: usize = 24_000;
+const MAX_PROJECT_CONTEXT_FILE_CHARS: usize = 8_000;
+const MAX_PROJECT_CONTEXT_FILES: usize = 32;
+const MAX_PROJECT_CONTEXT_ANCESTORS: usize = 12;
+const MAX_PROJECT_SKILLS: usize = 8;
+const MAX_PROJECT_SKILL_CHARS: usize = 3_000;
 const SERVER_MONITOR_COMMAND: &str = "printf '== hostname ==\\n'; hostname 2>/dev/null; printf '\\n== uptime ==\\n'; uptime 2>/dev/null; printf '\\n== memory ==\\n'; free -h 2>/dev/null; printf '\\n== disk ==\\n'; df -h 2>/dev/null | head -20";
 const LOCAL_MONITOR_COMMAND: &str = "Get-ComputerInfo -Property CsName,OsName,OsVersion; Get-CimInstance Win32_OperatingSystem | Select-Object FreePhysicalMemory,TotalVisibleMemorySize; Get-Volume | Select-Object DriveLetter,SizeRemaining,Size";
 
@@ -51,6 +66,32 @@ pub(crate) const TOOL_TASK_OUTPUT: &str = "task_output";
 pub(crate) const TOOL_CANCEL_TASK: &str = "cancel_task";
 pub(crate) const TOOL_WEB_SEARCH: &str = "web_search";
 pub(crate) const TOOL_WEB_FETCH: &str = "web_fetch";
+pub(crate) const TOOL_READ_OUTPUT: &str = "read_tool_output";
+pub(crate) const TOOL_READ_ATTACHMENT: &str = "read_attachment";
+pub(crate) const TOOL_WORKSPACE_CHANGES: &str = "workspace_changes";
+pub(crate) const TOOL_CREATE_WORKSPACE_CHECKPOINT: &str = "create_workspace_checkpoint";
+pub(crate) const TOOL_ROLLBACK_WORKSPACE: &str = "rollback_workspace";
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum WorkspaceTarget {
+    #[default]
+    Local,
+    Ssh,
+}
+
+impl WorkspaceTarget {
+    fn key_prefix(self) -> &'static str {
+        match self {
+            Self::Local => "local",
+            Self::Ssh => "ssh",
+        }
+    }
+}
+
+fn scoped_workspace_path(target: WorkspaceTarget, path: &str) -> String {
+    format!("{}::{path}", target.key_prefix())
+}
 
 pub(crate) const TOOL_STATUS_PENDING_APPROVAL: &str = "pending_approval";
 pub(crate) const TOOL_STATUS_PENDING_USER_INPUT: &str = "pending_user_input";
@@ -67,10 +108,357 @@ pub(crate) struct PreparedAgent {
     pub config: Option<ResolvedSshConfig>,
     pub mode: AiAgentMode,
     pub working_directory: Option<String>,
-    pub host_local_directory: Option<std::path::PathBuf>,
-    pub local_workspace: Option<std::path::PathBuf>,
+    pub host_local_directory: Option<PathBuf>,
+    pub local_workspace: Option<PathBuf>,
+    pub attachments: Vec<crate::ai_assistant::AiContextBlock>,
     pub terminal_output: Option<String>,
     pub terminal_session_id: Option<String>,
+    pub project_context: String,
+}
+
+pub(crate) fn workspace_scope_key(agent: &PreparedAgent) -> String {
+    if let Some(config) = agent.config.as_ref() {
+        let ssh_scope = format!(
+            "ssh:{}:{}",
+            config.connection_id,
+            agent.working_directory.as_deref().unwrap_or("/")
+        );
+        if let Some(path) = agent.local_workspace.as_ref() {
+            return format!("{ssh_scope}|local:{}", path.to_string_lossy());
+        }
+        return ssh_scope;
+    }
+    if let Some(path) = agent.local_workspace.as_ref() {
+        return format!("local:{}", path.to_string_lossy());
+    }
+    format!(
+        "local-host:{}",
+        agent
+            .host_local_directory
+            .as_ref()
+            .map(|path| path.to_string_lossy().to_string())
+            .unwrap_or_default()
+    )
+}
+
+/// Loads bounded, workspace-local context for the model. This intentionally only
+/// follows the selected workspace (or the local terminal directory) up to the
+/// repository root, so an unrelated parent directory cannot silently influence
+/// an Agent run.
+pub(crate) fn load_local_project_context(agent: &PreparedAgent) -> String {
+    let root = agent
+        .local_workspace
+        .as_ref()
+        .or(agent.host_local_directory.as_ref());
+    let Some(root) = root else {
+        return String::new();
+    };
+    let scope = if agent.local_workspace.is_some() {
+        "本地文件工作区"
+    } else {
+        "当前本地主机工作区"
+    };
+    load_project_context_from_root(root, scope)
+}
+
+fn load_project_context_from_root(root: &Path, scope: &str) -> String {
+    let mut sections = Vec::new();
+    let mut file_count = 0usize;
+
+    for (index, directory) in project_context_ancestor_directories(root)
+        .into_iter()
+        .enumerate()
+    {
+        let label = if index == 0 {
+            "AGENTS.md".to_string()
+        } else {
+            "上级 AGENTS.md".to_string()
+        };
+        append_context_file(
+            &mut sections,
+            &mut file_count,
+            &directory.join("AGENTS.md"),
+            &label,
+            MAX_PROJECT_CONTEXT_FILE_CHARS,
+        );
+    }
+
+    for relative in [
+        ".codex/instructions.md",
+        ".codex/user-instructions.md",
+        ".agents/instructions.md",
+        ".agents/user-instructions.md",
+        "USER_INSTRUCTIONS.md",
+        "INSTRUCTIONS.md",
+    ] {
+        append_context_file(
+            &mut sections,
+            &mut file_count,
+            &root.join(relative),
+            relative,
+            MAX_PROJECT_CONTEXT_FILE_CHARS,
+        );
+    }
+
+    for relative in [
+        "MEMORY.md",
+        ".codex/MEMORY.md",
+        ".codex/memory.md",
+        ".agents/MEMORY.md",
+        ".agents/memory.md",
+        "docs/MEMORY.md",
+        "docs/memory.md",
+    ] {
+        append_context_file(
+            &mut sections,
+            &mut file_count,
+            &root.join(relative),
+            relative,
+            MAX_PROJECT_CONTEXT_FILE_CHARS,
+        );
+    }
+
+    for skills_root in [root.join(".codex/skills"), root.join(".agents/skills")] {
+        let mut skill_paths = std::fs::read_dir(skills_root)
+            .ok()
+            .into_iter()
+            .flat_map(|entries| entries.filter_map(Result::ok))
+            .filter_map(|entry| {
+                let path = entry.path();
+                entry.file_type().ok().filter(|kind| kind.is_dir())?;
+                let skill = path.join("SKILL.md");
+                skill.is_file().then_some(skill)
+            })
+            .collect::<Vec<_>>();
+        skill_paths.sort();
+        for path in skill_paths.into_iter().take(MAX_PROJECT_SKILLS) {
+            let name = path
+                .parent()
+                .and_then(Path::file_name)
+                .map(|value| value.to_string_lossy().to_string())
+                .unwrap_or_else(|| "未命名 skill".to_string());
+            append_context_file(
+                &mut sections,
+                &mut file_count,
+                &path,
+                &format!("skill: {name}"),
+                MAX_PROJECT_SKILL_CHARS,
+            );
+        }
+    }
+
+    if sections.is_empty() {
+        return String::new();
+    }
+    let body = sections.join("\n\n");
+    format!(
+        "【{scope}上下文】\n{}",
+        truncate_context_text(&body, MAX_PROJECT_CONTEXT_CHARS)
+    )
+}
+
+fn project_context_ancestor_directories(root: &Path) -> Vec<PathBuf> {
+    let mut directories = Vec::new();
+    let mut current = Some(root.to_path_buf());
+    while let Some(directory) = current {
+        directories.push(directory.clone());
+        let repository_root = directory.join(".git").exists();
+        if repository_root || directories.len() >= MAX_PROJECT_CONTEXT_ANCESTORS {
+            break;
+        }
+        current = directory.parent().map(Path::to_path_buf);
+    }
+    directories.reverse();
+    directories
+}
+
+fn append_context_file(
+    sections: &mut Vec<String>,
+    file_count: &mut usize,
+    path: &Path,
+    label: &str,
+    max_chars: usize,
+) {
+    if *file_count >= MAX_PROJECT_CONTEXT_FILES || !path.is_file() {
+        return;
+    }
+    let Ok(bytes) = std::fs::read(path) else {
+        return;
+    };
+    *file_count += 1;
+    let text = String::from_utf8_lossy(&bytes);
+    let text = sanitize_project_context(&text);
+    sections.push(format!(
+        "### {label}\n{}",
+        truncate_context_text(&text, max_chars)
+    ));
+}
+
+fn sanitize_project_context(value: &str) -> String {
+    value
+        .lines()
+        .map(|line| {
+            let lower = line.to_ascii_lowercase();
+            let has_assignment = line.contains('=') || line.contains(':') || line.contains('：');
+            let sensitive = has_assignment
+                && [
+                    "api_key",
+                    "apikey",
+                    "password",
+                    "passwd",
+                    "secret",
+                    "token",
+                    "private_key",
+                    "credential",
+                ]
+                .iter()
+                .any(|marker| lower.contains(marker));
+            if sensitive {
+                "[已隐藏敏感配置行]".to_string()
+            } else {
+                redact_private_ip_tokens(line)
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn redact_private_ip_tokens(line: &str) -> String {
+    line.split_inclusive(|character: char| character.is_whitespace())
+        .map(|token| {
+            let Some(start) = token.find(|character: char| character.is_ascii_digit()) else {
+                return token.to_string();
+            };
+            let end = token[start..]
+                .find(|character: char| !(character.is_ascii_digit() || character == '.'))
+                .map(|offset| start + offset)
+                .unwrap_or(token.len());
+            let candidate = &token[start..end];
+            let octets = candidate
+                .split('.')
+                .map(|part| part.parse::<u8>())
+                .collect::<Result<Vec<_>, _>>();
+            let private = octets.as_ref().is_ok_and(|parts| {
+                parts.len() == 4
+                    && (parts[0] == 10
+                        || (parts[0] == 192 && parts[1] == 168)
+                        || (parts[0] == 172 && (16..=31).contains(&parts[1])))
+            });
+            if private {
+                format!("{}<private-ip>{}", &token[..start], &token[end..])
+            } else {
+                token.to_string()
+            }
+        })
+        .collect()
+}
+
+fn truncate_context_text(value: &str, max_chars: usize) -> String {
+    let total = value.chars().count();
+    if total <= max_chars {
+        return value.to_string();
+    }
+    let retained = value.chars().take(max_chars).collect::<String>();
+    format!("{retained}\n[项目上下文已截断]")
+}
+
+fn merge_project_context(local: &str, remote: &str) -> String {
+    let merged = [local.trim(), remote.trim()]
+        .into_iter()
+        .filter(|value| !value.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    truncate_context_text(&merged, MAX_PROJECT_CONTEXT_CHARS)
+}
+
+fn build_remote_project_context_command(directory: Option<&str>) -> String {
+    let start = directory
+        .map(quote_posix_shell)
+        .unwrap_or_else(|| "\"$PWD\"".to_string());
+    let mut command =
+        format!("set -u\nbase={start}\nif [ ! -d \"$base\" ]; then base=$(pwd); fi\n");
+    command.push_str(concat!(
+        "emit_file() { file=\"$1\"; if [ -f \"$file\" ]; then ",
+        "printf '\\n--- %s ---\\n' \"${file##*/}\"; sed -n '1,220p' \"$file\"; fi; }\n",
+        "d=\"$base\"\ndepth=0\n",
+        "while [ \"$depth\" -lt 12 ]; do emit_file \"$d/AGENTS.md\"; ",
+        "if [ -d \"$d/.git\" ] || [ -f \"$d/.git\" ]; then break; fi; ",
+        "parent=$(dirname \"$d\"); [ \"$parent\" = \"$d\" ] && break; ",
+        "d=\"$parent\"; depth=$((depth + 1)); done\n",
+        "for file in \"$base/.codex/instructions.md\" \"$base/.codex/user-instructions.md\" ",
+        "\"$base/.agents/instructions.md\" \"$base/.agents/user-instructions.md\" ",
+        "\"$base/USER_INSTRUCTIONS.md\" \"$base/INSTRUCTIONS.md\" ",
+        "\"$base/MEMORY.md\" \"$base/.codex/MEMORY.md\" \"$base/.codex/memory.md\" ",
+        "\"$base/.agents/MEMORY.md\" \"$base/.agents/memory.md\" ",
+        "\"$base/docs/MEMORY.md\" \"$base/docs/memory.md\"; do emit_file \"$file\"; done\n",
+        "for file in \"$base/.codex/skills\"/*/SKILL.md \"$base/.agents/skills\"/*/SKILL.md; ",
+        "do emit_file \"$file\"; done",
+    ));
+    command
+}
+
+async fn load_remote_project_context(run: &AgentRun<'_>) -> String {
+    let Some(config) = run.agent.config.as_ref() else {
+        return String::new();
+    };
+    let command = build_remote_project_context_command(run.agent.working_directory.as_deref());
+    let result = timeout(
+        Duration::from_secs(REMOTE_PROJECT_CONTEXT_TIMEOUT_SECONDS),
+        run.pool
+            .exec(run.app, config, &command, RemoteExecRetry::None),
+    )
+    .await;
+    let output = match result {
+        Ok(Ok(output)) => output,
+        Ok(Err(error)) => {
+            return format!("【当前 SSH 工作区上下文】\n读取失败（{}）。", error.code);
+        }
+        Err(_) => {
+            return "【当前 SSH 工作区上下文】\n读取超时，后续可通过文件工具继续读取项目规则。"
+                .to_string();
+        }
+    };
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let mut content = stdout.to_string();
+    if output.exit_status != Some(0) && !stderr.trim().is_empty() {
+        content.push_str("\n读取错误：");
+        content.push_str(stderr.trim());
+    }
+    let content = sanitize_project_context(&content);
+    if content.trim().is_empty() {
+        return String::new();
+    }
+    format!(
+        "【当前 SSH 工作区上下文】\n{}",
+        truncate_context_text(&content, MAX_PROJECT_CONTEXT_CHARS)
+    )
+}
+
+pub(crate) fn delete_output_artifacts(app: &AppHandle, session_id: &str) -> Result<(), AppError> {
+    let root = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| {
+            AppError::new(
+                "ai_output_artifact_path_failed",
+                "工具输出保存目录不可用。",
+                error,
+                true,
+            )
+        })?
+        .join("ai-agent-outputs")
+        .join(session_id);
+    match std::fs::remove_dir_all(root) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(AppError::new(
+            "ai_output_artifact_delete_failed",
+            "工具输出清理失败。",
+            error,
+            true,
+        )),
+    }
 }
 
 pub(crate) struct AgentRun<'a> {
@@ -89,22 +477,26 @@ pub(crate) struct AgentRun<'a> {
     pub pending_separator: AtomicBool,
     pub reasoning_level: Option<&'a str>,
     pub files: Arc<tokio::sync::Mutex<WorkspaceState>>,
+    pub workspace_scope: String,
+    pub message_persist_failed: AtomicBool,
     pub audit_failed: AtomicBool,
     pub tasks: Arc<StdMutex<HashMap<String, Arc<BackgroundTask>>>>,
 }
 
 pub(crate) struct BackgroundTask {
     pub(crate) id: String,
+    pub(crate) tool_call_id: String,
     pub(crate) session_id: String,
     pub(crate) workspace: Option<String>,
     pub(crate) command: String,
     pub(crate) created_at_ms: u128,
     status: StdMutex<String>,
     output: StdMutex<String>,
+    output_artifact_id: StdMutex<Option<String>>,
     exit_status: StdMutex<Option<u32>>,
     finished_at_ms: StdMutex<Option<u128>>,
     cancel_requested: AtomicBool,
-    stop_confirmed: AtomicBool,
+    stop_confirmed: Arc<AtomicBool>,
     cancel_notify: Arc<Notify>,
 }
 
@@ -125,6 +517,11 @@ impl BackgroundTask {
                 .lock()
                 .map(|value| value.clone())
                 .unwrap_or_default(),
+            output_artifact_id: self
+                .output_artifact_id
+                .lock()
+                .ok()
+                .and_then(|value| value.clone()),
             exit_status: self.exit_status.lock().ok().and_then(|value| *value),
             cancel_requested: self.cancel_requested.load(Ordering::SeqCst),
             created_at_ms: self.created_at_ms,
@@ -141,23 +538,56 @@ impl BackgroundTask {
             );
         }
     }
+
+    fn append_live_output(&self, bytes: &[u8]) {
+        if bytes.is_empty() {
+            return;
+        }
+        let delta = String::from_utf8_lossy(bytes);
+        if let Ok(mut output) = self.output.lock() {
+            let combined = format!("{}{}", output, delta);
+            *output = tail_chars(&combined, MAX_RECORD_OUTPUT_CHARS * 4).0;
+        }
+    }
 }
 
-#[derive(Default)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub(crate) struct WorkspaceState {
     reads: HashMap<String, Option<String>>,
     remote_meta: HashMap<String, (u64, u64)>,
     patches: HashMap<String, PendingPatch>,
     applied: HashMap<String, PendingPatch>,
+    #[serde(default)]
+    checkpoints: Vec<WorkspaceCheckpoint>,
 }
-#[derive(Clone)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 struct PendingPatch {
+    #[serde(default)]
+    target: WorkspaceTarget,
     path: String,
     before: Option<String>,
     after: Option<String>,
     diff: String,
     action: String,
     destination: Option<String>,
+    #[serde(default)]
+    applied_at_ms: u128,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct WorkspaceCheckpoint {
+    id: String,
+    label: String,
+    created_at_ms: u128,
+    change_ids: Vec<String>,
+    #[serde(default = "default_checkpoint_status")]
+    status: String,
+    #[serde(default)]
+    rolled_back_at_ms: Option<u128>,
+}
+
+fn default_checkpoint_status() -> String {
+    "active".into()
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -203,6 +633,8 @@ struct ReadTerminalOutputArgs {
 struct AgentConversation {
     format: AiApiFormat,
     messages: Vec<Value>,
+    context_window_tokens: usize,
+    compact_count: usize,
 }
 
 pub(crate) async fn run_agent(
@@ -210,12 +642,19 @@ pub(crate) async fn run_agent(
     history: Vec<AiModelMessage>,
 ) -> Result<(), AppError> {
     let client = Client::new();
-    let system = agent_system_prompt(run.agent);
-    let mut conversation = AgentConversation::new(run.provider.api_format, history);
+    let remote_context = load_remote_project_context(run).await;
+    let project_context = merge_project_context(&run.agent.project_context, &remote_context);
+    let system = agent_system_prompt(run.agent, &project_context);
+    let mut conversation = AgentConversation::new(
+        run.provider.api_format,
+        history,
+        configured_context_window(run.provider),
+    );
     loop {
         if run.is_stopped() {
             return Ok(());
         }
+        conversation.compact_if_needed(&system, false);
         let turn = run_turn(
             &client,
             run.provider,
@@ -246,16 +685,98 @@ pub(crate) async fn run_agent(
                     true,
                 ));
             }
+            if let Err(error) = run.persist_workspace_state().await {
+                return Err(error);
+            }
+            if run.message_persist_failed.load(Ordering::SeqCst) {
+                return Err(AppError::new(
+                    "ai_message_persist_failed",
+                    "会话状态保存失败，已停止后续工具执行。",
+                    "assistant message persistence failed",
+                    true,
+                ));
+            }
             results.push((call.clone(), outcome));
         }
         conversation.push_tool_results(&results);
+        if turn
+            .tool_calls
+            .iter()
+            .any(|call| call.name == "compact_context")
+        {
+            conversation.compact_if_needed(&system, true);
+        }
         run.pending_separator.store(true, Ordering::SeqCst);
     }
+}
+
+fn configured_context_window(provider: &StoredAiProviderConfig) -> usize {
+    provider
+        .models
+        .iter()
+        .find(|model| model.id == provider.model)
+        .map(|model| model.context_window as usize)
+        .filter(|value| *value > 0)
+        .unwrap_or(MAX_CONTEXT_WINDOW_TOKENS)
 }
 
 impl AgentRun<'_> {
     fn is_stopped(&self) -> bool {
         self.stopped.load(Ordering::SeqCst)
+    }
+
+    fn workspace_target(&self, args: &Value) -> Result<WorkspaceTarget, AppError> {
+        let target = match args["target"].as_str().map(str::trim) {
+            Some("local") => WorkspaceTarget::Local,
+            Some("ssh") => WorkspaceTarget::Ssh,
+            Some(value) if !value.is_empty() => {
+                return Err(AppError::new(
+                    "ai_workspace_target_invalid",
+                    "文件工具 target 必须是 local 或 ssh。",
+                    value,
+                    true,
+                ))
+            }
+            _ if self.agent.config.is_some() => WorkspaceTarget::Ssh,
+            _ => WorkspaceTarget::Local,
+        };
+        match target {
+            WorkspaceTarget::Local
+                if self.agent.local_workspace.is_none()
+                    && self.agent.host_local_directory.is_none() =>
+            {
+                Err(AppError::new(
+                    "ai_local_workspace_missing",
+                    "尚未选择可用的本地文件工作区。",
+                    "local workspace required",
+                    true,
+                ))
+            }
+            WorkspaceTarget::Ssh if self.agent.config.is_none() => Err(AppError::new(
+                "ai_agent_connection_missing",
+                "当前终端不是 SSH 主机，不能使用 ssh 文件目标。",
+                "ssh target unavailable",
+                true,
+            )),
+            WorkspaceTarget::Ssh if self.agent.working_directory.is_none() => Err(AppError::new(
+                "ai_workspace_path_missing",
+                "SSH 文件目标未选择工作目录。",
+                "remote workspace required",
+                true,
+            )),
+            _ => Ok(target),
+        }
+    }
+
+    fn local_root(&self) -> Option<&Path> {
+        self.agent
+            .local_workspace
+            .as_deref()
+            .or(self.agent.host_local_directory.as_deref())
+    }
+
+    fn scoped_path(target: WorkspaceTarget, path: &str) -> String {
+        scoped_workspace_path(target, path)
     }
 
     fn push_text(&self, delta: String) {
@@ -313,7 +834,58 @@ impl AgentRun<'_> {
             }
         }
         self.emitter.tool_call(record.clone());
+        if let Err(error) = self.persist_message_snapshot() {
+            self.message_persist_failed.store(true, Ordering::SeqCst);
+            self.emitter
+                .chunk(format!("\n\n会话状态保存失败：{}\n", error.message));
+        }
         audit.is_ok()
+    }
+
+    fn persist_message_snapshot(&self) -> Result<(), AppError> {
+        let content = self
+            .content
+            .lock()
+            .map(|value| value.clone())
+            .unwrap_or_default();
+        let thinking = self
+            .thinking
+            .lock()
+            .map(|value| value.clone())
+            .unwrap_or_default();
+        let tool_calls = self
+            .tool_calls
+            .lock()
+            .map(|value| value.clone())
+            .unwrap_or_default();
+        crate::ai_assistant::update_assistant_message(
+            self.app,
+            self.emitter.session_id(),
+            self.emitter.message_id(),
+            &content,
+            &thinking,
+            "streaming",
+            &tool_calls,
+        )
+    }
+
+    async fn persist_workspace_state(&self) -> Result<(), AppError> {
+        let state = self.files.lock().await.clone();
+        let state_json = serde_json::to_string(&state).map_err(|error| {
+            AppError::new(
+                "ai_workspace_state_serialize_failed",
+                "Agent 工作区状态序列化失败。",
+                error,
+                true,
+            )
+        })?;
+        crate::storage_sqlite::upsert_ai_workspace_state(
+            self.app,
+            self.emitter.session_id(),
+            &self.workspace_scope,
+            &state_json,
+            now_millis(),
+        )
     }
 
     fn fail_tool(&self, mut record: AiToolCallRecord, message: String) -> ToolOutcome {
@@ -330,6 +902,7 @@ impl AgentRun<'_> {
     async fn execute_tool(&self, call: &AgentToolCall) -> ToolOutcome {
         let mut record = AiToolCallRecord::new(&call.id, &call.name, self.text_offset());
         record.created_at_ms = now_millis();
+        record.arguments = Some(call.arguments.clone());
         record.connection_id = self
             .agent
             .config
@@ -347,8 +920,35 @@ impl AgentRun<'_> {
                 | "preview_file_change"
                 | "apply_file_change"
         ) {
-            if let Some(path) = self.agent.local_workspace.as_ref() {
-                record.workspace = Some(path.to_string_lossy().to_string());
+            let args = parse_tool_input(&call.arguments);
+            let mut target = match self.workspace_target(&args) {
+                Ok(target) => target,
+                Err(error) => return self.fail_tool(record, error.message),
+            };
+            if matches!(
+                call.name.as_str(),
+                "apply_patch" | "apply_file_change" | "rollback_patch"
+            ) {
+                let change_id = args["patch_id"]
+                    .as_str()
+                    .or_else(|| args["change_id"].as_str())
+                    .or_else(|| args["backup_id"].as_str())
+                    .unwrap_or_default();
+                if let Ok(state) = self.files.try_lock() {
+                    target = state
+                        .patches
+                        .get(change_id)
+                        .or_else(|| state.applied.get(change_id))
+                        .map(|patch| patch.target)
+                        .unwrap_or(target);
+                }
+            }
+            if target == WorkspaceTarget::Local {
+                if let Some(path) = self.local_root() {
+                    record.workspace = Some(path.to_string_lossy().to_string());
+                }
+            } else {
+                record.workspace = self.agent.working_directory.clone();
             }
         }
         match call.name.as_str() {
@@ -360,6 +960,7 @@ impl AgentRun<'_> {
             | "rollback_patch"
             | "preview_file_change"
             | "apply_file_change" => self.workspace_tool(call, record).await,
+            TOOL_READ_ATTACHMENT => self.read_attachment_tool(call, record),
             "update_plan" => {
                 record.output = call
                     .arguments
@@ -415,6 +1016,9 @@ impl AgentRun<'_> {
             TOOL_START_TASK | TOOL_TASK_STATUS | TOOL_TASK_OUTPUT | TOOL_CANCEL_TASK => {
                 self.background_task_tool(call, record).await
             }
+            TOOL_WORKSPACE_CHANGES | TOOL_CREATE_WORKSPACE_CHECKPOINT | TOOL_ROLLBACK_WORKSPACE => {
+                self.workspace_state_tool(call, record).await
+            }
             TOOL_RUN_COMMAND => self.run_command_tool(call, record).await,
             TOOL_SERVER_MONITOR => {
                 let mut record = record;
@@ -433,6 +1037,18 @@ impl AgentRun<'_> {
                 .await
             }
             TOOL_READ_TERMINAL_OUTPUT => self.read_terminal_output_tool(call, record),
+            TOOL_READ_OUTPUT => self.read_tool_output(call, record),
+            "compact_context" => {
+                let mut record = record;
+                record.status = TOOL_STATUS_COMPLETED.to_string();
+                record.output = "已请求立即压缩当前对话上下文。".to_string();
+                record.finished_at_ms = Some(now_millis());
+                self.upsert_tool_call(&record);
+                ToolOutcome {
+                    content: record.output.clone(),
+                    is_error: false,
+                }
+            }
             TOOL_WEB_SEARCH | TOOL_WEB_FETCH => self.web_tool(call, record).await,
             other => self.fail_tool(record, format!("未知工具：{other}")),
         }
@@ -586,40 +1202,45 @@ impl AgentRun<'_> {
         let Some(root) = self.agent.working_directory.as_deref() else {
             return self.fail_tool(record, "远程工作目录未选择。".into());
         };
+        let is_apply = call.name == "apply_file_change";
         let path = args["path"].as_str().unwrap_or_default().trim().to_string();
-        if path.is_empty()
-            || !(path == root || path.starts_with(&format!("{}/", root.trim_end_matches('/'))))
+        if !is_apply
+            && (path.is_empty()
+                || !(path == root || path.starts_with(&format!("{}/", root.trim_end_matches('/')))))
         {
             return self.fail_tool(record, "远程文件路径必须位于所选工作目录内。".into());
         }
         let manager = self.app.state::<crate::remote_files::RemoteFileManager>();
-        let exists = match self
-            .pool
-            .exec(
-                self.app,
-                &config,
-                &format!("test -e {}", quote_posix_shell(&path)),
-                RemoteExecRetry::None,
-            )
-            .await
-        {
-            Ok(output) => output.exit_status == Some(0),
-            Err(error) => return self.fail_tool(record, error.message),
-        };
-        let current = if exists {
-            match manager.read_file(self.app, config.clone(), &path).await {
-                Ok(value) => {
-                    self.files
-                        .lock()
-                        .await
-                        .remote_meta
-                        .insert(path.clone(), (value.mtime, value.size));
-                    Some(value.content)
-                }
-                Err(error) => return self.fail_tool(record, error.message),
-            }
-        } else {
+        let current = if is_apply {
             None
+        } else {
+            let exists = match self
+                .pool
+                .exec(
+                    self.app,
+                    &config,
+                    &format!("test -e {}", quote_posix_shell(&path)),
+                    RemoteExecRetry::None,
+                )
+                .await
+            {
+                Ok(output) => output.exit_status == Some(0),
+                Err(error) => return self.fail_tool(record, error.message),
+            };
+            if exists {
+                match manager.read_file(self.app, config.clone(), &path).await {
+                    Ok(value) => {
+                        self.files.lock().await.remote_meta.insert(
+                            Self::scoped_path(WorkspaceTarget::Ssh, &path),
+                            (value.mtime, value.size),
+                        );
+                        Some(value.content)
+                    }
+                    Err(error) => return self.fail_tool(record, error.message),
+                }
+            } else {
+                None
+            }
         };
 
         if call.name == "preview_file_change" {
@@ -677,6 +1298,14 @@ impl AgentRun<'_> {
             };
             let diff = match action {
                 "create" => format!("+++ {path}\n{}", after.as_deref().unwrap_or_default()),
+                "write" => format!(
+                    "operation=write\n{}",
+                    crate::ai_workspace::simple_diff(
+                        &path,
+                        current.as_deref().unwrap_or_default(),
+                        after.as_deref().unwrap_or_default(),
+                    )
+                ),
                 "delete" => format!("--- {path}\n{}", current.as_deref().unwrap_or_default()),
                 "rename" => format!(
                     "rename {path} -> {}",
@@ -688,12 +1317,14 @@ impl AgentRun<'_> {
             self.files.lock().await.patches.insert(
                 id.clone(),
                 PendingPatch {
+                    target: WorkspaceTarget::Ssh,
                     path: path.clone(),
                     before: current,
                     after,
                     diff: diff.clone(),
                     action: action.to_string(),
                     destination,
+                    applied_at_ms: 0,
                 },
             );
             record.command = Some(format!("file_change:{id}"));
@@ -709,7 +1340,7 @@ impl AgentRun<'_> {
 
         let change_id = args["change_id"].as_str().unwrap_or_default();
         let patch = self.files.lock().await.patches.remove(change_id);
-        let Some(patch) = patch else {
+        let Some(mut patch) = patch else {
             return self.fail_tool(record, "远程文件变更预览不存在或已失效。".into());
         };
         if !self.request_file_approval(&mut record).await {
@@ -876,6 +1507,7 @@ impl AgentRun<'_> {
             "远程文件操作已应用。".into()
         };
         record.finished_at_ms = Some(now_millis());
+        patch.applied_at_ms = now_millis();
         self.files
             .lock()
             .await
@@ -1053,6 +1685,7 @@ impl AgentRun<'_> {
                 record.output = "远程文件已回滚。".into();
                 record.finished_at_ms = Some(now_millis());
                 self.files.lock().await.applied.remove(backup_id);
+                self.mark_checkpoint_change_removed(backup_id).await;
                 self.upsert_tool_call(&record);
                 ToolOutcome {
                     content: record.output.clone(),
@@ -1063,53 +1696,838 @@ impl AgentRun<'_> {
         }
     }
 
+    async fn search_workspace(
+        &self,
+        call: &AgentToolCall,
+        mut record: AiToolCallRecord,
+    ) -> ToolOutcome {
+        let options = match crate::ai_search::parse_options(&call.name, &call.arguments) {
+            Ok(options) => options,
+            Err(error) => return self.fail_tool(record, error.message),
+        };
+        let args = parse_tool_input(&call.arguments);
+        let target = match self.workspace_target(&args) {
+            Ok(target) => target,
+            Err(error) => return self.fail_tool(record, error.message),
+        };
+        record.risk = Some(AiCommandRisk::Safe);
+        record.status = TOOL_STATUS_RUNNING.into();
+        record.started_at_ms = Some(now_millis());
+        record.command = Some(format!("{} {}", call.name, call.arguments));
+        if !self.upsert_tool_call(&record) || self.is_stopped() {
+            return self.fail_tool(record, "审计失败或运行已停止，搜索未执行。".into());
+        }
+        let started = Instant::now();
+        let result = if target == WorkspaceTarget::Local {
+            let Some(root) = self.local_root() else {
+                return self.fail_tool(record, "尚未选择可用的本地文件工作区。".into());
+            };
+            let root = root.to_path_buf();
+            let tool = call.name.clone();
+            let options = options.clone();
+            let stopped = Arc::clone(&self.stopped);
+            match tokio::task::spawn_blocking(move || {
+                crate::ai_search::search_local(&root, &tool, &options, &stopped)
+                    .map(|data| data.page(&tool, &options, "native", Vec::new()))
+            })
+            .await
+            {
+                Ok(result) => result,
+                Err(error) => Err(crate::ai_search::search_error("本地搜索任务失败", error)),
+            }
+        } else if let (Some(config), Some(root)) = (
+            self.agent.config.as_ref(),
+            self.agent.working_directory.as_deref(),
+        ) {
+            let result = timeout(
+                Duration::from_secs(REMOTE_SEARCH_TIMEOUT_SECONDS),
+                self.search_remote_workspace(config, root, &call.name, &options),
+            )
+            .await;
+            match result {
+                Ok(result) => result,
+                Err(_) => {
+                    self.pool
+                        .invalidate_connection_detached(&config.connection_id)
+                        .await;
+                    Err(crate::ai_search::search_error("远程搜索超时", "30 seconds"))
+                }
+            }
+        } else {
+            Err(crate::ai_search::search_error(
+                "搜索工作区未选择",
+                "select local workspace or SSH directory",
+            ))
+        };
+        record.duration_ms = Some(started.elapsed().as_millis() as u64);
+        record.finished_at_ms = Some(now_millis());
+        let page = match result {
+            Ok(page) => page,
+            Err(error) => return self.fail_tool(record, error.message),
+        };
+        let raw = match serde_json::to_string(&page) {
+            Ok(raw) => raw,
+            Err(error) => return self.fail_tool(record, format!("搜索结果序列化失败：{error}")),
+        };
+        let (content, artifact_id) = match self.model_output_with_artifact(&raw) {
+            Ok(result) => result,
+            Err(error) => return self.fail_tool(record, error.message),
+        };
+        record.status = TOOL_STATUS_COMPLETED.into();
+        record.exit_status = Some(0);
+        record.output = raw.chars().take(MAX_RECORD_OUTPUT_CHARS).collect();
+        record.output_truncated = page.truncated || raw.chars().count() > MAX_RECORD_OUTPUT_CHARS;
+        record.output_artifact_id = artifact_id;
+        self.upsert_tool_call(&record);
+        ToolOutcome {
+            content,
+            is_error: false,
+        }
+    }
+
+    async fn search_remote_workspace(
+        &self,
+        config: &ResolvedSshConfig,
+        root: &str,
+        tool: &str,
+        options: &crate::ai_search::SearchOptions,
+    ) -> Result<crate::ai_search::SearchPage, AppError> {
+        let command = crate::ai_search::remote_command(root, tool, options)?;
+        let output = self
+            .pool
+            .exec(self.app, config, &command, RemoteExecRetry::None)
+            .await?;
+        crate::ai_search::check_remote_output(&output)?;
+        crate::ai_search::ensure_running(&self.stopped)?;
+        let mut warnings = Vec::new();
+        let mut data;
+        let engine;
+        if let Some(list) = output
+            .stdout
+            .strip_prefix(crate::ai_search::FALLBACK_MARKER)
+        {
+            engine = "native_ssh";
+            let separator = list.iter().position(|byte| *byte == 0).ok_or_else(|| {
+                crate::ai_search::search_error("远程搜索协议无效", "missing base directory")
+            })?;
+            let base = std::str::from_utf8(&list[..separator])
+                .map_err(|error| crate::ai_search::search_error("远程目录不是 UTF-8", error))?;
+            let files = crate::ai_search::parse_remote_files(&list[separator + 1..], options)?;
+            data = crate::ai_search::SearchData::default();
+            if !options.include_ignored {
+                // The portable listing does not implement gitignore. Make this
+                // downgrade visible instead of silently claiming rg semantics.
+                warnings.push("远程未安装 rg：使用原生匹配器，当前遍历未应用 .gitignore；可安装 rg 获得完整忽略规则和更快搜索。".into());
+            }
+            let expression = if tool == "grep" {
+                Some(crate::ai_search::compile_regex(options)?)
+            } else {
+                None
+            };
+            for path in files {
+                crate::ai_search::ensure_running(&self.stopped)?;
+                if let Some(expression) = expression.as_ref() {
+                    let command = crate::ai_search::remote_read_command(root, base, &path);
+                    let output = self
+                        .pool
+                        .exec(self.app, config, &command, RemoteExecRetry::None)
+                        .await?;
+                    crate::ai_search::check_remote_output(&output)?;
+                    crate::ai_search::append_text_matches(
+                        &mut data,
+                        &path,
+                        &output.stdout,
+                        options,
+                        expression,
+                    )?;
+                } else {
+                    data.counts.insert(path, 0);
+                }
+            }
+        } else if tool == "glob" {
+            engine = "ripgrep";
+            data = crate::ai_search::SearchData::default();
+            for path in crate::ai_search::parse_remote_files(&output.stdout, options)? {
+                data.counts.insert(path, 0);
+            }
+        } else {
+            engine = "ripgrep";
+            data = crate::ai_search::parse_rg_json(&output.stdout)?;
+        }
+        Ok(data.page(tool, options, engine, warnings))
+    }
+
+    async fn exec_remote_checked(
+        &self,
+        config: &ResolvedSshConfig,
+        command: &str,
+    ) -> Result<ExecOutput, AppError> {
+        let output = self
+            .pool
+            .exec(self.app, config, command, RemoteExecRetry::None)
+            .await?;
+        if output.exit_status == Some(0) {
+            return Ok(output);
+        }
+        Err(AppError::new(
+            "ai_remote_workspace_rollback_failed",
+            "远程工作区回滚失败。",
+            String::from_utf8_lossy(&output.stderr),
+            true,
+        ))
+    }
+
+    async fn rollback_applied_patch(
+        &self,
+        backup_id: &str,
+        patch: &PendingPatch,
+    ) -> Result<(), AppError> {
+        if patch.target == WorkspaceTarget::Local {
+            let Some(root) = self.local_root() else {
+                return Err(AppError::new(
+                    "ai_local_workspace_missing",
+                    "本地文件回滚缺少工作区。",
+                    "local workspace required",
+                    true,
+                ));
+            };
+            let backup_dir = self
+                .app
+                .path()
+                .app_data_dir()
+                .map(|path| path.join("ai-agent-backups"))
+                .unwrap_or_else(|_| root.join(".mxterm-agent-backups"));
+            let current = crate::ai_workspace::read_version(root, &patch.path)?;
+            let conflict = || {
+                AppError::new(
+                    "ai_workspace_rollback_conflict",
+                    "文件在应用后又发生变化，不能整体回滚。",
+                    patch.path.clone(),
+                    true,
+                )
+            };
+            match patch.action.as_str() {
+                "patch" | "write" => {
+                    if current != patch.after {
+                        return Err(conflict());
+                    }
+                    if let Some(before) = patch.before.as_deref() {
+                        crate::ai_workspace::write_version(
+                            root,
+                            &patch.path,
+                            current.as_deref(),
+                            before,
+                            &backup_dir,
+                        )?;
+                    } else {
+                        let path = crate::ai_workspace::resolve_workspace_path(root, &patch.path)?;
+                        std::fs::remove_file(path).map_err(|error| {
+                            AppError::new(
+                                "ai_workspace_rollback_failed",
+                                "删除已创建文件失败。",
+                                error,
+                                true,
+                            )
+                        })?;
+                    }
+                }
+                "create" => {
+                    if current != patch.after {
+                        return Err(conflict());
+                    }
+                    let path = crate::ai_workspace::resolve_workspace_path(root, &patch.path)?;
+                    std::fs::remove_file(path).map_err(|error| {
+                        AppError::new(
+                            "ai_workspace_rollback_failed",
+                            "删除已创建文件失败。",
+                            error,
+                            true,
+                        )
+                    })?;
+                }
+                "delete" => {
+                    if current.is_some() || patch.before.is_none() {
+                        return Err(conflict());
+                    }
+                    crate::ai_workspace::write_version(
+                        root,
+                        &patch.path,
+                        None,
+                        patch.before.as_deref().unwrap_or_default(),
+                        &backup_dir,
+                    )?;
+                }
+                "rename" => {
+                    let destination = patch.destination.as_deref().ok_or_else(|| {
+                        AppError::new(
+                            "ai_workspace_rollback_failed",
+                            "重命名回滚缺少目标路径。",
+                            backup_id,
+                            true,
+                        )
+                    })?;
+                    if current.is_some()
+                        || crate::ai_workspace::read_version(root, destination)? != patch.before
+                    {
+                        return Err(conflict());
+                    }
+                    let source = crate::ai_workspace::resolve_workspace_path(root, &patch.path)?;
+                    let target = crate::ai_workspace::resolve_workspace_path(root, destination)?;
+                    std::fs::rename(target, source).map_err(|error| {
+                        AppError::new(
+                            "ai_workspace_rollback_failed",
+                            "重命名回滚失败。",
+                            error,
+                            true,
+                        )
+                    })?;
+                }
+                _ => {
+                    return Err(AppError::new(
+                        "ai_workspace_operation_invalid",
+                        "工作区回滚操作无效。",
+                        patch.action.clone(),
+                        true,
+                    ));
+                }
+            }
+            return Ok(());
+        }
+
+        let (Some(config), Some(root)) = (
+            self.agent.config.as_ref(),
+            self.agent.working_directory.as_deref(),
+        ) else {
+            return Err(AppError::new(
+                "ai_workspace_missing",
+                "没有可用的工作区。",
+                "workspace",
+                true,
+            ));
+        };
+        let path_in_root = |path: &str| {
+            path == root || path.starts_with(&format!("{}/", root.trim_end_matches('/')))
+        };
+        if !path_in_root(&patch.path)
+            || patch
+                .destination
+                .as_deref()
+                .is_some_and(|path| !path_in_root(path))
+            || (patch.action != "create" && !path_in_root(backup_id))
+        {
+            return Err(AppError::new(
+                "ai_workspace_path_forbidden",
+                "回滚路径必须位于所选工作目录内。",
+                patch.path.clone(),
+                true,
+            ));
+        }
+        let manager = self.app.state::<crate::remote_files::RemoteFileManager>();
+        let exists = self
+            .pool
+            .exec(
+                self.app,
+                config,
+                &format!("test -e {}", quote_posix_shell(&patch.path)),
+                RemoteExecRetry::None,
+            )
+            .await?;
+        let current = match exists.exit_status {
+            Some(0) => Some(
+                manager
+                    .read_file(self.app, config.clone(), &patch.path)
+                    .await?,
+            ),
+            Some(1) => None,
+            Some(status) => {
+                return Err(AppError::new(
+                    "ai_remote_workspace_rollback_failed",
+                    "检查远程文件状态失败。",
+                    format!("exit_status={status}"),
+                    true,
+                ))
+            }
+            None => {
+                return Err(AppError::new(
+                    "ai_remote_workspace_rollback_failed",
+                    "检查远程文件状态失败。",
+                    "missing exit status",
+                    true,
+                ))
+            }
+        };
+        match patch.action.as_str() {
+            "patch" | "write" => {
+                let Some(current) = current else {
+                    return Err(AppError::new(
+                        "ai_workspace_rollback_conflict",
+                        "远程文件在应用后已不存在，不能整体回滚。",
+                        patch.path.clone(),
+                        true,
+                    ));
+                };
+                if Some(current.content.clone()) != patch.after {
+                    return Err(AppError::new(
+                        "ai_workspace_rollback_conflict",
+                        "远程文件在应用后又发生变化，不能整体回滚。",
+                        patch.path.clone(),
+                        true,
+                    ));
+                }
+                if let Some(before) = patch.before.as_deref() {
+                    manager
+                        .write_file(
+                            self.app,
+                            config.clone(),
+                            &patch.path,
+                            before,
+                            current.mtime,
+                            current.size,
+                            false,
+                        )
+                        .await?;
+                } else {
+                    self.exec_remote_checked(
+                        config,
+                        &format!("rm -f -- {}", quote_posix_shell(&patch.path)),
+                    )
+                    .await?;
+                }
+            }
+            "create" => {
+                let Some(current) = current else {
+                    return Err(AppError::new(
+                        "ai_workspace_rollback_conflict",
+                        "远程创建的文件已经不存在。",
+                        patch.path.clone(),
+                        true,
+                    ));
+                };
+                if Some(current.content) != patch.after {
+                    return Err(AppError::new(
+                        "ai_workspace_rollback_conflict",
+                        "远程文件在应用后又发生变化，不能整体回滚。",
+                        patch.path.clone(),
+                        true,
+                    ));
+                }
+                self.exec_remote_checked(
+                    config,
+                    &format!("rm -f -- {}", quote_posix_shell(&patch.path)),
+                )
+                .await?;
+            }
+            "delete" => {
+                if current.is_some() {
+                    return Err(AppError::new(
+                        "ai_workspace_rollback_conflict",
+                        "远程删除目标已经被重新创建，不能整体回滚。",
+                        patch.path.clone(),
+                        true,
+                    ));
+                }
+                self.exec_remote_checked(
+                    config,
+                    &format!(
+                        "cp -p -- {} {}",
+                        quote_posix_shell(backup_id),
+                        quote_posix_shell(&patch.path)
+                    ),
+                )
+                .await?;
+            }
+            "rename" => {
+                let destination = patch.destination.as_deref().ok_or_else(|| {
+                    AppError::new(
+                        "ai_workspace_rollback_failed",
+                        "远程重命名回滚缺少目标路径。",
+                        backup_id,
+                        true,
+                    )
+                })?;
+                let destination_current = manager
+                    .read_file(self.app, config.clone(), destination)
+                    .await
+                    .map_err(|error| {
+                        AppError::new(
+                            "ai_workspace_rollback_conflict",
+                            "远程重命名目标已发生变化，不能整体回滚。",
+                            error.message,
+                            true,
+                        )
+                    })?;
+                if current.is_some() || Some(destination_current.content) != patch.before {
+                    return Err(AppError::new(
+                        "ai_workspace_rollback_conflict",
+                        "远程重命名目标已发生变化，不能整体回滚。",
+                        patch.path.clone(),
+                        true,
+                    ));
+                }
+                self.exec_remote_checked(
+                    config,
+                    &format!(
+                        "mv -- {} {}",
+                        quote_posix_shell(destination),
+                        quote_posix_shell(&patch.path)
+                    ),
+                )
+                .await?;
+            }
+            _ => {
+                return Err(AppError::new(
+                    "ai_workspace_operation_invalid",
+                    "工作区回滚操作无效。",
+                    patch.action.clone(),
+                    true,
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    fn workspace_changes_value(state: &WorkspaceState) -> Value {
+        let pending = state
+            .patches
+            .iter()
+            .map(|(id, patch)| {
+                json!({
+                    "id": id,
+                    "path": patch.path,
+                    "action": patch.action,
+                    "destination": patch.destination,
+                    "diff": patch.diff,
+                    "status": "pending_approval"
+                })
+            })
+            .collect::<Vec<_>>();
+        let applied = state
+            .applied
+            .iter()
+            .map(|(backup_id, patch)| {
+                json!({
+                    "backup_id": backup_id,
+                    "path": patch.path,
+                    "action": patch.action,
+                    "destination": patch.destination,
+                    "diff": patch.diff,
+                    "applied_at_ms": patch.applied_at_ms,
+                    "status": "applied"
+                })
+            })
+            .collect::<Vec<_>>();
+        let checkpoints = state
+            .checkpoints
+            .iter()
+            .map(|checkpoint| {
+                json!({
+                    "id": checkpoint.id,
+                    "label": checkpoint.label,
+                    "created_at_ms": checkpoint.created_at_ms,
+                    "change_ids": checkpoint.change_ids,
+                    "status": checkpoint.status,
+                    "rolled_back_at_ms": checkpoint.rolled_back_at_ms
+                })
+            })
+            .collect::<Vec<_>>();
+        json!({
+            "pending": pending,
+            "applied": applied,
+            "checkpoints": checkpoints,
+            "pending_count": state.patches.len(),
+            "applied_count": state.applied.len()
+        })
+    }
+
+    async fn mark_checkpoint_change_removed(&self, change_id: &str) {
+        let mut state = self.files.lock().await;
+        let applied_ids = state.applied.keys().cloned().collect::<Vec<_>>();
+        for checkpoint in &mut state.checkpoints {
+            if !checkpoint.change_ids.iter().any(|id| id == change_id) {
+                continue;
+            }
+            let remaining = checkpoint
+                .change_ids
+                .iter()
+                .filter(|id| applied_ids.contains(id))
+                .count();
+            if remaining == 0 {
+                checkpoint.status = "rolled_back".into();
+                checkpoint.rolled_back_at_ms = Some(now_millis());
+            } else if remaining < checkpoint.change_ids.len() {
+                checkpoint.status = "partial".into();
+                checkpoint.rolled_back_at_ms = None;
+            }
+        }
+    }
+
+    async fn workspace_state_tool(
+        &self,
+        call: &AgentToolCall,
+        mut record: AiToolCallRecord,
+    ) -> ToolOutcome {
+        record.risk = Some(AiCommandRisk::Safe);
+        record.started_at_ms = Some(now_millis());
+        record.status = TOOL_STATUS_RUNNING.into();
+        if !self.upsert_tool_call(&record) || self.is_stopped() {
+            return self.fail_tool(
+                record,
+                "审计失败或运行已停止，工作区状态操作未执行。".into(),
+            );
+        }
+        let args = parse_tool_input(&call.arguments);
+        if call.name == TOOL_WORKSPACE_CHANGES {
+            let state = self.files.lock().await.clone();
+            let raw = Self::workspace_changes_value(&state).to_string();
+            let (content, artifact_id) = match self.model_output_with_artifact(&raw) {
+                Ok(value) => value,
+                Err(error) => return self.fail_tool(record, error.message),
+            };
+            record.status = TOOL_STATUS_COMPLETED.into();
+            record.output = raw.chars().take(MAX_RECORD_OUTPUT_CHARS).collect();
+            record.output_truncated = raw.chars().count() > MAX_RECORD_OUTPUT_CHARS;
+            record.output_artifact_id = artifact_id;
+            record.finished_at_ms = Some(now_millis());
+            self.upsert_tool_call(&record);
+            return ToolOutcome {
+                content,
+                is_error: false,
+            };
+        }
+
+        if call.name == TOOL_CREATE_WORKSPACE_CHECKPOINT {
+            let label = args["label"]
+                .as_str()
+                .unwrap_or("Agent checkpoint")
+                .trim()
+                .chars()
+                .take(120)
+                .collect::<String>();
+            let mut state = self.files.lock().await;
+            if state.applied.is_empty() {
+                return self.fail_tool(record, "当前没有已应用的文件变更，无法创建检查点。".into());
+            }
+            let mut change_ids = state
+                .applied
+                .iter()
+                .map(|(id, patch)| (id.clone(), patch.applied_at_ms))
+                .collect::<Vec<_>>();
+            change_ids.sort_by(|(left_id, left_at), (right_id, right_at)| {
+                left_at.cmp(right_at).then_with(|| left_id.cmp(right_id))
+            });
+            let change_ids = change_ids.into_iter().map(|(id, _)| id).collect::<Vec<_>>();
+            let checkpoint = WorkspaceCheckpoint {
+                id: Uuid::new_v4().to_string(),
+                label: if label.is_empty() {
+                    "Agent checkpoint".into()
+                } else {
+                    label
+                },
+                created_at_ms: now_millis(),
+                change_ids,
+                status: "active".into(),
+                rolled_back_at_ms: None,
+            };
+            let output = json!({
+                "checkpoint_id": checkpoint.id,
+                "label": checkpoint.label,
+                "change_count": checkpoint.change_ids.len(),
+                "status": checkpoint.status
+            });
+            let id = checkpoint.id.clone();
+            state.checkpoints.push(checkpoint);
+            drop(state);
+            record.status = TOOL_STATUS_COMPLETED.into();
+            record.command = Some(format!("checkpoint:{id}"));
+            record.output = output.to_string();
+            record.finished_at_ms = Some(now_millis());
+            self.upsert_tool_call(&record);
+            return ToolOutcome {
+                content: record.output.clone(),
+                is_error: false,
+            };
+        }
+
+        let requested_checkpoint = args["checkpoint_id"].as_str().unwrap_or_default().trim();
+        let requested_ids = args["change_ids"]
+            .as_array()
+            .map(|values| {
+                values
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .map(str::to_string)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        if !requested_checkpoint.is_empty() {
+            let exists = self
+                .files
+                .lock()
+                .await
+                .checkpoints
+                .iter()
+                .any(|checkpoint| checkpoint.id == requested_checkpoint);
+            if !exists {
+                return self.fail_tool(record, "指定的工作区检查点不存在。".into());
+            }
+        }
+        let (checkpoint_id, mut ids, patches) = {
+            let state = self.files.lock().await;
+            let checkpoint = if requested_checkpoint.is_empty() {
+                state
+                    .checkpoints
+                    .iter()
+                    .rev()
+                    .find(|checkpoint| checkpoint.status == "active")
+            } else {
+                state
+                    .checkpoints
+                    .iter()
+                    .find(|checkpoint| checkpoint.id == requested_checkpoint)
+            };
+            let checkpoint_id = checkpoint.map(|value| value.id.clone());
+            let ids = if !requested_ids.is_empty() {
+                requested_ids
+            } else if let Some(checkpoint) = checkpoint {
+                checkpoint.change_ids.clone()
+            } else {
+                let mut ids = state
+                    .applied
+                    .iter()
+                    .map(|(id, patch)| (id.clone(), patch.applied_at_ms))
+                    .collect::<Vec<_>>();
+                ids.sort_by(|(left_id, left_at), (right_id, right_at)| {
+                    left_at.cmp(right_at).then_with(|| left_id.cmp(right_id))
+                });
+                ids.into_iter().map(|(id, _)| id).collect::<Vec<_>>()
+            };
+            let patches = ids
+                .iter()
+                .filter_map(|id| {
+                    state
+                        .applied
+                        .get(id)
+                        .cloned()
+                        .map(|patch| (id.clone(), patch))
+                })
+                .collect::<Vec<_>>();
+            (checkpoint_id, ids, patches)
+        };
+        ids.retain(|id| patches.iter().any(|(candidate, _)| candidate == id));
+        if patches.is_empty() {
+            return self.fail_tool(record, "没有可回滚的已应用文件变更。".into());
+        }
+        let summary = patches
+            .iter()
+            .map(|(id, patch)| format!("{} {} {}", id, patch.action, patch.path))
+            .collect::<Vec<_>>()
+            .join("\n");
+        record.command = Some(format!(
+            "rollback_workspace:{}",
+            checkpoint_id.as_deref().unwrap_or("all")
+        ));
+        record.output = summary.clone();
+        if !self.request_file_approval(&mut record).await {
+            return ToolOutcome {
+                content: "用户拒绝整体回滚。".into(),
+                is_error: false,
+            };
+        }
+        let mut rolled_back = Vec::new();
+        for (id, patch) in patches.iter().rev() {
+            if let Err(error) = self.rollback_applied_patch(id, patch).await {
+                record.status = TOOL_STATUS_FAILED.into();
+                record.error = Some(error.message.clone());
+                record.output = format!(
+                    "整体回滚部分完成：{}/{}\n{}",
+                    rolled_back.len(),
+                    patches.len(),
+                    error.message
+                );
+                record.finished_at_ms = Some(now_millis());
+                self.upsert_tool_call(&record);
+                return ToolOutcome {
+                    content: record.output.clone(),
+                    is_error: true,
+                };
+            }
+            rolled_back.push(id.clone());
+            self.files.lock().await.applied.remove(id);
+            self.mark_checkpoint_change_removed(id).await;
+        }
+        if let Some(checkpoint_id) = checkpoint_id.as_deref() {
+            let mut state = self.files.lock().await;
+            if let Some(checkpoint) = state
+                .checkpoints
+                .iter_mut()
+                .find(|checkpoint| checkpoint.id == checkpoint_id)
+            {
+                checkpoint.status = "rolled_back".into();
+                checkpoint.rolled_back_at_ms = Some(now_millis());
+            }
+        }
+        record.status = TOOL_STATUS_COMPLETED.into();
+        record.output = format!("整体回滚完成，共回滚 {} 个文件变更。", rolled_back.len());
+        record.finished_at_ms = Some(now_millis());
+        self.upsert_tool_call(&record);
+        ToolOutcome {
+            content: record.output.clone(),
+            is_error: false,
+        }
+    }
+
     async fn workspace_tool(
         &self,
         call: &AgentToolCall,
         mut record: AiToolCallRecord,
     ) -> ToolOutcome {
         let args = parse_tool_input(&call.arguments);
+        let mut target = match self.workspace_target(&args) {
+            Ok(target) => target,
+            Err(error) => return self.fail_tool(record, error.message),
+        };
+        if matches!(
+            call.name.as_str(),
+            "apply_patch" | "apply_file_change" | "rollback_patch"
+        ) {
+            let change_id = args["patch_id"]
+                .as_str()
+                .or_else(|| args["change_id"].as_str())
+                .or_else(|| args["backup_id"].as_str())
+                .unwrap_or_default();
+            if let Ok(state) = self.files.try_lock() {
+                if let Some(patch) = state.patches.get(change_id) {
+                    target = patch.target;
+                }
+            }
+        }
         let mut path = args["path"].as_str().unwrap_or_default().to_string();
-        if self.agent.local_workspace.is_none()
-            && self.agent.config.is_some()
+        if matches!(call.name.as_str(), "glob" | "grep") {
+            return self.search_workspace(call, record).await;
+        }
+        if target == WorkspaceTarget::Ssh
             && matches!(
                 call.name.as_str(),
                 "preview_file_change" | "apply_file_change" | "rollback_patch"
             )
         {
             if call.name == "rollback_patch" {
-                return self.remote_rollback_tool(record, args).await;
+                let backup_id = args["backup_id"].as_str().unwrap_or_default();
+                let patch_target = self
+                    .files
+                    .try_lock()
+                    .ok()
+                    .and_then(|state| state.applied.get(backup_id).map(|patch| patch.target));
+                if patch_target.unwrap_or(target) == WorkspaceTarget::Ssh {
+                    return self.remote_rollback_tool(record, args).await;
+                }
+                target = WorkspaceTarget::Local;
             }
-            return self.remote_file_lifecycle_tool(call, record, args).await;
+            if target == WorkspaceTarget::Ssh {
+                return self.remote_file_lifecycle_tool(call, record, args).await;
+            }
         }
-        if self.agent.local_workspace.is_none()
-            && self.agent.config.is_some()
-            && matches!(call.name.as_str(), "glob" | "grep")
-        {
-            let Some(root) = self.agent.working_directory.as_deref() else {
-                return self.fail_tool(record, "远程工作目录未选择。".into());
-            };
-            let command = match build_remote_search_command(
-                &call.name,
-                root,
-                args["pattern"].as_str().unwrap_or("*"),
-                args["query"].as_str(),
-            ) {
-                Ok(command) => command,
-                Err(message) => return self.fail_tool(record, message),
-            };
-            record.command = Some(command.clone());
-            record.risk = Some(AiCommandRisk::Safe);
-            return self
-                .exec_tool(
-                    record,
-                    command,
-                    Duration::from_secs(REMOTE_SEARCH_TIMEOUT_SECONDS),
-                )
-                .await;
-        }
-        if self.agent.local_workspace.is_none()
-            && self.agent.config.is_some()
+        if target == WorkspaceTarget::Ssh
             && matches!(call.name.as_str(), "read_file" | "preview_patch")
         {
             if !matches!(call.name.as_str(), "read_file" | "preview_patch") {
@@ -1132,16 +2550,14 @@ impl AgentRun<'_> {
                 Ok(v) => v,
                 Err(e) => return self.fail_tool(record, e.message),
             };
-            self.files
-                .lock()
-                .await
-                .reads
-                .insert(path.clone(), Some(result.content.clone()));
-            self.files
-                .lock()
-                .await
-                .remote_meta
-                .insert(path.clone(), (result.mtime, result.size));
+            self.files.lock().await.reads.insert(
+                Self::scoped_path(target, &path),
+                Some(result.content.clone()),
+            );
+            self.files.lock().await.remote_meta.insert(
+                Self::scoped_path(target, &path),
+                (result.mtime, result.size),
+            );
             if call.name == "read_file" {
                 let offset = args["offset"].as_u64().map(|value| value as usize);
                 let limit = args["limit"].as_u64().map(|value| value as usize);
@@ -1155,7 +2571,11 @@ impl AgentRun<'_> {
                     )
                 };
                 if partial {
-                    self.files.lock().await.reads.insert(path.clone(), None);
+                    self.files
+                        .lock()
+                        .await
+                        .reads
+                        .insert(Self::scoped_path(target, &path), None);
                 }
                 record.status = TOOL_STATUS_COMPLETED.into();
                 record.output = value.chars().take(MAX_RECORD_OUTPUT_CHARS).collect();
@@ -1172,11 +2592,19 @@ impl AgentRun<'_> {
                 };
             }
         }
-        if self.agent.local_workspace.is_none() && self.agent.config.is_some() {
-            let Some(current) = self.files.lock().await.reads.get(&path).cloned().flatten() else {
-                return self.fail_tool(record, "编辑前必须先完整读取文件。".into());
-            };
+        if target == WorkspaceTarget::Ssh {
             if call.name == "preview_patch" {
+                let Some(current) = self
+                    .files
+                    .lock()
+                    .await
+                    .reads
+                    .get(&Self::scoped_path(target, &path))
+                    .cloned()
+                    .flatten()
+                else {
+                    return self.fail_tool(record, "编辑前必须先完整读取文件。".into());
+                };
                 let (updated, diff) = match crate::ai_workspace::build_patch_with_options(
                     &current,
                     &path,
@@ -1191,12 +2619,14 @@ impl AgentRun<'_> {
                 self.files.lock().await.patches.insert(
                     id.clone(),
                     PendingPatch {
+                        target: WorkspaceTarget::Ssh,
                         path: path.into(),
                         before: Some(current),
                         after: Some(updated),
                         diff: diff.clone(),
                         action: "patch".into(),
                         destination: None,
+                        applied_at_ms: 0,
                     },
                 );
                 record.output = diff.clone();
@@ -1253,7 +2683,13 @@ impl AgentRun<'_> {
                     ),
                 );
             }
-            let Some((mtime, size)) = self.files.lock().await.remote_meta.get(&path).copied()
+            let Some((mtime, size)) = self
+                .files
+                .lock()
+                .await
+                .remote_meta
+                .get(&Self::scoped_path(target, &path))
+                .copied()
             else {
                 return self.fail_tool(record, "缺少远程文件版本，请重新读取。".into());
             };
@@ -1288,16 +2724,19 @@ impl AgentRun<'_> {
                 Err(e) => self.fail_tool(record, e.message),
             }
         } else {
-            let Some(root) = self.agent.local_workspace.as_ref() else {
+            let Some(root) = self.local_root() else {
                 return self.fail_tool(record, "尚未选择本地文件工作区。".into());
             };
-            if !matches!(call.name.as_str(), "glob" | "grep") {
+            if matches!(
+                call.name.as_str(),
+                "read_file" | "preview_patch" | "preview_file_change"
+            ) {
                 path = match crate::ai_workspace::normalize_workspace_path(root, &path) {
                     Ok(value) => value,
                     Err(error) => return self.fail_tool(record, error.message),
                 };
             }
-            let result = match call.name.as_str() {
+            match call.name.as_str() {
                 "read_file" => {
                     let full = match crate::ai_workspace::read_local_file(
                         root,
@@ -1314,11 +2753,10 @@ impl AgentRun<'_> {
                     } else {
                         (full.clone(), false, full.lines().count())
                     };
-                    self.files
-                        .lock()
-                        .await
-                        .reads
-                        .insert(path.to_string(), (!partial).then_some(full.clone()));
+                    self.files.lock().await.reads.insert(
+                        Self::scoped_path(target, &path),
+                        (!partial).then_some(full.clone()),
+                    );
                     record.status = TOOL_STATUS_COMPLETED.into();
                     record.output = value.chars().take(MAX_RECORD_OUTPUT_CHARS).collect();
                     record.output_truncated = value.chars().count() > MAX_RECORD_OUTPUT_CHARS;
@@ -1335,25 +2773,6 @@ impl AgentRun<'_> {
                         is_error: false,
                     };
                 }
-                "glob" | "grep" => {
-                    let pattern = args["pattern"].as_str().unwrap_or("*");
-                    let query = args["query"].as_str();
-                    if call.name == "glob" {
-                        match crate::ai_workspace::search_local_files(root, pattern) {
-                            Ok(value) => serde_json::to_string(&value).unwrap_or_default(),
-                            Err(e) => return self.fail_tool(record, e.message),
-                        }
-                    } else {
-                        match crate::ai_workspace::search_local_content(
-                            root,
-                            query.unwrap_or_default(),
-                            Some(pattern),
-                        ) {
-                            Ok(value) => serde_json::to_string(&value).unwrap_or_default(),
-                            Err(e) => return self.fail_tool(record, e.message),
-                        }
-                    }
-                }
                 "preview_file_change" => {
                     let action = args["operation"].as_str().unwrap_or_default();
                     if !matches!(action, "create" | "write" | "delete" | "rename") {
@@ -1367,7 +2786,14 @@ impl AgentRun<'_> {
                         Err(error) => return self.fail_tool(record, error.message),
                     };
                     if action != "create" && current.is_some() {
-                        if self.files.lock().await.reads.get(&path) != Some(&current) {
+                        if self
+                            .files
+                            .lock()
+                            .await
+                            .reads
+                            .get(&Self::scoped_path(target, &path))
+                            != Some(&current)
+                        {
                             return self.fail_tool(
                                 record,
                                 "请先读取文件，且文件在预览前不能发生变化。".into(),
@@ -1425,12 +2851,14 @@ impl AgentRun<'_> {
                     self.files.lock().await.patches.insert(
                         id.clone(),
                         PendingPatch {
+                            target: WorkspaceTarget::Local,
                             path: path.clone(),
                             before: current,
                             after,
                             diff: diff.clone(),
                             action: action.into(),
                             destination,
+                            applied_at_ms: 0,
                         },
                     );
                     record.output = diff.clone();
@@ -1446,7 +2874,7 @@ impl AgentRun<'_> {
                 "apply_file_change" => {
                     let id = args["change_id"].as_str().unwrap_or_default().to_string();
                     let patch = self.files.lock().await.patches.remove(&id);
-                    let Some(patch) = patch else {
+                    let Some(mut patch) = patch else {
                         return self.fail_tool(record, "文件操作不存在或已失效。".into());
                     };
                     record.output = patch.diff.clone();
@@ -1531,18 +2959,24 @@ impl AgentRun<'_> {
                         _ => Ok(backup.clone()),
                     };
                     return match operation {
-                        Ok(_) => {
+                        Ok(operation_backup) => {
+                            let backup_id = if operation_backup.is_empty() {
+                                backup.clone()
+                            } else {
+                                operation_backup
+                            };
                             record.status = TOOL_STATUS_COMPLETED.into();
-                            record.output = if backup.is_empty() {
+                            record.output = if backup_id.is_empty() {
                                 "文件操作已完成。".into()
                             } else {
-                                format!("文件操作已完成，备份编号 {backup}")
+                                format!("文件操作已完成，备份编号 {backup_id}")
                             };
+                            patch.applied_at_ms = now_millis();
                             self.files.lock().await.applied.insert(
-                                if backup.is_empty() {
+                                if backup_id.is_empty() {
                                     id
                                 } else {
-                                    backup.clone()
+                                    backup_id.clone()
                                 },
                                 patch,
                             );
@@ -1557,7 +2991,13 @@ impl AgentRun<'_> {
                     };
                 }
                 "preview_patch" => {
-                    let before = match self.files.lock().await.reads.get(&path) {
+                    let before = match self
+                        .files
+                        .lock()
+                        .await
+                        .reads
+                        .get(&Self::scoped_path(target, &path))
+                    {
                         Some(value) => value.clone(),
                         None => {
                             return self.fail_tool(record, "必须先 read_file 再生成补丁。".into())
@@ -1580,12 +3020,14 @@ impl AgentRun<'_> {
                     self.files.lock().await.patches.insert(
                         id.clone(),
                         PendingPatch {
+                            target: WorkspaceTarget::Local,
                             path: path.into(),
                             before,
                             after: Some(updated),
                             diff: diff.clone(),
                             action: "patch".into(),
                             destination: None,
+                            applied_at_ms: 0,
                         },
                     );
                     record.output = diff.clone();
@@ -1601,7 +3043,7 @@ impl AgentRun<'_> {
                 "apply_patch" => {
                     let id = args["patch_id"].as_str().unwrap_or_default().to_string();
                     let patch = self.files.lock().await.patches.remove(&id);
-                    let Some(patch) = patch else {
+                    let Some(mut patch) = patch else {
                         return self.fail_tool(
                             record,
                             "补丁不存在或已失效，请重新 preview_patch。".into(),
@@ -1628,6 +3070,7 @@ impl AgentRun<'_> {
                         &backup_dir,
                     ) {
                         Ok(backup) => {
+                            patch.applied_at_ms = now_millis();
                             record.status = TOOL_STATUS_COMPLETED.into();
                             record.output = format!("已应用补丁，备份编号 {backup}");
                             self.files
@@ -1718,6 +3161,7 @@ impl AgentRun<'_> {
                         record.output = "远程文件操作已回滚。".into();
                         record.finished_at_ms = Some(now_millis());
                         self.files.lock().await.applied.remove(&backup_id);
+                        self.mark_checkpoint_change_removed(&backup_id).await;
                         self.upsert_tool_call(&record);
                         return ToolOutcome {
                             content: record.output.clone(),
@@ -1827,6 +3271,7 @@ impl AgentRun<'_> {
                                 record.status = TOOL_STATUS_COMPLETED.into();
                                 record.output = "文件操作已回滚。".into();
                                 self.files.lock().await.applied.remove(&backup_id);
+                                self.mark_checkpoint_change_removed(&backup_id).await;
                                 record.finished_at_ms = Some(now_millis());
                                 self.upsert_tool_call(&record);
                                 return ToolOutcome {
@@ -1874,6 +3319,7 @@ impl AgentRun<'_> {
                             record.status = TOOL_STATUS_COMPLETED.into();
                             record.output = format!("已回滚文件；回滚前版本备份编号：{id}");
                             self.files.lock().await.applied.remove(&backup_id);
+                            self.mark_checkpoint_change_removed(&backup_id).await;
                             record.finished_at_ms = Some(now_millis());
                             self.upsert_tool_call(&record);
                             return ToolOutcome {
@@ -1886,15 +3332,6 @@ impl AgentRun<'_> {
                 }
                 _ => unreachable!(),
             };
-            record.status = TOOL_STATUS_COMPLETED.into();
-            record.output = result.chars().take(MAX_RECORD_OUTPUT_CHARS).collect();
-            record.output_truncated = result.chars().count() > MAX_RECORD_OUTPUT_CHARS;
-            record.finished_at_ms = Some(now_millis());
-            self.upsert_tool_call(&record);
-            ToolOutcome {
-                content: result,
-                is_error: false,
-            }
         }
     }
 
@@ -1925,16 +3362,18 @@ impl AgentRun<'_> {
             let task_id = Uuid::new_v4().to_string();
             let entry = Arc::new(BackgroundTask {
                 id: task_id.clone(),
+                tool_call_id: record.id.clone(),
                 session_id: self.emitter.session_id().to_string(),
                 workspace: self.agent.working_directory.clone(),
                 command: command.clone(),
                 created_at_ms: now_millis(),
                 status: StdMutex::new("running".into()),
                 output: StdMutex::new(String::new()),
+                output_artifact_id: StdMutex::new(None),
                 exit_status: StdMutex::new(None),
                 finished_at_ms: StdMutex::new(None),
                 cancel_requested: AtomicBool::new(false),
-                stop_confirmed: AtomicBool::new(false),
+                stop_confirmed: Arc::new(AtomicBool::new(false)),
                 cancel_notify: Arc::new(Notify::new()),
             });
             if let Ok(mut tasks) = self.tasks.lock() {
@@ -1949,14 +3388,47 @@ impl AgentRun<'_> {
             let root = self.agent.host_local_directory.clone();
             let pool = self.pool.clone();
             let app = self.app.clone();
+            let emitter = self.emitter.clone();
+            let tool_calls = Arc::clone(&self.tool_calls);
+            let content = Arc::clone(&self.content);
+            let thinking = Arc::clone(&self.thinking);
+            let output_tool_call_id = record.id.clone();
+            let remote_execution = config.is_some();
+
+            // The tool call remains running while the detached task executes. The
+            // completion event will update this same record later; marking it
+            // completed here made the UI report success before the process exited.
+            record.output = format!("后台任务已启动：{id}", id = task_id);
+            record.finished_at_ms = None;
             tokio::spawn(async move {
+                let output_emitter = emitter.clone();
+                let output_tool_call_id_for_chunks = output_tool_call_id.clone();
+                let entry_for_chunks = Arc::clone(&entry);
+                let app_for_chunks = app.clone();
+                let on_chunk: OutputChunkCallback = Arc::new(move |bytes, stream| {
+                    entry_for_chunks.append_live_output(bytes);
+                    entry_for_chunks.persist(&app_for_chunks);
+                    output_emitter.tool_output(
+                        output_tool_call_id_for_chunks.clone(),
+                        String::from_utf8_lossy(bytes).into_owned(),
+                        stream,
+                    );
+                });
                 let result = match (config, root) {
                     (Some(config), None) => {
-                        run_remote_background_command(&pool, &app, &config, &command, &entry, limit)
-                            .await
+                        run_remote_background_command(
+                            &pool,
+                            &app,
+                            &config,
+                            &command,
+                            &entry,
+                            limit,
+                            on_chunk.clone(),
+                        )
+                        .await
                     }
                     (None, Some(root)) => {
-                        run_local_background_command(&root, &command, &entry, limit).await
+                        run_local_background_command(&root, &command, &entry, limit, on_chunk).await
                     }
                     _ => Err(AppError::new(
                         "ai_task_workspace_invalid",
@@ -1966,44 +3438,161 @@ impl AgentRun<'_> {
                     )),
                 };
                 if let Ok(mut status) = entry.status.lock() {
-                    *status = if entry.cancel_requested.load(Ordering::SeqCst) {
-                        if entry.stop_confirmed.load(Ordering::SeqCst) {
-                            "cancelled".into()
-                        } else {
-                            "stop_requested_unconfirmed".into()
-                        }
-                    } else if result.is_ok() {
-                        "succeeded".into()
-                    } else {
-                        "failed".into()
-                    };
+                    *status = background_task_status(
+                        &result,
+                        entry.cancel_requested.load(Ordering::SeqCst),
+                        entry.stop_confirmed.load(Ordering::SeqCst),
+                    )
+                    .into();
                 }
-                if let Ok(output) = result {
-                    if let Ok(mut value) = entry.output.lock() {
-                        *value = combine_output_preview(
-                            &String::from_utf8_lossy(&output.stdout),
-                            &String::from_utf8_lossy(&output.stderr),
-                        )
-                        .chars()
-                        .take(MAX_RECORD_OUTPUT_CHARS * 4)
-                        .collect();
+                let mut output_preview = String::new();
+                let mut output_artifact_id = None;
+                let mut output_persistence_error = None;
+                if let Ok(output) = &result {
+                    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+                    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+                    if remote_execution && !stderr.is_empty() {
+                        emitter.tool_output(output_tool_call_id.clone(), stderr.clone(), "stderr");
+                    }
+                    let raw_content = format_full_command_output(
+                        output.exit_status,
+                        now_millis().saturating_sub(entry.created_at_ms) as u64,
+                        &stdout,
+                        &stderr,
+                    );
+                    if !stdout.is_empty() || !stderr.is_empty() {
+                        match save_output_artifact_for_session(
+                            &app,
+                            &entry.session_id,
+                            &raw_content,
+                        ) {
+                            Ok(artifact_id) => output_artifact_id = Some(artifact_id),
+                            Err(error) => output_persistence_error = Some(error.message),
+                        }
+                    }
+                    output_preview = tail_chars(
+                        &combine_output_preview(&stdout, &stderr),
+                        MAX_RECORD_OUTPUT_CHARS * 4,
+                    )
+                    .0;
+                    if let Ok(mut artifact_id) = entry.output_artifact_id.lock() {
+                        *artifact_id = output_artifact_id.clone();
                     }
                     if let Ok(mut code) = entry.exit_status.lock() {
                         *code = output.exit_status;
                     }
+                } else if let Err(error) = &result {
+                    let live_output = entry
+                        .output
+                        .lock()
+                        .map(|value| value.clone())
+                        .unwrap_or_default();
+                    output_preview = if live_output.is_empty() {
+                        error.message.clone()
+                    } else {
+                        format!("{live_output}\n[任务错误] {}", error.message)
+                    };
+                    if !output_preview.is_empty() {
+                        match save_output_artifact_for_session(
+                            &app,
+                            &entry.session_id,
+                            &output_preview,
+                        ) {
+                            Ok(artifact_id) => output_artifact_id = Some(artifact_id),
+                            Err(artifact_error) => {
+                                output_persistence_error = Some(artifact_error.message)
+                            }
+                        }
+                    }
+                    if let Ok(mut artifact_id) = entry.output_artifact_id.lock() {
+                        *artifact_id = output_artifact_id.clone();
+                    }
+                }
+                if let Some(error) = output_persistence_error {
+                    output_preview.push_str(&format!("\n[完整输出保存失败] {error}"));
+                    if let Ok(mut status) = entry.status.lock() {
+                        *status = "failed".into();
+                    }
+                }
+                if let Ok(mut value) = entry.output.lock() {
+                    *value = tail_chars(&output_preview, MAX_RECORD_OUTPUT_CHARS * 4).0;
+                    output_preview = value.clone();
                 }
                 if let Ok(mut finished_at) = entry.finished_at_ms.lock() {
                     *finished_at = Some(now_millis());
                 }
                 entry.persist(&app);
+                let final_status = entry
+                    .status
+                    .lock()
+                    .map(|value| value.clone())
+                    .unwrap_or_else(|_| "unknown".into());
+                let final_exit_status = entry.exit_status.lock().ok().and_then(|value| *value);
+                let final_artifact_id = entry
+                    .output_artifact_id
+                    .lock()
+                    .ok()
+                    .and_then(|value| value.clone());
+                emitter.background_task(crate::events::AiBackgroundTaskEvent {
+                    task_id: entry.id.clone(),
+                    tool_call_id: entry.tool_call_id.clone(),
+                    status: final_status.clone(),
+                    exit_status: final_exit_status,
+                    output_artifact_id: final_artifact_id.clone(),
+                    output_preview: output_preview.clone(),
+                });
+                if let Ok(mut calls) = tool_calls.lock() {
+                    if let Some(record) =
+                        calls.iter_mut().find(|item| item.id == entry.tool_call_id)
+                    {
+                        record.status = match final_status.as_str() {
+                            "succeeded" => TOOL_STATUS_COMPLETED.to_string(),
+                            "cancelled" => TOOL_STATUS_CANCELLED.to_string(),
+                            _ => TOOL_STATUS_FAILED.to_string(),
+                        };
+                        record.output = output_preview.clone();
+                        record.output_truncated =
+                            output_preview.chars().count() >= MAX_RECORD_OUTPUT_CHARS * 4;
+                        record.output_artifact_id = final_artifact_id;
+                        record.exit_status = final_exit_status;
+                        record.error =
+                            (final_status == "failed").then(|| "后台任务执行失败。".to_string());
+                        record.duration_ms = Some(
+                            now_millis()
+                                .saturating_sub(record.started_at_ms.unwrap_or(entry.created_at_ms))
+                                as u64,
+                        );
+                        record.finished_at_ms = Some(now_millis());
+                        let snapshot = record.clone();
+                        let _ = emitter.audit(&snapshot);
+                        emitter.tool_call(snapshot);
+                        let current_content = content
+                            .lock()
+                            .map(|value| value.clone())
+                            .unwrap_or_default();
+                        let current_thinking = thinking
+                            .lock()
+                            .map(|value| value.clone())
+                            .unwrap_or_default();
+                        let _ = crate::ai_assistant::update_assistant_message_preserving_status(
+                            &app,
+                            emitter.session_id(),
+                            emitter.message_id(),
+                            &current_content,
+                            &current_thinking,
+                            if emitter.is_active() {
+                                "streaming"
+                            } else {
+                                "complete"
+                            },
+                            &calls,
+                        );
+                    }
+                }
                 if let Ok(mut map) = tasks.lock() {
                     map.insert(task_id_for_worker, entry);
                 }
             });
-            record.status = TOOL_STATUS_COMPLETED.into();
-            record.output = format!("后台任务已启动：{id}", id = task_id);
-            record.finished_at_ms = Some(now_millis());
-            self.upsert_tool_call(&record);
             return ToolOutcome {
                 content: record.output.clone(),
                 is_error: false,
@@ -2012,6 +3601,9 @@ impl AgentRun<'_> {
         let task = self.tasks.lock().ok().and_then(|map| map.get(&id).cloned());
         let Some(task) = task else {
             let snapshot = match crate::storage_sqlite::get_ai_task(self.app, &id) {
+                Ok(Some(snapshot)) if snapshot.session_id != self.emitter.session_id() => {
+                    return self.fail_tool(record, "后台任务不存在或不属于当前 Agent 会话。".into())
+                }
                 Ok(Some(snapshot)) => snapshot,
                 Ok(None) => {
                     return self.fail_tool(record, "后台任务不存在或不属于当前 Agent 会话。".into())
@@ -2025,9 +3617,17 @@ impl AgentRun<'_> {
                 );
             }
             record.status = TOOL_STATUS_COMPLETED.into();
+            record.output_artifact_id = snapshot.output_artifact_id.clone();
             record.output = format!(
-                "status={} exit={:?}\n{}",
-                snapshot.status, snapshot.exit_status, snapshot.output
+                "status={} exit={:?}{}\n{}",
+                snapshot.status,
+                snapshot.exit_status,
+                snapshot
+                    .output_artifact_id
+                    .as_deref()
+                    .map(|id| format!(" artifact_id={id}"))
+                    .unwrap_or_default(),
+                snapshot.output
             );
             record.finished_at_ms = Some(now_millis());
             self.upsert_tool_call(&record);
@@ -2052,9 +3652,21 @@ impl AgentRun<'_> {
                 .map(|v| v.clone())
                 .unwrap_or_else(|_| "unknown".into());
             let output = task.output.lock().map(|v| v.clone()).unwrap_or_default();
+            let artifact_id = task
+                .output_artifact_id
+                .lock()
+                .ok()
+                .and_then(|value| value.clone());
             let code = task.exit_status.lock().ok().and_then(|v| *v);
             record.status = TOOL_STATUS_COMPLETED.into();
-            record.output = format!("status={status} exit={code:?}\n{output}");
+            record.output_artifact_id = artifact_id.clone();
+            record.output = format!(
+                "status={status} exit={code:?}{}\n{output}",
+                artifact_id
+                    .as_deref()
+                    .map(|id| format!(" artifact_id={id}"))
+                    .unwrap_or_default(),
+            );
         }
         record.finished_at_ms = Some(now_millis());
         self.upsert_tool_call(&record);
@@ -2069,6 +3681,15 @@ impl AgentRun<'_> {
         call: &AgentToolCall,
         mut record: AiToolCallRecord,
     ) -> ToolOutcome {
+        let run_in_background = serde_json::from_str::<Value>(&call.arguments)
+            .ok()
+            .and_then(|value| value.get("background").and_then(Value::as_bool))
+            .unwrap_or(false);
+        if run_in_background {
+            let mut background_call = call.clone();
+            background_call.name = TOOL_START_TASK.to_string();
+            return self.background_task_tool(&background_call, record).await;
+        }
         let (command, limit) = match parse_run_command_args(&call.arguments) {
             Ok(parsed) => parsed,
             Err(message) => return self.fail_tool(record, message),
@@ -2108,11 +3729,17 @@ impl AgentRun<'_> {
         match result {
             Ok(content) => {
                 record.status = TOOL_STATUS_COMPLETED.to_string();
-                record.output = content.chars().take(MAX_RECORD_OUTPUT_CHARS).collect();
-                record.output_truncated = content.chars().count() > MAX_RECORD_OUTPUT_CHARS;
+                let (preview, preview_truncated) = tail_chars(&content, MAX_RECORD_OUTPUT_CHARS);
+                let (model_content, artifact_id) = match self.model_output_with_artifact(&content) {
+                    Ok(value) => value,
+                    Err(error) => return self.fail_tool(record, error.message),
+                };
+                record.output = preview;
+                record.output_truncated = preview_truncated;
+                record.output_artifact_id = artifact_id;
                 self.upsert_tool_call(&record);
                 ToolOutcome {
-                    content,
+                    content: model_content,
                     is_error: false,
                 }
             }
@@ -2134,11 +3761,29 @@ impl AgentRun<'_> {
         let script =
             command_with_working_directory(&command, self.agent.working_directory.as_deref());
         let started = Instant::now();
+        let remote_emitter = self.emitter.clone();
+        let remote_tool_call_id = record.id.clone();
+        let remote_chunks: ExecOutputChunkCallback = Arc::new(move |bytes| {
+            remote_emitter.tool_output(
+                remote_tool_call_id.clone(),
+                String::from_utf8_lossy(bytes).into_owned(),
+                "stdout",
+            );
+        });
+        let local_emitter = self.emitter.clone();
+        let local_tool_call_id = record.id.clone();
+        let local_chunks: OutputChunkCallback = Arc::new(move |bytes, stream| {
+            local_emitter.tool_output(
+                local_tool_call_id.clone(),
+                String::from_utf8_lossy(bytes).into_owned(),
+                stream,
+            );
+        });
         let result = match (&self.agent.config, &self.agent.host_local_directory) {
             (Some(config), None) => match timeout(
                 limit,
                 self.pool
-                    .exec(self.app, config, &script, RemoteExecRetry::None),
+                    .exec_with_stdout_chunks(self.app, config, &script, remote_chunks),
             )
             .await
             {
@@ -2155,15 +3800,10 @@ impl AgentRun<'_> {
                     ))
                 }
             },
-            (None, Some(root)) => match timeout(limit, run_local_command(root, &command)).await {
-                Ok(result) => result,
-                Err(_) => Err(AppError::new(
-                    "ai_command_timeout",
-                    "本地命令执行超时。",
-                    format!("timeout_seconds={}", limit.as_secs()),
-                    true,
-                )),
-            },
+            (None, Some(root)) => {
+                run_local_command_streaming(root, &command, limit, None, None, Some(local_chunks))
+                    .await
+            }
             _ => Err(AppError::new(
                 "ai_agent_workspace_invalid",
                 "Agent 工作区状态无效。",
@@ -2179,6 +3819,10 @@ impl AgentRun<'_> {
         };
         let stdout = String::from_utf8_lossy(&output.stdout).to_string();
         let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+        if !stderr.is_empty() {
+            self.emitter
+                .tool_output(record.id.clone(), stderr.clone(), "stderr");
+        }
         let (preview, preview_truncated) = tail_chars(
             &combine_output_preview(&stdout, &stderr),
             MAX_RECORD_OUTPUT_CHARS,
@@ -2192,16 +3836,178 @@ impl AgentRun<'_> {
         record.exit_status = output.exit_status;
         record.output = preview;
         record.output_truncated = preview_truncated;
-        let content = format_command_output_for_model(
+        let raw_content = format_full_command_output(
             output.exit_status,
             record.duration_ms.unwrap_or_default(),
             &stdout,
             &stderr,
         );
+        let (content, artifact_id) = match self.model_output_with_artifact(&raw_content) {
+            Ok(value) => value,
+            Err(error) => return self.fail_tool(record, error.message),
+        };
+        record.output_artifact_id = artifact_id;
         self.upsert_tool_call(&record);
         ToolOutcome {
             content,
             is_error: output.exit_status != Some(0),
+        }
+    }
+
+    fn output_artifact_path(&self, artifact_id: &str) -> Result<std::path::PathBuf, AppError> {
+        output_artifact_path_for_session(self.app, self.emitter.session_id(), artifact_id)
+    }
+
+    fn save_output_artifact(&self, content: &str) -> Result<String, AppError> {
+        let artifact_id = Uuid::new_v4().to_string();
+        let path = self.output_artifact_path(&artifact_id)?;
+        std::fs::write(path, content).map_err(|error| {
+            AppError::new(
+                "ai_output_artifact_write_failed",
+                "完整工具输出保存失败。",
+                error,
+                true,
+            )
+        })?;
+        Ok(artifact_id)
+    }
+
+    fn model_output_with_artifact(
+        &self,
+        content: &str,
+    ) -> Result<(String, Option<String>), AppError> {
+        if content.chars().count() <= MAX_RECORD_OUTPUT_CHARS {
+            return Ok((content.to_string(), None));
+        }
+        let artifact_id = self.save_output_artifact(content)?;
+        let (tail, _) = tail_chars(content, MAX_MODEL_OUTPUT_CHARS);
+        Ok((
+            format!(
+                "{tail}\n[输出过长，完整结果已保存。调用 read_tool_output，artifact_id={artifact_id}，可用 start 继续读取。]"
+            ),
+            Some(artifact_id),
+        ))
+    }
+
+    fn read_attachment_tool(
+        &self,
+        call: &AgentToolCall,
+        mut record: AiToolCallRecord,
+    ) -> ToolOutcome {
+        let args = parse_tool_input(&call.arguments);
+        let attachment_id = args["attachment_id"].as_str().unwrap_or_default().trim();
+        if attachment_id.is_empty() {
+            return self.fail_tool(record, "attachment_id 不能为空。".into());
+        }
+        record.command = Some(format!("attachment:{attachment_id}"));
+        record.workspace = Some("session_attachment".to_string());
+        let Some(attachment) = self
+            .agent
+            .attachments
+            .iter()
+            .find(|item| item.artifact_id.as_deref() == Some(attachment_id))
+        else {
+            return self.fail_tool(record, "附件不存在或不属于当前会话。".into());
+        };
+        let bytes = match crate::ai_assistant::read_attachment_artifact(
+            self.app,
+            self.emitter.session_id(),
+            attachment_id,
+        ) {
+            Ok(bytes) => bytes,
+            Err(error) => return self.fail_tool(record, error.message),
+        };
+        if attachment.kind == "image" {
+            record.status = TOOL_STATUS_COMPLETED.into();
+            record.output = format!(
+                "图片附件 {} 已作为视觉输入提供给当前模型。",
+                attachment.title
+            );
+            record.finished_at_ms = Some(now_millis());
+            self.upsert_tool_call(&record);
+            return ToolOutcome {
+                content: record.output.clone(),
+                is_error: false,
+            };
+        }
+        let content = match String::from_utf8(bytes) {
+            Ok(content) => content,
+            Err(error) => {
+                return self.fail_tool(record, format!("文本附件不是有效的 UTF-8：{error}"))
+            }
+        };
+        let lines = content.lines().collect::<Vec<_>>();
+        let offset = args["offset"].as_u64().unwrap_or(1).max(1) as usize - 1;
+        let limit = args["limit"].as_u64().unwrap_or(200).clamp(1, 2_000) as usize;
+        let value = lines
+            .iter()
+            .skip(offset)
+            .take(limit)
+            .copied()
+            .collect::<Vec<_>>()
+            .join("\n");
+        let next_offset = offset.saturating_add(value.lines().count());
+        let mut output = format!(
+            "[附件 {} | 第 {} 行起 | 共 {} 行 | attachment_id={}]\n{}",
+            attachment.title,
+            offset + 1,
+            lines.len(),
+            attachment_id,
+            value
+        );
+        if next_offset < lines.len() {
+            output.push_str(&format!(
+                "\n[还有后续内容，可用 offset={} 继续读取]",
+                next_offset + 1
+            ));
+        }
+        record.status = TOOL_STATUS_COMPLETED.into();
+        record.output = output.chars().take(MAX_RECORD_OUTPUT_CHARS).collect();
+        record.output_truncated = output.chars().count() > MAX_RECORD_OUTPUT_CHARS;
+        record.finished_at_ms = Some(now_millis());
+        self.upsert_tool_call(&record);
+        ToolOutcome {
+            content: output,
+            is_error: false,
+        }
+    }
+
+    fn read_tool_output(&self, call: &AgentToolCall, mut record: AiToolCallRecord) -> ToolOutcome {
+        let args = parse_tool_input(&call.arguments);
+        let artifact_id = args["artifact_id"].as_str().unwrap_or_default().trim();
+        if artifact_id.is_empty() {
+            return self.fail_tool(record, "artifact_id 不能为空。".into());
+        }
+        let path = match self.output_artifact_path(artifact_id) {
+            Ok(path) => path,
+            Err(error) => return self.fail_tool(record, error.message),
+        };
+        let content = match std::fs::read_to_string(path) {
+            Ok(content) => content,
+            Err(error) => return self.fail_tool(record, format!("完整工具输出读取失败：{error}")),
+        };
+        let total = content.chars().count();
+        let start = args["start"].as_u64().unwrap_or(0) as usize;
+        let limit = args["limit"]
+            .as_u64()
+            .unwrap_or(MAX_MODEL_OUTPUT_CHARS as u64)
+            .clamp(1, (MAX_MODEL_OUTPUT_CHARS * 4) as u64) as usize;
+        let value: String = content.chars().skip(start).take(limit).collect();
+        let next = start.saturating_add(value.chars().count());
+        let mut output =
+            format!("[完整工具输出 offset={start} total={total} next_start={next}]\n{value}");
+        if next < total {
+            output.push_str("\n[还有后续内容，可继续调用 read_tool_output]");
+        }
+        record.status = TOOL_STATUS_COMPLETED.to_string();
+        record.output = output.chars().take(MAX_RECORD_OUTPUT_CHARS).collect();
+        record.output_truncated = output.chars().count() > MAX_RECORD_OUTPUT_CHARS;
+        record.output_artifact_id = Some(artifact_id.to_string());
+        record.finished_at_ms = Some(now_millis());
+        self.upsert_tool_call(&record);
+        ToolOutcome {
+            content: output,
+            is_error: false,
         }
     }
 
@@ -2266,21 +4072,210 @@ impl AgentRun<'_> {
     }
 }
 
+fn output_artifact_path_for_session(
+    app: &AppHandle,
+    session_id: &str,
+    artifact_id: &str,
+) -> Result<std::path::PathBuf, AppError> {
+    Uuid::parse_str(artifact_id).map_err(|error| {
+        AppError::new(
+            "ai_output_artifact_invalid",
+            "工具输出编号无效。",
+            error,
+            true,
+        )
+    })?;
+    let root = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| {
+            AppError::new(
+                "ai_output_artifact_path_failed",
+                "工具输出保存目录不可用。",
+                error,
+                true,
+            )
+        })?
+        .join("ai-agent-outputs")
+        .join(session_id);
+    std::fs::create_dir_all(&root).map_err(|error| {
+        AppError::new(
+            "ai_output_artifact_path_failed",
+            "工具输出目录创建失败。",
+            error,
+            true,
+        )
+    })?;
+    Ok(root.join(format!("{artifact_id}.txt")))
+}
+
+fn save_output_artifact_for_session(
+    app: &AppHandle,
+    session_id: &str,
+    content: &str,
+) -> Result<String, AppError> {
+    let artifact_id = Uuid::new_v4().to_string();
+    let path = output_artifact_path_for_session(app, session_id, &artifact_id)?;
+    std::fs::write(path, content).map_err(|error| {
+        AppError::new(
+            "ai_output_artifact_write_failed",
+            "完整工具输出保存失败。",
+            error,
+            true,
+        )
+    })?;
+    Ok(artifact_id)
+}
+
 impl AgentConversation {
-    fn new(format: AiApiFormat, history: Vec<AiModelMessage>) -> Self {
+    fn new(
+        format: AiApiFormat,
+        history: Vec<AiModelMessage>,
+        context_window_tokens: usize,
+    ) -> Self {
         Self {
             format,
+            context_window_tokens: context_window_tokens.max(1),
+            compact_count: 0,
             messages: history
                 .into_iter()
                 .filter(|message| message.role != "system")
-                .map(|message| json!({ "role": message.role, "content": message.content }))
+                .flat_map(|message| match format {
+                    AiApiFormat::OpenaiCompatible => vec![openai_message_value(message)],
+                    AiApiFormat::Responses => responses_message_values(message),
+                    AiApiFormat::Anthropic => {
+                        if message.role == "assistant" && !message.tool_calls.is_empty() {
+                            let mut content = Vec::new();
+                            if !message.content.trim().is_empty() {
+                                content.push(json!({
+                                    "type": "text",
+                                    "text": message.content,
+                                }));
+                            }
+                            content.extend(message.tool_calls.iter().filter_map(|call| {
+                                let function = call.get("function")?;
+                                Some(json!({
+                                    "type": "tool_use",
+                                    "id": call.get("id").and_then(Value::as_str).unwrap_or_default(),
+                                    "name": function.get("name").and_then(Value::as_str).unwrap_or_default(),
+                                    "input": serde_json::from_str::<Value>(
+                                        function
+                                            .get("arguments")
+                                            .and_then(Value::as_str)
+                                            .unwrap_or("{}"),
+                                    )
+                                    .unwrap_or_else(|_| json!({})),
+                                }))
+                            }));
+                            vec![json!({ "role": "assistant", "content": content })]
+                        } else if message.role == "tool" {
+                            vec![json!({
+                                "role": "user",
+                                "content": [{
+                                    "type": "tool_result",
+                                    "tool_use_id": message.tool_call_id.unwrap_or_default(),
+                                    "content": message.content,
+                                }]
+                            })]
+                        } else {
+                            if message.images.is_empty() {
+                                vec![json!({ "role": message.role, "content": message.content })]
+                            } else {
+                                let mut content = vec![json!({
+                                    "type": "text",
+                                    "text": message.content,
+                                })];
+                                content.extend(message.images.into_iter().map(|image| json!({
+                                    "type": "image",
+                                    "source": {
+                                        "type": "base64",
+                                        "media_type": image.media_type,
+                                        "data": image.data_base64,
+                                    }
+                                })));
+                                vec![json!({ "role": message.role, "content": content })]
+                            }
+                        }
+                    }
+                })
                 .collect(),
         }
     }
 
+    fn estimated_tokens(&self, system: &str) -> usize {
+        let chars = self
+            .messages
+            .iter()
+            .map(|message| {
+                summarize_message_value(message).chars().count()
+                    + count_image_parts(message) * 6_400
+            })
+            .sum::<usize>()
+            + system.chars().count();
+        (chars / 4).max(1)
+    }
+
+    fn compact_if_needed(&mut self, system: &str, force: bool) -> bool {
+        let estimated = self.estimated_tokens(system);
+        let threshold = self.context_window_tokens * CONTEXT_COMPACT_THRESHOLD / 100;
+        if !force && estimated < threshold.max(1) {
+            return false;
+        }
+        if self.messages.len() <= 4 {
+            return false;
+        }
+        let target = self.context_window_tokens * CONTEXT_COMPACT_TARGET / 100;
+        let keep_messages = self.messages.len().min(8);
+        let mut remove_until = self.messages.len().saturating_sub(keep_messages);
+        while remove_until < self.messages.len()
+            && self.messages[remove_until]
+                .get("role")
+                .and_then(Value::as_str)
+                == Some("tool")
+        {
+            remove_until += 1;
+        }
+        if remove_until == 0 {
+            return false;
+        }
+        let removed: Vec<Value> = self.messages.drain(..remove_until).collect();
+        let summary = compact_message_summary(&removed);
+        self.compact_count += 1;
+        self.messages.insert(
+            0,
+            json!({
+                "role": "system",
+                "content": format!("[上下文已压缩，第 {} 次]\n{}", self.compact_count, summary)
+            }),
+        );
+        if self.estimated_tokens(system) > target.max(1) && self.messages.len() > 4 {
+            let mut additional_end = self.messages.len().saturating_sub(4);
+            while additional_end < self.messages.len()
+                && self.messages[additional_end]
+                    .get("role")
+                    .and_then(Value::as_str)
+                    == Some("tool")
+            {
+                additional_end += 1;
+            }
+            if additional_end > 1 {
+                let additional = self.messages.drain(0..additional_end).collect::<Vec<_>>();
+                let additional_summary = compact_message_summary(&additional);
+                self.messages.insert(
+                    0,
+                    json!({
+                        "role": "system",
+                        "content": format!("[上下文已压缩，第 {} 次]\n{}", self.compact_count, additional_summary)
+                    }),
+                );
+            }
+        }
+        true
+    }
+
     fn push_assistant_turn(&mut self, turn: &AgentTurn) {
         let message = match self.format {
-            AiApiFormat::OpenaiCompatible | AiApiFormat::Responses => json!({
+            AiApiFormat::OpenaiCompatible => json!({
                 "role": "assistant",
                 "content": if turn.text.is_empty() { Value::Null } else { Value::String(turn.text.clone()) },
                 "tool_calls": turn
@@ -2293,6 +4288,23 @@ impl AgentConversation {
                     }))
                     .collect::<Vec<_>>(),
             }),
+            AiApiFormat::Responses => {
+                if !turn.text.trim().is_empty() {
+                    self.messages.push(json!({
+                        "role": "assistant",
+                        "content": [{ "type": "output_text", "text": turn.text }],
+                    }));
+                }
+                self.messages.extend(turn.tool_calls.iter().map(|call| {
+                    json!({
+                        "type": "function_call",
+                        "call_id": call.id,
+                        "name": call.name,
+                        "arguments": call.arguments,
+                    })
+                }));
+                return;
+            }
             AiApiFormat::Anthropic => {
                 let mut content = Vec::new();
                 if !turn.text.trim().is_empty() {
@@ -2314,9 +4326,18 @@ impl AgentConversation {
 
     fn push_tool_results(&mut self, results: &[(AgentToolCall, ToolOutcome)]) {
         match self.format {
-            AiApiFormat::OpenaiCompatible | AiApiFormat::Responses => {
+            AiApiFormat::OpenaiCompatible => {
                 self.messages.extend(results.iter().map(|(call, outcome)| {
                     json!({ "role": "tool", "tool_call_id": call.id, "content": outcome.content })
+                }));
+            }
+            AiApiFormat::Responses => {
+                self.messages.extend(results.iter().map(|(call, outcome)| {
+                    json!({
+                        "type": "function_call_output",
+                        "call_id": call.id,
+                        "output": outcome.content,
+                    })
                 }));
             }
             AiApiFormat::Anthropic => {
@@ -2335,6 +4356,81 @@ impl AgentConversation {
                     .push(json!({ "role": "user", "content": content }));
             }
         }
+    }
+}
+
+fn compact_message_summary(messages: &[Value]) -> String {
+    let mut lines = Vec::new();
+    for message in messages {
+        let role = message
+            .get("role")
+            .and_then(Value::as_str)
+            .unwrap_or("unknown");
+        let text = message
+            .get("content")
+            .map(summarize_message_value)
+            .unwrap_or_default();
+        if !text.is_empty() {
+            let (tail, truncated) = tail_chars(&text, 700);
+            lines.push(format!(
+                "{role}: {}{}",
+                tail,
+                if truncated { " …" } else { "" }
+            ));
+        }
+        if let Some(calls) = message.get("tool_calls").and_then(Value::as_array) {
+            for call in calls.iter().take(12) {
+                let name = call
+                    .pointer("/function/name")
+                    .and_then(Value::as_str)
+                    .unwrap_or("unknown");
+                lines.push(format!("assistant tool_call: {name}"));
+            }
+        }
+    }
+    let summary = lines.join("\n");
+    if summary.is_empty() {
+        "历史上下文已压缩，未保留可读文本。".to_string()
+    } else {
+        summary.chars().take(6_000).collect()
+    }
+}
+
+fn summarize_message_value(value: &Value) -> String {
+    match value {
+        Value::String(text) => text.to_string(),
+        Value::Array(items) => items
+            .iter()
+            .map(summarize_message_value)
+            .filter(|text| !text.is_empty())
+            .collect::<Vec<_>>()
+            .join("\n"),
+        Value::Object(map) => {
+            if matches!(
+                map.get("type").and_then(Value::as_str),
+                Some("input_image" | "image")
+            ) {
+                return "[图片附件]".to_string();
+            }
+            map.get("text")
+                .or_else(|| map.get("content"))
+                .map(summarize_message_value)
+                .unwrap_or_default()
+        }
+        _ => String::new(),
+    }
+}
+
+fn count_image_parts(value: &Value) -> usize {
+    match value {
+        Value::Array(items) => items.iter().map(count_image_parts).sum(),
+        Value::Object(map) => {
+            usize::from(matches!(
+                map.get("type").and_then(Value::as_str),
+                Some("input_image" | "image" | "image_url")
+            )) + map.values().map(count_image_parts).sum::<usize>()
+        }
+        _ => 0,
     }
 }
 
@@ -2389,6 +4485,80 @@ impl TurnAccumulator {
             }
         }
         Ok((false, text, thinking))
+    }
+
+    fn apply_responses_event(&mut self, data: &str) -> Result<(bool, String, String), AppError> {
+        let value: Value = serde_json::from_str(data).map_err(stream_parse_error)?;
+        if let Some(error) = value.get("error") {
+            return Err(provider_stream_error(error));
+        }
+        let event_type = value
+            .get("type")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let index = value
+            .get("output_index")
+            .or_else(|| value.get("index"))
+            .and_then(Value::as_u64)
+            .unwrap_or(0) as usize;
+        match event_type {
+            "response.output_text.delta" => {
+                let text = value
+                    .get("delta")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string();
+                self.text.push_str(&text);
+                return Ok((false, text, String::new()));
+            }
+            "response.reasoning_summary_text.delta" | "response.reasoning_text.delta" => {
+                let thinking = value
+                    .get("delta")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string();
+                self.thinking.push_str(&thinking);
+                return Ok((false, String::new(), thinking));
+            }
+            "response.output_item.added" | "response.output_item.done" => {
+                let item = value.get("item").cloned().unwrap_or(Value::Null);
+                if item.get("type").and_then(Value::as_str) == Some("function_call") {
+                    let entry = self.tools.entry(index).or_default();
+                    if let Some(id) = item.get("call_id").and_then(Value::as_str) {
+                        entry.id = id.to_string();
+                    }
+                    if let Some(name) = item.get("name").and_then(Value::as_str) {
+                        entry.name = name.to_string();
+                    }
+                    if let Some(arguments) = item.get("arguments").and_then(Value::as_str) {
+                        entry.arguments = arguments.to_string();
+                    }
+                }
+            }
+            "response.function_call_arguments.delta" => {
+                let entry = self.tools.entry(index).or_default();
+                entry.arguments.push_str(
+                    value
+                        .get("delta")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default(),
+                );
+            }
+            "response.function_call_arguments.done" => {
+                let entry = self.tools.entry(index).or_default();
+                if let Some(arguments) = value.get("arguments").and_then(Value::as_str) {
+                    entry.arguments = arguments.to_string();
+                }
+            }
+            "response.completed" | "response.done" => {
+                return Ok((true, String::new(), String::new()))
+            }
+            "response.failed" | "response.incomplete" => {
+                return Err(provider_stream_error(value.get("error").unwrap_or(&value)));
+            }
+            _ => {}
+        }
+        Ok((false, String::new(), String::new()))
     }
 
     fn apply_anthropic_event(&mut self, data: &str) -> Result<(bool, String, String), AppError> {
@@ -2528,9 +4698,69 @@ async fn run_turn<F>(
 where
     F: FnMut(String),
 {
+    let mut attempt = 0;
+    loop {
+        if stopped.load(Ordering::SeqCst) {
+            return Ok(AgentTurn::default());
+        }
+        let attempt_emitted = Arc::new(AtomicBool::new(false));
+        let attempt_emitted_for_delta = Arc::clone(&attempt_emitted);
+        let attempt_emitted_for_thinking = Arc::clone(&attempt_emitted);
+        let result = run_turn_once(
+            client,
+            provider,
+            api_key,
+            reasoning_level,
+            system,
+            messages,
+            Arc::clone(&stopped),
+            |delta| {
+                if !delta.is_empty() {
+                    attempt_emitted_for_delta.store(true, Ordering::SeqCst);
+                }
+                on_delta(delta);
+            },
+            |delta| {
+                if !delta.is_empty() {
+                    attempt_emitted_for_thinking.store(true, Ordering::SeqCst);
+                }
+                on_thinking(delta);
+            },
+        )
+        .await;
+        match result {
+            Ok(turn) => return Ok(turn),
+            Err(error)
+                if !attempt_emitted.load(Ordering::SeqCst)
+                    && attempt < MAX_PROVIDER_RETRIES
+                    && should_retry_provider_error(&error)
+                    && !stopped.load(Ordering::SeqCst) =>
+            {
+                attempt += 1;
+                sleep(provider_retry_delay(attempt)).await;
+            }
+            Err(error) => return Err(error),
+        }
+    }
+}
+
+async fn run_turn_once<F>(
+    client: &Client,
+    provider: &StoredAiProviderConfig,
+    api_key: &str,
+    reasoning_level: Option<&str>,
+    system: &str,
+    messages: &[Value],
+    stopped: Arc<AtomicBool>,
+    mut on_delta: F,
+    mut on_thinking: impl FnMut(String),
+) -> Result<AgentTurn, AppError>
+where
+    F: FnMut(String),
+{
     let endpoint = normalize_endpoint(&provider.endpoint, provider.api_format)?;
     let request = match provider.api_format {
-        AiApiFormat::OpenaiCompatible | AiApiFormat::Responses => {
+        AiApiFormat::OpenaiCompatible => {
             let mut all_messages = Vec::with_capacity(messages.len() + 1);
             all_messages.push(json!({ "role": "system", "content": system }));
             all_messages.extend(messages.iter().cloned());
@@ -2539,6 +4769,18 @@ where
                 "stream": true,
                 "messages": all_messages,
                 "tools": openai_tool_definitions(),
+            });
+            apply_openai_reasoning_fields(&mut body, reasoning_level);
+            client.post(endpoint).bearer_auth(api_key).json(&body)
+        }
+        AiApiFormat::Responses => {
+            let mut body = json!({
+                "model": provider.model,
+                "stream": true,
+                "store": false,
+                "instructions": system,
+                "input": messages,
+                "tools": responses_tool_definitions(),
             });
             apply_openai_reasoning_fields(&mut body, reasoning_level);
             client.post(endpoint).bearer_auth(api_key).json(&body)
@@ -2566,9 +4808,8 @@ where
     let mut accumulator = TurnAccumulator::default();
     read_sse_events(response, stopped, |data| {
         let (done, delta, thinking) = match format {
-            AiApiFormat::OpenaiCompatible | AiApiFormat::Responses => {
-                accumulator.apply_openai_event(data)?
-            }
+            AiApiFormat::OpenaiCompatible => accumulator.apply_openai_event(data)?,
+            AiApiFormat::Responses => accumulator.apply_responses_event(data)?,
             AiApiFormat::Anthropic => accumulator.apply_anthropic_event(data)?,
         };
         if !delta.is_empty() {
@@ -2585,13 +4826,17 @@ where
 
 fn tool_specs() -> Vec<(&'static str, &'static str, Value)> {
     vec![
-        ("read_file", "读取当前明确授权的 UTF-8 文本文件；可用 offset/limit 按行读取大文件。只有完整读取后才能编辑。SSH 当前目录和本地文件工作区是两个独立作用域。", json!({"type":"object","properties":{"path":{"type":"string"},"offset":{"type":"integer","minimum":1,"description":"起始行号，从 1 开始"},"limit":{"type":"integer","minimum":1,"description":"读取行数"}},"required":["path"]})),
-        ("glob", "在当前明确授权的文件作用域内查找文件名，返回匹配路径。", json!({"type":"object","properties":{"pattern":{"type":"string"}},"required":["pattern"]})),
-        ("grep", "在当前明确授权的文件作用域内搜索内容，返回匹配行号、列号和内容。", json!({"type":"object","properties":{"query":{"type":"string"},"pattern":{"type":"string"}},"required":["query"]})),
-        ("preview_patch", "根据完整读取的文件生成待确认 diff，不会写入文件；默认要求唯一匹配，replace_all=true 时替换全部匹配。", json!({"type":"object","properties":{"path":{"type":"string"},"old_string":{"type":"string"},"new_string":{"type":"string"},"replace_all":{"type":"boolean","default":false}},"required":["path","old_string","new_string"]})),
+        (TOOL_WORKSPACE_CHANGES, "汇总当前工作区的待应用变更、已应用变更和检查点，不修改文件。", json!({"type":"object","properties":{}})),
+        (TOOL_CREATE_WORKSPACE_CHECKPOINT, "为当前已应用的多文件变更创建可持久化检查点。", json!({"type":"object","properties":{"label":{"type":"string"}}})),
+        (TOOL_ROLLBACK_WORKSPACE, "在一次确认后按逆序整体回滚检查点或指定的多个文件变更。", json!({"type":"object","properties":{"checkpoint_id":{"type":"string"},"change_ids":{"type":"array","items":{"type":"string"}}}})),
+        (TOOL_READ_ATTACHMENT, "读取当前会话中用户附加的图片或文本文件；文本支持按行 offset/limit 分段读取，不改变当前本地或 SSH 工作区。", json!({"type":"object","properties":{"attachment_id":{"type":"string","description":"附件编号"},"offset":{"type":"integer","minimum":1,"description":"文本起始行号，从 1 开始"},"limit":{"type":"integer","minimum":1,"maximum":2000,"description":"本次读取的最大行数，默认 200"}},"required":["attachment_id"],"additionalProperties":false})),
+        ("read_file", "读取当前明确授权的 UTF-8 文本文件；可用 offset/limit 按行读取大文件。省略 target 时跟随当前终端主机；SSH 会话中需要操作本地文件时显式传 target=local。", json!({"type":"object","properties":{"target":{"type":"string","enum":["local","ssh"]},"path":{"type":"string"},"offset":{"type":"integer","minimum":1,"description":"起始行号，从 1 开始"},"limit":{"type":"integer","minimum":1,"description":"读取行数"}},"required":["path"]})),
+        ("glob", "在明确授权的文件作用域内查找文件名；省略 target 时跟随当前终端主机，支持显式 local/ssh、** 和分页。", json!({"type":"object","properties":{"target":{"type":"string","enum":["local","ssh"]},"pattern":{"type":"string","description":"文件名或路径 glob，例如 **/*.rs"},"path":{"type":"string","description":"搜索根目录，相对目标工作区"},"offset":{"type":"integer","minimum":0},"limit":{"type":"integer","minimum":0,"description":"每页数量；0 表示不限制"},"include_ignored":{"type":"boolean"}},"required":["pattern"]})),
+        ("grep", "在明确授权的文件作用域内用正则搜索内容；省略 target 时跟随当前终端主机，支持显式 local/ssh、大小写、多行、上下文、输出模式和分页。", json!({"type":"object","properties":{"target":{"type":"string","enum":["local","ssh"]},"query":{"type":"string","description":"正则表达式；regex=false 时按字面量搜索"},"pattern":{"type":"string","description":"文件 glob，默认 **/*"},"path":{"type":"string"},"regex":{"type":"boolean","default":true},"case_sensitive":{"type":"boolean","default":true},"multiline":{"type":"boolean","default":false},"context":{"type":"integer","minimum":0},"before_context":{"type":"integer","minimum":0},"after_context":{"type":"integer","minimum":0},"output_mode":{"type":"string","enum":["content","files_with_matches","count"]},"offset":{"type":"integer","minimum":0},"head_limit":{"type":"integer","minimum":0,"description":"兼容 ZCode 的分页参数；等同 limit"},"limit":{"type":"integer","minimum":0},"include_ignored":{"type":"boolean"}},"required":["query"]})),
+        ("preview_patch", "根据完整读取的文件生成待确认 diff；省略 target 时跟随当前终端主机，SSH 会话中操作本地文件时显式传 target=local。", json!({"type":"object","properties":{"target":{"type":"string","enum":["local","ssh"]},"path":{"type":"string"},"old_string":{"type":"string"},"new_string":{"type":"string"},"replace_all":{"type":"boolean","default":false}},"required":["path","old_string","new_string"]})),
         ("apply_patch", "应用已经 preview 的补丁；会再次核对原文、先备份再原子替换，并要求用户确认。", json!({"type":"object","properties":{"patch_id":{"type":"string"}},"required":["patch_id"]})),
         ("rollback_patch", "回滚当前会话中已应用的补丁；会再次校验当前文件版本并要求确认。", json!({"type":"object","properties":{"backup_id":{"type":"string"}},"required":["backup_id"]})),
-        ("preview_file_change", "预览创建、完整写入、删除或重命名文件，只有确认后才会产生副作用。完整写入需要先读取已有文件。", json!({"type":"object","properties":{"operation":{"type":"string","enum":["create","write","delete","rename"]},"path":{"type":"string"},"destination":{"type":"string"},"content":{"type":"string"}},"required":["operation","path"]})),
+        ("preview_file_change", "预览创建、完整写入、删除或重命名文件；省略 target 时跟随当前终端主机，SSH 会话中操作本地文件时显式传 target=local。", json!({"type":"object","properties":{"target":{"type":"string","enum":["local","ssh"]},"operation":{"type":"string","enum":["create","write","delete","rename"]},"path":{"type":"string"},"destination":{"type":"string"},"content":{"type":"string"}},"required":["operation","path"]})),
         ("apply_file_change", "应用已经预览的文件操作，并先保存备份。", json!({"type":"object","properties":{"change_id":{"type":"string"}},"required":["change_id"]})),
         ("update_plan", "向用户展示当前编码计划和下一步。", json!({"type":"object","properties":{"plan":{"type":"string"}},"required":["plan"]})),
         ("ask_user", "需要用户做出明确选择时提问。优先传递结构化 options；用户可选择其中一项，也可在 allow_free_text 为 true 时补充文字。不要把选项只拼在 question 文本里。", json!({
@@ -2618,7 +4863,7 @@ fn tool_specs() -> Vec<(&'static str, &'static str, Value)> {
         })),
         (
             TOOL_RUN_COMMAND,
-            "在当前终端对应的主机上以非交互方式执行一条 shell 命令；SSH 终端执行在当前 SSH 主机，本机终端执行在本机。命令走独立的 exec 通道，不是用户正在使用的终端，不共享其环境变量、sudo 凭据和 shell 状态。已选择的本地文件工作区不会改变命令目标。",
+            "在当前终端对应的主机上以非交互方式执行一条 shell 命令；SSH 终端执行在当前 SSH 主机，本机终端执行在本机。命令走独立的 exec 通道，不是用户正在使用的终端，不共享其环境变量、sudo 凭据和 shell 状态。已选择的本地文件工作区不会改变命令目标。设 background=true 可将同一命令转入后台并沿用实时输出、完整 artifact 和完成通知。",
             json!({
                 "type": "object",
                 "properties": {
@@ -2628,6 +4873,10 @@ fn tool_specs() -> Vec<(&'static str, &'static str, Value)> {
                         "minimum": 1,
                         "maximum": MAX_COMMAND_TIMEOUT_SECONDS,
                         "description": "超时秒数，默认 60"
+                    },
+                    "background": {
+                        "type": "boolean",
+                        "description": "设为 true 时转入后台任务，立即返回任务编号并继续推送输出"
                     }
                 },
                 "required": ["command"]
@@ -2652,6 +4901,25 @@ fn tool_specs() -> Vec<(&'static str, &'static str, Value)> {
                     }
                 }
             }),
+        ),
+        (
+            TOOL_READ_OUTPUT,
+            "读取之前保存的完整工具输出；输出过长时使用 start 继续读取。",
+            json!({
+                "type": "object",
+                "properties": {
+                    "artifact_id": { "type": "string", "description": "工具输出编号" },
+                    "start": { "type": "integer", "minimum": 0, "description": "字符偏移，默认 0" },
+                    "limit": { "type": "integer", "minimum": 1, "maximum": MAX_MODEL_OUTPUT_CHARS * 4, "description": "本次最多读取的字符数，默认 12000" }
+                },
+                "required": ["artifact_id"],
+                "additionalProperties": false
+            }),
+        ),
+        (
+            "compact_context",
+            "立即压缩当前 Agent 对话上下文，保留最近工作内容和旧消息摘要。",
+            json!({ "type": "object", "properties": {}, "additionalProperties": false }),
         ),
         (TOOL_START_TASK, "启动当前工作区中的后台命令，返回任务编号；命令仍受工作区和超时限制。", json!({"type":"object","properties":{"command":{"type":"string"},"timeout_seconds":{"type":"integer","minimum":1,"maximum":300}},"required":["command"]})),
         (TOOL_TASK_STATUS, "查询本次 Agent 启动的后台任务状态和退出码。", json!({"type":"object","properties":{"task_id":{"type":"string"}},"required":["task_id"]})),
@@ -2700,6 +4968,23 @@ fn openai_tool_definitions() -> Value {
     )
 }
 
+fn responses_tool_definitions() -> Value {
+    Value::Array(
+        tool_specs()
+            .into_iter()
+            .map(|(name, description, parameters)| {
+                json!({
+                    "type": "function",
+                    "name": name,
+                    "description": description,
+                    "parameters": parameters,
+                    "strict": false,
+                })
+            })
+            .collect(),
+    )
+}
+
 fn anthropic_tool_definitions() -> Value {
     Value::Array(
         tool_specs()
@@ -2711,7 +4996,7 @@ fn anthropic_tool_definitions() -> Value {
     )
 }
 
-fn agent_system_prompt(agent: &PreparedAgent) -> String {
+fn agent_system_prompt(agent: &PreparedAgent, project_context: &str) -> String {
     let directory = agent
         .working_directory
         .as_deref()
@@ -2742,10 +5027,13 @@ fn agent_system_prompt(agent: &PreparedAgent) -> String {
 本地文件工作区：{local_file_scope}\n\
 终端输出快照：{terminal_snapshot}\n\n\
 工具说明：\n\
-- run_command：只在当前终端对应的主机上以非交互方式执行 shell 命令；已选择的本地文件工作区不会改变命令目标。它使用独立的 exec 通道，不是用户正在使用的终端；若当前目录已知，会先进入该目录。\n\
+- run_command：只在当前终端对应的主机上以非交互方式执行 shell 命令；已选择的本地文件工作区不会改变命令目标。它使用独立的 exec 通道，不是用户正在使用的终端；若当前目录已知，会先进入该目录。需要长时间运行时传 background=true 转入后台，任务编号、实时输出、完整输出文件和完成通知会沿用同一条工具记录。\n\
 - server_monitor：只读获取主机负载、内存、磁盘概况。\n\
 - read_terminal_output：读取用户发送消息时终端最近输出的快照。\n\
-- read_file / glob / grep：在明确授权的文件作用域内读取、查找和搜索；有本地文件工作区时优先使用它，否则在当前 SSH 工作目录内操作。read_file 支持 offset/limit 分段读取，但编辑前必须完整读取文件。\n\
+- read_tool_output：长命令或联网结果会保存为完整输出文件；根据 artifact_id 和 start 分段读取。\n\
+- compact_context：需要立即释放上下文空间时，压缩旧消息并保留最近工作内容。\n\
+- read_attachment：读取用户随本条消息附加的图片或文本；文本用 attachment_id 和 offset/limit 分段读取，不要把附件编号当成本地或 SSH 路径。\n\
+- read_file / glob / grep：在明确授权的文件作用域内读取、查找和搜索；省略 target 时跟随当前终端主机，SSH 会话中要操作本地文件时显式传 target=local。read_file 支持 offset/limit 分段读取，但编辑前必须完整读取文件。\n\
 - preview_patch / apply_patch：先展示带上下文的 diff；默认要求旧内容唯一匹配，replace_all=true 才替换全部匹配；用户确认后再次校验原文、备份并替换。\n\
 - preview_file_change / apply_file_change：预览并应用 create、write、delete、rename；write 用于完整覆盖已有文件，create 用于新建文件。受控模式需要确认，完全访问模式仍保留 diff、CAS、备份和审计但不重复弹窗。\n\
 - start_task / task_status / task_output / cancel_task：管理有边界的后台任务；停止请求未确认时必须如实说明。\n\
@@ -2760,7 +5048,9 @@ fn agent_system_prompt(agent: &PreparedAgent) -> String {
 4. 修改配置、删除数据、重启服务等操作前先说明目的和影响；这类命令会交给用户确认，被拒绝时换方案或询问用户。\n\
 5. 控制输出量（配合 head、tail、grep），每条命令保持简短、可验证。\n\
 6. 工具执行记录和内部摘要只用于上下文，绝对不要把“[本轮工具调用记录]”或原始工具日志原样输出给用户；界面会单独展示执行过程。\n\
-7. 最后用中文总结发现、原因和建议；不要声称执行过工具结果里没有的命令。"
+7. 最后用中文总结发现、原因和建议；不要声称执行过工具结果里没有的命令。
+\n项目上下文（来自当前工作区，仅作为项目约束和背景；如果与系统安全规则或用户当前要求冲突，按更高优先级处理）：
+{project_context}"
     )
 }
 
@@ -3009,6 +5299,24 @@ pub(crate) fn now_millis() -> u128 {
         .unwrap_or_default()
 }
 
+fn background_task_status(
+    result: &Result<ExecOutput, AppError>,
+    cancel_requested: bool,
+    stop_confirmed: bool,
+) -> &'static str {
+    if cancel_requested {
+        if stop_confirmed {
+            "cancelled"
+        } else {
+            "stop_requested_unconfirmed"
+        }
+    } else if matches!(result, Ok(output) if output.exit_status == Some(0)) {
+        "succeeded"
+    } else {
+        "failed"
+    }
+}
+
 async fn run_remote_background_command(
     pool: &RemoteExecSessionPool,
     app: &AppHandle,
@@ -3016,9 +5324,13 @@ async fn run_remote_background_command(
     command: &str,
     entry: &BackgroundTask,
     limit: Duration,
+    on_chunk: OutputChunkCallback,
 ) -> Result<ExecOutput, AppError> {
     tokio::select! {
-        result = timeout(limit, pool.exec(app, config, command, RemoteExecRetry::None)) => {
+        result = timeout(limit, pool.exec_with_stdout_chunks(app, config, command, {
+            let on_chunk = Arc::clone(&on_chunk);
+            Arc::new(move |bytes| on_chunk(bytes, "stdout"))
+        })) => {
             result
                 .map_err(|_| AppError::new("ai_task_timeout", "后台任务超时。", "timeout", true))?
         }
@@ -3033,7 +5345,194 @@ async fn run_remote_background_command(
     }
 }
 
+async fn run_local_command_streaming(
+    root: &std::path::Path,
+    command: &str,
+    limit: Duration,
+    cancel_notify: Option<Arc<Notify>>,
+    stop_confirmed: Option<Arc<AtomicBool>>,
+    on_chunk: Option<OutputChunkCallback>,
+) -> Result<ExecOutput, AppError> {
+    let mut process = if cfg!(windows) {
+        let mut process = Command::new("powershell.exe");
+        process.args([
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            command,
+        ]);
+        process
+    } else {
+        let mut process = Command::new("sh");
+        process.args(["-lc", command]);
+        process
+    };
+    let mut child = process
+        .current_dir(root)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .map_err(|error| {
+            AppError::new("ai_local_command_failed", "启动本地命令失败。", error, true)
+        })?;
+    let mut stdout = child.stdout.take().ok_or_else(|| {
+        AppError::new(
+            "ai_task_output_unavailable",
+            "无法读取命令输出。",
+            "stdout",
+            true,
+        )
+    })?;
+    let mut stderr = child.stderr.take().ok_or_else(|| {
+        AppError::new(
+            "ai_task_output_unavailable",
+            "无法读取命令错误输出。",
+            "stderr",
+            true,
+        )
+    })?;
+    enum LocalOutputEvent {
+        Chunk(String, Vec<u8>),
+        Closed,
+    }
+    let (tx, mut rx) = mpsc::unbounded_channel::<LocalOutputEvent>();
+    let stdout_tx = tx.clone();
+    let stdout_reader = tokio::spawn(async move {
+        let mut buffer = vec![0u8; LOCAL_OUTPUT_CHUNK_BYTES];
+        loop {
+            let size = stdout.read(&mut buffer).await?;
+            if size == 0 {
+                break;
+            }
+            if stdout_tx
+                .send(LocalOutputEvent::Chunk(
+                    "stdout".to_string(),
+                    buffer[..size].to_vec(),
+                ))
+                .is_err()
+            {
+                break;
+            }
+        }
+        let _ = stdout_tx.send(LocalOutputEvent::Closed);
+        Ok::<(), std::io::Error>(())
+    });
+    let stderr_tx = tx;
+    let stderr_reader = tokio::spawn(async move {
+        let mut buffer = vec![0u8; LOCAL_OUTPUT_CHUNK_BYTES];
+        loop {
+            let size = stderr.read(&mut buffer).await?;
+            if size == 0 {
+                break;
+            }
+            if stderr_tx
+                .send(LocalOutputEvent::Chunk(
+                    "stderr".to_string(),
+                    buffer[..size].to_vec(),
+                ))
+                .is_err()
+            {
+                break;
+            }
+        }
+        let _ = stderr_tx.send(LocalOutputEvent::Closed);
+        Ok::<(), std::io::Error>(())
+    });
+    let cancel_wait = async move {
+        match cancel_notify {
+            Some(notify) => notify.notified().await,
+            None => std::future::pending::<()>().await,
+        }
+    };
+    tokio::pin!(cancel_wait);
+    let (status, cancelled, stdout_bytes, stderr_bytes) = timeout(limit, async {
+        let mut status = None;
+        let mut cancelled = false;
+        let mut closed_streams = 0usize;
+        let mut stdout_bytes = Vec::new();
+        let mut stderr_bytes = Vec::new();
+        loop {
+            tokio::select! {
+                result = child.wait(), if status.is_none() => {
+                    status = Some(result.map_err(|error| AppError::new("ai_local_command_failed", "等待本地命令失败。", error, true))?);
+                }
+                event = rx.recv(), if closed_streams < 2 => {
+                    match event {
+                        Some(LocalOutputEvent::Chunk(stream, bytes)) => {
+                            if stream == "stdout" {
+                                stdout_bytes.extend_from_slice(&bytes);
+                            } else {
+                                stderr_bytes.extend_from_slice(&bytes);
+                            }
+                            if let Some(callback) = on_chunk.as_ref() {
+                                callback(&bytes, &stream);
+                            }
+                        }
+                        Some(LocalOutputEvent::Closed) => closed_streams += 1,
+                        None => closed_streams = 2,
+                    }
+                }
+                _ = &mut cancel_wait, if !cancelled => {
+                    let kill_result = child.kill().await;
+                    if let Some(stop_confirmed) = stop_confirmed.as_ref() {
+                        stop_confirmed.store(kill_result.is_ok(), Ordering::SeqCst);
+                    }
+                    status = Some(child.wait().await.map_err(|error| AppError::new("ai_local_command_failed", "停止本地命令失败。", error, true))?);
+                    cancelled = true;
+                }
+            }
+            if status.is_some() && closed_streams >= 2 {
+                break;
+            }
+        }
+        Ok::<_, AppError>((status, cancelled, stdout_bytes, stderr_bytes))
+    })
+    .await
+    .map_err(|_| AppError::new("ai_command_timeout", "本地命令执行超时。", format!("timeout_seconds={}", limit.as_secs()), true))??;
+    let _ = stdout_reader.await;
+    let _ = stderr_reader.await;
+    Ok(ExecOutput {
+        stdout: stdout_bytes,
+        stderr: stderr_bytes,
+        exit_status: if cancelled {
+            None
+        } else {
+            status
+                .and_then(|value| value.code())
+                .map(|code| code as u32)
+        },
+    })
+}
+
 async fn run_local_background_command(
+    root: &std::path::Path,
+    command: &str,
+    entry: &BackgroundTask,
+    limit: Duration,
+    on_chunk: OutputChunkCallback,
+) -> Result<ExecOutput, AppError> {
+    run_local_command_streaming(
+        root,
+        command,
+        limit,
+        Some(Arc::clone(&entry.cancel_notify)),
+        Some(Arc::clone(&entry.stop_confirmed)),
+        Some(on_chunk),
+    )
+    .await
+}
+
+/*
+ * Kept for compatibility with older task snapshots. New tasks use the
+ * streaming implementation above so foreground and background output share
+ * the same event path.
+ */
+async fn run_local_background_command_legacy_streaming(
     root: &std::path::Path,
     command: &str,
     entry: &BackgroundTask,
@@ -3281,6 +5780,7 @@ fn combine_output_preview(stdout: &str, stderr: &str) -> String {
     }
 }
 
+#[cfg(test)]
 fn format_output_section(label: &str, value: &str) -> String {
     let trimmed = value.trim_end();
     if trimmed.is_empty() {
@@ -3294,7 +5794,22 @@ fn format_output_section(label: &str, value: &str) -> String {
     }
 }
 
+#[cfg(test)]
 fn format_command_output_for_model(
+    exit_status: Option<u32>,
+    duration_ms: u64,
+    stdout: &str,
+    stderr: &str,
+) -> String {
+    let exit = exit_status
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| "未知".to_string());
+    let stdout_section = format_output_section("stdout", stdout);
+    let stderr_section = format_output_section("stderr", stderr);
+    format!("exit_status: {exit}\nduration_ms: {duration_ms}\n{stdout_section}\n{stderr_section}")
+}
+
+fn format_full_command_output(
     exit_status: Option<u32>,
     duration_ms: u64,
     stdout: &str,
@@ -3305,14 +5820,55 @@ fn format_command_output_for_model(
         .unwrap_or_else(|| "未知".to_string());
     format!(
         "exit_status: {exit}\nduration_ms: {duration_ms}\n{}\n{}",
-        format_output_section("stdout", stdout),
-        format_output_section("stderr", stderr)
+        format_full_output_section("stdout", stdout),
+        format_full_output_section("stderr", stderr)
     )
+}
+
+fn format_full_output_section(label: &str, value: &str) -> String {
+    let trimmed = value.trim_end();
+    if trimmed.is_empty() {
+        format!("{label}: (空)")
+    } else {
+        format!("{label}:\n{trimmed}")
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn project_context_redacts_sensitive_assignments_and_private_ips() {
+        let sanitized = sanitize_project_context(
+            "api_key: REDACTED\nserver = 10.0.0.20:22\nkeep: read-only rule",
+        );
+        assert!(sanitized.contains("[已隐藏敏感配置行]"));
+        assert!(sanitized.contains("<private-ip>"));
+        assert!(sanitized.contains("keep: read-only rule"));
+        assert!(!sanitized.contains("REDACTED"));
+    }
+
+    #[test]
+    fn remote_project_context_command_is_read_only_and_scoped() {
+        let command = build_remote_project_context_command(Some("/srv/app's data"));
+        assert!(command.contains("base='/srv/app'\\''s data'"));
+        assert!(command.contains("sed -n '1,220p'"));
+        assert!(command.contains("$base/.codex/skills"));
+        assert!(command.contains("$base/MEMORY.md"));
+        assert!(!command.contains("rm -rf"));
+    }
+
+    #[test]
+    fn merged_project_context_is_bounded() {
+        let local = "a".repeat(MAX_PROJECT_CONTEXT_CHARS);
+        let merged = merge_project_context(&local, "remote");
+        assert!(
+            merged.chars().count()
+                <= MAX_PROJECT_CONTEXT_CHARS + "\n[项目上下文已截断]".chars().count()
+        );
+        assert!(merged.contains("[项目上下文已截断]"));
+    }
 
     #[test]
     fn user_question_options_keep_structured_labels_and_fallback_ids() {
@@ -3350,6 +5906,18 @@ mod tests {
         assert!(build_remote_search_command("glob", "relative", "*", None).is_err());
         assert!(build_remote_search_command("grep", "/srv/app", "*", Some("  ")).is_err());
         assert!(build_remote_search_command("unknown", "/srv/app", "*", None).is_err());
+    }
+
+    #[test]
+    fn workspace_state_restores_old_json_and_exposes_checkpoint_fields() {
+        let state: WorkspaceState =
+            serde_json::from_str(r#"{"reads":{},"remote_meta":{},"patches":{},"applied":{}}"#)
+                .unwrap();
+        assert!(state.checkpoints.is_empty());
+        let value = AgentRun::workspace_changes_value(&state);
+        assert_eq!(value["pending_count"], 0);
+        assert_eq!(value["applied_count"], 0);
+        assert!(value["checkpoints"].as_array().is_some());
     }
 
     #[test]
@@ -3490,6 +6058,26 @@ mod tests {
     }
 
     #[test]
+    fn responses_stream_accumulates_reasoning_and_function_arguments() {
+        let mut accumulator = TurnAccumulator::default();
+        for event in [
+            json!({"type":"response.reasoning_summary_text.delta","delta":"thinking"}).to_string(),
+            json!({"type":"response.output_text.delta","delta":"checking"}).to_string(),
+            json!({"type":"response.output_item.added","output_index":0,"item":{"type":"function_call","call_id":"call_r","name":"read_file","arguments":""}}).to_string(),
+            json!({"type":"response.function_call_arguments.delta","output_index":0,"delta":"{\"path\":\""}).to_string(),
+            json!({"type":"response.function_call_arguments.delta","output_index":0,"delta":"README.md\"}"}).to_string(),
+            json!({"type":"response.function_call_arguments.done","output_index":0,"arguments":"{\"path\":\"README.md\"}"}).to_string(),
+        ] {
+            assert!(!accumulator.apply_responses_event(&event).unwrap().0);
+        }
+        let turn = accumulator.finish();
+        assert_eq!(turn.thinking, "thinking");
+        assert_eq!(turn.text, "checking");
+        assert_eq!(turn.tool_calls[0].id, "call_r");
+        assert_eq!(turn.tool_calls[0].arguments, r#"{"path":"README.md"}"#);
+    }
+
+    #[test]
     fn stream_error_payloads_fail_the_turn() {
         let mut accumulator = TurnAccumulator::default();
         assert!(accumulator
@@ -3581,7 +6169,11 @@ mod tests {
             is_error: false,
         };
 
-        let mut openai = AgentConversation::new(AiApiFormat::OpenaiCompatible, Vec::new());
+        let mut openai = AgentConversation::new(
+            AiApiFormat::OpenaiCompatible,
+            Vec::new(),
+            MAX_CONTEXT_WINDOW_TOKENS,
+        );
         openai.push_assistant_turn(&turn);
         openai.push_tool_results(&[(turn.tool_calls[0].clone(), outcome)]);
         assert_eq!(
@@ -3595,7 +6187,11 @@ mod tests {
             content: "失败".to_string(),
             is_error: true,
         };
-        let mut anthropic = AgentConversation::new(AiApiFormat::Anthropic, Vec::new());
+        let mut anthropic = AgentConversation::new(
+            AiApiFormat::Anthropic,
+            Vec::new(),
+            MAX_CONTEXT_WINDOW_TOKENS,
+        );
         anthropic.push_assistant_turn(&turn);
         anthropic.push_tool_results(&[(turn.tool_calls[0].clone(), outcome)]);
         assert_eq!(anthropic.messages[0]["content"][1]["type"], "tool_use");
@@ -3620,5 +6216,85 @@ mod tests {
             combine_output_preview("out\n", "err\n"),
             "out\n[stderr]\nerr"
         );
+    }
+
+    #[test]
+    fn background_task_status_requires_zero_exit_code() {
+        let success = Ok(ExecOutput {
+            stdout: Vec::new(),
+            stderr: Vec::new(),
+            exit_status: Some(0),
+        });
+        let failure = Ok(ExecOutput {
+            stdout: Vec::new(),
+            stderr: Vec::new(),
+            exit_status: Some(7),
+        });
+        let transport_error = Err(AppError::new("ai_task_failed", "执行失败", "test", true));
+        assert_eq!(background_task_status(&success, false, false), "succeeded");
+        assert_eq!(background_task_status(&failure, false, false), "failed");
+        assert_eq!(
+            background_task_status(&transport_error, false, false),
+            "failed"
+        );
+        assert_eq!(background_task_status(&failure, true, true), "cancelled");
+        assert_eq!(
+            background_task_status(&failure, true, false),
+            "stop_requested_unconfirmed"
+        );
+    }
+
+    #[test]
+    fn context_compaction_keeps_recent_messages_without_recursive_growth() {
+        let mut conversation =
+            AgentConversation::new(AiApiFormat::OpenaiCompatible, Vec::new(), 1_000);
+        conversation.messages = (0..12)
+            .map(|index| {
+                json!({
+                    "role": if index % 2 == 0 { "user" } else { "assistant" },
+                    "content": format!("message-{index} {}", "x".repeat(500)),
+                })
+            })
+            .collect();
+
+        assert!(conversation.compact_if_needed("system", false));
+        assert!(conversation.messages.len() <= 9);
+        assert_eq!(conversation.messages[0]["role"], "system");
+        assert_eq!(conversation.compact_count, 1);
+    }
+
+    #[test]
+    fn full_command_output_preserves_content_for_artifact_storage() {
+        let stdout = "a".repeat(MAX_MODEL_OUTPUT_CHARS + 10);
+        let formatted = format_full_command_output(Some(0), 12, &stdout, "err");
+        assert!(formatted.contains(&stdout));
+        assert!(formatted.ends_with("stderr:\nerr"));
+    }
+
+    #[test]
+    fn provider_retry_classification_distinguishes_transient_and_permanent_errors() {
+        let rate_limited = AppError::new(
+            "ai_provider_request_failed",
+            "AI 服务返回错误。",
+            "status=429 body=busy",
+            true,
+        );
+        let unauthorized = AppError::new(
+            "ai_provider_request_failed",
+            "AI 服务返回错误。",
+            "status=401 body=invalid key",
+            true,
+        );
+        let parse_error = AppError::new(
+            "ai_stream_parse_failed",
+            "AI 流式响应解析失败。",
+            "invalid json",
+            true,
+        );
+        assert!(should_retry_provider_error(&rate_limited));
+        assert!(!should_retry_provider_error(&unauthorized));
+        assert!(!should_retry_provider_error(&parse_error));
+        assert_eq!(provider_retry_delay(1), Duration::from_millis(400));
+        assert_eq!(provider_retry_delay(2), Duration::from_millis(800));
     }
 }

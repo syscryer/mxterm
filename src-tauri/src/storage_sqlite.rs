@@ -27,6 +27,7 @@ CREATE TABLE IF NOT EXISTS ai_agent_tasks (
     command TEXT NOT NULL,
     status TEXT NOT NULL,
     output TEXT NOT NULL DEFAULT '',
+    output_artifact_id TEXT,
     exit_status INTEGER,
     cancel_requested INTEGER NOT NULL DEFAULT 0,
     created_at_ms TEXT NOT NULL,
@@ -200,6 +201,18 @@ CREATE TABLE IF NOT EXISTS ai_chat_sessions (
 CREATE INDEX IF NOT EXISTS idx_ai_chat_sessions_updated_at
     ON ai_chat_sessions(updated_at DESC);
 
+CREATE TABLE IF NOT EXISTS ai_agent_workspace_states (
+    session_id TEXT NOT NULL,
+    scope_key TEXT NOT NULL,
+    state_json TEXT NOT NULL,
+    updated_at_ms TEXT NOT NULL,
+    PRIMARY KEY(session_id, scope_key),
+    FOREIGN KEY(session_id) REFERENCES ai_chat_sessions(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_ai_agent_workspace_states_session
+    ON ai_agent_workspace_states(session_id, updated_at_ms DESC);
+
 CREATE TABLE IF NOT EXISTS ai_chat_messages (
     id TEXT PRIMARY KEY,
     session_id TEXT NOT NULL,
@@ -269,6 +282,11 @@ impl SqliteStore {
             "tool_calls_json",
             "ALTER TABLE ai_chat_messages
              ADD COLUMN tool_calls_json TEXT NOT NULL DEFAULT '[]'",
+        )?;
+        self.add_column_if_missing(
+            "ai_agent_tasks",
+            "output_artifact_id",
+            "ALTER TABLE ai_agent_tasks ADD COLUMN output_artifact_id TEXT",
         )?;
         self.add_column_if_missing(
             "ai_chat_messages",
@@ -548,6 +566,7 @@ pub struct AiTaskSnapshot {
     pub command: String,
     pub status: String,
     pub output: String,
+    pub output_artifact_id: Option<String>,
     pub exit_status: Option<u32>,
     pub cancel_requested: bool,
     pub created_at_ms: u128,
@@ -568,15 +587,16 @@ pub fn upsert_ai_task(app: &AppHandle, task: &AiTaskSnapshot) -> Result<(), AppE
     connection
         .execute(
             "INSERT INTO ai_agent_tasks
-                (id, session_id, workspace, command, status, output, exit_status,
+                (id, session_id, workspace, command, status, output, output_artifact_id, exit_status,
                  cancel_requested, created_at_ms, updated_at_ms, finished_at_ms)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
              ON CONFLICT(id) DO UPDATE SET
                 session_id = excluded.session_id,
                 workspace = excluded.workspace,
                 command = excluded.command,
                 status = excluded.status,
                 output = excluded.output,
+                output_artifact_id = excluded.output_artifact_id,
                 exit_status = excluded.exit_status,
                 cancel_requested = excluded.cancel_requested,
                 updated_at_ms = excluded.updated_at_ms,
@@ -588,6 +608,7 @@ pub fn upsert_ai_task(app: &AppHandle, task: &AiTaskSnapshot) -> Result<(), AppE
                 task.command,
                 task.status,
                 task.output,
+                task.output_artifact_id,
                 task.exit_status.map(i64::from),
                 i64::from(task.cancel_requested),
                 task.created_at_ms.to_string(),
@@ -603,7 +624,7 @@ pub fn get_ai_task(app: &AppHandle, id: &str) -> Result<Option<AiTaskSnapshot>, 
     let connection = open_ai_task_connection(app)?;
     connection
         .query_row(
-            "SELECT id, session_id, workspace, command, status, output, exit_status,
+            "SELECT id, session_id, workspace, command, status, output, output_artifact_id, exit_status,
                     cancel_requested, created_at_ms, updated_at_ms, finished_at_ms
              FROM ai_agent_tasks WHERE id = ?1",
             params![id],
@@ -615,18 +636,68 @@ pub fn get_ai_task(app: &AppHandle, id: &str) -> Result<Option<AiTaskSnapshot>, 
                     command: row.get(3)?,
                     status: row.get(4)?,
                     output: row.get(5)?,
-                    exit_status: row.get::<_, Option<i64>>(6)?.map(|value| value as u32),
-                    cancel_requested: row.get::<_, i64>(7)? != 0,
-                    created_at_ms: row.get::<_, String>(8)?.parse::<u128>().unwrap_or_default(),
-                    updated_at_ms: row.get::<_, String>(9)?.parse::<u128>().unwrap_or_default(),
+                    output_artifact_id: row.get(6)?,
+                    exit_status: row.get::<_, Option<i64>>(7)?.map(|value| value as u32),
+                    cancel_requested: row.get::<_, i64>(8)? != 0,
+                    created_at_ms: row.get::<_, String>(9)?.parse::<u128>().unwrap_or_default(),
+                    updated_at_ms: row.get::<_, String>(10)?.parse::<u128>().unwrap_or_default(),
                     finished_at_ms: row
-                        .get::<_, Option<String>>(10)?
+                        .get::<_, Option<String>>(11)?
                         .and_then(|value| value.parse::<u128>().ok()),
                 })
             },
         )
         .optional()
         .map_err(sqlite_query_error)
+}
+
+pub fn upsert_ai_workspace_state(
+    app: &AppHandle,
+    session_id: &str,
+    scope_key: &str,
+    state_json: &str,
+    updated_at_ms: u128,
+) -> Result<(), AppError> {
+    let connection = open_ai_task_connection(app)?;
+    connection
+        .execute(
+            "INSERT INTO ai_agent_workspace_states(session_id, scope_key, state_json, updated_at_ms)
+             VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(session_id, scope_key) DO UPDATE SET
+                state_json = excluded.state_json,
+                updated_at_ms = excluded.updated_at_ms",
+            params![session_id, scope_key, state_json, updated_at_ms.to_string()],
+        )
+        .map_err(sqlite_query_error)?;
+    Ok(())
+}
+
+pub fn get_ai_workspace_state(
+    app: &AppHandle,
+    session_id: &str,
+    scope_key: &str,
+) -> Result<Option<String>, AppError> {
+    let connection = open_ai_task_connection(app)?;
+    connection
+        .query_row(
+            "SELECT state_json FROM ai_agent_workspace_states
+             WHERE session_id = ?1 AND scope_key = ?2",
+            params![session_id, scope_key],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(sqlite_query_error)
+}
+
+pub fn delete_ai_workspace_states(app: &AppHandle, session_id: &str) -> Result<(), AppError> {
+    let connection = open_ai_task_connection(app)?;
+    connection
+        .execute(
+            "DELETE FROM ai_agent_workspace_states WHERE session_id = ?1",
+            params![session_id],
+        )
+        .map_err(sqlite_query_error)?;
+    Ok(())
 }
 
 pub fn mark_running_ai_tasks_interrupted(app: &AppHandle) -> Result<usize, AppError> {

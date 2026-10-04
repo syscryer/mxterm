@@ -4,14 +4,15 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use reqwest::{Client, Response, Url};
 use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::sync::Mutex as AsyncMutex;
 use tokio::task::JoinHandle;
-use tokio::time::{timeout, Duration};
+use tokio::time::{sleep, timeout, Duration};
 use uuid::Uuid;
 
 #[cfg(test)]
@@ -21,7 +22,9 @@ use crate::ai_agent::{
     TOOL_STATUS_PENDING_APPROVAL, TOOL_STATUS_PENDING_USER_INPUT, TOOL_STATUS_RUNNING,
 };
 use crate::app_error::AppError;
-use crate::events::{AiChatStreamEvent, AI_CHAT_STREAM_EVENT};
+use crate::events::{
+    AiBackgroundTaskEvent, AiChatStreamEvent, AiToolOutputEvent, AI_CHAT_STREAM_EVENT,
+};
 use crate::remote_exec_pool::RemoteExecSessionPool;
 use crate::ssh_config::resolve_saved_connection;
 use crate::storage_repository::StorageRepository;
@@ -37,10 +40,18 @@ pub(crate) const DEFAULT_REASONING_LEVEL: &str = "enabled";
 pub(crate) const REASONING_LEVELS: [&str; 3] = ["low", "medium", "high"];
 pub(crate) const ANTHROPIC_THINKING_BUDGET_TOKENS: [u32; 3] = [2_048, 8_192, 16_384];
 const MAX_AGENT_TERMINAL_OUTPUT_CHARS: usize = 20_000;
+const MAX_IMAGE_ATTACHMENT_BYTES: usize = 12 * 1024 * 1024;
+const MAX_IMAGE_ATTACHMENTS: usize = 4;
+const MAX_TEXT_ATTACHMENTS: usize = 8;
+const MAX_ATTACHMENT_PREVIEW_CHARS: usize = 4_000;
 #[cfg(test)]
 const MAX_HISTORY_TOOL_OUTPUT_CHARS: usize = 300;
 const MAX_CONTEXT_CHARS_PER_BLOCK: usize = 20_000;
+const MODEL_CONTEXT_RESERVED_TOKENS: usize = 16_384;
+const MODEL_CONTEXT_CHARS_PER_TOKEN: usize = 1;
 const MAX_SSE_ERROR_BODY_CHARS: usize = 1200;
+pub(crate) const MAX_PROVIDER_RETRIES: u8 = 2;
+const INITIAL_PROVIDER_RETRY_DELAY_MS: u64 = 400;
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -172,6 +183,16 @@ pub struct AiContextBlock {
     pub source: String,
     pub line_count: usize,
     pub char_count: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub artifact_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub storage_kind: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mime_type: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size_bytes: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data_url: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -215,6 +236,8 @@ pub struct AiUserAnswer {
 pub struct AiToolCallRecord {
     pub id: String,
     pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub arguments: Option<String>,
     #[serde(default)]
     pub command: Option<String>,
     pub status: String,
@@ -228,6 +251,8 @@ pub struct AiToolCallRecord {
     pub output: String,
     #[serde(default)]
     pub output_truncated: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_artifact_id: Option<String>,
     #[serde(default)]
     pub duration_ms: Option<u64>,
     #[serde(default)]
@@ -263,6 +288,7 @@ impl AiToolCallRecord {
         Self {
             id: id.to_string(),
             name: name.to_string(),
+            arguments: None,
             command: None,
             status: TOOL_STATUS_RUNNING.to_string(),
             risk: None,
@@ -270,6 +296,7 @@ impl AiToolCallRecord {
             exit_status: None,
             output: String::new(),
             output_truncated: false,
+            output_artifact_id: None,
             duration_ms: None,
             error: None,
             text_offset,
@@ -329,6 +356,24 @@ pub struct AiChatSession {
 #[derive(Clone, Debug, Deserialize)]
 pub struct AiChatSessionIdRequest {
     pub session_id: String,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct AiChatAttachmentReadRequest {
+    pub session_id: String,
+    pub attachment_id: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct AiAttachmentReadResponse {
+    pub kind: String,
+    pub title: String,
+    pub source: String,
+    pub content: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mime_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub data_url: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -411,9 +456,22 @@ pub struct AiChatStreamStopRequest {
 }
 
 #[derive(Clone, Debug, Serialize)]
+pub(crate) struct AiImageAttachment {
+    pub(crate) title: String,
+    pub(crate) media_type: String,
+    pub(crate) data_base64: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
 pub(crate) struct AiModelMessage {
     pub(crate) role: String,
     pub(crate) content: String,
+    #[serde(skip)]
+    pub(crate) images: Vec<AiImageAttachment>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) tool_calls: Vec<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) tool_call_id: Option<String>,
 }
 
 #[derive(Clone)]
@@ -452,6 +510,7 @@ pub(crate) struct StreamEmitter {
     stream_id: String,
     session_id: String,
     message_id: String,
+    active: Arc<AtomicBool>,
 }
 
 impl StreamEmitter {
@@ -460,6 +519,12 @@ impl StreamEmitter {
     }
     pub(crate) fn session_id(&self) -> &str {
         &self.session_id
+    }
+    pub(crate) fn message_id(&self) -> &str {
+        &self.message_id
+    }
+    pub(crate) fn is_active(&self) -> bool {
+        self.active.load(Ordering::SeqCst)
     }
     fn event(&self, kind: &str) -> AiChatStreamEvent {
         AiChatStreamEvent {
@@ -472,6 +537,8 @@ impl StreamEmitter {
             content: None,
             error: None,
             tool_call: None,
+            tool_output: None,
+            background_task: None,
         }
     }
 
@@ -500,7 +567,29 @@ impl StreamEmitter {
         });
     }
 
+    pub(crate) fn tool_output(&self, tool_call_id: String, delta: String, stream: &str) {
+        if delta.is_empty() {
+            return;
+        }
+        self.emit(AiChatStreamEvent {
+            tool_output: Some(AiToolOutputEvent {
+                tool_call_id,
+                delta,
+                stream: stream.to_string(),
+            }),
+            ..self.event("tool_output")
+        });
+    }
+
+    pub(crate) fn background_task(&self, update: AiBackgroundTaskEvent) {
+        self.emit(AiChatStreamEvent {
+            background_task: Some(update),
+            ..self.event("background_task")
+        });
+    }
+
     fn finished(&self, content: String) {
+        self.active.store(false, Ordering::SeqCst);
         self.emit(AiChatStreamEvent {
             content: Some(content),
             ..self.event("finished")
@@ -508,6 +597,7 @@ impl StreamEmitter {
     }
 
     fn stopped(&self, content: String) {
+        self.active.store(false, Ordering::SeqCst);
         self.emit(AiChatStreamEvent {
             content: Some(content),
             ..self.event("stopped")
@@ -515,6 +605,7 @@ impl StreamEmitter {
     }
 
     fn failed(&self, content: String, error: String) {
+        self.active.store(false, Ordering::SeqCst);
         self.emit(AiChatStreamEvent {
             content: Some(content),
             error: Some(error),
@@ -548,7 +639,8 @@ impl Default for AiChatStreamManager {
 impl AiChatStreamManager {
     fn forget_workspace_state(&self, session_id: &str) {
         if let Ok(mut states) = self.workspace_states.try_lock() {
-            states.remove(session_id);
+            let prefix = format!("{session_id}\n");
+            states.retain(|key, _| !key.starts_with(&prefix));
         }
     }
 
@@ -556,11 +648,13 @@ impl AiChatStreamManager {
         let stream_id = prepared.response.stream_id.clone();
         let session_id = prepared.response.session_id.clone();
         let message_id = prepared.response.assistant_message_id.clone();
+        let active = Arc::new(AtomicBool::new(true));
         let emitter = StreamEmitter {
             app: app.clone(),
             stream_id: stream_id.clone(),
             session_id: session_id.clone(),
             message_id: message_id.clone(),
+            active,
         };
         let content = Arc::new(StdMutex::new(String::new()));
         let thinking = Arc::new(StdMutex::new(String::new()));
@@ -576,13 +670,32 @@ impl AiChatStreamManager {
         let task_user_inputs = Arc::clone(&user_inputs);
         let task_stopped = Arc::clone(&stopped);
         let task_tasks = Arc::clone(&self.tasks);
-        let task_workspace_state = {
+        let workspace_scope = prepared
+            .agent
+            .as_ref()
+            .map(ai_agent::workspace_scope_key)
+            .unwrap_or_else(|| "none".to_string());
+        let workspace_cache_key = format!("{session_id}\n{workspace_scope}");
+        let (task_workspace_state, should_hydrate_workspace_state) = {
             let mut states = self.workspace_states.lock().await;
-            states
-                .entry(session_id.clone())
-                .or_insert_with(|| Arc::new(AsyncMutex::new(Default::default())))
-                .clone()
+            if let Some(state) = states.get(&workspace_cache_key) {
+                (state.clone(), false)
+            } else {
+                let state = Arc::new(AsyncMutex::new(Default::default()));
+                states.insert(workspace_cache_key.clone(), state.clone());
+                (state, true)
+            }
         };
+        if should_hydrate_workspace_state {
+            if let Ok(Some(state_json)) =
+                crate::storage_sqlite::get_ai_workspace_state(&app, &session_id, &workspace_scope)
+            {
+                if let Ok(restored) = serde_json::from_str::<ai_agent::WorkspaceState>(&state_json)
+                {
+                    *task_workspace_state.lock().await = restored;
+                }
+            }
+        }
         let task_emitter = emitter.clone();
 
         let task = tokio::spawn(async move {
@@ -612,6 +725,8 @@ impl AiChatStreamManager {
                         pending_separator: AtomicBool::new(false),
                         reasoning_level: reasoning_level.as_deref(),
                         files: task_workspace_state,
+                        workspace_scope,
+                        message_persist_failed: AtomicBool::new(false),
                         audit_failed: AtomicBool::new(false),
                         tasks: Arc::clone(&task_tasks),
                     };
@@ -648,6 +763,18 @@ impl AiChatStreamManager {
             };
 
             if task_stopped.load(Ordering::SeqCst) {
+                let final_content = strip_tool_call_summary(locked_string(&task_content));
+                let final_thinking = locked_string(&task_thinking);
+                let final_tool_calls = settle_tool_calls(&task_tool_calls, &task_emitter);
+                let _ = update_assistant_message(
+                    &app,
+                    &task_emitter.session_id,
+                    &task_emitter.message_id,
+                    &final_content,
+                    &final_thinking,
+                    "stopped",
+                    &final_tool_calls,
+                );
                 manager.finish_stream(&task_emitter.stream_id).await;
                 return;
             }
@@ -657,9 +784,9 @@ impl AiChatStreamManager {
             let final_tool_calls = settle_tool_calls(&task_tool_calls, &task_emitter);
             let (status, error) = match result {
                 Ok(()) => ("complete", None),
-                Err(error) => ("error", Some(error.message)),
+                Err(error) => ("error", Some(user_visible_ai_error(&error))),
             };
-            let _ = update_assistant_message(
+            let save_result = update_assistant_message(
                 &app,
                 &task_emitter.session_id,
                 &task_emitter.message_id,
@@ -668,6 +795,14 @@ impl AiChatStreamManager {
                 status,
                 &final_tool_calls,
             );
+            if let Err(error) = save_result {
+                task_emitter.failed(
+                    final_content,
+                    format!("会话状态保存失败：{}", error.message),
+                );
+                manager.finish_stream(&task_emitter.stream_id).await;
+                return;
+            }
             match error {
                 None => task_emitter.finished(final_content),
                 Some(error) => task_emitter.failed(final_content, error),
@@ -960,6 +1095,72 @@ pub fn ai_chat_session_get(
 }
 
 #[tauri::command]
+pub fn ai_chat_attachment_read(
+    app: AppHandle,
+    request: AiChatAttachmentReadRequest,
+) -> Result<AiAttachmentReadResponse, AppError> {
+    let repository = StorageRepository::open_app(&app)?;
+    let session_id = require_non_empty(
+        &request.session_id,
+        "ai_session_missing",
+        "AI 会话标识缺失。",
+    )?;
+    ensure_chat_session_exists(&repository, session_id)?;
+    let attachment_id = require_non_empty(
+        &request.attachment_id,
+        "ai_attachment_missing",
+        "附件编号缺失。",
+    )?;
+    let context = list_chat_messages(&repository, session_id)?
+        .into_iter()
+        .flat_map(|message| message.contexts)
+        .find(|block| block.artifact_id.as_deref() == Some(attachment_id))
+        .ok_or_else(|| {
+            AppError::new(
+                "ai_attachment_missing",
+                "附件不存在或不属于当前会话。",
+                attachment_id.to_string(),
+                true,
+            )
+        })?;
+    let bytes = read_attachment_artifact(&app, session_id, attachment_id)?;
+    if context.kind == "image" {
+        let mime_type = context
+            .mime_type
+            .clone()
+            .unwrap_or_else(|| "image/png".to_string());
+        return Ok(AiAttachmentReadResponse {
+            kind: context.kind,
+            title: context.title,
+            source: context.source,
+            content: context.content,
+            mime_type: Some(mime_type.clone()),
+            data_url: Some(format!(
+                "data:{};base64,{}",
+                mime_type,
+                BASE64_STANDARD.encode(bytes)
+            )),
+        });
+    }
+    let content = String::from_utf8(bytes).map_err(|error| {
+        AppError::new(
+            "ai_attachment_invalid",
+            "文本附件不是有效的 UTF-8 内容。",
+            error,
+            true,
+        )
+    })?;
+    Ok(AiAttachmentReadResponse {
+        kind: context.kind,
+        title: context.title,
+        source: context.source,
+        content,
+        mime_type: context.mime_type,
+        data_url: None,
+    })
+}
+
+#[tauri::command]
 pub fn ai_chat_session_delete(
     app: AppHandle,
     manager: State<'_, AiChatStreamManager>,
@@ -978,6 +1179,9 @@ pub fn ai_chat_session_delete(
             params![session_id],
         )
         .map_err(sqlite_ai_error)?;
+    ai_agent::delete_output_artifacts(&app, session_id)?;
+    delete_attachment_artifacts(&app, session_id)?;
+    crate::storage_sqlite::delete_ai_workspace_states(&app, session_id)?;
     manager.forget_workspace_state(session_id);
     Ok(())
 }
@@ -1013,6 +1217,9 @@ pub fn ai_chat_session_clear(
             params![session_id],
         )
         .map_err(sqlite_ai_error)?;
+    ai_agent::delete_output_artifacts(&app, &session_id)?;
+    delete_attachment_artifacts(&app, &session_id)?;
+    crate::storage_sqlite::delete_ai_workspace_states(&app, &session_id)?;
     manager.forget_workspace_state(&session_id);
     get_chat_session(&repository, &session_id)
 }
@@ -1064,14 +1271,6 @@ fn prepare_stream(
     request: AiChatStreamStartRequest,
 ) -> Result<PreparedAiStream, AppError> {
     let user_content = request.content.trim().to_string();
-    if user_content.is_empty() {
-        return Err(AppError::new(
-            "ai_message_missing",
-            "请输入要发送给 AI 的问题。",
-            "message is blank",
-            true,
-        ));
-    }
     let provider_config_id = require_non_empty(
         &request.provider_config_id,
         "ai_provider_config_missing",
@@ -1088,10 +1287,6 @@ fn prepare_stream(
     apply_model_override(&mut config, request.model.as_deref());
     let api_key = api_key_for_config(&repository, &config)?;
     let reasoning_level = effective_reasoning_level(&config, request.reasoning_level.as_deref())?;
-    let agent = request
-        .agent
-        .map(|agent| prepare_agent(app, agent))
-        .transpose()?;
     let host_scope = validate_bounded_tag(
         request.host_scope,
         "ai_host_scope_invalid",
@@ -1102,43 +1297,75 @@ fn prepare_stream(
         "ai_connection_id_invalid",
         "连接标识过长。",
     )?;
-    let session_id = match trim_optional(request.session_id).as_deref() {
-        Some(existing_id) => {
-            ensure_chat_session_exists(&repository, existing_id)?;
-            repository
-                .sqlite_connection()
-                .execute(
-                    "UPDATE ai_chat_sessions
-                        SET provider_config_id = ?2, updated_at = ?3
-                      WHERE id = ?1",
-                    params![existing_id, provider_config_id, now],
-                )
-                .map_err(sqlite_ai_error)?;
-            existing_id.to_string()
-        }
-        None => {
-            let next_id = Uuid::new_v4().to_string();
-            repository
-                .sqlite_connection()
-                .execute(
-                    "INSERT INTO ai_chat_sessions(id, title, provider_config_id, host_scope, connection_id, created_at, updated_at)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)",
-                    params![
-                        next_id,
-                        chat_title_from_content(&user_content),
-                        provider_config_id,
-                        host_scope,
-                        session_connection_id,
-                        now,
-                    ],
-                )
-                .map_err(sqlite_ai_error)?;
-            next_id
-        }
+    let requested_session_id = trim_optional(request.session_id);
+    let is_new_session = requested_session_id.is_none();
+    let session_id = if let Some(existing_id) = requested_session_id.as_deref() {
+        ensure_chat_session_exists(&repository, existing_id)?;
+        existing_id.to_string()
+    } else {
+        Uuid::new_v4().to_string()
+    };
+
+    let normalized_contexts = normalize_context_blocks(request.contexts)?;
+    let contexts = persist_context_artifacts(app, &session_id, normalized_contexts.clone())?;
+    if user_content.is_empty() && contexts.is_empty() {
+        return Err(AppError::new(
+            "ai_message_missing",
+            "请输入要发送给 AI 的问题。",
+            "message is blank",
+            true,
+        ));
+    }
+    if is_new_session {
+        repository
+            .sqlite_connection()
+            .execute(
+                "INSERT INTO ai_chat_sessions(id, title, provider_config_id, host_scope, connection_id, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)",
+                params![
+                    session_id,
+                    if user_content.is_empty() {
+                        "附件消息".to_string()
+                    } else {
+                        chat_title_from_content(&user_content)
+                    },
+                    provider_config_id,
+                    host_scope,
+                    session_connection_id,
+                    now,
+                ],
+            )
+            .map_err(sqlite_ai_error)?;
+    } else {
+        repository
+            .sqlite_connection()
+            .execute(
+                "UPDATE ai_chat_sessions
+                    SET provider_config_id = ?2, updated_at = ?3
+                  WHERE id = ?1",
+                params![session_id, provider_config_id, now],
+            )
+            .map_err(sqlite_ai_error)?;
+    }
+    let mut agent = request
+        .agent
+        .map(|agent| prepare_agent(app, agent))
+        .transpose()?;
+    let model_contexts = if agent.is_some() {
+        &contexts
+    } else {
+        &normalized_contexts
     };
 
     let previous_messages = list_chat_messages(&repository, &session_id)?;
-    let contexts = normalize_context_blocks(request.contexts);
+    if let Some(agent) = agent.as_mut() {
+        agent.attachments = previous_messages
+            .iter()
+            .flat_map(|message| message.contexts.iter().cloned())
+            .chain(contexts.iter().cloned())
+            .filter(|block| block.artifact_id.is_some())
+            .collect();
+    }
     insert_chat_message(
         &repository,
         InsertChatMessage {
@@ -1173,10 +1400,23 @@ fn prepare_stream(
         )
         .map_err(sqlite_ai_error)?;
 
-    let mut model_messages = model_messages_from_history(previous_messages);
+    let attachment_char_budget = model_attachment_char_budget(&config);
+    let mut model_messages = model_messages_from_history_with_budget_for_session(
+        app,
+        &session_id,
+        previous_messages,
+        attachment_char_budget,
+    )?;
     model_messages.push(AiModelMessage {
         role: "user".to_string(),
-        content: format_user_message_for_model(&user_content, &contexts),
+        content: format_user_message_for_model(
+            &user_content,
+            model_contexts,
+            attachment_char_budget,
+        ),
+        images: image_attachments_from_contexts_for_session(app, &session_id, &contexts)?,
+        tool_calls: Vec::new(),
+        tool_call_id: None,
     });
 
     Ok(PreparedAiStream {
@@ -1285,15 +1525,19 @@ fn prepare_agent(app: &AppHandle, request: AiAgentRequest) -> Result<PreparedAge
         Some("full") => AiAgentMode::Full,
         _ => AiAgentMode::Execute,
     };
-    Ok(PreparedAgent {
+    let mut agent = PreparedAgent {
         config,
         mode,
         working_directory: default_directory,
         host_local_directory,
         local_workspace,
+        attachments: Vec::new(),
         terminal_output,
         terminal_session_id: trim_optional(request.terminal_session_id),
-    })
+        project_context: String::new(),
+    };
+    agent.project_context = crate::ai_agent::load_local_project_context(&agent);
+    Ok(agent)
 }
 
 fn tail_chars_owned(value: &str, max_chars: usize) -> String {
@@ -1632,6 +1876,9 @@ async fn test_provider_config_connectivity(
             vec![AiModelMessage {
                 role: "user".to_string(),
                 content: "请仅回复 OK。".to_string(),
+                images: Vec::new(),
+                tool_calls: Vec::new(),
+                tool_call_id: None,
             }],
             stopped,
             |_| {},
@@ -2324,7 +2571,7 @@ fn list_chat_messages(
     Ok(messages)
 }
 
-fn update_assistant_message(
+pub(crate) fn update_assistant_message(
     app: &AppHandle,
     session_id: &str,
     message_id: &str,
@@ -2334,6 +2581,42 @@ fn update_assistant_message(
     tool_calls: &[AiToolCallRecord],
 ) -> Result<(), AppError> {
     let repository = StorageRepository::open_app(app)?;
+    save_assistant_message(
+        &repository,
+        session_id,
+        message_id,
+        content,
+        thinking,
+        status,
+        tool_calls,
+    )
+}
+
+pub(crate) fn update_assistant_message_preserving_status(
+    app: &AppHandle,
+    session_id: &str,
+    message_id: &str,
+    content: &str,
+    thinking: &str,
+    active_status: &str,
+    tool_calls: &[AiToolCallRecord],
+) -> Result<(), AppError> {
+    let repository = StorageRepository::open_app(app)?;
+    let current_status = repository
+        .sqlite_connection()
+        .query_row(
+            "SELECT status FROM ai_chat_messages WHERE id = ?1 AND role = 'assistant'",
+            params![message_id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(sqlite_ai_error)?
+        .unwrap_or_else(|| active_status.to_string());
+    let status = if current_status == "streaming" {
+        active_status
+    } else {
+        current_status.as_str()
+    };
     save_assistant_message(
         &repository,
         session_id,
@@ -2377,30 +2660,162 @@ fn save_assistant_message(
     Ok(())
 }
 
-fn model_messages_from_history(messages: Vec<AiChatMessage>) -> Vec<AiModelMessage> {
-    messages
-        .into_iter()
-        .filter_map(|message| {
-            if message.role != "user" && message.role != "assistant" {
-                return None;
-            }
-            if message.role == "assistant"
-                && message.content.trim().is_empty()
-                && message.tool_calls.is_empty()
-            {
-                return None;
-            }
-            let content = if message.role == "user" {
-                format_user_message_for_model(&message.content, &message.contexts)
-            } else {
-                strip_tool_call_summary(message.content)
-            };
-            Some(AiModelMessage {
-                role: message.role,
-                content,
+fn model_messages_from_history(
+    messages: Vec<AiChatMessage>,
+) -> Result<Vec<AiModelMessage>, AppError> {
+    model_messages_from_history_with_budget(messages, default_model_attachment_char_budget())
+}
+
+fn model_messages_from_history_with_budget(
+    messages: Vec<AiChatMessage>,
+    attachment_char_budget: usize,
+) -> Result<Vec<AiModelMessage>, AppError> {
+    model_messages_from_history_with_budget_inner(None, None, messages, attachment_char_budget)
+}
+
+fn model_messages_from_history_with_budget_for_session(
+    app: &AppHandle,
+    session_id: &str,
+    messages: Vec<AiChatMessage>,
+    attachment_char_budget: usize,
+) -> Result<Vec<AiModelMessage>, AppError> {
+    model_messages_from_history_with_budget_inner(
+        Some(app),
+        Some(session_id),
+        messages,
+        attachment_char_budget,
+    )
+}
+
+fn model_messages_from_history_with_budget_inner(
+    app: Option<&AppHandle>,
+    session_id: Option<&str>,
+    messages: Vec<AiChatMessage>,
+    attachment_char_budget: usize,
+) -> Result<Vec<AiModelMessage>, AppError> {
+    let mut output = Vec::new();
+    for message in messages {
+        if message.role == "user" {
+            output.push(AiModelMessage {
+                role: "user".to_string(),
+                content: format_user_message_for_model(
+                    &message.content,
+                    &message.contexts,
+                    attachment_char_budget,
+                ),
+                images: match (app, session_id) {
+                    (Some(app), Some(session_id)) => image_attachments_from_contexts_for_session(
+                        app,
+                        session_id,
+                        &message.contexts,
+                    )?,
+                    _ => image_attachments_from_contexts(&message.contexts)?,
+                },
+                tool_calls: Vec::new(),
+                tool_call_id: None,
+            });
+            continue;
+        }
+        if message.role != "assistant" {
+            continue;
+        }
+
+        let mut content = strip_tool_call_summary(message.content);
+        let replayable_calls = message
+            .tool_calls
+            .iter()
+            .filter_map(|call| {
+                let arguments = call.arguments.as_deref()?.trim();
+                if arguments.is_empty() {
+                    return None;
+                }
+                Some(json!({
+                    "id": call.id,
+                    "type": "function",
+                    "function": {
+                        "name": call.name,
+                        "arguments": arguments,
+                    },
+                }))
             })
-        })
-        .collect()
+            .collect::<Vec<_>>();
+        let legacy_results = message
+            .tool_calls
+            .iter()
+            .filter(|call| {
+                call.arguments
+                    .as_deref()
+                    .unwrap_or_default()
+                    .trim()
+                    .is_empty()
+            })
+            .map(format_tool_history_result)
+            .filter(|result| !result.is_empty())
+            .collect::<Vec<_>>();
+        if !legacy_results.is_empty() {
+            if !content.trim().is_empty() {
+                content.push_str("\n\n");
+            }
+            content.push_str("[历史工具结果]\n");
+            content.push_str(&legacy_results.join("\n"));
+        }
+        if content.trim().is_empty() && replayable_calls.is_empty() {
+            continue;
+        }
+        output.push(AiModelMessage {
+            role: "assistant".to_string(),
+            content,
+            images: Vec::new(),
+            tool_calls: replayable_calls,
+            tool_call_id: None,
+        });
+        for call in message.tool_calls {
+            if call
+                .arguments
+                .as_deref()
+                .unwrap_or_default()
+                .trim()
+                .is_empty()
+            {
+                continue;
+            }
+            output.push(AiModelMessage {
+                role: "tool".to_string(),
+                content: format_tool_history_result(&call),
+                images: Vec::new(),
+                tool_calls: Vec::new(),
+                tool_call_id: Some(call.id),
+            });
+        }
+    }
+    Ok(output)
+}
+
+fn format_tool_history_result(call: &AiToolCallRecord) -> String {
+    let mut result = format!("工具 {} 状态：{}", call.name, call.status);
+    if let Some(exit_status) = call.exit_status {
+        result.push_str(&format!("，退出码：{exit_status}"));
+    }
+    if let Some(error) = call
+        .error
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+    {
+        result.push_str(&format!("\n错误：{error}"));
+    }
+    if !call.output.trim().is_empty() {
+        result.push_str(&format!("\n输出：{}", call.output));
+    }
+    if let Some(artifact_id) = call
+        .output_artifact_id
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+    {
+        result.push_str(&format!(
+            "\n完整输出已保存，artifact_id={artifact_id}；可调用 read_tool_output 分段读取。"
+        ));
+    }
+    result
 }
 
 fn strip_tool_call_summary(content: String) -> String {
@@ -2472,6 +2887,62 @@ fn append_tool_call_summary(content: String, tool_calls: &[AiToolCallRecord]) ->
 }
 
 async fn run_provider_stream<F>(
+    config: &StoredAiProviderConfig,
+    api_key: &str,
+    reasoning_level: Option<&str>,
+    messages: Vec<AiModelMessage>,
+    stopped: Arc<AtomicBool>,
+    mut on_delta: F,
+    mut on_thinking: impl FnMut(String) + Send,
+) -> Result<(), AppError>
+where
+    F: FnMut(String) + Send,
+{
+    let mut attempt = 0;
+    loop {
+        if stopped.load(Ordering::SeqCst) {
+            return Ok(());
+        }
+        let attempt_emitted = Arc::new(AtomicBool::new(false));
+        let attempt_emitted_for_delta = Arc::clone(&attempt_emitted);
+        let attempt_emitted_for_thinking = Arc::clone(&attempt_emitted);
+        let result = run_provider_stream_once(
+            config,
+            api_key,
+            reasoning_level,
+            messages.clone(),
+            Arc::clone(&stopped),
+            |delta| {
+                if !delta.is_empty() {
+                    attempt_emitted_for_delta.store(true, Ordering::SeqCst);
+                }
+                on_delta(delta);
+            },
+            |delta| {
+                if !delta.is_empty() {
+                    attempt_emitted_for_thinking.store(true, Ordering::SeqCst);
+                }
+                on_thinking(delta);
+            },
+        )
+        .await;
+        match result {
+            Ok(()) => return Ok(()),
+            Err(error)
+                if !attempt_emitted.load(Ordering::SeqCst)
+                    && attempt < MAX_PROVIDER_RETRIES
+                    && should_retry_provider_error(&error)
+                    && !stopped.load(Ordering::SeqCst) =>
+            {
+                attempt += 1;
+                sleep(provider_retry_delay(attempt)).await;
+            }
+            Err(error) => return Err(error),
+        }
+    }
+}
+
+async fn run_provider_stream_once<F>(
     config: &StoredAiProviderConfig,
     api_key: &str,
     reasoning_level: Option<&str>,
@@ -2637,9 +3108,43 @@ where
     let input = messages
         .into_iter()
         .map(|message| {
+            let mut text = message.content;
+            if !message.tool_calls.is_empty() {
+                let calls = message
+                    .tool_calls
+                    .iter()
+                    .filter_map(|call| call.get("function"))
+                    .map(|function| {
+                        format!(
+                            "工具调用 {} 参数 {}",
+                            function
+                                .get("name")
+                                .and_then(Value::as_str)
+                                .unwrap_or("unknown"),
+                            function
+                                .get("arguments")
+                                .and_then(Value::as_str)
+                                .unwrap_or("{}")
+                        )
+                    })
+                    .collect::<Vec<_>>();
+                if !calls.is_empty() {
+                    if !text.is_empty() {
+                        text.push('\n');
+                    }
+                    text.push_str(&calls.join("\n"));
+                }
+            }
+            let mut content = vec![json!({ "type": "input_text", "text": text })];
+            content.extend(message.images.into_iter().map(|image| {
+                json!({
+                    "type": "input_image",
+                    "image_url": format!("data:{};base64,{}", image.media_type, image.data_base64),
+                })
+            }));
             json!({
-                "role": message.role,
-                "content": [{ "type": "input_text", "text": message.content }]
+                "role": if message.role == "tool" { "user" } else { message.role.as_str() },
+                "content": content
             })
         })
         .collect::<Vec<_>>();
@@ -2999,20 +3504,79 @@ fn normalize_models_endpoint(endpoint: &str, api_format: AiApiFormat) -> Result<
     Ok(url.to_string())
 }
 
-fn split_system_message(messages: Vec<AiModelMessage>) -> (String, Vec<AiModelMessage>) {
+fn split_system_message(messages: Vec<AiModelMessage>) -> (String, Vec<Value>) {
     let mut system_parts = vec![default_system_prompt().to_string()];
     let mut chat_messages = Vec::new();
     for message in messages {
         if message.role == "system" {
             system_parts.push(message.content);
         } else {
-            chat_messages.push(message);
+            if message.role == "assistant" && !message.tool_calls.is_empty() {
+                let mut content = Vec::new();
+                if !message.content.trim().is_empty() {
+                    content.push(json!({
+                        "type": "text",
+                        "text": message.content,
+                    }));
+                }
+                content.extend(message.tool_calls.iter().filter_map(|call| {
+                    let function = call.get("function")?;
+                    Some(json!({
+                        "type": "tool_use",
+                        "id": call.get("id").and_then(Value::as_str).unwrap_or_default(),
+                        "name": function.get("name").and_then(Value::as_str).unwrap_or_default(),
+                        "input": serde_json::from_str::<Value>(
+                            function
+                                .get("arguments")
+                                .and_then(Value::as_str)
+                                .unwrap_or("{}"),
+                        )
+                        .unwrap_or_else(|_| json!({})),
+                    }))
+                }));
+                chat_messages.push(json!({ "role": "assistant", "content": content }));
+            } else if message.role == "tool" {
+                chat_messages.push(json!({
+                    "role": "user",
+                    "content": [{
+                        "type": "tool_result",
+                        "tool_use_id": message.tool_call_id.unwrap_or_default(),
+                        "content": message.content,
+                    }]
+                }));
+            } else {
+                if message.images.is_empty() {
+                    chat_messages.push(json!({
+                        "role": message.role,
+                        "content": message.content,
+                    }));
+                } else {
+                    let mut content = vec![json!({
+                        "type": "text",
+                        "text": message.content,
+                    })];
+                    content.extend(message.images.iter().map(|image| {
+                        json!({
+                            "type": "image",
+                            "source": {
+                                "type": "base64",
+                                "media_type": &image.media_type,
+                                "data": &image.data_base64,
+                            }
+                        })
+                    }));
+                    chat_messages.push(json!({
+                        "role": message.role,
+                        "content": content,
+                    }));
+                }
+            }
         }
     }
     (system_parts.join("\n\n"), chat_messages)
 }
 
-fn openai_messages_with_system(messages: Vec<AiModelMessage>) -> Vec<AiModelMessage> {
+fn openai_messages_with_system(messages: Vec<AiModelMessage>) -> Vec<Value> {
     let mut system_parts = vec![default_system_prompt().to_string()];
     let mut chat_messages = Vec::with_capacity(messages.len() + 1);
     for message in messages {
@@ -3023,27 +3587,150 @@ fn openai_messages_with_system(messages: Vec<AiModelMessage>) -> Vec<AiModelMess
         }
     }
     let mut output = Vec::with_capacity(chat_messages.len() + 1);
-    output.push(AiModelMessage {
-        role: "system".to_string(),
-        content: system_parts.join("\n\n"),
-    });
-    output.extend(chat_messages);
+    output.push(json!({
+        "role": "system",
+        "content": system_parts.join("\n\n"),
+    }));
+    output.extend(chat_messages.into_iter().map(openai_message_value));
     output
+}
+
+pub(crate) fn openai_message_value(message: AiModelMessage) -> Value {
+    let content = if message.images.is_empty() {
+        Value::String(message.content)
+    } else {
+        let mut parts = vec![json!({
+            "type": "text",
+            "text": message.content,
+        })];
+        parts.extend(message.images.into_iter().map(|image| {
+            json!({
+                "type": "image_url",
+                "image_url": {
+                    "url": format!("data:{};base64,{}", image.media_type, image.data_base64),
+                }
+            })
+        }));
+        Value::Array(parts)
+    };
+    let mut value = json!({
+        "role": message.role,
+        "content": content,
+    });
+    if !message.tool_calls.is_empty() {
+        value["tool_calls"] = Value::Array(message.tool_calls);
+    }
+    if let Some(tool_call_id) = message.tool_call_id {
+        value["tool_call_id"] = Value::String(tool_call_id);
+    }
+    value
+}
+
+pub(crate) fn responses_message_values(message: AiModelMessage) -> Vec<Value> {
+    if message.role == "tool" {
+        return vec![json!({
+            "type": "function_call_output",
+            "call_id": message.tool_call_id.unwrap_or_default(),
+            "output": message.content,
+        })];
+    }
+    if message.role == "assistant" && !message.tool_calls.is_empty() {
+        let mut items = Vec::new();
+        if !message.content.trim().is_empty() {
+            items.push(json!({
+                "role": "assistant",
+                "content": [{ "type": "output_text", "text": message.content }]
+            }));
+        }
+        items.extend(message.tool_calls.into_iter().map(|call| {
+            json!({
+                "type": "function_call",
+                "call_id": call.get("id").and_then(Value::as_str).unwrap_or_default(),
+                "name": call.pointer("/function/name").and_then(Value::as_str).unwrap_or_default(),
+                "arguments": call.pointer("/function/arguments").and_then(Value::as_str).unwrap_or("{}"),
+            })
+        }));
+        return items;
+    }
+    let mut content = vec![json!({ "type": "input_text", "text": message.content })];
+    content.extend(message.images.into_iter().map(|image| {
+        json!({
+            "type": "input_image",
+            "image_url": format!("data:{};base64,{}", image.media_type, image.data_base64),
+        })
+    }));
+    vec![json!({ "role": message.role, "content": content })]
 }
 
 fn default_system_prompt() -> &'static str {
     "你是 mXterm 内置的终端排障和命令生成助手。回答要面向实际终端操作，解释原因、给出可验证步骤，并在命令可能破坏数据、权限、网络或服务时明确提示风险。不要声称已经执行命令。"
 }
 
-fn format_user_message_for_model(content: &str, contexts: &[AiContextBlock]) -> String {
+fn format_user_message_for_model(
+    content: &str,
+    contexts: &[AiContextBlock],
+    attachment_char_budget: usize,
+) -> String {
     if contexts.is_empty() {
         return content.to_string();
     }
     let mut formatted = String::from("以下是用户在发送前可见并确认附加的上下文：\n");
+    let mut remaining_file_count = contexts.iter().filter(|block| block.kind == "file").count();
+    let mut remaining_chars = attachment_char_budget;
     for block in contexts {
+        if block.kind == "image" {
+            formatted.push_str(&format!(
+                "\n[图片附件 | {} | {}{}]\n请结合这张图片回答用户问题。\n",
+                block.title,
+                block.source,
+                block
+                    .artifact_id
+                    .as_deref()
+                    .map(|id| format!(" | attachment_id={id}"))
+                    .unwrap_or_default()
+            ));
+            continue;
+        }
+        let model_content = if block.kind == "file" {
+            if let Some(attachment_id) = block.artifact_id.as_deref() {
+                format!(
+                    "{}\n\n[完整附件已保存；Agent 模式需要查看时调用 read_attachment，attachment_id={attachment_id}，可用 offset/limit 分段读取。]",
+                    block.content
+                )
+            } else {
+                let allocation = if remaining_file_count == 0 {
+                    0
+                } else {
+                    (remaining_chars / remaining_file_count).max(1)
+                };
+                let (excerpt, truncated) = excerpt_text_for_model(&block.content, allocation);
+                remaining_file_count = remaining_file_count.saturating_sub(1);
+                remaining_chars =
+                    remaining_chars.saturating_sub(block.content.chars().count().min(allocation));
+                if truncated {
+                    format!(
+                        "{}\n\n[附件中间内容因模型上下文限制未发送；完整内容仍保存在会话附件中。]",
+                        excerpt
+                    )
+                } else {
+                    excerpt
+                }
+            }
+        } else {
+            block.content.clone()
+        };
         formatted.push_str(&format!(
-            "\n[{} | {} | {} 行 | {} 字]\n{}\n",
-            block.title, block.source, block.line_count, block.char_count, block.content
+            "\n[{} | {} | {} 行 | {} 字{}]\n{}\n",
+            block.title,
+            block.source,
+            block.line_count,
+            block.char_count,
+            block
+                .artifact_id
+                .as_deref()
+                .map(|id| format!(" | attachment_id={id}"))
+                .unwrap_or_default(),
+            model_content
         ));
     }
     formatted.push_str("\n用户问题：\n");
@@ -3051,22 +3738,401 @@ fn format_user_message_for_model(content: &str, contexts: &[AiContextBlock]) -> 
     formatted
 }
 
-fn normalize_context_blocks(blocks: Vec<AiContextBlock>) -> Vec<AiContextBlock> {
+fn default_model_attachment_char_budget() -> usize {
+    model_attachment_char_budget_for_tokens(default_context_window() as usize)
+}
+
+fn model_attachment_char_budget(config: &StoredAiProviderConfig) -> usize {
+    let context_window = config
+        .models
+        .iter()
+        .find(|model| model.id == config.model)
+        .map(|model| model.context_window as usize)
+        .filter(|window| *window > 0)
+        .unwrap_or_else(|| default_context_window() as usize);
+    model_attachment_char_budget_for_tokens(context_window)
+}
+
+fn model_attachment_char_budget_for_tokens(context_window: usize) -> usize {
+    let reserved_tokens = context_window.min(MODEL_CONTEXT_RESERVED_TOKENS);
+    let usable_tokens = context_window
+        .saturating_sub(reserved_tokens)
+        .max(context_window / 2);
+    usable_tokens
+        .saturating_mul(MODEL_CONTEXT_CHARS_PER_TOKEN)
+        .saturating_mul(3)
+        / 4
+}
+
+fn excerpt_text_for_model(content: &str, max_chars: usize) -> (String, bool) {
+    let chars = content.chars().collect::<Vec<_>>();
+    if chars.len() <= max_chars {
+        return (content.to_string(), false);
+    }
+    if max_chars < 32 {
+        return (chars.into_iter().take(max_chars).collect(), true);
+    }
+    let head_chars = max_chars * 2 / 5;
+    let tail_chars = max_chars.saturating_sub(head_chars);
+    let mut excerpt = chars[..head_chars].iter().collect::<String>();
+    excerpt.push_str("\n\n[…中间内容已省略…]\n\n");
+    excerpt.extend(chars[chars.len().saturating_sub(tail_chars)..].iter());
+    (excerpt, true)
+}
+
+fn user_visible_ai_error(error: &AppError) -> String {
+    let detail = error.raw_message.trim();
+    if detail.is_empty() || detail == error.message {
+        return error.message.clone();
+    }
+    format!("{}（{}）", error.message, truncate_chars(detail, 360))
+}
+
+fn image_attachments_from_contexts(
+    contexts: &[AiContextBlock],
+) -> Result<Vec<AiImageAttachment>, AppError> {
+    contexts
+        .iter()
+        .filter(|block| block.kind == "image")
+        .map(|block| {
+            let data_url = block.data_url.as_deref().ok_or_else(|| {
+                AppError::new(
+                    "ai_image_attachment_missing",
+                    "图片附件数据缺失。",
+                    block.title.clone(),
+                    true,
+                )
+            })?;
+            parse_image_data_url(data_url, &block.title)
+        })
+        .collect()
+}
+
+fn image_attachments_from_contexts_for_session(
+    app: &AppHandle,
+    session_id: &str,
+    contexts: &[AiContextBlock],
+) -> Result<Vec<AiImageAttachment>, AppError> {
+    contexts
+        .iter()
+        .filter(|block| block.kind == "image")
+        .map(|block| {
+            if let Some(attachment_id) = block.artifact_id.as_deref() {
+                let bytes = read_attachment_artifact(app, session_id, attachment_id)?;
+                let media_type = block
+                    .mime_type
+                    .as_deref()
+                    .and_then(|value| value.split(';').next())
+                    .filter(|value| value.starts_with("image/"))
+                    .unwrap_or("image/png");
+                let data_url = format!(
+                    "data:{};base64,{}",
+                    media_type,
+                    BASE64_STANDARD.encode(bytes)
+                );
+                return parse_image_data_url(&data_url, &block.title);
+            }
+            let data_url = block.data_url.as_deref().ok_or_else(|| {
+                AppError::new(
+                    "ai_image_attachment_missing",
+                    "图片附件数据缺失。",
+                    block.title.clone(),
+                    true,
+                )
+            })?;
+            parse_image_data_url(data_url, &block.title)
+        })
+        .collect()
+}
+
+fn parse_image_data_url(data_url: &str, title: &str) -> Result<AiImageAttachment, AppError> {
+    let (header, encoded) = data_url.trim().split_once(',').ok_or_else(|| {
+        AppError::new(
+            "ai_image_attachment_invalid",
+            "图片附件格式无效。",
+            format!("{title}: missing data URL payload"),
+            true,
+        )
+    })?;
+    let media_type = header
+        .strip_prefix("data:")
+        .and_then(|value| value.split(';').next())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    if !matches!(
+        media_type.as_str(),
+        "image/png" | "image/jpeg" | "image/gif" | "image/webp"
+    ) || !header.to_ascii_lowercase().contains(";base64")
+    {
+        return Err(AppError::new(
+            "ai_image_attachment_unsupported",
+            "仅支持 PNG、JPEG、GIF 和 WebP 图片附件。",
+            format!("{title}: unsupported media type"),
+            true,
+        ));
+    }
+    let encoded = encoded.trim();
+    let max_encoded_len = ((MAX_IMAGE_ATTACHMENT_BYTES + 2) / 3) * 4 + 4;
+    if encoded.len() > max_encoded_len {
+        return Err(AppError::new(
+            "ai_image_attachment_too_large",
+            "图片附件超过 12 MB 限制。",
+            format!("{title}: encoded payload is too large"),
+            true,
+        ));
+    }
+    let bytes = BASE64_STANDARD.decode(encoded).map_err(|error| {
+        AppError::new(
+            "ai_image_attachment_invalid",
+            "图片附件内容无法读取。",
+            format!("{title}: {error}"),
+            true,
+        )
+    })?;
+    if bytes.is_empty() || bytes.len() > MAX_IMAGE_ATTACHMENT_BYTES {
+        return Err(AppError::new(
+            "ai_image_attachment_too_large",
+            "图片附件为空或超过 12 MB 限制。",
+            format!("{title}: {} bytes", bytes.len()),
+            true,
+        ));
+    }
+    if !image_signature_matches(&media_type, &bytes) {
+        return Err(AppError::new(
+            "ai_image_attachment_invalid",
+            "图片附件内容与声明的格式不匹配。",
+            title.to_string(),
+            true,
+        ));
+    }
+    Ok(AiImageAttachment {
+        title: non_empty_or(title.to_string(), "图片附件"),
+        media_type,
+        data_base64: BASE64_STANDARD.encode(bytes),
+    })
+}
+
+fn image_signature_matches(media_type: &str, bytes: &[u8]) -> bool {
+    match media_type {
+        "image/png" => bytes.starts_with(b"\x89PNG\r\n\x1a\n"),
+        "image/jpeg" => bytes.starts_with(&[0xff, 0xd8, 0xff]),
+        "image/gif" => bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a"),
+        "image/webp" => bytes.len() >= 12 && bytes.starts_with(b"RIFF") && &bytes[8..12] == b"WEBP",
+        _ => false,
+    }
+}
+
+fn attachment_root_for_session(
+    app: &AppHandle,
+    session_id: &str,
+) -> Result<std::path::PathBuf, AppError> {
+    Uuid::parse_str(session_id).map_err(|error| {
+        AppError::new(
+            "ai_attachment_session_invalid",
+            "附件会话编号无效。",
+            error,
+            true,
+        )
+    })?;
+    let root = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| {
+            AppError::new(
+                "ai_attachment_path_failed",
+                "附件保存目录不可用。",
+                error,
+                true,
+            )
+        })?
+        .join("ai-agent-attachments")
+        .join(session_id);
+    std::fs::create_dir_all(&root).map_err(|error| {
+        AppError::new(
+            "ai_attachment_path_failed",
+            "附件保存目录创建失败。",
+            error,
+            true,
+        )
+    })?;
+    Ok(root)
+}
+
+fn attachment_path_for_session(
+    app: &AppHandle,
+    session_id: &str,
+    attachment_id: &str,
+) -> Result<std::path::PathBuf, AppError> {
+    Uuid::parse_str(attachment_id)
+        .map_err(|error| AppError::new("ai_attachment_invalid", "附件编号无效。", error, true))?;
+    Ok(attachment_root_for_session(app, session_id)?.join(format!("{attachment_id}.bin")))
+}
+
+fn save_attachment_artifact(
+    app: &AppHandle,
+    session_id: &str,
+    bytes: &[u8],
+) -> Result<String, AppError> {
+    let attachment_id = Uuid::new_v4().to_string();
+    let path = attachment_path_for_session(app, session_id, &attachment_id)?;
+    std::fs::write(path, bytes).map_err(|error| {
+        AppError::new("ai_attachment_write_failed", "附件保存失败。", error, true)
+    })?;
+    Ok(attachment_id)
+}
+
+pub(crate) fn read_attachment_artifact(
+    app: &AppHandle,
+    session_id: &str,
+    attachment_id: &str,
+) -> Result<Vec<u8>, AppError> {
+    let path = attachment_path_for_session(app, session_id, attachment_id)?;
+    std::fs::read(path).map_err(|error| {
+        AppError::new(
+            "ai_attachment_read_failed",
+            "附件内容读取失败。",
+            error,
+            true,
+        )
+    })
+}
+
+pub(crate) fn delete_attachment_artifacts(
+    app: &AppHandle,
+    session_id: &str,
+) -> Result<(), AppError> {
+    let root = attachment_root_for_session(app, session_id)?;
+    match std::fs::remove_dir_all(root) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(AppError::new(
+            "ai_attachment_delete_failed",
+            "附件清理失败。",
+            error,
+            true,
+        )),
+    }
+}
+
+fn persist_context_artifacts(
+    app: &AppHandle,
+    session_id: &str,
+    blocks: Vec<AiContextBlock>,
+) -> Result<Vec<AiContextBlock>, AppError> {
     blocks
         .into_iter()
-        .filter_map(|mut block| {
+        .map(|mut block| {
+            if block.kind == "image" {
+                let data_url = block.data_url.as_deref().ok_or_else(|| {
+                    AppError::new(
+                        "ai_image_attachment_missing",
+                        "图片附件数据缺失。",
+                        block.title.clone(),
+                        true,
+                    )
+                })?;
+                let image = parse_image_data_url(data_url, &block.title)?;
+                let bytes = BASE64_STANDARD
+                    .decode(&image.data_base64)
+                    .map_err(|error| {
+                        AppError::new(
+                            "ai_image_attachment_invalid",
+                            "图片附件内容无法读取。",
+                            format!("{}: {error}", block.title),
+                            true,
+                        )
+                    })?;
+                block.artifact_id = Some(save_attachment_artifact(app, session_id, &bytes)?);
+                block.storage_kind = Some("session_artifact".to_string());
+                block.mime_type = Some(image.media_type);
+                block.size_bytes = Some(bytes.len() as u64);
+                block.content = format!("图片附件：{}", block.title);
+                block.data_url = None;
+                return Ok(block);
+            }
+            if block.kind == "file" {
+                let bytes = block.content.as_bytes();
+                block.artifact_id = Some(save_attachment_artifact(app, session_id, bytes)?);
+                block.storage_kind = Some("session_artifact".to_string());
+                block.mime_type = Some("text/plain; charset=utf-8".to_string());
+                block.size_bytes = Some(bytes.len() as u64);
+                let (preview, _) =
+                    excerpt_text_for_model(&block.content, MAX_ATTACHMENT_PREVIEW_CHARS);
+                block.content = preview;
+                block.data_url = None;
+                return Ok(block);
+            }
+            Ok(block)
+        })
+        .collect()
+}
+
+fn normalize_context_blocks(blocks: Vec<AiContextBlock>) -> Result<Vec<AiContextBlock>, AppError> {
+    let mut image_count = 0usize;
+    let mut text_count = 0usize;
+    blocks
+        .into_iter()
+        .map(|mut block| {
+            if block.kind == "image" {
+                image_count += 1;
+                if image_count > MAX_IMAGE_ATTACHMENTS {
+                    return Err(AppError::new(
+                        "ai_image_attachment_limit",
+                        "一次最多添加 4 张图片。",
+                        "too many image attachments",
+                        true,
+                    ));
+                }
+                let data_url = block.data_url.as_deref().ok_or_else(|| {
+                    AppError::new(
+                        "ai_image_attachment_missing",
+                        "图片附件数据缺失。",
+                        block.title.clone(),
+                        true,
+                    )
+                })?;
+                let image = parse_image_data_url(data_url, &block.title)?;
+                block.title = non_empty_or(block.title, "图片附件");
+                block.content = format!("图片附件：{}", block.title);
+                block.line_count = 1;
+                block.char_count = block.content.chars().count();
+                block.data_url = Some(format!(
+                    "data:{};base64,{}",
+                    image.media_type, image.data_base64
+                ));
+                return Ok(Some(block));
+            }
+            if block.kind == "file" {
+                text_count += 1;
+                if text_count > MAX_TEXT_ATTACHMENTS {
+                    return Err(AppError::new(
+                        "ai_text_attachment_limit",
+                        "一次最多添加 8 个文本附件。",
+                        "too many text attachments",
+                        true,
+                    ));
+                }
+                block.title = non_empty_or(block.title, "文本附件");
+                block.source = non_empty_or(block.source, "本地附件");
+                block.line_count = block.content.lines().count().max(1);
+                block.char_count = block.content.chars().count();
+                block.data_url = None;
+                return Ok(Some(block));
+            }
             block.content = truncate_chars(block.content.trim(), MAX_CONTEXT_CHARS_PER_BLOCK);
             if block.content.is_empty() {
-                return None;
+                return Ok(None);
             }
             block.title = non_empty_or(block.title, "上下文");
             block.kind = non_empty_or(block.kind, "custom");
             block.source = non_empty_or(block.source, "mXterm");
             block.char_count = block.content.chars().count();
             block.line_count = block.content.lines().count().max(1);
-            Some(block)
+            block.data_url = None;
+            Ok(Some(block))
         })
-        .collect()
+        .collect::<Result<Vec<_>, AppError>>()
+        .map(|blocks| blocks.into_iter().flatten().collect())
 }
 
 fn extract_command_suggestions(content: &str) -> Vec<AiCommandSuggestion> {
@@ -3423,6 +4489,45 @@ pub(crate) fn provider_request_error(error: reqwest::Error) -> AppError {
         sanitize_provider_error_body(&error.to_string()),
         true,
     )
+}
+
+pub(crate) fn should_retry_provider_error(error: &AppError) -> bool {
+    let raw = error.raw_message.to_ascii_lowercase();
+    if error.code == "ai_provider_request_failed" {
+        if let Some(status) = raw.split_whitespace().find_map(|part| {
+            part.strip_prefix("status=")
+                .and_then(|value| value.parse::<u16>().ok())
+        }) {
+            return matches!(status, 408 | 409 | 425 | 429 | 500..=599);
+        }
+        return [
+            "timed out",
+            "timeout",
+            "connection",
+            "connect error",
+            "broken pipe",
+            "body unavailable",
+        ]
+        .iter()
+        .any(|marker| raw.contains(marker));
+    }
+    if error.code == "ai_provider_stream_error" {
+        return [
+            "rate limit",
+            "rate_limit",
+            "overload",
+            "temporar",
+            "timeout",
+        ]
+        .iter()
+        .any(|marker| raw.contains(marker));
+    }
+    false
+}
+
+pub(crate) fn provider_retry_delay(attempt: u8) -> Duration {
+    let exponent = attempt.saturating_sub(1).min(3) as u32;
+    Duration::from_millis(INITIAL_PROVIDER_RETRY_DELAY_MS * 2_u64.pow(exponent))
 }
 
 fn invalid_models_response_error(source: &str) -> AppError {
@@ -3922,10 +5027,16 @@ mod tests {
         let messages = openai_messages_with_system(vec![AiModelMessage {
             role: "user".to_string(),
             content: "帮我分析报错".to_string(),
+            images: Vec::new(),
+            tool_calls: Vec::new(),
+            tool_call_id: None,
         }]);
-        assert_eq!(messages[0].role, "system");
-        assert!(messages[0].content.contains("终端排障"));
-        assert_eq!(messages[1].role, "user");
+        assert_eq!(messages[0]["role"], "system");
+        assert!(messages[0]["content"]
+            .as_str()
+            .unwrap()
+            .contains("终端排障"));
+        assert_eq!(messages[1]["role"], "user");
     }
 
     #[test]
@@ -4306,9 +5417,10 @@ mod tests {
         let messages = list_chat_messages(&repository, "session-tools").unwrap();
         assert_eq!(messages[0].tool_calls.len(), 2);
         assert_eq!(messages[0].tool_calls[1].text_offset, 4);
-        let history = model_messages_from_history(messages);
+        let history = model_messages_from_history(messages).unwrap();
         assert_eq!(history.len(), 1);
-        assert_eq!(history[0].content, "磁盘已满");
+        assert!(history[0].content.starts_with("磁盘已满"));
+        assert!(history[0].content.contains("历史工具结果"));
     }
 
     #[test]
@@ -4329,6 +5441,90 @@ mod tests {
             summary,
             "[本轮工具调用记录]\n- server_monitor → 失败：连接失败"
         );
+    }
+
+    #[test]
+    fn image_attachment_validates_signature_and_preserves_media_type() {
+        let data_url = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
+        let image = parse_image_data_url(data_url, "pixel.png").unwrap();
+        assert_eq!(image.media_type, "image/png");
+        assert!(!image.data_base64.is_empty());
+        assert!(parse_image_data_url("data:image/png;base64,aGVsbG8=", "bad.png").is_err());
+    }
+
+    #[test]
+    fn text_attachment_keeps_full_content_without_context_truncation() {
+        let block = AiContextBlock {
+            id: "file-1".to_string(),
+            kind: "file".to_string(),
+            title: "notes.md".to_string(),
+            content: "  first line  \nsecond line\n".to_string(),
+            source: "本地附件".to_string(),
+            line_count: 1,
+            char_count: 0,
+            artifact_id: None,
+            storage_kind: None,
+            mime_type: None,
+            size_bytes: None,
+            data_url: None,
+        };
+        let normalized = normalize_context_blocks(vec![block]).unwrap();
+        assert_eq!(normalized[0].content, "  first line  \nsecond line\n");
+        assert_eq!(normalized[0].line_count, 2);
+    }
+
+    #[test]
+    fn large_text_attachment_keeps_full_content() {
+        let mut content = String::from("日志开头\n");
+        content.push_str(&"x".repeat(2 * 1024 * 1024 + 1));
+        content.push_str("\n日志结尾");
+        let expected_len = content.len();
+        let block = AiContextBlock {
+            id: "file-large".to_string(),
+            kind: "file".to_string(),
+            title: "playwright-mcp-server.1.log".to_string(),
+            content,
+            source: "本地附件".to_string(),
+            line_count: 0,
+            char_count: 0,
+            artifact_id: None,
+            storage_kind: None,
+            mime_type: None,
+            size_bytes: None,
+            data_url: None,
+        };
+
+        let normalized = normalize_context_blocks(vec![block]).unwrap();
+        assert_eq!(normalized[0].content.len(), expected_len);
+        assert!(normalized[0].content.starts_with("日志开头\n"));
+        assert!(normalized[0].content.ends_with("\n日志结尾"));
+        assert_eq!(normalized[0].line_count, 3);
+    }
+
+    #[test]
+    fn model_attachment_excerpt_keeps_head_and_tail() {
+        let content = format!("开头{}结尾", "x".repeat(128));
+        let (excerpt, truncated) = excerpt_text_for_model(&content, 48);
+
+        assert!(truncated);
+        assert!(excerpt.starts_with("开头"));
+        assert!(excerpt.contains("…中间内容已省略…"));
+        assert!(excerpt.ends_with("结尾"));
+        assert!(model_attachment_char_budget_for_tokens(200_000) < 200_000);
+    }
+
+    #[test]
+    fn provider_error_keeps_safe_diagnostic_detail() {
+        let error = AppError::new(
+            "ai_provider_request_failed",
+            "AI 服务返回错误。",
+            "status=413 body=context length exceeded",
+            true,
+        );
+        let visible = user_visible_ai_error(&error);
+        assert!(visible.contains("AI 服务返回错误"));
+        assert!(visible.contains("status=413"));
+        assert!(visible.contains("context length exceeded"));
     }
 
     fn temp_repository(name: &str) -> (StorageRepository, Arc<InMemorySecretStore>) {

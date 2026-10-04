@@ -3,7 +3,15 @@ export type AiApiFormat = "openai_compatible" | "anthropic" | "responses";
 export type AiCommandRisk = "safe" | "dangerous";
 export type AiAgentMode = "execute" | "full";
 export type AiExecutionMode = "chat" | AiAgentMode;
-export type AiChatStreamKind = "chunk" | "thinking" | "tool_call" | "finished" | "error" | "stopped";
+export type AiChatStreamKind =
+  | "chunk"
+  | "thinking"
+  | "tool_call"
+  | "tool_output"
+  | "background_task"
+  | "finished"
+  | "error"
+  | "stopped";
 export type AiToolCallStatus =
   | "pending_approval"
   | "pending_user_input"
@@ -78,6 +86,21 @@ export interface AiContextBlock {
   source: string;
   line_count: number;
   char_count: number;
+  /** 会话级附件 Artifact 编号；存在时模型按需读取完整内容。 */
+  artifact_id?: string | null;
+  storage_kind?: "session_artifact" | "inline" | "metadata_only" | string | null;
+  mime_type?: string | null;
+  size_bytes?: number | null;
+  data_url?: string | null;
+}
+
+export interface AiAttachmentReadResponse {
+  kind: string;
+  title: string;
+  source: string;
+  content: string;
+  mime_type?: string | null;
+  data_url?: string | null;
 }
 
 export interface AiCommandSuggestion {
@@ -102,6 +125,7 @@ export interface AiToolCallRecord {
   exit_status?: number | null;
   output: string;
   output_truncated: boolean;
+  output_artifact_id?: string | null;
   duration_ms?: number | null;
   error?: string | null;
   text_offset: number;
@@ -221,4 +245,21 @@ export interface AiChatStreamEvent {
   content?: string | null;
   error?: string | null;
   tool_call?: AiToolCallRecord | null;
+  tool_output?: AiToolOutputEvent | null;
+  background_task?: AiBackgroundTaskEvent | null;
+}
+
+export interface AiToolOutputEvent {
+  tool_call_id: string;
+  delta: string;
+  stream: string;
+}
+
+export interface AiBackgroundTaskEvent {
+  task_id: string;
+  tool_call_id: string;
+  status: string;
+  exit_status?: number | null;
+  output_artifact_id?: string | null;
+  output_preview: string;
 }

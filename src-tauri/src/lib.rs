@@ -1,6 +1,7 @@
 mod ai_agent;
 mod ai_assistant;
 mod ai_audit;
+mod ai_search;
 mod ai_web;
 mod ai_workspace;
 pub mod app_error;
@@ -236,6 +237,7 @@ pub fn run() {
             ai_assistant::ai_provider_models_list,
             ai_assistant::ai_chat_session_list,
             ai_assistant::ai_chat_session_get,
+            ai_assistant::ai_chat_attachment_read,
             ai_assistant::ai_chat_session_delete,
             ai_assistant::ai_chat_session_clear,
             ai_assistant::ai_chat_stream_start,

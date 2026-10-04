@@ -14185,7 +14185,7 @@ body.vnc-runner-window-body {
   gap: 4px;
 }
 
-.ai-message-contexts span,
+.ai-message-contexts > span,
 .ai-command-card header span {
   border: 1px solid var(--mx-line);
   border-radius: 999px;
@@ -14196,6 +14196,19 @@ body.vnc-runner-window-body {
   color: var(--mx-subtle);
   background: var(--mx-panel-soft);
   font-size: 10.5px;
+}
+
+.ai-message-contexts .ai-message-context-image {
+  max-width: 220px;
+  padding: 2px 6px 2px 2px;
+}
+
+.ai-message-context-image img {
+  width: 22px;
+  height: 22px;
+  border-radius: 4px;
+  object-fit: cover;
+  background: var(--mx-panel);
 }
 
 .ai-command-suggestions {
@@ -14402,12 +14415,6 @@ body.vnc-runner-window-body {
   }
 }
 
-@media (prefers-reduced-motion: reduce) {
-  .ai-streaming-spinner {
-    animation: none;
-  }
-}
-
 .stream-text-disclosure {
   min-width: 0;
   color: var(--mx-muted);
@@ -14573,6 +14580,18 @@ body.vnc-runner-window-body {
 .ai-tool-summary:focus-visible {
   outline: 2px solid color-mix(in srgb, var(--mx-primary) 42%, transparent);
   outline-offset: 1px;
+}
+
+.ai-tool-live-output {
+  max-height: 72px;
+  margin: -2px 0 2px 19px;
+  overflow: hidden;
+  color: var(--mx-muted);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  line-height: 1.4;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
 .ai-tool-summary .ui-icon {
@@ -15108,10 +15127,6 @@ body.vnc-runner-window-body {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .ai-tool-spinner {
-    animation: none;
-  }
-
   .ai-tool-card.flowing .ai-tool-summary {
     background: transparent;
   }
@@ -15353,6 +15368,136 @@ body.vnc-runner-window-body {
   max-width: 148px;
   color: var(--mx-subtle);
   font-size: 9.5px;
+}
+
+.ai-compose-context-image {
+  width: 28px;
+  height: 28px;
+  border: 1px solid var(--mx-line-soft);
+  border-radius: 5px;
+  flex: 0 0 auto;
+  object-fit: cover;
+  background: var(--mx-panel);
+}
+
+.ai-image-attachment-input {
+  display: none;
+}
+
+.ai-compose-context-preview,
+.ai-message-context {
+  border: 0;
+  cursor: pointer;
+}
+
+.ai-compose-context-preview {
+  width: 28px;
+  height: 28px;
+  border-radius: 5px;
+  display: inline-grid;
+  place-items: center;
+  flex: 0 0 auto;
+  padding: 0;
+  color: var(--mx-primary);
+  background: var(--mx-panel-soft);
+}
+
+.ai-compose-context-preview:hover,
+.ai-compose-context-preview:focus-visible {
+  background: var(--mx-panel);
+  outline: 1px solid var(--mx-line);
+}
+
+.ai-message-context {
+  border: 1px solid var(--mx-line);
+  border-radius: 999px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 6px;
+  color: var(--mx-subtle);
+  background: var(--mx-panel-soft);
+  font: inherit;
+  font-size: 10.5px;
+}
+
+.ai-message-context:hover,
+.ai-message-context:focus-visible {
+  color: var(--mx-text);
+  border-color: var(--mx-line-strong);
+  outline: none;
+}
+
+.ai-message-context > span {
+  overflow: hidden;
+  max-width: 180px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.attachment-preview-backdrop {
+  z-index: 24;
+}
+
+.attachment-preview-dialog {
+  position: fixed;
+  inset: 50% auto auto 50%;
+  z-index: 25;
+  width: min(720px, calc(100vw - 32px));
+  max-height: min(720px, calc(100vh - 48px));
+  transform: translate(-50%, -50%);
+  overflow: hidden;
+  border: 1px solid var(--mx-line);
+  border-radius: 8px;
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+  color: var(--mx-text);
+  background: var(--mx-panel);
+  box-shadow: var(--mx-glass-shadow);
+}
+
+.attachment-preview-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.attachment-preview-title {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.attachment-preview-meta {
+  margin-top: 3px;
+  color: var(--mx-subtle);
+  font-size: 11px;
+}
+
+.attachment-preview-image {
+  display: block;
+  width: 100%;
+  max-height: min(62vh, 560px);
+  border-radius: 6px;
+  object-fit: contain;
+  background: var(--mx-panel-soft);
+}
+
+.attachment-preview-text {
+  min-height: 120px;
+  max-height: min(62vh, 560px);
+  overflow: auto;
+  margin: 0;
+  padding: 12px;
+  border: 1px solid var(--mx-line-soft);
+  border-radius: 6px;
+  color: var(--mx-text);
+  background: var(--mx-panel-soft);
+  font: 12px/1.55 var(--mx-font-mono);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
 .ai-compose-context-chip > .ui-icon {
