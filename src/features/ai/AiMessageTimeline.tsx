@@ -6,6 +6,7 @@ import type { AiChatMessage, AiToolCallRecord } from "./aiTypes";
 
 interface AiMessageFlowProps {
   message: AiChatMessage;
+  isStreaming?: boolean;
   renderText: (text: string) => ReactNode;
   renderTool: (call: AiToolCallRecord, flowing?: boolean) => ReactNode;
 }
@@ -17,8 +18,13 @@ function parseTimestamp(value: string, fallback: number) {
   return Number.isFinite(parsed) ? parsed : fallback;
 }
 
-export function AiMessageTimeline({ message, renderText, renderTool }: AiMessageFlowProps) {
-  const streaming = message.status === "streaming";
+export function AiMessageTimeline({
+  message,
+  isStreaming,
+  renderText,
+  renderTool,
+}: AiMessageFlowProps) {
+  const streaming = isStreaming ?? message.status === "streaming";
   const [now, setNow] = useState(Date.now);
   useEffect(() => {
     if (!streaming) return;
@@ -29,7 +35,7 @@ export function AiMessageTimeline({ message, renderText, renderTool }: AiMessage
   const started = parseTimestamp(message.created_at, now);
   const ended = streaming ? now : parseTimestamp(message.updated_at, now);
   const elapsed = Math.max(0, Math.floor((ended - started) / 1000));
-  const items = buildAiMessageFlow(message);
+  const items = buildAiMessageFlow(message, streaming);
   const runningCommandIds = items
     .filter(
       (item): item is Extract<(typeof items)[number], { kind: "tool" }> =>

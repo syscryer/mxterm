@@ -52,7 +52,11 @@ export function finishThinkingBlock(message: AiChatMessage): AiChatMessage {
 }
 
 /** Interleave thought and tool boundaries with the original Unicode text offsets. */
-export function buildAiMessageFlow(message: AiChatMessage): AiMessageFlowItem[] {
+export function buildAiMessageFlow(
+  message: AiChatMessage,
+  streamingOverride?: boolean,
+): AiMessageFlowItem[] {
+  const streaming = streamingOverride ?? message.status === "streaming";
   const chars = Array.from(message.content);
   const calls = message.tool_calls;
   const blocks: AiThinkingBlock[] = message.thinking_blocks?.length
@@ -60,7 +64,7 @@ export function buildAiMessageFlow(message: AiChatMessage): AiMessageFlowItem[] 
     : message.thinking ? [{
         id: `${message.id}-legacy-thinking`, content: message.thinking,
         text_offset: 0, tool_offset: 0, started_at_ms: 0,
-        finished_at_ms: message.status === "streaming" ? null : 0,
+        finished_at_ms: streaming ? null : 0,
       }] : [];
   const boundaries = [
     ...calls.map((call, index) => ({

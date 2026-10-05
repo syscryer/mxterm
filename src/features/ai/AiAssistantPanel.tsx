@@ -1653,6 +1653,7 @@ export function AiAssistantPanel({
                       {contextsNode}
                       <AiMessageTimeline
                         message={message}
+                        isStreaming={streamState?.assistantMessageId === message.id}
                         renderText={renderMarkdownContent}
                         renderTool={renderToolCallCard}
                       />
