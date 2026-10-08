@@ -94,12 +94,30 @@ export function AiModelPicker({
       if (cached && cached.cacheKey === cacheKey) {
         return;
       }
+      const configuredModels = getConfiguredProviderModels(provider);
+      const fallbackModels =
+        configuredModels.length > 0
+          ? configuredModels
+          : provider.model.trim()
+            ? [withDefaultModelCapabilities({ id: provider.model.trim(), display_name: null })]
+            : [];
+
+      // Settings already contains the user's enabled model list. Render it immediately;
+      // a remote /models request should never delay opening the picker.
+      if (configuredModels.length > 0) {
+        setModelCache((previous) => ({
+          ...previous,
+          [provider.id]: { cacheKey, loading: false, models: configuredModels },
+        }));
+        return;
+      }
+
       setModelCache((previous) => ({
         ...previous,
         [provider.id]: {
           cacheKey,
           loading: true,
-          models: cached?.cacheKey === cacheKey ? cached.models : [],
+          models: fallbackModels,
         },
       }));
       void aiProviderModelsList({
@@ -135,27 +153,13 @@ export function AiModelPicker({
           });
         })
         .catch(() => {
-          const models: AiProviderModelOption[] = provider.models
-            .filter((model) => model.enabled)
-            .map((model) =>
-              withDefaultModelCapabilities({
-                id: model.id,
-                display_name: null,
-                subtitle: null,
-              }),
-            );
-          if (models.length === 0 && provider.model.trim()) {
-            models.push(
-              withDefaultModelCapabilities({ id: provider.model, display_name: null }),
-            );
-          }
           setModelCache((previous) => {
             if (previous[provider.id]?.cacheKey !== cacheKey) {
               return previous;
             }
             return {
               ...previous,
-              [provider.id]: { cacheKey, loading: false, models },
+              [provider.id]: { cacheKey, loading: false, models: fallbackModels },
             };
           });
         });
@@ -477,6 +481,18 @@ export function AiModelPicker({
         : null}
     </div>
   );
+}
+
+function getConfiguredProviderModels(provider: AiProviderConfig): AiProviderModelOption[] {
+  return provider.models
+    .filter((model) => model.enabled)
+    .map((model) =>
+      withDefaultModelCapabilities({
+        id: model.id,
+        display_name: null,
+        subtitle: null,
+      }),
+    );
 }
 
 function withDefaultModelCapabilities(model: AiProviderModelOption): AiProviderModelOption {

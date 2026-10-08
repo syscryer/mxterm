@@ -1063,7 +1063,8 @@ export function WorkspaceShell() {
   const [remoteFileTextAction, setRemoteFileTextAction] = useState<RemoteFileTextAction | null>(null);
   const [remoteFileTextValue, setRemoteFileTextValue] = useState("");
   const [remoteFileTextError, setRemoteFileTextError] = useState<string | null>(null);
-  const [rightTool, setRightTool] = useState<RemoteFileTool>("files");
+  const [rightToolByScopeKey, setRightToolByScopeKey] =
+    useState<Record<string, RemoteFileTool>>({});
   const [aiAssistantPanelLoaded, setAiAssistantPanelLoaded] = useState(false);
   const [settingsViewLoaded, setSettingsViewLoaded] = useState(false);
   const [LoadedSettingsView, setLoadedSettingsView] =
@@ -2048,9 +2049,6 @@ export function WorkspaceShell() {
     enabled: showVncWorkspace,
     itemCount: activeVncSessions.length,
   });
-  const shouldShowAiAssistantPanel = showWorkspaceToolPane && rightTool === "ai";
-  const shouldRenderAiAssistantPanel =
-    aiAssistantPanelLoaded || shouldShowAiAssistantPanel;
   const shouldRenderSettingsView = settingsViewLoaded || activeView === "settings";
   const SettingsViewComponent = LoadedSettingsView ?? SettingsView;
   const activeConnectionSelectionId =
@@ -2084,6 +2082,33 @@ export function WorkspaceShell() {
     : activeWorkspaceMode === "ssh"
       ? activeConnection
       : null;
+  const aiAssistantStateScopeKey = activeAiTerminalTab
+    ? `${activeAiConnection ? "ssh" : "local"}:${activeAiTerminalTab.id}`
+    : activeAiConnection
+      ? `connection:${activeAiConnection.id}`
+      : "local:default";
+  const rightTool = rightToolByScopeKey[aiAssistantStateScopeKey] || "files";
+  const setRightToolForScope = useCallback(
+    (scopeKey: string, tool: RemoteFileTool) => {
+      setRightToolByScopeKey((current) => ({
+        ...current,
+        [scopeKey]: tool,
+      }));
+    },
+    [],
+  );
+  const setRightTool = useCallback(
+    (tool: RemoteFileTool) => {
+      setRightToolByScopeKey((current) => ({
+        ...current,
+        [aiAssistantStateScopeKey]: tool,
+      }));
+    },
+    [aiAssistantStateScopeKey],
+  );
+  const shouldShowAiAssistantPanel = showWorkspaceToolPane && rightTool === "ai";
+  const shouldRenderAiAssistantPanel =
+    aiAssistantPanelLoaded || shouldShowAiAssistantPanel;
   const activeAiTerminalTitle = activeAiTerminalTab?.title || null;
   const aiSendMessageShortcutBinding = resolveShortcutBindingById(
     settings.shortcuts.bindings,
@@ -2303,6 +2328,7 @@ export function WorkspaceShell() {
     <Suspense fallback={<p className="file-panel-empty">正在加载 AI 面板...</p>}>
       <AiAssistantPanel
         active={activeView === "workspace" && showWorkspaceToolPane && !rightPaneCollapsed && rightTool === "ai"}
+        stateScopeKey={aiAssistantStateScopeKey}
         commandDraft={commandSenderInput}
         connection={activeAiConnection}
         connections={connections}
@@ -5838,7 +5864,10 @@ export function WorkspaceShell() {
     setAiContextRequestKey((key) => key + 1);
     setAiAssistantPanelLoaded(true);
     setRightPaneCollapsed(false);
-    setRightTool("ai");
+    setRightToolForScope(
+      terminalTabsRef.current.some((tab) => tab.id === tabId) ? `ssh:${tabId}` : `local:${tabId}`,
+      "ai",
+    );
   }
 
   function insertAiCommandToSender(command: string) {
@@ -7030,7 +7059,7 @@ export function WorkspaceShell() {
     setHomeActive(false);
     setActiveConnectionId(session.connectionId);
     setActiveRdpSessionId(session.id);
-    setRightTool("tools");
+    setRightToolForScope(`connection:${session.connectionId}`, "tools");
   }
 
   function closeRdpSession(sessionId: string) {
@@ -7408,7 +7437,7 @@ export function WorkspaceShell() {
     setHomeActive(false);
     setActiveConnectionId(session.connectionId);
     setActiveVncSessionId(session.id);
-    setRightTool("tools");
+    setRightToolForScope(`connection:${session.connectionId}`, "tools");
   }
 
   function closeVncSession(sessionId: string) {

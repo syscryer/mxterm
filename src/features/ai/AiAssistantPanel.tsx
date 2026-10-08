@@ -85,6 +85,7 @@ import type {
 
 interface AiAssistantPanelProps {
   active: boolean;
+  stateScopeKey?: string | null;
   commandDraft: string;
   connection: ConnectionProfile | null;
   connections: ConnectionProfile[];
@@ -107,6 +108,19 @@ interface StreamState {
   sessionId: string;
   streamId: string;
 }
+
+interface AiAssistantStateSnapshot {
+  activeSessionId: string | null;
+  messages: AiChatMessage[];
+  contextBlocks: AiContextBlock[];
+  input: string;
+  historyScopeChoice: string;
+  selectedUserOptionIds: Record<string, string>;
+  userInputDrafts: Record<string, string>;
+  expandedToolCallIds: Record<string, boolean>;
+}
+
+const aiAssistantStateCache = new Map<string, AiAssistantStateSnapshot>();
 
 const selectedProviderStorageKey = "mxterm.ai.selectedProviderConfigId";
 const selectedAgentModeStorageKey = "mxterm.ai.selectedExecutionMode";
@@ -168,6 +182,7 @@ function isAiExecutionMode(value: string | null): value is AiExecutionMode {
 
 export function AiAssistantPanel({
   active,
+  stateScopeKey = null,
   commandDraft,
   connection,
   connections,
@@ -185,16 +200,28 @@ export function AiAssistantPanel({
   onSendCommand,
 }: AiAssistantPanelProps) {
   const runtimeAvailable = hasTauriRuntime();
+  const initialStateSnapshotRef = useRef<AiAssistantStateSnapshot | null>(
+    stateScopeKey ? aiAssistantStateCache.get(stateScopeKey) || null : null,
+  );
+  const initialStateSnapshot = initialStateSnapshotRef.current;
   const [providerConfigs, setProviderConfigs] = useState<AiProviderConfig[]>([]);
   const [selectedProviderId, setSelectedProviderId] = useState(() =>
     window.localStorage.getItem(selectedProviderStorageKey) || "",
   );
   const [sessions, setSessions] = useState<AiChatSessionSummary[]>([]);
-  const [historyScopeChoice, setHistoryScopeChoice] = useState(HISTORY_SCOPE_CURRENT);
-  const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
-  const [messages, setMessages] = useState<AiChatMessage[]>([]);
-  const [contextBlocks, setContextBlocks] = useState<AiContextBlock[]>([]);
-  const [input, setInput] = useState("");
+  const [historyScopeChoice, setHistoryScopeChoice] = useState(
+    () => initialStateSnapshot?.historyScopeChoice || HISTORY_SCOPE_CURRENT,
+  );
+  const [activeSessionId, setActiveSessionId] = useState<string | null>(
+    () => initialStateSnapshot?.activeSessionId || null,
+  );
+  const [messages, setMessages] = useState<AiChatMessage[]>(
+    () => initialStateSnapshot?.messages || [],
+  );
+  const [contextBlocks, setContextBlocks] = useState<AiContextBlock[]>(
+    () => initialStateSnapshot?.contextBlocks || [],
+  );
+  const [input, setInput] = useState(() => initialStateSnapshot?.input || "");
   const [historyOpen, setHistoryOpen] = useState(false);
   const [auditOpen, setAuditOpen] = useState(false);
   const [auditEvents, setAuditEvents] = useState<AiAuditEvent[]>([]);
@@ -235,9 +262,15 @@ export function AiAssistantPanel({
   });
   const [decidingToolCallIds, setDecidingToolCallIds] = useState<string[]>([]);
   const [answeringToolCallIds, setAnsweringToolCallIds] = useState<string[]>([]);
-  const [selectedUserOptionIds, setSelectedUserOptionIds] = useState<Record<string, string>>({});
-  const [userInputDrafts, setUserInputDrafts] = useState<Record<string, string>>({});
-  const [expandedToolCallIds, setExpandedToolCallIds] = useState<Record<string, boolean>>({});
+  const [selectedUserOptionIds, setSelectedUserOptionIds] = useState<Record<string, string>>(
+    () => initialStateSnapshot?.selectedUserOptionIds || {},
+  );
+  const [userInputDrafts, setUserInputDrafts] = useState<Record<string, string>>(
+    () => initialStateSnapshot?.userInputDrafts || {},
+  );
+  const [expandedToolCallIds, setExpandedToolCallIds] = useState<Record<string, boolean>>(
+    () => initialStateSnapshot?.expandedToolCallIds || {},
+  );
   const [selectedModel, setSelectedModel] = useState("");
   const [reasoningLevels, setReasoningLevels] = useState<string[]>([]);
   const [selectedReasoningLevel, setSelectedReasoningLevel] = useState("");
@@ -379,6 +412,33 @@ export function AiAssistantPanel({
   useEffect(() => {
     streamStateRef.current = streamState;
   }, [streamState]);
+
+  useEffect(() => {
+    if (!stateScopeKey) {
+      return;
+    }
+    aiAssistantStateCache.set(stateScopeKey, {
+      activeSessionId,
+      messages,
+      contextBlocks,
+      input,
+      historyScopeChoice,
+      selectedUserOptionIds,
+      userInputDrafts,
+      expandedToolCallIds,
+    });
+  }, [
+    activeSessionId,
+    contextBlocks,
+    expandedToolCallIds,
+    historyScopeChoice,
+    input,
+    messages,
+    selectedUserOptionIds,
+    stateScopeKey,
+    userInputDrafts,
+  ]);
+
   useEffect(() => {
     if (!historyOpen) {
       setHistoryScopeOpen(false);
