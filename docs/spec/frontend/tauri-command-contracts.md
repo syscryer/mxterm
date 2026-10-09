@@ -1,5 +1,13 @@
 # Tauri Command Contracts
 
+## AI file change undo
+
+- Typed wrapper: `aiFileChangesUndo(sessionId, messageId, checkpointId)` → `ai_file_changes_undo`.
+- Request uses `{ request: { session_id, message_id, checkpoint_id } }`.
+- Response: `{ summary: AiFileChangeSummary, reverted_changes: number, error: string | null }`. A non-null error can accompany actual partial progress; apply the returned summary before showing the error.
+- Session history returns `message.file_changes`; stream `kind=file_changes` carries summaries keyed by assistant message/checkpoint. Update only matching sessions, including cached inactive views.
+- Undo requires no active Agent in the session, shared confirmation, and explicit conflict/error feedback. Persisted `streaming` status alone must not block a history undo after restart. Do not infer changes from generated prose or silently rewind conversation history.
+
 ## Scenario: React Wrappers for Rust Commands
 
 ### 1. Scope / Trigger
@@ -2242,8 +2250,12 @@ Compose footer control contract:
 ### 3. Contracts
 
 - Components must call AI backend commands through `src/shared/tauri/commands.ts`; do not call raw `invoke("ai_*")` from feature components.
-- Components must listen to `ai:chat_stream` through `listenAiChatStream(...)`, store the returned unlisten function, and call it during cleanup. Stream chunks must be matched by `stream_id` before mutating messages.
-- After `aiChatStreamStart(...)` returns, `AiAssistantPanel` must synchronously write the returned `stream_id` into its current stream ref before relying on React state/effects. Some providers can emit the first SSE chunk immediately, and waiting for a state commit can make the listener drop early chunks as stale.
+- AI conversation state is owned per terminal scope, not per panel instance. `WorkspaceShell` derives `aiAssistantStateScopeKey` (`ssh:<tabId>` / `local:<tabId>`, falling back to `connection:<id>` or `local:default`) and renders `<AiAssistantPanel key={scopeKey} stateScopeKey={scopeKey}>`, so every terminal or split-pane focus change remounts the panel with clean instance-local UI state (dialogs, errors, loading).
+- `activeSessionId`, `messages`, `streamState`, `contextBlocks`, `input`, `historyScopeChoice` and the `ask_user` drafts/expanded tool ids live in `src/features/ai/aiAssistantScopeStore.ts` and are read through `useAiScopeField(scopeKey, field)` (`useSyncExternalStore`). Writes land in the store even after the panel unmounted, so an in-flight `aiChatStreamStart` response still attaches to its original scope.
+- `ai:chat_stream` is consumed by exactly one module-level listener (`ensureAiScopeStreamListener`) registered on first panel mount and kept for the app session; it applies every event to every scope store via `applyAiStreamEventToScope`. Chunk/thinking/finished/stopped/error events must match the scope's `streamState.streamId`; `tool_call`, `tool_output` and `background_task` match by `message_id` because background results can arrive after the main stream ended. Panels must not register their own `listenAiChatStream` handlers for message state.
+- A scope keeps receiving events, pending approvals and stop control while its panel is unmounted. On remount the panel reads the live scope state, so approve/reject/answer/stop keep working with the stored `streamId`. UI side effects (notices, errors, session list reload) are delivered through `setAiScopeEffectHandler` only to the currently mounted panel of that scope and are dropped for unmounted scopes.
+- After `aiChatStreamStart(...)` returns, the panel writes the returned stream into the scope store synchronously (store writes are not deferred to a React commit), so the global listener never treats the first fast SSE chunk as stale. Handlers read the current stream through `readAiScopeState(scopeKey).streamState`, not a React state closure.
+- Terminal selection handoff (`contextRequestKey`) is consumed once per request across all panel instances; a panel remounted for another scope must not append the same `initialContexts` again.
 - `AiAssistantPanel` must be lazy-loaded from `WorkspaceShell`; do not statically import the panel component or provider logic into `main.tsx`, `App.tsx`, or top-level workspace startup code.
 - The right-pane first-level tool id is `ai`. It lives beside `files`, `monitor`, `commands`, and `tools`; local terminal workspaces may expose `commands` and `ai`.
 - Terminal right-click selection handoff uses xterm's selection API. The menu action only opens the AI pane and appends a visible `terminal_selection` context block; it must not automatically submit a model request.
@@ -2257,6 +2269,7 @@ Compose footer control contract:
 - Direct terminal sends must reuse the existing Command Sender write path so target selection, delivery status, and command history remain consistent.
 - Browser preview or non-Tauri runtime must show stable unavailable states and must not fake persistence or model calls.
 - The compose footer execution-mode picker offers chat, execute, and full-access modes, remembers the choice, and is disabled while a stream is running. Agent commands follow the active SSH or local terminal; an optional local file workspace does not change the command target.
+- Local and SSH workspaces are default directories and project context, not file access boundaries. File tools may use relative parent paths or absolute paths outside them, subject to the selected host's user permissions and existing approval/backup/conflict checks. An explicit `target=local` is still required for local file operations during an SSH conversation.
 - When the toggle is on, `sendMessage` passes `agent = { connection_id, working_directory, terminal_output }` with the current SSH connection id, tracked terminal directory, and the last 20000 chars of recent terminal output. When it is off, `agent` must be `null` so the backend never advertises tools.
 - Messages render as a flat flow, not cards: `.ai-message` has no border/background; user messages are a right-aligned `ai-message-bubble` (max-width 88%, primary-tinted) holding context chips + markdown content; assistant messages are full-width markdown content. The message header only appears while status is not `complete` (streaming / stopped / error) and shows just the status text — no role label. Hovering or focusing a message reveals `ai-message-meta` under it: a copy button (`copyTextToClipboard` on raw content) and the `HH:MM` local time parsed from `created_at` (epoch millis string; seconds and ISO strings are tolerated). The meta row reserves space and only changes opacity.
 - `tool_call` stream events upsert records by `id` into the matching assistant message; they must be matched by `stream_id` like chunks. Assistant messages with `tool_calls` render text segments and tool cards interleaved by `text_offset` (split with `Array.from(content)` to match Rust char counts).
@@ -2288,8 +2301,9 @@ Compose footer control contract:
 
 ### 5. Good / Base / Bad Cases
 
-- Good: AI panel registers one stream listener, cleans it up on unmount, and ignores stale stream ids.
-- Good: stream start stores the returned `stream_id` in a ref synchronously before the UI waits for React state, so early chunks from fast providers are preserved.
+- Good: the AI module registers one app-lifetime stream listener that routes events into per-scope stores and ignores stale stream ids.
+- Good: switching from terminal A (agent waiting for approval) to terminal B and back keeps A's pending approval card actionable, the stop button visible, and the text that streamed while A was hidden.
+- Good: stream start stores the returned `stream_id` in the scope store synchronously before the UI waits for React state, so early chunks from fast providers are preserved.
 - Good: provider settings edit metadata with `api_key_touched=false` when the API key field was not changed, preserving the vault secret.
 - Good: clicking the API Key eye button reveals the saved key for the current config only, shows it in the password field, and still preserves the vault secret if the user saves without editing it.
 - Good: terminal selected text becomes a visible context chip and waits for the user to type or send a question.
@@ -2301,6 +2315,8 @@ Compose footer control contract:
 - Bad: preloading AI panel code at app startup or importing provider request code into the workspace shell.
 - Bad: using `window.confirm`, native `<select>`, or feature-local menu styling for AI settings/actions.
 - Bad: updating only React stream state after `aiChatStreamStart` and letting the event listener read a stale/null ref during the first chunk.
+- Bad: snapshotting panel state on unmount and restoring it on remount without the live stream; events emitted while hidden are lost and pending approvals become unclickable.
+- Bad: reusing one panel instance across terminal scopes without a `key`, which shows terminal A's conversation in terminal B.
 
 ### 6. Tests Required
 
@@ -2308,7 +2324,8 @@ Compose footer control contract:
 - Run `npm run build` and confirm the production output keeps `AiAssistantPanel-*.js` as a separate lazy chunk.
 - Run `node scripts/check-startup-module-boundary-source.mjs` after touching `WorkspaceShell`, `App`, startup imports, settings imports, or lazy feature boundaries.
 - Cross-check TypeScript request/response fields against Rust structs in `src-tauri/src/ai_assistant.rs`.
-- Check stream lifecycle changes for first-chunk races by ensuring `streamStateRef.current` is set before any event handler can process returned stream events.
+- Check stream lifecycle changes for first-chunk races by ensuring the scope store's `streamState` is set before any event handler can process returned stream events.
+- After changing scope state or the stream reducer, cover: switching terminals mid-stream and back (text keeps flowing, stop works), switching while a dangerous command waits for approval (approve/reject still work after returning), background task completion while the owning terminal is hidden, two local terminal tabs keeping separate conversations, and a terminal-selection handoff not reappearing in another terminal.
 - Manual or automated desktop checks should cover no-config state, provider switching, streaming reply, stop, retry, session delete/clear, terminal-selection context, sensitive-context warning, command copy/insert/save/send, dangerous-send confirmation, and dark theme contrast.
 - For agent mode also cover: toggle disabled without SSH, read-only command auto-run, dangerous command approve and reject, stop while a tool is running or pending, reopening a session with persisted tool cards, and tool status colors in light, dark, and system-dark themes.
 
@@ -2344,30 +2361,25 @@ useEffect(() => {
 }, []);
 ```
 
-This leaks the listener and appends stale chunks.
+This registers one more handler on every panel remount (one per terminal switch), never removes it, and appends chunks without checking the owning stream.
 
 #### Correct
 
 ```tsx
+// module scope: one listener for the app session
+function handleAiScopeStreamEvent(event: AiChatStreamEvent) {
+  updateEveryAiScopeState((key, state) => applyAiStreamEventToScope(state, event).state);
+}
+
+// component: state comes from the scope store, effects only while mounted
+const [messages, setMessages] = useAiScopeField(scopeKey, "messages");
 useEffect(() => {
-  let disposed = false;
-  let unlisten: (() => void) | null = null;
-  void listenAiChatStream((event) => {
-    if (!disposed && event.stream_id === streamStateRef.current?.streamId) {
-      applyStreamEvent(event);
-    }
-  }).then((cleanup) => {
-    if (disposed) cleanup();
-    else unlisten = cleanup;
-  });
-  return () => {
-    disposed = true;
-    unlisten?.();
-  };
-}, []);
+  void ensureAiScopeStreamListener();
+  return setAiScopeEffectHandler(scopeKey, handleEffect);
+}, [scopeKey]);
 ```
 
-The component cleans up and treats `stream_id` as the stream owner.
+Events keep updating a terminal's conversation while its panel is hidden, and `stream_id` stays the stream owner.
 
 ## Scenario: Update Confirmation for Running MCP Processes
 

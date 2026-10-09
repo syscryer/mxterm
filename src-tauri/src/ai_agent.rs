@@ -21,7 +21,7 @@ use crate::ai_assistant::{
     ensure_provider_response, normalize_endpoint, openai_message_value, provider_request_error,
     provider_retry_delay, provider_stream_error, read_sse_events, responses_message_values,
     should_retry_provider_error, stream_parse_error, AiAgentMode, AiApiFormat, AiCommandAssessment,
-    AiCommandRisk, AiModelMessage, AiToolCallRecord, AiUserAnswer, AiUserOption,
+    AiCommandRisk, AiFileActivity, AiModelMessage, AiToolCallRecord, AiUserAnswer, AiUserOption,
     StoredAiProviderConfig, StreamEmitter, DEFAULT_ANTHROPIC_VERSION, MAX_PROVIDER_RETRIES,
 };
 use crate::app_error::AppError;
@@ -29,6 +29,8 @@ use crate::remote_exec_pool::{RemoteExecRetry, RemoteExecSessionPool};
 use crate::remote_files::quote_posix_shell;
 use crate::ssh_config::ResolvedSshConfig;
 use crate::terminal::session::{ExecOutput, ExecOutputChunkCallback};
+
+pub(crate) mod file_history;
 
 type OutputChunkCallback = Arc<dyn Fn(&[u8], &str) + Send + Sync>;
 
@@ -91,6 +93,15 @@ impl WorkspaceTarget {
 
 fn scoped_workspace_path(target: WorkspaceTarget, path: &str) -> String {
     format!("{}::{path}", target.key_prefix())
+}
+
+fn is_remote_absolute_path(path: &str) -> bool {
+    let path = path.trim();
+    !path.is_empty()
+        && path.starts_with('/')
+        && !path.contains('\0')
+        && !path.contains('\n')
+        && !path.contains('\r')
 }
 
 pub(crate) const TOOL_STATUS_PENDING_APPROVAL: &str = "pending_approval";
@@ -559,6 +570,8 @@ pub(crate) struct WorkspaceState {
     applied: HashMap<String, PendingPatch>,
     #[serde(default)]
     checkpoints: Vec<WorkspaceCheckpoint>,
+    #[serde(default)]
+    next_applied_sequence: u64,
 }
 #[derive(Clone, Debug, Deserialize, Serialize)]
 struct PendingPatch {
@@ -572,6 +585,43 @@ struct PendingPatch {
     destination: Option<String>,
     #[serde(default)]
     applied_at_ms: u128,
+    #[serde(default)]
+    applied_sequence: u64,
+}
+
+impl PendingPatch {
+    fn file_activity(&self, rollback: bool) -> AiFileActivity {
+        let before = self.before.as_deref().unwrap_or_default();
+        let after = if self.action == "delete" {
+            ""
+        } else {
+            self.after.as_deref().unwrap_or_default()
+        };
+        let counts = (self.action != "rename").then(|| {
+            if rollback {
+                crate::ai_workspace::changed_line_counts(after, before)
+            } else {
+                crate::ai_workspace::changed_line_counts(before, after)
+            }
+        });
+        AiFileActivity {
+            path: if rollback && self.action == "rename" {
+                self.destination
+                    .clone()
+                    .unwrap_or_else(|| self.path.clone())
+            } else {
+                self.path.clone()
+            },
+            operation: if rollback { "rollback" } else { &self.action }.into(),
+            destination: if rollback && self.action == "rename" {
+                Some(self.path.clone())
+            } else {
+                self.destination.clone()
+            },
+            added_lines: counts.map(|(added, _)| added),
+            removed_lines: counts.map(|(_, removed)| removed),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -584,6 +634,12 @@ struct WorkspaceCheckpoint {
     status: String,
     #[serde(default)]
     rolled_back_at_ms: Option<u128>,
+    #[serde(default)]
+    message_id: String,
+    #[serde(default)]
+    changes: Vec<(String, PendingPatch)>,
+    #[serde(default)]
+    location: file_history::WorkspaceLocation,
 }
 
 fn default_checkpoint_status() -> String {
@@ -885,7 +941,9 @@ impl AgentRun<'_> {
             &self.workspace_scope,
             &state_json,
             now_millis(),
-        )
+        )?;
+        self.emitter.file_changes(state.file_change_summaries());
+        Ok(())
     }
 
     fn fail_tool(&self, mut record: AiToolCallRecord, message: String) -> ToolOutcome {
@@ -897,6 +955,47 @@ impl AgentRun<'_> {
             content: format!("工具执行失败：{message}"),
             is_error: true,
         }
+    }
+
+    async fn complete_file_preview(
+        &self,
+        mut record: AiToolCallRecord,
+        id: String,
+        patch: PendingPatch,
+    ) -> ToolOutcome {
+        record.file_activity = Some(self.patch_file_activity(&patch, false));
+        record.command = Some(format!("file_change:{id}"));
+        record.output = patch.diff.clone();
+        record.status = TOOL_STATUS_COMPLETED.into();
+        record.approval_required = false;
+        record.finished_at_ms = Some(now_millis());
+        self.files.lock().await.patches.insert(id.clone(), patch);
+        self.upsert_tool_call(&record);
+        let apply_tool = if record.name == "preview_patch" {
+            "apply_patch"
+        } else {
+            "apply_file_change"
+        };
+        ToolOutcome {
+            content: format!(
+                "文件变更预览 {id}\n{}\n调用 {apply_tool} 应用变更，权限确认由工具处理。",
+                record.output
+            ),
+            is_error: false,
+        }
+    }
+
+    fn patch_file_activity(&self, patch: &PendingPatch, rollback: bool) -> AiFileActivity {
+        let mut activity = patch.file_activity(rollback);
+        if patch.target == WorkspaceTarget::Local {
+            if let Some(root) = self.local_root() {
+                activity.path = root.join(&activity.path).to_string_lossy().into();
+                activity.destination = activity
+                    .destination
+                    .map(|path| root.join(path).to_string_lossy().into());
+            }
+        }
+        activity
     }
 
     async fn execute_tool(&self, call: &AgentToolCall) -> ToolOutcome {
@@ -934,13 +1033,18 @@ impl AgentRun<'_> {
                     .or_else(|| args["change_id"].as_str())
                     .or_else(|| args["backup_id"].as_str())
                     .unwrap_or_default();
-                if let Ok(state) = self.files.try_lock() {
-                    target = state
+                {
+                    let state = self.files.lock().await;
+                    let patch = state
                         .patches
                         .get(change_id)
-                        .or_else(|| state.applied.get(change_id))
-                        .map(|patch| patch.target)
-                        .unwrap_or(target);
+                        .or_else(|| state.applied.get(change_id));
+                    if let Some(patch) = patch {
+                        target = patch.target;
+                        record.file_activity =
+                            Some(self.patch_file_activity(patch, call.name == "rollback_patch"));
+                        record.output = patch.diff.clone();
+                    }
                 }
             }
             if target == WorkspaceTarget::Local {
@@ -1199,17 +1303,18 @@ impl AgentRun<'_> {
         let Some(config) = self.agent.config.clone() else {
             return self.fail_tool(record, "Agent 配置尚未解析。".into());
         };
-        let Some(root) = self.agent.working_directory.as_deref() else {
-            return self.fail_tool(record, "远程工作目录未选择。".into());
-        };
         let is_apply = call.name == "apply_file_change";
-        let path = args["path"].as_str().unwrap_or_default().trim().to_string();
-        if !is_apply
-            && (path.is_empty()
-                || !(path == root || path.starts_with(&format!("{}/", root.trim_end_matches('/')))))
-        {
-            return self.fail_tool(record, "远程文件路径必须位于所选工作目录内。".into());
-        }
+        let path = if is_apply {
+            String::new()
+        } else {
+            match crate::ai_workspace::resolve_remote_workspace_path(
+                self.agent.working_directory.as_deref(),
+                args["path"].as_str().unwrap_or_default(),
+            ) {
+                Ok(path) => path,
+                Err(error) => return self.fail_tool(record, error.message),
+            }
+        };
         let manager = self.app.state::<crate::remote_files::RemoteFileManager>();
         let current = if is_apply {
             None
@@ -1264,19 +1369,19 @@ impl AgentRun<'_> {
                 return self.fail_tool(record, "目标文件不存在，无法执行该操作。".into());
             }
             let destination = if action == "rename" {
-                let destination = args["destination"].as_str().unwrap_or_default().trim();
-                if destination.is_empty()
-                    || !(destination == root
-                        || destination.starts_with(&format!("{}/", root.trim_end_matches('/'))))
-                {
-                    return self.fail_tool(record, "重命名目标必须位于所选工作目录内。".into());
-                }
+                let destination = match crate::ai_workspace::resolve_remote_workspace_path(
+                    self.agent.working_directory.as_deref(),
+                    args["destination"].as_str().unwrap_or_default(),
+                ) {
+                    Ok(path) => path,
+                    Err(error) => return self.fail_tool(record, error.message),
+                };
                 let target_exists = match self
                     .pool
                     .exec(
                         self.app,
                         &config,
-                        &format!("test -e {}", quote_posix_shell(destination)),
+                        &format!("test -e {}", quote_posix_shell(&destination)),
                         RemoteExecRetry::None,
                     )
                     .await
@@ -1287,26 +1392,26 @@ impl AgentRun<'_> {
                 if target_exists {
                     return self.fail_tool(record, "重命名目标已经存在。".into());
                 }
-                Some(destination.to_string())
+                Some(destination)
             } else {
                 None
             };
             let after = if matches!(action, "create" | "write") {
                 Some(args["content"].as_str().unwrap_or_default().to_string())
+            } else if action == "delete" {
+                None
             } else {
                 current.clone()
             };
             let diff = match action {
-                "create" => format!("+++ {path}\n{}", after.as_deref().unwrap_or_default()),
-                "write" => format!(
-                    "operation=write\n{}",
+                "create" | "write" | "delete" => format!(
+                    "operation={action}\n{}",
                     crate::ai_workspace::simple_diff(
                         &path,
                         current.as_deref().unwrap_or_default(),
                         after.as_deref().unwrap_or_default(),
                     )
                 ),
-                "delete" => format!("--- {path}\n{}", current.as_deref().unwrap_or_default()),
                 "rename" => format!(
                     "rename {path} -> {}",
                     destination.as_deref().unwrap_or_default()
@@ -1314,35 +1419,41 @@ impl AgentRun<'_> {
                 _ => String::new(),
             };
             let id = Uuid::new_v4().to_string();
-            self.files.lock().await.patches.insert(
-                id.clone(),
-                PendingPatch {
-                    target: WorkspaceTarget::Ssh,
-                    path: path.clone(),
-                    before: current,
-                    after,
-                    diff: diff.clone(),
-                    action: action.to_string(),
-                    destination,
-                    applied_at_ms: 0,
-                },
-            );
-            record.command = Some(format!("file_change:{id}"));
-            record.output = diff.clone();
-            record.status = TOOL_STATUS_PENDING_APPROVAL.into();
-            record.approval_required = true;
-            self.upsert_tool_call(&record);
-            return ToolOutcome {
-                content: format!("待确认的远程文件操作 {id}\n{diff}"),
-                is_error: false,
-            };
+            return self
+                .complete_file_preview(
+                    record,
+                    id,
+                    PendingPatch {
+                        target: WorkspaceTarget::Ssh,
+                        path: path.clone(),
+                        before: current,
+                        after,
+                        diff: diff.clone(),
+                        action: action.to_string(),
+                        destination,
+                        applied_at_ms: 0,
+                        applied_sequence: 0,
+                    },
+                )
+                .await;
         }
 
         let change_id = args["change_id"].as_str().unwrap_or_default();
         let patch = self.files.lock().await.patches.remove(change_id);
-        let Some(mut patch) = patch else {
+        let Some(patch) = patch else {
             return self.fail_tool(record, "远程文件变更预览不存在或已失效。".into());
         };
+        if !is_remote_absolute_path(&patch.path)
+            || patch
+                .destination
+                .as_deref()
+                .is_some_and(|path| !is_remote_absolute_path(path))
+        {
+            return self.fail_tool(
+                record,
+                "远程文件变更路径必须是当前 SSH 主机上的绝对路径。".into(),
+            );
+        }
         if !self.request_file_approval(&mut record).await {
             return ToolOutcome {
                 content: "用户拒绝应用远程文件变更。".into(),
@@ -1507,12 +1618,7 @@ impl AgentRun<'_> {
             "远程文件操作已应用。".into()
         };
         record.finished_at_ms = Some(now_millis());
-        patch.applied_at_ms = now_millis();
-        self.files
-            .lock()
-            .await
-            .applied
-            .insert(backup.clone(), patch);
+        self.register_applied(backup.clone(), patch).await;
         self.upsert_tool_call(&record);
         ToolOutcome {
             content: record.output.clone(),
@@ -1524,25 +1630,22 @@ impl AgentRun<'_> {
         let Some(config) = self.agent.config.clone() else {
             return self.fail_tool(record, "Agent 配置尚未解析。".into());
         };
-        let Some(root) = self.agent.working_directory.as_deref() else {
-            return self.fail_tool(record, "远程工作目录未选择。".into());
-        };
         let backup_id = args["backup_id"].as_str().unwrap_or_default().trim();
         let patch = self.files.lock().await.applied.get(backup_id).cloned();
         let Some(patch) = patch else {
             return self.fail_tool(record, "远程备份不属于当前 Agent 会话或已失效。".into());
         };
-        let path_in_root = |path: &str| {
-            path == root || path.starts_with(&format!("{}/", root.trim_end_matches('/')))
-        };
-        if !path_in_root(&patch.path)
+        if !is_remote_absolute_path(&patch.path)
             || patch
                 .destination
                 .as_deref()
-                .is_some_and(|path| !path_in_root(path))
-            || (patch.action != "create" && !path_in_root(backup_id))
+                .is_some_and(|path| !is_remote_absolute_path(path))
+            || (patch.action != "create" && !is_remote_absolute_path(backup_id))
         {
-            return self.fail_tool(record, "远程回滚路径超出所选工作目录。".into());
+            return self.fail_tool(
+                record,
+                "远程回滚路径必须是当前 SSH 主机上的绝对路径。".into(),
+            );
         }
         record.command = Some(format!("rollback:{backup_id}"));
         record.output = patch.diff.clone();
@@ -1827,7 +1930,7 @@ impl AgentRun<'_> {
             for path in files {
                 crate::ai_search::ensure_running(&self.stopped)?;
                 if let Some(expression) = expression.as_ref() {
-                    let command = crate::ai_search::remote_read_command(root, base, &path);
+                    let command = crate::ai_search::remote_read_command(base, &path);
                     let output = self
                         .pool
                         .exec(self.app, config, &command, RemoteExecRetry::None)
@@ -1857,333 +1960,28 @@ impl AgentRun<'_> {
         Ok(data.page(tool, options, engine, warnings))
     }
 
-    async fn exec_remote_checked(
-        &self,
-        config: &ResolvedSshConfig,
-        command: &str,
-    ) -> Result<ExecOutput, AppError> {
-        let output = self
-            .pool
-            .exec(self.app, config, command, RemoteExecRetry::None)
-            .await?;
-        if output.exit_status == Some(0) {
-            return Ok(output);
-        }
-        Err(AppError::new(
-            "ai_remote_workspace_rollback_failed",
-            "远程工作区回滚失败。",
-            String::from_utf8_lossy(&output.stderr),
-            true,
-        ))
-    }
-
     async fn rollback_applied_patch(
         &self,
         backup_id: &str,
         patch: &PendingPatch,
     ) -> Result<(), AppError> {
-        if patch.target == WorkspaceTarget::Local {
-            let Some(root) = self.local_root() else {
-                return Err(AppError::new(
-                    "ai_local_workspace_missing",
-                    "本地文件回滚缺少工作区。",
-                    "local workspace required",
-                    true,
-                ));
-            };
-            let backup_dir = self
-                .app
-                .path()
-                .app_data_dir()
-                .map(|path| path.join("ai-agent-backups"))
-                .unwrap_or_else(|_| root.join(".mxterm-agent-backups"));
-            let current = crate::ai_workspace::read_version(root, &patch.path)?;
-            let conflict = || {
-                AppError::new(
-                    "ai_workspace_rollback_conflict",
-                    "文件在应用后又发生变化，不能整体回滚。",
-                    patch.path.clone(),
-                    true,
-                )
-            };
-            match patch.action.as_str() {
-                "patch" | "write" => {
-                    if current != patch.after {
-                        return Err(conflict());
-                    }
-                    if let Some(before) = patch.before.as_deref() {
-                        crate::ai_workspace::write_version(
-                            root,
-                            &patch.path,
-                            current.as_deref(),
-                            before,
-                            &backup_dir,
-                        )?;
-                    } else {
-                        let path = crate::ai_workspace::resolve_workspace_path(root, &patch.path)?;
-                        std::fs::remove_file(path).map_err(|error| {
-                            AppError::new(
-                                "ai_workspace_rollback_failed",
-                                "删除已创建文件失败。",
-                                error,
-                                true,
-                            )
-                        })?;
-                    }
-                }
-                "create" => {
-                    if current != patch.after {
-                        return Err(conflict());
-                    }
-                    let path = crate::ai_workspace::resolve_workspace_path(root, &patch.path)?;
-                    std::fs::remove_file(path).map_err(|error| {
-                        AppError::new(
-                            "ai_workspace_rollback_failed",
-                            "删除已创建文件失败。",
-                            error,
-                            true,
-                        )
-                    })?;
-                }
-                "delete" => {
-                    if current.is_some() || patch.before.is_none() {
-                        return Err(conflict());
-                    }
-                    crate::ai_workspace::write_version(
-                        root,
-                        &patch.path,
-                        None,
-                        patch.before.as_deref().unwrap_or_default(),
-                        &backup_dir,
-                    )?;
-                }
-                "rename" => {
-                    let destination = patch.destination.as_deref().ok_or_else(|| {
-                        AppError::new(
-                            "ai_workspace_rollback_failed",
-                            "重命名回滚缺少目标路径。",
-                            backup_id,
-                            true,
-                        )
-                    })?;
-                    if current.is_some()
-                        || crate::ai_workspace::read_version(root, destination)? != patch.before
-                    {
-                        return Err(conflict());
-                    }
-                    let source = crate::ai_workspace::resolve_workspace_path(root, &patch.path)?;
-                    let target = crate::ai_workspace::resolve_workspace_path(root, destination)?;
-                    std::fs::rename(target, source).map_err(|error| {
-                        AppError::new(
-                            "ai_workspace_rollback_failed",
-                            "重命名回滚失败。",
-                            error,
-                            true,
-                        )
-                    })?;
-                }
-                _ => {
-                    return Err(AppError::new(
-                        "ai_workspace_operation_invalid",
-                        "工作区回滚操作无效。",
-                        patch.action.clone(),
-                        true,
-                    ));
-                }
-            }
-            return Ok(());
+        file_history::WorkspaceRollback {
+            app: self.app,
+            pool: self.pool,
+            config: self.agent.config.as_ref(),
+            local_root: self.local_root(),
         }
+        .rollback_applied_patch(backup_id, patch)
+        .await
+    }
 
-        let (Some(config), Some(root)) = (
-            self.agent.config.as_ref(),
-            self.agent.working_directory.as_deref(),
-        ) else {
-            return Err(AppError::new(
-                "ai_workspace_missing",
-                "没有可用的工作区。",
-                "workspace",
-                true,
-            ));
-        };
-        let path_in_root = |path: &str| {
-            path == root || path.starts_with(&format!("{}/", root.trim_end_matches('/')))
-        };
-        if !path_in_root(&patch.path)
-            || patch
-                .destination
-                .as_deref()
-                .is_some_and(|path| !path_in_root(path))
-            || (patch.action != "create" && !path_in_root(backup_id))
-        {
-            return Err(AppError::new(
-                "ai_workspace_path_forbidden",
-                "回滚路径必须位于所选工作目录内。",
-                patch.path.clone(),
-                true,
-            ));
-        }
-        let manager = self.app.state::<crate::remote_files::RemoteFileManager>();
-        let exists = self
-            .pool
-            .exec(
-                self.app,
-                config,
-                &format!("test -e {}", quote_posix_shell(&patch.path)),
-                RemoteExecRetry::None,
-            )
-            .await?;
-        let current = match exists.exit_status {
-            Some(0) => Some(
-                manager
-                    .read_file(self.app, config.clone(), &patch.path)
-                    .await?,
-            ),
-            Some(1) => None,
-            Some(status) => {
-                return Err(AppError::new(
-                    "ai_remote_workspace_rollback_failed",
-                    "检查远程文件状态失败。",
-                    format!("exit_status={status}"),
-                    true,
-                ))
-            }
-            None => {
-                return Err(AppError::new(
-                    "ai_remote_workspace_rollback_failed",
-                    "检查远程文件状态失败。",
-                    "missing exit status",
-                    true,
-                ))
-            }
-        };
-        match patch.action.as_str() {
-            "patch" | "write" => {
-                let Some(current) = current else {
-                    return Err(AppError::new(
-                        "ai_workspace_rollback_conflict",
-                        "远程文件在应用后已不存在，不能整体回滚。",
-                        patch.path.clone(),
-                        true,
-                    ));
-                };
-                if Some(current.content.clone()) != patch.after {
-                    return Err(AppError::new(
-                        "ai_workspace_rollback_conflict",
-                        "远程文件在应用后又发生变化，不能整体回滚。",
-                        patch.path.clone(),
-                        true,
-                    ));
-                }
-                if let Some(before) = patch.before.as_deref() {
-                    manager
-                        .write_file(
-                            self.app,
-                            config.clone(),
-                            &patch.path,
-                            before,
-                            current.mtime,
-                            current.size,
-                            false,
-                        )
-                        .await?;
-                } else {
-                    self.exec_remote_checked(
-                        config,
-                        &format!("rm -f -- {}", quote_posix_shell(&patch.path)),
-                    )
-                    .await?;
-                }
-            }
-            "create" => {
-                let Some(current) = current else {
-                    return Err(AppError::new(
-                        "ai_workspace_rollback_conflict",
-                        "远程创建的文件已经不存在。",
-                        patch.path.clone(),
-                        true,
-                    ));
-                };
-                if Some(current.content) != patch.after {
-                    return Err(AppError::new(
-                        "ai_workspace_rollback_conflict",
-                        "远程文件在应用后又发生变化，不能整体回滚。",
-                        patch.path.clone(),
-                        true,
-                    ));
-                }
-                self.exec_remote_checked(
-                    config,
-                    &format!("rm -f -- {}", quote_posix_shell(&patch.path)),
-                )
-                .await?;
-            }
-            "delete" => {
-                if current.is_some() {
-                    return Err(AppError::new(
-                        "ai_workspace_rollback_conflict",
-                        "远程删除目标已经被重新创建，不能整体回滚。",
-                        patch.path.clone(),
-                        true,
-                    ));
-                }
-                self.exec_remote_checked(
-                    config,
-                    &format!(
-                        "cp -p -- {} {}",
-                        quote_posix_shell(backup_id),
-                        quote_posix_shell(&patch.path)
-                    ),
-                )
-                .await?;
-            }
-            "rename" => {
-                let destination = patch.destination.as_deref().ok_or_else(|| {
-                    AppError::new(
-                        "ai_workspace_rollback_failed",
-                        "远程重命名回滚缺少目标路径。",
-                        backup_id,
-                        true,
-                    )
-                })?;
-                let destination_current = manager
-                    .read_file(self.app, config.clone(), destination)
-                    .await
-                    .map_err(|error| {
-                        AppError::new(
-                            "ai_workspace_rollback_conflict",
-                            "远程重命名目标已发生变化，不能整体回滚。",
-                            error.message,
-                            true,
-                        )
-                    })?;
-                if current.is_some() || Some(destination_current.content) != patch.before {
-                    return Err(AppError::new(
-                        "ai_workspace_rollback_conflict",
-                        "远程重命名目标已发生变化，不能整体回滚。",
-                        patch.path.clone(),
-                        true,
-                    ));
-                }
-                self.exec_remote_checked(
-                    config,
-                    &format!(
-                        "mv -- {} {}",
-                        quote_posix_shell(destination),
-                        quote_posix_shell(&patch.path)
-                    ),
-                )
-                .await?;
-            }
-            _ => {
-                return Err(AppError::new(
-                    "ai_workspace_operation_invalid",
-                    "工作区回滚操作无效。",
-                    patch.action.clone(),
-                    true,
-                ));
-            }
-        }
-        Ok(())
+    async fn register_applied(&self, id: String, patch: PendingPatch) {
+        self.files.lock().await.register_applied(
+            id,
+            patch,
+            self.emitter.message_id(),
+            file_history::WorkspaceLocation::from_agent(self.agent),
+        );
     }
 
     fn workspace_changes_value(state: &WorkspaceState) -> Value {
@@ -2310,7 +2108,7 @@ impl AgentRun<'_> {
             let mut change_ids = state
                 .applied
                 .iter()
-                .map(|(id, patch)| (id.clone(), patch.applied_at_ms))
+                .map(|(id, patch)| (id.clone(), (patch.applied_sequence, patch.applied_at_ms)))
                 .collect::<Vec<_>>();
             change_ids.sort_by(|(left_id, left_at), (right_id, right_at)| {
                 left_at.cmp(right_at).then_with(|| left_id.cmp(right_id))
@@ -2327,6 +2125,9 @@ impl AgentRun<'_> {
                 change_ids,
                 status: "active".into(),
                 rolled_back_at_ms: None,
+                message_id: String::new(),
+                changes: Vec::new(),
+                location: Default::default(),
             };
             let output = json!({
                 "checkpoint_id": checkpoint.id,
@@ -2394,7 +2195,7 @@ impl AgentRun<'_> {
                 let mut ids = state
                     .applied
                     .iter()
-                    .map(|(id, patch)| (id.clone(), patch.applied_at_ms))
+                    .map(|(id, patch)| (id.clone(), (patch.applied_sequence, patch.applied_at_ms)))
                     .collect::<Vec<_>>();
                 ids.sort_by(|(left_id, left_at), (right_id, right_at)| {
                     left_at.cmp(right_at).then_with(|| left_id.cmp(right_id))
@@ -2495,8 +2296,13 @@ impl AgentRun<'_> {
                 .or_else(|| args["change_id"].as_str())
                 .or_else(|| args["backup_id"].as_str())
                 .unwrap_or_default();
-            if let Ok(state) = self.files.try_lock() {
-                if let Some(patch) = state.patches.get(change_id) {
+            {
+                let state = self.files.lock().await;
+                if let Some(patch) = state
+                    .patches
+                    .get(change_id)
+                    .or_else(|| state.applied.get(change_id))
+                {
                     target = patch.target;
                 }
             }
@@ -2530,21 +2336,28 @@ impl AgentRun<'_> {
         if target == WorkspaceTarget::Ssh
             && matches!(call.name.as_str(), "read_file" | "preview_patch")
         {
-            if !matches!(call.name.as_str(), "read_file" | "preview_patch") {
-                return self.fail_tool(
-                    record,
-                    "远程工作区目前只开放受保护的 read_file；写入前会接入远程 diff/CAS。".into(),
-                );
-            }
             let Some(config) = self.agent.config.clone() else {
                 return self.fail_tool(record, "Agent 工作区未绑定连接。".into());
             };
-            let Some(root) = self.agent.working_directory.as_deref() else {
-                return self.fail_tool(record, "远程工作目录未选择。".into());
+            path = match crate::ai_workspace::resolve_remote_workspace_path(
+                self.agent.working_directory.as_deref(),
+                &path,
+            ) {
+                Ok(path) => path,
+                Err(error) => return self.fail_tool(record, error.message),
             };
-            if !(path == root || path.starts_with(&format!("{}/", root.trim_end_matches('/')))) {
-                return self.fail_tool(record, "远程文件必须位于已选择的工作目录内。".into());
-            }
+            record.file_activity = Some(AiFileActivity {
+                path: path.clone(),
+                operation: if call.name == "read_file" {
+                    "read"
+                } else {
+                    "patch"
+                }
+                .into(),
+                destination: None,
+                added_lines: None,
+                removed_lines: None,
+            });
             let manager = self.app.state::<crate::remote_files::RemoteFileManager>();
             let result = match manager.read_file(self.app, config, &path).await {
                 Ok(v) => v,
@@ -2616,28 +2429,23 @@ impl AgentRun<'_> {
                     Err(e) => return self.fail_tool(record, e.message),
                 };
                 let id = Uuid::new_v4().to_string();
-                self.files.lock().await.patches.insert(
-                    id.clone(),
-                    PendingPatch {
-                        target: WorkspaceTarget::Ssh,
-                        path: path.into(),
-                        before: Some(current),
-                        after: Some(updated),
-                        diff: diff.clone(),
-                        action: "patch".into(),
-                        destination: None,
-                        applied_at_ms: 0,
-                    },
-                );
-                record.output = diff.clone();
-                record.command = Some(format!("patch:{id}"));
-                record.status = TOOL_STATUS_PENDING_APPROVAL.into();
-                record.approval_required = true;
-                self.upsert_tool_call(&record);
-                return ToolOutcome {
-                    content: format!("补丁编号 {id}\n{diff}"),
-                    is_error: false,
-                };
+                return self
+                    .complete_file_preview(
+                        record,
+                        id,
+                        PendingPatch {
+                            target: WorkspaceTarget::Ssh,
+                            path: path.into(),
+                            before: Some(current),
+                            after: Some(updated),
+                            diff: diff.clone(),
+                            action: "patch".into(),
+                            destination: None,
+                            applied_at_ms: 0,
+                            applied_sequence: 0,
+                        },
+                    )
+                    .await;
             }
             let id = args["patch_id"].as_str().unwrap_or_default().to_string();
             let patch = self.files.lock().await.patches.remove(&id);
@@ -2654,11 +2462,11 @@ impl AgentRun<'_> {
             let Some(config) = self.agent.config.clone() else {
                 return self.fail_tool(record, "Agent 工作区未绑定连接。".into());
             };
-            let Some(root) = self.agent.working_directory.as_deref() else {
-                return self.fail_tool(record, "远程工作目录未选择。".into());
-            };
-            if !(path == root || path.starts_with(&format!("{}/", root.trim_end_matches('/')))) {
-                return self.fail_tool(record, "远程路径超出工作目录。".into());
+            if !is_remote_absolute_path(&path) {
+                return self.fail_tool(
+                    record,
+                    "远程文件路径必须是当前 SSH 主机上的绝对路径。".into(),
+                );
             };
             let backup = format!("{}.mxterm-agent-backup-{}", path, Uuid::new_v4());
             let backup_cmd = format!(
@@ -2710,11 +2518,7 @@ impl AgentRun<'_> {
                     record.status = TOOL_STATUS_COMPLETED.into();
                     record.output = format!("已应用远程补丁，备份：{backup}");
                     record.finished_at_ms = Some(now_millis());
-                    self.files
-                        .lock()
-                        .await
-                        .applied
-                        .insert(backup.clone(), patch);
+                    self.register_applied(backup.clone(), patch).await;
                     self.upsert_tool_call(&record);
                     ToolOutcome {
                         content: record.output.clone(),
@@ -2735,6 +2539,18 @@ impl AgentRun<'_> {
                     Ok(value) => value,
                     Err(error) => return self.fail_tool(record, error.message),
                 };
+                record.file_activity = Some(AiFileActivity {
+                    path: root.join(&path).to_string_lossy().into(),
+                    operation: if call.name == "read_file" {
+                        "read"
+                    } else {
+                        "patch"
+                    }
+                    .into(),
+                    destination: None,
+                    added_lines: None,
+                    removed_lines: None,
+                });
             }
             match call.name.as_str() {
                 "read_file" => {
@@ -2827,6 +2643,8 @@ impl AgentRun<'_> {
                     };
                     let after = if matches!(action, "create" | "write") {
                         Some(args["content"].as_str().unwrap_or_default().to_string())
+                    } else if action == "delete" {
+                        None
                     } else {
                         current.clone()
                     };
@@ -2848,33 +2666,28 @@ impl AgentRun<'_> {
                         )
                     };
                     let id = Uuid::new_v4().to_string();
-                    self.files.lock().await.patches.insert(
-                        id.clone(),
-                        PendingPatch {
-                            target: WorkspaceTarget::Local,
-                            path: path.clone(),
-                            before: current,
-                            after,
-                            diff: diff.clone(),
-                            action: action.into(),
-                            destination,
-                            applied_at_ms: 0,
-                        },
-                    );
-                    record.output = diff.clone();
-                    record.command = Some(format!("change:{id}"));
-                    record.status = TOOL_STATUS_PENDING_APPROVAL.into();
-                    record.approval_required = true;
-                    self.upsert_tool_call(&record);
-                    return ToolOutcome {
-                        content: format!("文件操作编号 {id}\n{diff}"),
-                        is_error: false,
-                    };
+                    return self
+                        .complete_file_preview(
+                            record,
+                            id,
+                            PendingPatch {
+                                target: WorkspaceTarget::Local,
+                                path: path.clone(),
+                                before: current,
+                                after,
+                                diff: diff.clone(),
+                                action: action.into(),
+                                destination,
+                                applied_at_ms: 0,
+                                applied_sequence: 0,
+                            },
+                        )
+                        .await;
                 }
                 "apply_file_change" => {
                     let id = args["change_id"].as_str().unwrap_or_default().to_string();
                     let patch = self.files.lock().await.patches.remove(&id);
-                    let Some(mut patch) = patch else {
+                    let Some(patch) = patch else {
                         return self.fail_tool(record, "文件操作不存在或已失效。".into());
                     };
                     record.output = patch.diff.clone();
@@ -2971,15 +2784,15 @@ impl AgentRun<'_> {
                             } else {
                                 format!("文件操作已完成，备份编号 {backup_id}")
                             };
-                            patch.applied_at_ms = now_millis();
-                            self.files.lock().await.applied.insert(
+                            self.register_applied(
                                 if backup_id.is_empty() {
                                     id
                                 } else {
                                     backup_id.clone()
                                 },
                                 patch,
-                            );
+                            )
+                            .await;
                             record.finished_at_ms = Some(now_millis());
                             self.upsert_tool_call(&record);
                             ToolOutcome {
@@ -3017,33 +2830,28 @@ impl AgentRun<'_> {
                         Err(e) => return self.fail_tool(record, e.message),
                     };
                     let id = Uuid::new_v4().to_string();
-                    self.files.lock().await.patches.insert(
-                        id.clone(),
-                        PendingPatch {
-                            target: WorkspaceTarget::Local,
-                            path: path.into(),
-                            before,
-                            after: Some(updated),
-                            diff: diff.clone(),
-                            action: "patch".into(),
-                            destination: None,
-                            applied_at_ms: 0,
-                        },
-                    );
-                    record.output = diff.clone();
-                    record.status = TOOL_STATUS_PENDING_APPROVAL.into();
-                    record.approval_required = true;
-                    record.command = Some(format!("patch:{id}"));
-                    self.upsert_tool_call(&record);
-                    return ToolOutcome {
-                        content: format!("补丁编号 {id}\n{diff}\n请用户确认后再 apply_patch。"),
-                        is_error: false,
-                    };
+                    return self
+                        .complete_file_preview(
+                            record,
+                            id,
+                            PendingPatch {
+                                target: WorkspaceTarget::Local,
+                                path: path.into(),
+                                before,
+                                after: Some(updated),
+                                diff: diff.clone(),
+                                action: "patch".into(),
+                                destination: None,
+                                applied_at_ms: 0,
+                                applied_sequence: 0,
+                            },
+                        )
+                        .await;
                 }
                 "apply_patch" => {
                     let id = args["patch_id"].as_str().unwrap_or_default().to_string();
                     let patch = self.files.lock().await.patches.remove(&id);
-                    let Some(mut patch) = patch else {
+                    let Some(patch) = patch else {
                         return self.fail_tool(
                             record,
                             "补丁不存在或已失效，请重新 preview_patch。".into(),
@@ -3070,14 +2878,9 @@ impl AgentRun<'_> {
                         &backup_dir,
                     ) {
                         Ok(backup) => {
-                            patch.applied_at_ms = now_millis();
                             record.status = TOOL_STATUS_COMPLETED.into();
                             record.output = format!("已应用补丁，备份编号 {backup}");
-                            self.files
-                                .lock()
-                                .await
-                                .applied
-                                .insert(backup.clone(), patch);
+                            self.register_applied(backup.clone(), patch).await;
                             record.finished_at_ms = Some(now_millis());
                             self.upsert_tool_call(&record);
                             return ToolOutcome {
@@ -4827,13 +4630,11 @@ where
 fn tool_specs() -> Vec<(&'static str, &'static str, Value)> {
     vec![
         (TOOL_WORKSPACE_CHANGES, "汇总当前工作区的待应用变更、已应用变更和检查点，不修改文件。", json!({"type":"object","properties":{}})),
-        (TOOL_CREATE_WORKSPACE_CHECKPOINT, "为当前已应用的多文件变更创建可持久化检查点。", json!({"type":"object","properties":{"label":{"type":"string"}}})),
-        (TOOL_ROLLBACK_WORKSPACE, "在一次确认后按逆序整体回滚检查点或指定的多个文件变更。", json!({"type":"object","properties":{"checkpoint_id":{"type":"string"},"change_ids":{"type":"array","items":{"type":"string"}}}})),
         (TOOL_READ_ATTACHMENT, "读取当前会话中用户附加的图片或文本文件；文本支持按行 offset/limit 分段读取，不改变当前本地或 SSH 工作区。", json!({"type":"object","properties":{"attachment_id":{"type":"string","description":"附件编号"},"offset":{"type":"integer","minimum":1,"description":"文本起始行号，从 1 开始"},"limit":{"type":"integer","minimum":1,"maximum":2000,"description":"本次读取的最大行数，默认 200"}},"required":["attachment_id"],"additionalProperties":false})),
-        ("read_file", "读取当前明确授权的 UTF-8 文本文件；可用 offset/limit 按行读取大文件。省略 target 时跟随当前终端主机；SSH 会话中需要操作本地文件时显式传 target=local。", json!({"type":"object","properties":{"target":{"type":"string","enum":["local","ssh"]},"path":{"type":"string"},"offset":{"type":"integer","minimum":1,"description":"起始行号，从 1 开始"},"limit":{"type":"integer","minimum":1,"description":"读取行数"}},"required":["path"]})),
-        ("glob", "在明确授权的文件作用域内查找文件名；省略 target 时跟随当前终端主机，支持显式 local/ssh、** 和分页。", json!({"type":"object","properties":{"target":{"type":"string","enum":["local","ssh"]},"pattern":{"type":"string","description":"文件名或路径 glob，例如 **/*.rs"},"path":{"type":"string","description":"搜索根目录，相对目标工作区"},"offset":{"type":"integer","minimum":0},"limit":{"type":"integer","minimum":0,"description":"每页数量；0 表示不限制"},"include_ignored":{"type":"boolean"}},"required":["pattern"]})),
-        ("grep", "在明确授权的文件作用域内用正则搜索内容；省略 target 时跟随当前终端主机，支持显式 local/ssh、大小写、多行、上下文、输出模式和分页。", json!({"type":"object","properties":{"target":{"type":"string","enum":["local","ssh"]},"query":{"type":"string","description":"正则表达式；regex=false 时按字面量搜索"},"pattern":{"type":"string","description":"文件 glob，默认 **/*"},"path":{"type":"string"},"regex":{"type":"boolean","default":true},"case_sensitive":{"type":"boolean","default":true},"multiline":{"type":"boolean","default":false},"context":{"type":"integer","minimum":0},"before_context":{"type":"integer","minimum":0},"after_context":{"type":"integer","minimum":0},"output_mode":{"type":"string","enum":["content","files_with_matches","count"]},"offset":{"type":"integer","minimum":0},"head_limit":{"type":"integer","minimum":0,"description":"兼容 ZCode 的分页参数；等同 limit"},"limit":{"type":"integer","minimum":0},"include_ignored":{"type":"boolean"}},"required":["query"]})),
-        ("preview_patch", "根据完整读取的文件生成待确认 diff；省略 target 时跟随当前终端主机，SSH 会话中操作本地文件时显式传 target=local。", json!({"type":"object","properties":{"target":{"type":"string","enum":["local","ssh"]},"path":{"type":"string"},"old_string":{"type":"string"},"new_string":{"type":"string"},"replace_all":{"type":"boolean","default":false}},"required":["path","old_string","new_string"]})),
+        ("read_file", "读取当前主机上的 UTF-8 文本文件；可用 offset/limit 按行读取大文件。省略 target 时跟随当前终端主机，路径相对当前工作区；需要访问其它位置时传绝对路径。SSH 会话中需要操作本地文件时显式传 target=local。", json!({"type":"object","properties":{"target":{"type":"string","enum":["local","ssh"]},"path":{"type":"string"},"offset":{"type":"integer","minimum":1,"description":"起始行号，从 1 开始"},"limit":{"type":"integer","minimum":1,"description":"读取行数"}},"required":["path"]})),
+        ("glob", "在当前主机上查找文件名；省略 target 时跟随当前终端主机，路径相对当前工作区，也可用绝对路径访问其它目录；支持显式 local/ssh、** 和分页。", json!({"type":"object","properties":{"target":{"type":"string","enum":["local","ssh"]},"pattern":{"type":"string","description":"文件名或路径 glob，例如 **/*.rs"},"path":{"type":"string","description":"搜索根目录，相对当前工作区或传绝对路径"},"offset":{"type":"integer","minimum":0},"limit":{"type":"integer","minimum":0,"description":"每页数量；0 表示不限制"},"include_ignored":{"type":"boolean"}},"required":["pattern"]})),
+        ("grep", "在当前主机上用正则搜索内容；省略 target 时跟随当前终端主机，路径相对当前工作区，也可用绝对路径访问其它目录；支持显式 local/ssh、大小写、多行、上下文、输出模式和分页。", json!({"type":"object","properties":{"target":{"type":"string","enum":["local","ssh"]},"query":{"type":"string","description":"正则表达式；regex=false 时按字面量搜索"},"pattern":{"type":"string","description":"文件 glob，默认 **/*"},"path":{"type":"string","description":"搜索根目录，相对当前工作区或传绝对路径"},"regex":{"type":"boolean","default":true},"case_sensitive":{"type":"boolean","default":true},"multiline":{"type":"boolean","default":false},"context":{"type":"integer","minimum":0},"before_context":{"type":"integer","minimum":0},"after_context":{"type":"integer","minimum":0},"output_mode":{"type":"string","enum":["content","files_with_matches","count"]},"offset":{"type":"integer","minimum":0},"head_limit":{"type":"integer","minimum":0,"description":"兼容 ZCode 的分页参数；等同 limit"},"limit":{"type":"integer","minimum":0},"include_ignored":{"type":"boolean"}},"required":["query"]})),
+        ("preview_patch", "根据完整读取的文件生成 diff 预览，不写入文件；随后调用 apply_patch 应用，权限确认由应用工具处理。省略 target 时跟随当前终端主机，SSH 会话中操作本地文件时显式传 target=local。", json!({"type":"object","properties":{"target":{"type":"string","enum":["local","ssh"]},"path":{"type":"string"},"old_string":{"type":"string"},"new_string":{"type":"string"},"replace_all":{"type":"boolean","default":false}},"required":["path","old_string","new_string"]})),
         ("apply_patch", "应用已经 preview 的补丁；会再次核对原文、先备份再原子替换，并要求用户确认。", json!({"type":"object","properties":{"patch_id":{"type":"string"}},"required":["patch_id"]})),
         ("rollback_patch", "回滚当前会话中已应用的补丁；会再次校验当前文件版本并要求确认。", json!({"type":"object","properties":{"backup_id":{"type":"string"}},"required":["backup_id"]})),
         ("preview_file_change", "预览创建、完整写入、删除或重命名文件；省略 target 时跟随当前终端主机，SSH 会话中操作本地文件时显式传 target=local。", json!({"type":"object","properties":{"target":{"type":"string","enum":["local","ssh"]},"operation":{"type":"string","enum":["create","write","delete","rename"]},"path":{"type":"string"},"destination":{"type":"string"},"content":{"type":"string"}},"required":["operation","path"]})),
@@ -5017,7 +4818,8 @@ fn agent_system_prompt(agent: &PreparedAgent, project_context: &str) -> String {
     };
     let local_file_scope = agent
         .local_workspace
-        .as_ref()
+        .as_deref()
+        .or(agent.host_local_directory.as_deref())
         .map(|path| path.to_string_lossy().to_string())
         .unwrap_or_else(|| "未选择（需要本地文件操作时先让用户选择）".to_string());
     format!(
@@ -5026,6 +4828,7 @@ fn agent_system_prompt(agent: &PreparedAgent, project_context: &str) -> String {
 当前终端目录：{directory}\n\
 本地文件工作区：{local_file_scope}\n\
 终端输出快照：{terminal_snapshot}\n\n\
+工作目录规则：工作区是默认目录和项目上下文，不是文件访问沙箱。写代码、执行项目命令默认在对应工作区进行；用户指定其它路径或任务需要时，可以读取、搜索、创建、修改、重命名和删除当前目标主机上的其它文件。相对路径（包括 ..）按目标工作区解析，绝对路径直接使用，实际访问权限由目标主机用户决定。不得因为路径在工作区外而拒绝，也不得据此切换到另一台主机。\n\n\
 工具说明：\n\
 - run_command：只在当前终端对应的主机上以非交互方式执行 shell 命令；已选择的本地文件工作区不会改变命令目标。它使用独立的 exec 通道，不是用户正在使用的终端；若当前目录已知，会先进入该目录。需要长时间运行时传 background=true 转入后台，任务编号、实时输出、完整输出文件和完成通知会沿用同一条工具记录。\n\
 - server_monitor：只读获取主机负载、内存、磁盘概况。\n\
@@ -5033,8 +4836,8 @@ fn agent_system_prompt(agent: &PreparedAgent, project_context: &str) -> String {
 - read_tool_output：长命令或联网结果会保存为完整输出文件；根据 artifact_id 和 start 分段读取。\n\
 - compact_context：需要立即释放上下文空间时，压缩旧消息并保留最近工作内容。\n\
 - read_attachment：读取用户随本条消息附加的图片或文本；文本用 attachment_id 和 offset/limit 分段读取，不要把附件编号当成本地或 SSH 路径。\n\
-- read_file / glob / grep：在明确授权的文件作用域内读取、查找和搜索；省略 target 时跟随当前终端主机，SSH 会话中要操作本地文件时显式传 target=local。read_file 支持 offset/limit 分段读取，但编辑前必须完整读取文件。\n\
-- preview_patch / apply_patch：先展示带上下文的 diff；默认要求旧内容唯一匹配，replace_all=true 才替换全部匹配；用户确认后再次校验原文、备份并替换。\n\
+- read_file / glob / grep：省略 target 时跟随当前终端主机，SSH 会话中要操作本地文件时显式传 target=local。read_file 支持 offset/limit 分段读取，但编辑前必须完整读取文件。\n\
+- preview_patch / apply_patch：先生成带上下文的 diff，再调用应用工具；默认要求旧内容唯一匹配，replace_all=true 才替换全部匹配。确认由应用工具按权限模式处理，应用时再次校验原文、备份并替换。\n\
 - preview_file_change / apply_file_change：预览并应用 create、write、delete、rename；write 用于完整覆盖已有文件，create 用于新建文件。受控模式需要确认，完全访问模式仍保留 diff、CAS、备份和审计但不重复弹窗。\n\
 - start_task / task_status / task_output / cancel_task：管理有边界的后台任务；停止请求未确认时必须如实说明。\n\
 - web_search：通过联网搜索查找公开网页，返回标题、摘要和来源 URL；联网请求在本机执行，不要把它改写成 SSH 主机上的 curl。\n\
@@ -5837,6 +5640,40 @@ fn format_full_output_section(label: &str, value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn file_activity_tracks_delete_rename_and_reverse_changes() {
+        let mut patch = PendingPatch {
+            target: WorkspaceTarget::Ssh,
+            path: "/tmp/demo.txt".into(),
+            before: Some("first\nsecond\n".into()),
+            after: None,
+            diff: String::new(),
+            action: "delete".into(),
+            destination: None,
+            applied_at_ms: 0,
+            applied_sequence: 0,
+        };
+        let deletion = patch.file_activity(false);
+        assert_eq!(
+            (deletion.added_lines, deletion.removed_lines),
+            (Some(0), Some(2))
+        );
+        let restore = patch.file_activity(true);
+        assert_eq!(
+            (restore.added_lines, restore.removed_lines),
+            (Some(2), Some(0))
+        );
+        assert_eq!(restore.operation, "rollback");
+        patch.action = "rename".into();
+        patch.destination = Some("/tmp/new.txt".into());
+        let rename = patch.file_activity(false);
+        assert!(rename.added_lines.is_none());
+        assert!(rename.removed_lines.is_none());
+        let undo_rename = patch.file_activity(true);
+        assert_eq!(undo_rename.path, "/tmp/new.txt");
+        assert_eq!(undo_rename.destination.as_deref(), Some("/tmp/demo.txt"));
+    }
 
     #[test]
     fn project_context_redacts_sensitive_assignments_and_private_ips() {

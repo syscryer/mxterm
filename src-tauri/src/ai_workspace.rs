@@ -52,6 +52,7 @@ pub(crate) fn validate_workspace_root(path: &str) -> Result<PathBuf, AppError> {
     Ok(root)
 }
 
+// 工作区提供默认 cwd，不作为文件沙箱；真实路径解析和写入版本校验仍保留。
 pub(crate) fn resolve_workspace_path(root: &Path, requested: &str) -> Result<PathBuf, AppError> {
     let requested = requested.trim();
     if requested.is_empty() {
@@ -92,13 +93,28 @@ pub(crate) fn resolve_workspace_path(root: &Path, requested: &str) -> Result<Pat
         }
         resolved
     };
-    if !path_is_within(root, &resolved) {
+    Ok(resolved)
+}
+
+pub(crate) fn resolve_remote_workspace_path(
+    root: Option<&str>,
+    requested: &str,
+) -> Result<String, AppError> {
+    let requested = requested.trim();
+    if requested.is_empty() || requested.contains(['\0', '\n', '\r']) {
         return Err(workspace_error(
-            "ai_workspace_path_forbidden",
-            "路径必须位于用户授权的工作目录内。",
+            "ai_workspace_path_invalid",
+            "远程文件路径不能为空或包含控制字符。",
         ));
     }
-    Ok(resolved)
+    if requested.starts_with('/') {
+        return Ok(requested.to_string());
+    }
+    let root = root
+        .filter(|root| root.starts_with('/') && !root.contains(['\0', '\n', '\r']))
+        .ok_or_else(|| workspace_error("ai_workspace_path_missing", "SSH 默认工作目录不可用。"))?;
+    // 保留 .. 由远程文件系统解析，避免跨符号链接时改变路径语义。
+    Ok(format!("{}/{requested}", root.trim_end_matches('/')))
 }
 
 pub(crate) fn read_local_file(
@@ -472,7 +488,31 @@ pub(crate) fn simple_diff(path: &str, before: &str, after: &str) -> String {
     diff
 }
 
+/// Counts the changed span used by `simple_diff`, excluding shared context.
+pub(crate) fn changed_line_counts(before: &str, after: &str) -> (usize, usize) {
+    let old_lines = diff_lines(before);
+    let new_lines = diff_lines(after);
+    let prefix = old_lines
+        .iter()
+        .zip(&new_lines)
+        .take_while(|(old, new)| old == new)
+        .count();
+    let suffix = old_lines[prefix..]
+        .iter()
+        .rev()
+        .zip(new_lines[prefix..].iter().rev())
+        .take_while(|(old, new)| old == new)
+        .count();
+    (
+        new_lines.len() - prefix - suffix,
+        old_lines.len() - prefix - suffix,
+    )
+}
+
 fn diff_lines(value: &str) -> Vec<String> {
+    if value.is_empty() {
+        return Vec::new();
+    }
     let mut lines: Vec<String> = value.split('\n').map(ToString::to_string).collect();
     if value.ends_with('\n') {
         lines.pop();
@@ -504,10 +544,6 @@ fn display_path(root: &Path, path: &Path) -> String {
 pub(crate) fn normalize_workspace_path(root: &Path, requested: &str) -> Result<String, AppError> {
     let path = resolve_workspace_path(root, requested)?;
     Ok(display_path(root, &path))
-}
-
-fn path_is_within(root: &Path, path: &Path) -> bool {
-    path.starts_with(root)
 }
 
 fn should_skip_directory(name: &str) -> bool {
@@ -686,10 +722,79 @@ pub(crate) fn restore_version(
 mod tests {
     use super::*;
     #[test]
-    fn rejects_escape() {
+    fn allows_paths_outside_the_default_workspace() {
         let d = tempfile::tempdir().unwrap();
-        let r = d.path().canonicalize().unwrap();
-        assert!(resolve_workspace_path(&r, "../escape").is_err());
+        fs::create_dir(d.path().join("project")).unwrap();
+        fs::create_dir(d.path().join("sibling")).unwrap();
+        let root = d.path().join("project").canonicalize().unwrap();
+        let outside = d.path().join("sibling").canonicalize().unwrap();
+        assert_eq!(
+            resolve_workspace_path(&root, "../sibling").unwrap(),
+            outside
+        );
+        assert_eq!(
+            resolve_workspace_path(&root, outside.to_str().unwrap()).unwrap(),
+            outside
+        );
+        assert_eq!(
+            resolve_workspace_path(&root, "src/new.rs").unwrap(),
+            root.join("src/new.rs")
+        );
+    }
+
+    #[test]
+    fn edits_external_file_with_backup_conflict_check_and_restore() {
+        let d = tempfile::tempdir().unwrap();
+        fs::create_dir(d.path().join("project")).unwrap();
+        let root = d.path().join("project").canonicalize().unwrap();
+        let outside = d.path().join("external").join("nested").join("file.txt");
+        let path = outside.to_str().unwrap();
+        let backups = d.path().join("backups");
+        write_version(&root, path, None, "old\n", &backups).unwrap();
+        let snapshot = read_local_file(&root, path, 1024).unwrap();
+        assert_eq!(snapshot.content, "old\n");
+        let (updated, _) = build_patch(&snapshot.content, path, "old", "new").unwrap();
+        let id = write_version(&root, path, Some(&snapshot.content), &updated, &backups).unwrap();
+        assert_eq!(fs::read_to_string(backups.join(id)).unwrap(), "old\n");
+        assert_eq!(
+            read_version(&root, "../external/nested/file.txt")
+                .unwrap()
+                .as_deref(),
+            Some("new\n")
+        );
+        fs::write(&outside, "user edit\n").unwrap();
+        assert!(write_version(&root, path, Some("new\n"), "stale\n", &backups).is_err());
+        assert!(restore_version(&root, path, "new\n", "old\n", &backups).is_err());
+        assert_eq!(fs::read_to_string(&outside).unwrap(), "user edit\n");
+        restore_version(&root, path, "user edit\n", "old\n", &backups).unwrap();
+        assert_eq!(fs::read_to_string(&outside).unwrap(), "old\n");
+    }
+
+    #[test]
+    fn remote_paths_use_cwd_without_confining_files() {
+        assert_eq!(
+            resolve_remote_workspace_path(Some("/root/project"), "src/main.rs").unwrap(),
+            "/root/project/src/main.rs"
+        );
+        assert_eq!(
+            resolve_remote_workspace_path(Some("/root/project"), "../sibling/a").unwrap(),
+            "/root/project/../sibling/a"
+        );
+        assert_eq!(
+            resolve_remote_workspace_path(Some("/root/project"), "/etc/app.conf").unwrap(),
+            "/etc/app.conf"
+        );
+        assert_eq!(
+            resolve_remote_workspace_path(None, "/tmp/file.txt").unwrap(),
+            "/tmp/file.txt"
+        );
+        assert_eq!(
+            resolve_remote_workspace_path(Some("/"), "tmp/file.txt").unwrap(),
+            "/tmp/file.txt"
+        );
+        assert!(resolve_remote_workspace_path(None, "file.txt").is_err());
+        assert!(resolve_remote_workspace_path(Some("/root"), "").is_err());
+        assert!(resolve_remote_workspace_path(Some("/root"), "/tmp/invalid\0path").is_err());
     }
 
     #[test]
@@ -714,6 +819,32 @@ mod tests {
     #[test]
     fn diff_has_line_markers() {
         assert!(simple_diff("a", "a\nb\n", "c\nd\n").contains("-a\n-b\n+c\n+d\n"));
+    }
+
+    #[test]
+    fn file_activity_counts_match_diff_for_empty_and_changed_files() {
+        for (before, after, expected) in [
+            ("", "first\nsecond\n", (2, 0)),
+            ("first\nsecond\n", "", (0, 2)),
+            ("", "", (0, 0)),
+            ("a\nb\nc\n", "a\nnew\nextra\nc\n", (2, 1)),
+            ("same\n", "same\n", (0, 0)),
+            ("a\r\nb\r\n", "a\r\nc\r\n", (1, 1)),
+        ] {
+            assert_eq!(changed_line_counts(before, after), expected);
+            let diff = simple_diff("file.txt", before, after);
+            let added = diff
+                .lines()
+                .skip(3)
+                .filter(|line| line.starts_with('+'))
+                .count();
+            let removed = diff
+                .lines()
+                .skip(3)
+                .filter(|line| line.starts_with('-'))
+                .count();
+            assert_eq!((added, removed), expected, "{diff}");
+        }
     }
 
     #[test]

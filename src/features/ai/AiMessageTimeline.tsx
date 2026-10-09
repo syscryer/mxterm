@@ -1,5 +1,5 @@
 import { Brain } from "lucide-react";
-import { useEffect, useState, type ReactNode } from "react";
+import { memo, useEffect, useMemo, useState, type ReactNode } from "react";
 import { StreamTextDisclosure } from "../../shared/ui/StreamTextDisclosure";
 import { buildAiMessageFlow } from "./aiMessageFlow";
 import type { AiChatMessage, AiToolCallRecord } from "./aiTypes";
@@ -7,6 +7,7 @@ import type { AiChatMessage, AiToolCallRecord } from "./aiTypes";
 interface AiMessageFlowProps {
   message: AiChatMessage;
   isStreaming?: boolean;
+  ticking?: boolean;
   renderText: (text: string) => ReactNode;
   renderTool: (call: AiToolCallRecord, flowing?: boolean) => ReactNode;
 }
@@ -18,24 +19,42 @@ function parseTimestamp(value: string, fallback: number) {
   return Number.isFinite(parsed) ? parsed : fallback;
 }
 
-export function AiMessageTimeline({
+const thinkingIcon = <Brain className="ui-icon" aria-hidden="true" />;
+
+const TimelineText = memo(function TimelineText({ text, render }: {
+  text: string;
+  render: AiMessageFlowProps["renderText"];
+}) {
+  return <div className="ai-message-content">{render(text)}</div>;
+});
+
+const TimelineTool = memo(function TimelineTool({ call, flowing, render }: {
+  call: AiToolCallRecord;
+  flowing: boolean;
+  render: AiMessageFlowProps["renderTool"];
+}) {
+  return <div>{render(call, flowing)}</div>;
+});
+
+export const AiMessageTimeline = memo(function AiMessageTimeline({
   message,
   isStreaming,
+  ticking = true,
   renderText,
   renderTool,
 }: AiMessageFlowProps) {
   const streaming = isStreaming ?? message.status === "streaming";
   const [now, setNow] = useState(Date.now);
   useEffect(() => {
-    if (!streaming) return;
+    if (!streaming || !ticking) return;
     setNow(Date.now());
     const timer = window.setInterval(() => setNow(Date.now()), 1000);
     return () => window.clearInterval(timer);
-  }, [streaming]);
+  }, [streaming, ticking]);
   const started = parseTimestamp(message.created_at, now);
   const ended = streaming ? now : parseTimestamp(message.updated_at, now);
   const elapsed = Math.max(0, Math.floor((ended - started) / 1000));
-  const items = buildAiMessageFlow(message, streaming);
+  const items = useMemo(() => buildAiMessageFlow(message, streaming), [message, streaming]);
   const runningCommandIds = items
     .filter(
       (item): item is Extract<(typeof items)[number], { kind: "tool" }> =>
@@ -57,7 +76,7 @@ export function AiMessageTimeline({
       {streaming && !hasThinking ? (
         <StreamTextDisclosure
           label="思考"
-          icon={<Brain className="ui-icon" aria-hidden="true" />}
+          icon={thinkingIcon}
           text="正在思考"
           streaming
           caption="持续生成中"
@@ -66,14 +85,11 @@ export function AiMessageTimeline({
       {items.map((item) => {
         if (item.kind === "tool") {
           return (
-            <div key={item.id}>
-              {renderTool(item.call, item.call.id === lastRunningCommandId)}
-            </div>
+            <TimelineTool key={item.id} call={item.call}
+              flowing={item.call.id === lastRunningCommandId} render={renderTool} />
           );
         }
-        if (item.kind === "text") return (
-          <div className="ai-message-content" key={item.id}>{renderText(item.text)}</div>
-        );
+        if (item.kind === "text") return <TimelineText key={item.id} text={item.text} render={renderText} />;
         const active = streaming && item.block.finished_at_ms == null;
         const blockEndedAt = item.block.finished_at_ms ?? now;
         const blockElapsed = Math.max(
@@ -84,7 +100,7 @@ export function AiMessageTimeline({
           <StreamTextDisclosure
             key={item.id}
             label="思考"
-            icon={<Brain className="ui-icon" aria-hidden="true" />}
+            icon={thinkingIcon}
             text={item.block.content}
             streaming={active}
             caption={active ? "持续生成中" : blockElapsed > 0 ? `持续了 ${blockElapsed} 秒` : "刚刚完成"}
@@ -102,4 +118,4 @@ export function AiMessageTimeline({
       ) : null}
     </div>
   );
-}
+});

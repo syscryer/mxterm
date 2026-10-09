@@ -12,6 +12,7 @@ import {
   useState,
 } from "react";
 import { createPortal } from "react-dom";
+import { usePanelVisible } from "./panelVisibility";
 
 export interface AppSelectOption<T extends string> {
   description?: ReactNode;
@@ -76,7 +77,16 @@ export function AppSelect<T extends string>({
   const triggerRef = useRef<HTMLButtonElement | null>(null);
   const menuRef = useRef<HTMLDivElement | null>(null);
   const searchInputRef = useRef<HTMLInputElement | null>(null);
+  const consumedOpenRequestRef = useRef(0);
   const [open, setOpen] = useState(false);
+  const visible = usePanelVisible();
+  useEffect(() => {
+    if (!visible && open) {
+      setOpen(false);
+      setSearchQuery("");
+      onOpenChange?.(false);
+    }
+  }, [visible, open, onOpenChange]);
   const [searchQuery, setSearchQuery] = useState("");
   const [position, setPosition] = useState<MenuPosition | null>(null);
   const selectedOption = options.find((option) => option.value === value);
@@ -101,14 +111,19 @@ export function AppSelect<T extends string>({
   }
 
   useEffect(() => {
-    if (!openRequestKey || disabled) {
+    if (!openRequestKey) {
+      consumedOpenRequestRef.current = 0;
       return;
     }
+    if (disabled || !visible || openRequestKey === consumedOpenRequestRef.current) {
+      return;
+    }
+    consumedOpenRequestRef.current = openRequestKey;
     setSelectOpen(true);
     if (!searchable) {
       window.requestAnimationFrame(() => triggerRef.current?.focus());
     }
-  }, [disabled, openRequestKey]);
+  }, [disabled, openRequestKey, visible]);
 
   useLayoutEffect(() => {
     if (!open) {
@@ -276,7 +291,7 @@ export function AppSelect<T extends string>({
         <ChevronDown className="ui-icon" aria-hidden="true" />
       </button>
 
-      {open && position
+      {visible && open && position
         ? createPortal(
             <DismissableLayerBranch asChild>
               <div

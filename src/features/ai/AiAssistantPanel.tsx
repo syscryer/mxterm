@@ -17,6 +17,7 @@ import {
   BookOpen,
   ListPlus,
   LoaderCircle,
+  Pencil,
   Play,
   Plus,
   Save,
@@ -30,7 +31,9 @@ import {
   X,
   Zap,
 } from "lucide-react";
+import * as Dialog from "@radix-ui/react-dialog";
 import {
+  memo,
   useCallback,
   useEffect,
   useRef,
@@ -45,6 +48,7 @@ import {
   aiChatSessionClear,
   aiChatSessionDelete,
   aiChatSessionGet,
+  aiFileChangesUndo,
   aiChatSessionList,
   aiChatStreamStart,
   aiChatStreamStop,
@@ -64,14 +68,33 @@ import { AnchoredSurfacePortal } from "../../shared/ui/AnchoredSurfacePortal";
 import { ConfirmDialog } from "../../shared/ui/ConfirmDialog";
 import { AttachmentPreviewDialog } from "../../shared/ui/AttachmentPreviewDialog";
 import { Tooltip } from "../../shared/ui/Tooltip";
+import { useScrollFollow } from "../../shared/ui/useScrollFollow";
 import type { CommandHistoryEntry } from "../commands/commandLibraryTypes";
 import type { ConnectionProfile } from "../connections/connectionTypes";
 import { keyboardEventMatchesShortcut } from "../shortcuts/shortcutKeys";
 import { AiModelPicker } from "./AiModelPicker";
 import { AiMessageTimeline } from "./AiMessageTimeline";
+import { AiFileActivitySummary } from "./AiFileActivitySummary";
+import { AiFileChangesSummary } from "./AiFileChangesSummary";
+import { applyFileChangeSummaries } from "./aiFileChanges";
+import { getFileActivity, isFileActivity } from "./aiFileActivity";
+import {
+  AI_HISTORY_SCOPE_CURRENT,
+  emitAiScopeEffect,
+  normalizeAiScopeKey,
+  readAiScopeState,
+  setAiScopeEffectHandler,
+  updateEveryAiScopeState,
+  useAiScopeField,
+  type AiAssistantScopeEffect,
+  type AiAssistantScopeState,
+  type AiAssistantStreamState,
+} from "./aiAssistantScopeStore";
 import { appendThinkingDelta, finishThinkingBlock } from "./aiMessageFlow";
 import type {
   AiChatMessage,
+  AiFileChangeSummary,
+  AiChatStreamEvent,
   AiChatSessionSummary,
   AiAuditEvent,
   AiCommandAssessment,
@@ -83,7 +106,7 @@ import type {
   AiToolCallRecord,
 } from "./aiTypes";
 
-interface AiAssistantPanelProps {
+export interface AiAssistantPanelProps {
   active: boolean;
   stateScopeKey?: string | null;
   commandDraft: string;
@@ -103,30 +126,20 @@ interface AiAssistantPanelProps {
   onSendCommand: (command: string) => Promise<void>;
 }
 
-interface StreamState {
-  assistantMessageId: string;
-  sessionId: string;
-  streamId: string;
-}
+type StreamState = AiAssistantStreamState;
 
-interface AiAssistantStateSnapshot {
-  activeSessionId: string | null;
-  messages: AiChatMessage[];
-  contextBlocks: AiContextBlock[];
-  input: string;
-  historyScopeChoice: string;
-  selectedUserOptionIds: Record<string, string>;
-  userInputDrafts: Record<string, string>;
-  expandedToolCallIds: Record<string, boolean>;
-}
-
-const aiAssistantStateCache = new Map<string, AiAssistantStateSnapshot>();
+let aiScopeStreamListener: Promise<void> | null = null;
+let aiScopeStreamUnlisten: (() => void) | null = null;
+let aiScopeStreamListenerGeneration = 0;
+let lastConsumedContextRequestKey = 0;
+let aiProviderConfigsCache: AiProviderConfig[] | null = null;
 
 const selectedProviderStorageKey = "mxterm.ai.selectedProviderConfigId";
 const selectedAgentModeStorageKey = "mxterm.ai.selectedExecutionMode";
 const selectedModelsStorageKey = "mxterm.ai.selectedModelsByProvider";
 const selectedReasoningLevelsStorageKey = "mxterm.ai.selectedReasoningLevelsByModel";
 const selectedLocalWorkspaceStorageKey = "mxterm.ai.selectedLocalWorkspace";
+const selectedRemoteWorkspacesStorageKey = "mxterm.ai.selectedRemoteWorkspacesByConnection";
 const agentTerminalOutputLimit = 20000;
 const maxImageAttachmentBytes = 12 * 1024 * 1024;
 const maxImageAttachments = 4;
@@ -137,8 +150,7 @@ const textAttachmentExtensions = new Set([
   "sh", "bash", "zsh", "ps1", "sql", "html", "htm", "css", "scss", "xml", "env",
   "gitignore", "dockerfile",
 ]);
-const AI_MESSAGE_LIST_BOTTOM_THRESHOLD = 32;
-const HISTORY_SCOPE_CURRENT = "__current__";
+const HISTORY_SCOPE_CURRENT = AI_HISTORY_SCOPE_CURRENT;
 const HISTORY_SCOPE_ALL = "__all__";
 const HISTORY_SCOPE_NONE = "__none__";
 
@@ -200,28 +212,26 @@ export function AiAssistantPanel({
   onSendCommand,
 }: AiAssistantPanelProps) {
   const runtimeAvailable = hasTauriRuntime();
-  const initialStateSnapshotRef = useRef<AiAssistantStateSnapshot | null>(
-    stateScopeKey ? aiAssistantStateCache.get(stateScopeKey) || null : null,
+  const scopeKey = normalizeAiScopeKey(stateScopeKey);
+  const [providerConfigs, setProviderConfigs] = useState<AiProviderConfig[]>(
+    () => aiProviderConfigsCache ?? [],
   );
-  const initialStateSnapshot = initialStateSnapshotRef.current;
-  const [providerConfigs, setProviderConfigs] = useState<AiProviderConfig[]>([]);
+  const [providerConfigsLoaded, setProviderConfigsLoaded] = useState(
+    () => !runtimeAvailable || aiProviderConfigsCache !== null,
+  );
   const [selectedProviderId, setSelectedProviderId] = useState(() =>
     window.localStorage.getItem(selectedProviderStorageKey) || "",
   );
   const [sessions, setSessions] = useState<AiChatSessionSummary[]>([]);
-  const [historyScopeChoice, setHistoryScopeChoice] = useState(
-    () => initialStateSnapshot?.historyScopeChoice || HISTORY_SCOPE_CURRENT,
+  const [historyScopeChoice, setHistoryScopeChoice] = useAiScopeField(
+    scopeKey,
+    "historyScopeChoice", active,
   );
-  const [activeSessionId, setActiveSessionId] = useState<string | null>(
-    () => initialStateSnapshot?.activeSessionId || null,
-  );
-  const [messages, setMessages] = useState<AiChatMessage[]>(
-    () => initialStateSnapshot?.messages || [],
-  );
-  const [contextBlocks, setContextBlocks] = useState<AiContextBlock[]>(
-    () => initialStateSnapshot?.contextBlocks || [],
-  );
-  const [input, setInput] = useState(() => initialStateSnapshot?.input || "");
+  const [activeSessionId, setActiveSessionId] = useAiScopeField(scopeKey, "activeSessionId", active);
+  const [messages, setMessages] = useAiScopeField(scopeKey, "messages", active);
+  const [contextBlocks, setContextBlocks] = useAiScopeField(scopeKey, "contextBlocks", active);
+  const [input, setInput] = useAiScopeField(scopeKey, "input", active);
+  const [remoteWorkspacePath, setRemoteWorkspacePath] = useAiScopeField(scopeKey, "remoteWorkspacePath", active);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [auditOpen, setAuditOpen] = useState(false);
   const [auditEvents, setAuditEvents] = useState<AiAuditEvent[]>([]);
@@ -235,22 +245,28 @@ export function AiAssistantPanel({
   const [historyScopeOpen, setHistoryScopeOpen] = useState(false);
   const [historyScopeQuery, setHistoryScopeQuery] = useState("");
   const [contextMenuOpen, setContextMenuOpen] = useState(false);
+  const [remoteWorkspaceDialogOpen, setRemoteWorkspaceDialogOpen] = useState(false);
+  const [remoteWorkspaceDraft, setRemoteWorkspaceDraft] = useState("");
+  const [remoteWorkspaceError, setRemoteWorkspaceError] = useState<string | null>(null);
+  const remoteWorkspaceHydratedConnectionRef = useRef<string | null>(null);
   const [loading, setLoading] = useState(false);
-  const [streamState, setStreamState] = useState<StreamState | null>(null);
+  const [streamState, setCurrentStreamState] = useAiScopeField(scopeKey, "streamState", active);
   const loadingRef = useRef(false);
   const historyTriggerRef = useRef<HTMLButtonElement | null>(null);
   const auditTriggerRef = useRef<HTMLButtonElement | null>(null);
   const contextTriggerRef = useRef<HTMLButtonElement | null>(null);
-  const messageListRef = useRef<HTMLElement | null>(null);
+  const {
+    viewportRef: messageListRef,
+    contentRef: messageListContentRef,
+    hasNewContent: messageListHasNewContent,
+    resetFollow: resetMessageListScrollFollow,
+    scrollToBottom: scrollMessageListToBottom,
+  } = useScrollFollow(messages, scopeKey, active);
   const attachmentInputRef = useRef<HTMLInputElement | null>(null);
-  const messageListFollowRef = useRef(true);
-  const streamStateRef = useRef<StreamState | null>(null);
-  const lastContextRequestKeyRef = useRef(0);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [imageAttachmentLoading, setImageAttachmentLoading] = useState(false);
   const [previewAttachment, setPreviewAttachment] = useState<AiContextBlock | null>(null);
-  const [messageListHasNewContent, setMessageListHasNewContent] = useState(false);
   const [pendingDeleteSession, setPendingDeleteSession] =
     useState<AiChatSessionSummary | null>(null);
   const [clearSessionOpen, setClearSessionOpen] = useState(false);
@@ -262,14 +278,14 @@ export function AiAssistantPanel({
   });
   const [decidingToolCallIds, setDecidingToolCallIds] = useState<string[]>([]);
   const [answeringToolCallIds, setAnsweringToolCallIds] = useState<string[]>([]);
-  const [selectedUserOptionIds, setSelectedUserOptionIds] = useState<Record<string, string>>(
-    () => initialStateSnapshot?.selectedUserOptionIds || {},
+  const [selectedUserOptionIds, setSelectedUserOptionIds] = useAiScopeField(
+    scopeKey,
+    "selectedUserOptionIds", active,
   );
-  const [userInputDrafts, setUserInputDrafts] = useState<Record<string, string>>(
-    () => initialStateSnapshot?.userInputDrafts || {},
-  );
-  const [expandedToolCallIds, setExpandedToolCallIds] = useState<Record<string, boolean>>(
-    () => initialStateSnapshot?.expandedToolCallIds || {},
+  const [userInputDrafts, setUserInputDrafts] = useAiScopeField(scopeKey, "userInputDrafts", active);
+  const [expandedToolCallIds, setExpandedToolCallIds] = useAiScopeField(
+    scopeKey,
+    "expandedToolCallIds", active,
   );
   const [selectedModel, setSelectedModel] = useState("");
   const [reasoningLevels, setReasoningLevels] = useState<string[]>([]);
@@ -321,9 +337,15 @@ export function AiAssistantPanel({
     ? `${connection.username}@${connection.host}`
     : terminalTitle || "本机终端";
   const localFileDisplay = localWorkspace || "本地文件未选择";
-  const scopeDisplay = `主机：${hostDisplay}；本地文件：${localFileDisplay}`;
+  const remoteFileDisplay = connection
+    ? remoteWorkspacePath?.trim() || "~"
+    : terminalDirectory?.trim() || "~";
+  const scopeDisplay = `主机：${hostDisplay}；${connection ? "SSH 工作区" : "本机目录"}：${remoteFileDisplay}${localWorkspace ? `；本机工作区：${localFileDisplay}` : ""}`;
   const currentHostScope = connection
     ? `${connection.username}@${connection.host}:${connection.port}`
+    : null;
+  const effectiveRemoteWorkspace = connection
+    ? remoteWorkspacePath?.trim() || terminalDirectory?.trim() || null
     : null;
   const connectionById = new Map(connections.map((item) => [item.id, item]));
   const sessionCountByConnection = new Map<string, number>();
@@ -410,36 +432,6 @@ export function AiAssistantPanel({
       .some((value) => value.toLocaleLowerCase().includes(query));
   });
   useEffect(() => {
-    streamStateRef.current = streamState;
-  }, [streamState]);
-
-  useEffect(() => {
-    if (!stateScopeKey) {
-      return;
-    }
-    aiAssistantStateCache.set(stateScopeKey, {
-      activeSessionId,
-      messages,
-      contextBlocks,
-      input,
-      historyScopeChoice,
-      selectedUserOptionIds,
-      userInputDrafts,
-      expandedToolCallIds,
-    });
-  }, [
-    activeSessionId,
-    contextBlocks,
-    expandedToolCallIds,
-    historyScopeChoice,
-    input,
-    messages,
-    selectedUserOptionIds,
-    stateScopeKey,
-    userInputDrafts,
-  ]);
-
-  useEffect(() => {
     if (!historyOpen) {
       setHistoryScopeOpen(false);
       setHistoryScopeQuery("");
@@ -477,66 +469,24 @@ export function AiAssistantPanel({
     };
   }, [activeSessionId, auditOpen, runtimeAvailable]);
 
-  function setCurrentStreamState(next: StreamState | null) {
-    streamStateRef.current = next;
-    setStreamState(next);
-  }
-
-  function resetMessageListScrollFollow() {
-    messageListFollowRef.current = true;
-    setMessageListHasNewContent(false);
-  }
-
-  function handleMessageListScroll() {
-    const list = messageListRef.current;
-    if (!list) {
-      return;
-    }
-    const distanceToBottom = list.scrollHeight - list.scrollTop - list.clientHeight;
-    if (distanceToBottom <= AI_MESSAGE_LIST_BOTTOM_THRESHOLD) {
-      messageListFollowRef.current = true;
-      setMessageListHasNewContent(false);
-      return;
-    }
-    messageListFollowRef.current = false;
-    if (streamStateRef.current) {
-      setMessageListHasNewContent(true);
-    }
-  }
-
-  function scrollMessageListToBottom() {
-    const list = messageListRef.current;
-    if (!list) {
-      return;
-    }
-    messageListFollowRef.current = true;
-    setMessageListHasNewContent(false);
-    list.scrollTop = list.scrollHeight;
-  }
+  const readCurrentStreamState = useCallback((): StreamState | null => {
+    return readAiScopeState(scopeKey).streamState;
+  }, [scopeKey]);
 
   useEffect(() => {
     loadingRef.current = loading;
   }, [loading]);
 
   useEffect(() => {
-    const list = messageListRef.current;
-    if (!list) {
-      return;
-    }
-    if (!messageListFollowRef.current) {
-      setMessageListHasNewContent(true);
-      return;
-    }
-    const frame = window.requestAnimationFrame(() => {
-      if (messageListRef.current === list && messageListFollowRef.current) {
-        list.scrollTop = list.scrollHeight;
-      }
-    });
-    return () => window.cancelAnimationFrame(frame);
-  }, [messages, streamState]);
-
-  useEffect(() => {
     if (!active) {
+      setHistoryOpen(false);
+      setAuditOpen(false);
+      setContextMenuOpen(false);
+      setRemoteWorkspaceDialogOpen(false);
+      setPendingDeleteSession(null);
+      setClearSessionOpen(false);
+      setPendingDangerousCommand(null);
+      setPreviewAttachment(null);
       return;
     }
     void reloadProviderConfigs();
@@ -544,6 +494,9 @@ export function AiAssistantPanel({
   }, [active]);
 
   useEffect(() => {
+    if (!providerConfigsLoaded) {
+      return;
+    }
     if (!selectedProviderId && providerConfigs.length > 0) {
       setSelectedProviderId(providerConfigs[0].id);
       window.localStorage.setItem(selectedProviderStorageKey, providerConfigs[0].id);
@@ -562,7 +515,7 @@ export function AiAssistantPanel({
       setSelectedProviderId(providerConfigs[0].id);
       window.localStorage.setItem(selectedProviderStorageKey, providerConfigs[0].id);
     }
-  }, [providerConfigs, selectedProviderId]);
+  }, [providerConfigs, providerConfigsLoaded, selectedProviderId]);
 
   const handleModelCapabilitiesChange = useCallback(
     (providerId: string, model: AiProviderModelOption | null) => {
@@ -613,201 +566,60 @@ export function AiAssistantPanel({
 
   useEffect(() => {
     let disposed = false;
-    let unlisten: (() => void) | null = null;
-    void listenAiChatStream((event) => {
-      if (disposed) {
-        return;
+    void ensureAiScopeStreamListener().catch((nextError) => {
+      if (!disposed) {
+        setError(formatAiError(nextError));
       }
-      const current = streamStateRef.current;
-      if (event.kind === "tool_output") {
-        const output = event.tool_output;
-        if (!output || !output.delta) {
-          return;
-        }
-        setMessages((items) =>
-          items.map((message) =>
-            message.id === event.message_id
-              ? {
-                  ...message,
-                  tool_calls: message.tool_calls.map((call) =>
-                    call.id === output.tool_call_id
-                      ? {
-                          ...call,
-                          output: tailByChars(
-                            `${call.status === "completed" ? "" : call.output}${output.delta}`,
-                            12_000,
-                          ),
-                          status: call.status === "pending_approval" ? call.status : "running",
-                        }
-                      : call,
-                  ),
-                }
-              : message,
-          ),
+    });
+    const removeEffectHandler = setAiScopeEffectHandler(scopeKey, (effect) => {
+      if (effect.kind === "background_task") {
+        setNotice(
+          effect.status === "succeeded"
+            ? "后台任务已完成。"
+            : effect.status === "cancelled"
+              ? "后台任务已停止。"
+              : effect.status === "stop_requested_unconfirmed"
+                ? "后台任务已发出停止请求，但远端停止状态尚未确认。"
+                : "后台任务执行失败。",
         );
         return;
       }
-      if (event.kind === "background_task") {
-        const update = event.background_task;
-        if (!update) {
-          return;
-        }
-        const status =
-          update.status === "succeeded"
-            ? "completed"
-            : update.status === "cancelled"
-              ? "cancelled"
-              : update.status === "running"
-                ? "running"
-                : "failed";
-        setMessages((items) =>
-          items.map((message) =>
-            message.id === event.message_id
-              ? {
-                  ...message,
-                  tool_calls: message.tool_calls.map((call) =>
-                    call.id === update.tool_call_id
-                      ? {
-                          ...call,
-                          status,
-                          output: update.output_preview || call.output,
-                          output_artifact_id: update.output_artifact_id || call.output_artifact_id,
-                          exit_status: update.exit_status ?? call.exit_status,
-                        }
-                      : call,
-                  ),
-                }
-              : message,
-          ),
-        );
-        if (update.status !== "running") {
-          setNotice(
-            update.status === "succeeded"
-              ? "后台任务已完成。"
-              : update.status === "cancelled"
-                ? "后台任务已停止。"
-                : update.status === "stop_requested_unconfirmed"
-                  ? "后台任务已发出停止请求，但远端停止状态尚未确认。"
-                  : "后台任务执行失败。",
-          );
-        }
-        return;
+      if (effect.status === "error") {
+        setError(effect.error || "AI 回复失败。");
+      } else if (effect.status === "stopped") {
+        setNotice("已停止生成，当前内容已保留。");
       }
-      if (event.kind === "tool_call") {
-        const record = event.tool_call;
-        if (!record) {
-          return;
-        }
-        // 后台任务可能在主流已结束后才完成。只要消息 ID 对得上，仍要
-        // 接收最终的完整工具记录，不能再用当前 stream_id 把它丢掉。
-        setMessages((items) =>
-          items.map((message) =>
-            message.id === event.message_id
-              ? {
-                  ...(message.tool_calls.some((item) => item.id === record.id)
-                    ? message
-                    : finishThinkingBlock(message)),
-                  tool_calls: upsertToolCall(message.tool_calls, record),
-                }
-              : message,
-          ),
-        );
-        return;
-      }
-      if (!current || event.stream_id !== current.streamId) {
-        return;
-      }
-      if (event.kind === "chunk") {
-        const delta = event.delta || "";
-        setMessages((items) =>
-          items.map((message) =>
-            message.id === event.message_id
-              ? {
-                  ...finishThinkingBlock(message),
-                  content: `${message.content}${delta}`,
-                  status: "streaming",
-                }
-              : message,
-          ),
-        );
-        return;
-      }
-      if (event.kind === "thinking") {
-        const delta = event.thinking_delta || "";
-        setMessages((items) => items.map((message) =>
-          message.id === event.message_id
-            ? { ...appendThinkingDelta(message, delta, event.thinking_update), status: "streaming" }
-            : message,
-        ));
-        return;
-      }
-      if (event.kind === "finished" || event.kind === "stopped" || event.kind === "error") {
-        setMessages((items) =>
-          items.map((message) =>
-            message.id === event.message_id
-              ? {
-                  ...finishThinkingBlock(message),
-                  commands: extractCommandSuggestions(event.content || message.content),
-                  content: event.content ?? message.content,
-                  status:
-                    event.kind === "finished"
-                      ? "complete"
-                      : event.kind === "stopped"
-                        ? "stopped"
-                        : "error",
-                }
-              : message,
-          ),
-        );
-        setCurrentStreamState(null);
-        if (event.kind === "error") {
-          setError(event.error || "AI 回复失败。");
-        } else if (event.kind === "stopped") {
-          setNotice("已停止生成，当前内容已保留。");
-        }
-        void reloadSessions();
-      }
-    })
-      .then((cleanup) => {
-        if (disposed) {
-          cleanup();
-          return;
-        }
-        unlisten = cleanup;
-      })
-      .catch((nextError) => {
-        if (!disposed) {
-          setError(formatAiError(nextError));
-        }
-      });
+      void reloadSessions();
+    });
     return () => {
       disposed = true;
-      if (unlisten) {
-        unlisten();
-        unlisten = null;
-      }
+      removeEffectHandler();
     };
-  }, []);
+  }, [scopeKey]);
 
   useEffect(() => {
-    if (!contextRequestKey || contextRequestKey === lastContextRequestKeyRef.current) {
+    if (!contextRequestKey || contextRequestKey === lastConsumedContextRequestKey) {
       return;
     }
-    lastContextRequestKeyRef.current = contextRequestKey;
+    lastConsumedContextRequestKey = contextRequestKey;
     appendContextBlocks(initialContexts);
   }, [contextRequestKey, initialContexts]);
 
   async function reloadProviderConfigs() {
     if (!runtimeAvailable) {
       setProviderConfigs([]);
+      setProviderConfigsLoaded(true);
       return;
     }
     try {
       const configs = await aiProviderConfigList();
+      aiProviderConfigsCache = configs;
       setProviderConfigs(configs);
       setError(null);
     } catch (nextError) {
       setError(formatAiError(nextError));
+    } finally {
+      setProviderConfigsLoaded(true);
     }
   }
 
@@ -871,7 +683,7 @@ export function AiAssistantPanel({
   }
 
   async function sendMessage(content: string, contexts: AiContextBlock[]) {
-    if (streamStateRef.current || loadingRef.current) {
+    if (readCurrentStreamState() || loadingRef.current) {
       return;
     }
     const normalizedContent = content.trim();
@@ -906,10 +718,10 @@ export function AiAssistantPanel({
           ? {
               connection_id: connection?.id ?? null,
               workspace_type: connection ? "remote" : "local",
-              workspace_path: terminalDirectory ?? null,
+              workspace_path: connection ? effectiveRemoteWorkspace : terminalDirectory ?? null,
               local_workspace_path: localWorkspace,
               mode: effectiveAgentMode,
-              working_directory: terminalDirectory ?? null,
+              working_directory: connection ? effectiveRemoteWorkspace : terminalDirectory ?? null,
               terminal_output: terminalOutput ? tailByChars(terminalOutput, agentTerminalOutputLimit) : null,
               terminal_session_id: terminalSessionId ?? null,
             }
@@ -973,8 +785,18 @@ export function AiAssistantPanel({
     }
   }, [localWorkspace]);
 
-  async function decideToolCall(call: AiToolCallRecord, approved: boolean) {
-    const current = streamStateRef.current;
+  useEffect(() => {
+    const connectionId = connection?.id?.trim() || "";
+    if (!connectionId || remoteWorkspaceHydratedConnectionRef.current === connectionId) {
+      return;
+    }
+    remoteWorkspaceHydratedConnectionRef.current = connectionId;
+    const stored = readStoredAiSelectionMap(selectedRemoteWorkspacesStorageKey)[connectionId]?.trim() || "";
+    setRemoteWorkspacePath(stored || null);
+  }, [connection?.id, remoteWorkspacePath, setRemoteWorkspacePath]);
+
+  const decideToolCall = useCallback(async (call: AiToolCallRecord, approved: boolean) => {
+    const current = readCurrentStreamState();
     if (!current || decidingToolCallIds.includes(call.id)) {
       return;
     }
@@ -986,10 +808,10 @@ export function AiAssistantPanel({
       setDecidingToolCallIds((ids) => ids.filter((id) => id !== call.id));
       setError(formatAiError(nextError));
     }
-  }
+  }, [readCurrentStreamState, decidingToolCallIds]);
 
-  async function answerToolCall(call: AiToolCallRecord, cancelled = false) {
-    const current = streamStateRef.current;
+  const answerToolCall = useCallback(async (call: AiToolCallRecord, cancelled = false) => {
+    const current = readCurrentStreamState();
     if (!current || answeringToolCallIds.includes(call.id)) {
       return;
     }
@@ -1023,7 +845,7 @@ export function AiAssistantPanel({
     } finally {
       setAnsweringToolCallIds((ids) => ids.filter((id) => id !== call.id));
     }
-  }
+  }, [readCurrentStreamState, answeringToolCallIds, selectedUserOptionIds, userInputDrafts, setExpandedToolCallIds, setSelectedUserOptionIds, setUserInputDrafts]);
 
   async function stopStreaming() {
     if (!streamState) {
@@ -1041,7 +863,7 @@ export function AiAssistantPanel({
       return;
     }
     try {
-      const currentStream = streamStateRef.current;
+      const currentStream = readCurrentStreamState();
       if (currentStream?.sessionId === pendingDeleteSession.id) {
         await aiChatStreamStop(currentStream.streamId).catch(() => undefined);
         setCurrentStreamState(null);
@@ -1066,7 +888,7 @@ export function AiAssistantPanel({
     if (!activeSessionId) {
       return;
     }
-    if (streamStateRef.current) {
+    if (readCurrentStreamState()) {
       setError("请先停止生成，再清空当前会话。");
       setClearSessionOpen(false);
       return;
@@ -1085,25 +907,34 @@ export function AiAssistantPanel({
     }
   }
 
-  async function copyMessage(content: string) {
+  const copyMessage = useCallback(async (content: string) => {
     try {
       await copyTextToClipboard(content);
       setNotice("消息已复制。");
     } catch {
       setError("复制消息失败。");
     }
-  }
+  }, []);
 
-  async function copyCommand(command: string) {
+  const copyCommand = useCallback(async (command: string) => {
     try {
       await copyTextToClipboard(command);
       setNotice("命令已复制。");
     } catch {
       setError("复制命令失败。");
     }
-  }
+  }, []);
 
-  async function requestSendCommand(command: string) {
+  const runSendCommand = useCallback(async (command: string) => {
+    try {
+      await onSendCommand(command);
+      setNotice("命令已发送到终端。");
+    } catch (nextError) {
+      setError(formatAiError(nextError));
+    }
+  }, [onSendCommand]);
+
+  const requestSendCommand = useCallback(async (command: string) => {
     setError(null);
     const assessment = runtimeAvailable
       ? await aiCommandAssess(command).catch(() => assessCommandLocally(command))
@@ -1113,16 +944,9 @@ export function AiAssistantPanel({
       return;
     }
     await runSendCommand(command);
-  }
+  }, [runtimeAvailable, runSendCommand]);
 
-  async function runSendCommand(command: string) {
-    try {
-      await onSendCommand(command);
-      setNotice("命令已发送到终端。");
-    } catch (nextError) {
-      setError(formatAiError(nextError));
-    }
-  }
+
 
   function appendContextBlocks(blocks: AiContextBlock[]) {
     if (blocks.length === 0) {
@@ -1147,7 +971,7 @@ export function AiAssistantPanel({
     setNotice(null);
   }
 
-  async function openAttachmentPreview(block: AiContextBlock, sessionId?: string) {
+  const openAttachmentPreview = useCallback(async (block: AiContextBlock, sessionId?: string) => {
     setPreviewAttachment(block);
     if (!block.artifact_id || !sessionId || !runtimeAvailable) {
       return;
@@ -1163,7 +987,7 @@ export function AiAssistantPanel({
     } catch (nextError) {
       setError(formatAiError(nextError));
     }
-  }
+  }, [runtimeAvailable]);
 
   async function addAttachments(files: FileList | File[]) {
     const selected = Array.from(files);
@@ -1262,6 +1086,32 @@ export function AiAssistantPanel({
         content: tailByChars(content, 8000),
       }),
     ]);
+  }
+
+  function openRemoteWorkspaceDialog() {
+    if (!connection || streamState) {
+      return;
+    }
+    setRemoteWorkspaceDraft(remoteWorkspacePath?.trim() || terminalDirectory?.trim() || "/");
+    setRemoteWorkspaceError(null);
+    setContextMenuOpen(false);
+    setRemoteWorkspaceDialogOpen(true);
+  }
+
+  function submitRemoteWorkspace(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const path = remoteWorkspaceDraft.trim();
+    if (path && !path.startsWith("/")) {
+      setRemoteWorkspaceError("请输入 SSH 主机上的绝对路径，例如 /home/user/project。");
+      return;
+    }
+    setRemoteWorkspacePath(path || null);
+    if (connection?.id) {
+      rememberAiSelection(selectedRemoteWorkspacesStorageKey, connection.id, path);
+    }
+    setRemoteWorkspaceError(null);
+    setRemoteWorkspaceDialogOpen(false);
+    setNotice(path ? `已切换 SSH 工作区：${path}` : "已恢复跟随当前终端目录。");
   }
 
   function addConnectionContext() {
@@ -1372,6 +1222,296 @@ export function AiAssistantPanel({
     }
   }
 
+  const renderToolCallCard = useCallback((call: AiToolCallRecord, flowing = false) => {
+    const fileTool = isFileActivity(call);
+    const fileActivity = getFileActivity(call);
+    const pendingApproval = call.status === "pending_approval";
+    const pendingUserInput = call.name === "ask_user" && call.status === "pending_user_input";
+    const userInputOptions = call.options ?? [];
+    const selectedOptionId = selectedUserOptionIds[call.id] || "";
+    const answerDraft = userInputDrafts[call.id] ?? "";
+    const allowFreeText = call.allow_free_text !== false || userInputOptions.length === 0;
+    const pending = pendingApproval;
+    const deciding = decidingToolCallIds.includes(call.id);
+    const answering = answeringToolCallIds.includes(call.id);
+    const danger = pendingApproval || call.risk === "dangerous";
+    const ToolIcon =
+      fileTool ? (call.name === "read_file" ? FileText : Pencil) : call.name === "server_monitor"
+        ? Activity
+        : call.name === "read_terminal_output"
+          ? FileText
+          : call.name === "update_plan"
+            ? ListPlus
+            : call.name === "ask_user"
+              ? Bot
+              : call.name === "web_search"
+                ? Globe
+                : call.name === "web_fetch"
+                  ? BookOpen
+                : Terminal;
+    const expanded = expandedToolCallIds[call.id] ?? (pendingApproval || pendingUserInput);
+    const detailId = `ai-tool-detail-${call.id}`;
+    const answeredOption = call.answer?.option_id
+      ? userInputOptions.find((option) => option.id === call.answer?.option_id)
+      : null;
+    const answerSummary = call.answer?.cancelled
+      ? "用户取消了选择。"
+      : [
+          answeredOption?.label,
+          call.answer?.text?.trim() ? `补充：${call.answer.text.trim()}` : null,
+        ]
+          .filter(Boolean)
+          .join("；");
+    const outputMeta = [
+      call.exit_status !== null && call.exit_status !== undefined
+        ? `退出码 ${call.exit_status.toString()}`
+        : null,
+      call.duration_ms !== null && call.duration_ms !== undefined ? formatDuration(call.duration_ms) : null,
+      call.output_truncated ? "仅显示末尾" : null,
+      call.output_artifact_id ? "完整输出已保存" : null,
+    ].filter(Boolean);
+    return (
+      <article
+        className={`ai-tool-card ${fileTool ? "file-activity" : ""} ${expanded ? "expanded" : ""} ${danger ? "danger" : ""} ${flowing ? "flowing" : ""} ${
+          call.name === "update_plan" ? "plan" : call.name === "ask_user" ? "question" : ""
+        }`}
+        key={call.id}
+      >
+        <button
+          className="ai-tool-summary"
+          type="button"
+          aria-controls={detailId}
+          aria-expanded={expanded}
+          onClick={() =>
+            setExpandedToolCallIds((current) => ({ ...current, [call.id]: !expanded }))
+          }
+        >
+          <ToolIcon className="ui-icon" aria-hidden="true" />
+          {fileTool ? <AiFileActivitySummary call={call} /> : (
+            <>
+              <span className="ai-tool-label">{formatToolCallTitle(call.name)}</span>
+              <span className="ai-tool-summary-text">{formatToolCallSummary(call)}</span>
+            </>
+          )}
+          {!fileTool || call.status !== "completed" || Boolean(call.exit_status) ? <span className={`ai-tool-status ${toolCallStatusTone(call)}`}>
+            {call.status === "running" ? (
+              <LoaderCircle className="ui-icon ai-tool-spinner" aria-hidden="true" />
+            ) : pendingApproval ? (
+              <ShieldAlert className="ui-icon" aria-hidden="true" />
+            ) : pendingUserInput ? (
+              <Clock3 className="ui-icon" aria-hidden="true" />
+            ) : null}
+            {formatToolCallStatus(call)}
+          </span> : null}
+        </button>
+        {call.status === "running" && call.output && (call.name === "run_command" || call.name === "start_task") ? (
+          <pre className="ai-tool-live-output" aria-live="polite">
+            {tailByChars(call.output, 2_400)}
+          </pre>
+        ) : null}
+        {expanded ? (
+          <div className="ai-tool-detail" id={detailId}>
+            {fileActivity ? (
+              <small className="ai-tool-meta ai-file-path">
+                {fileActivity.path}{fileActivity.destination ? ` → ${fileActivity.destination}` : ""}
+              </small>
+            ) : null}
+            {call.name === "update_plan" ? (
+              <div className="ai-plan-content">
+                <strong>当前计划</strong>
+                <pre>{formatPlanOutput(call.output)}</pre>
+              </div>
+            ) : null}
+            {call.name === "ask_user" ? (
+              <div className="ai-question-content">
+                <strong>{pendingUserInput ? "需要你的选择" : call.answer ? "已记录回答" : "AI 提问"}</strong>
+                <p>{call.question || call.output || "AI 正在等待你的回答。"}</p>
+                {pendingUserInput ? (
+                  <>
+                    {userInputOptions.length > 0 ? (
+                      <div className="ai-user-options" role="radiogroup" aria-label="选择一个选项">
+                        {userInputOptions.map((option) => {
+                          const selected = selectedOptionId === option.id;
+                          return (
+                            <button
+                              aria-checked={selected}
+                              className={`ai-user-option ${selected ? "selected" : ""}`}
+                              key={option.id}
+                              role="radio"
+                              type="button"
+                              onClick={() =>
+                                setSelectedUserOptionIds((current) => ({ ...current, [call.id]: option.id }))
+                              }
+                            >
+                              <span>
+                                <strong>{option.label}</strong>
+                                {option.description ? <small>{option.description}</small> : null}
+                              </span>
+                              {selected ? <Check className="ui-icon" aria-hidden="true" /> : null}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    ) : null}
+                    {allowFreeText ? (
+                      <textarea
+                        aria-label="补充回答"
+                        className="ai-user-answer-input"
+                        placeholder={userInputOptions.length > 0 ? "也可以补充说明（可选）" : "输入你的回答"}
+                        rows={2}
+                        value={answerDraft}
+                        onChange={(event) =>
+                          setUserInputDrafts((current) => ({ ...current, [call.id]: event.currentTarget.value }))
+                        }
+                      />
+                    ) : null}
+                    <div className="ai-tool-card-actions ai-user-answer-actions">
+                      <button
+                        className="ai-mini-button"
+                        disabled={answering || !streamState}
+                        type="button"
+                        onClick={() => void answerToolCall(call, true)}
+                      >
+                        <Ban className="ui-icon" aria-hidden="true" />
+                        <span>取消</span>
+                      </button>
+                      <button
+                        className="ai-mini-button active"
+                        disabled={answering || !streamState || (!selectedOptionId && !answerDraft.trim())}
+                        type="button"
+                        onClick={() => void answerToolCall(call)}
+                      >
+                        {answering ? <LoaderCircle className="ui-icon ai-tool-spinner" aria-hidden="true" /> : <Check className="ui-icon" aria-hidden="true" />}
+                        <span>提交</span>
+                      </button>
+                    </div>
+                  </>
+                ) : answerSummary ? (
+                  <small className="ai-tool-meta">{answerSummary}</small>
+                ) : null}
+              </div>
+            ) : null}
+            {(call.name === "run_command" || call.name === "start_task") && call.command ? <code>{call.command}</code> : null}
+            {pendingApproval && call.reasons.length > 0 ? <p>{call.reasons.join("；")}</p> : null}
+            {call.error ? <p>{call.error}</p> : null}
+            {call.output && call.name !== "ask_user" ? (
+              <div className="ai-tool-output">
+                <small className="ai-tool-meta">{[call.name.startsWith("preview_") ? "变更预览" : "输出", ...outputMeta].join(" · ")}</small>
+                <pre>{call.output}</pre>
+              </div>
+            ) : outputMeta.length > 0 && call.status === "completed" ? (
+              <small className="ai-tool-meta">{["无输出", ...outputMeta].join(" · ")}</small>
+            ) : null}
+          </div>
+        ) : null}
+        {pending ? (
+          <div className="ai-tool-card-actions">
+            <button
+              className="ai-mini-button"
+              type="button"
+              disabled={deciding || !streamState}
+              onClick={() => void decideToolCall(call, false)}
+            >
+              <Ban className="ui-icon" aria-hidden="true" />
+              <span>拒绝</span>
+            </button>
+            <button
+              className="ai-mini-button danger"
+              type="button"
+              disabled={deciding || !streamState}
+              onClick={() => void decideToolCall(call, true)}
+            >
+              <Check className="ui-icon" aria-hidden="true" />
+              <span>执行</span>
+            </button>
+          </div>
+        ) : null}
+      </article>
+    );
+  }, [selectedUserOptionIds, userInputDrafts, decidingToolCallIds, answeringToolCallIds, expandedToolCallIds, streamState, setExpandedToolCallIds, setSelectedUserOptionIds, setUserInputDrafts, decideToolCall, answerToolCall]);
+
+  const renderCommandSuggestions = useCallback((message: AiChatMessage) => {
+    const suggestions = extractCommandSuggestions(message.content);
+    if (suggestions.length === 0) {
+      return null;
+    }
+    return (
+      <div className="ai-command-suggestions ai-command-suggestions-compact">
+        {suggestions.map((suggestion, index) => (
+          <article
+            aria-label={`命令建议：${suggestion.command}`}
+            className={`ai-command-card ai-command-card-compact ${suggestion.risk === "dangerous" ? "danger" : ""}`}
+            key={`${message.id}-${index.toString()}`}
+          >
+            <div className="ai-command-card-main">
+              <code title={suggestion.command}>{suggestion.command}</code>
+              {suggestion.risk === "dangerous" ? (
+                <span
+                  className="ai-command-card-risk"
+                  title={suggestion.reasons.join("；") || "高风险命令"}
+                >
+                  <ShieldAlert className="ui-icon" aria-hidden="true" />
+                  高风险
+                </span>
+              ) : null}
+            </div>
+            <footer>
+              <Tooltip label="复制命令">
+                <button type="button" aria-label="复制命令" onClick={() => void copyCommand(suggestion.command)}>
+                  <Copy className="ui-icon" aria-hidden="true" />
+                </button>
+              </Tooltip>
+              <Tooltip label="插入到命令操作台">
+                <button
+                  type="button"
+                  aria-label="插入到命令操作台"
+                  onClick={() => {
+                    onInsertCommand(suggestion.command);
+                    setNotice("命令已插入命令操作台。");
+                  }}
+                >
+                  <CornerDownLeft className="ui-icon" aria-hidden="true" />
+                </button>
+              </Tooltip>
+              <Tooltip label="保存为命令片段">
+                <button
+                  type="button"
+                  aria-label="保存为命令片段"
+                  onClick={() => {
+                    onSaveCommand(suggestion.command);
+                    setNotice("已打开命令片段保存窗口。");
+                  }}
+                >
+                  <Save className="ui-icon" aria-hidden="true" />
+                </button>
+              </Tooltip>
+              <Tooltip label="发送到终端">
+                <button
+                  className="primary"
+                  type="button"
+                  aria-label="发送到终端"
+                  onClick={() => void requestSendCommand(suggestion.command)}
+                >
+                  <Play className="ui-icon" aria-hidden="true" />
+                </button>
+              </Tooltip>
+            </footer>
+          </article>
+        ))}
+      </div>
+    );
+  }, [copyCommand, onInsertCommand, onSaveCommand, requestSendCommand]);
+
+  const undoMessageFileChanges = useCallback(async (message: AiChatMessage, change: AiFileChangeSummary) => {
+    try {
+      const result = await aiFileChangesUndo(message.session_id, message.id, change.checkpoint_id);
+      setMessages((items) => applyFileChangeSummaries(items, message.session_id, [result.summary]));
+      return result.error ?? null;
+    } catch (error) {
+      return formatAiError(error);
+    }
+  }, [setMessages]);
+
   return (
     <section className="ai-assistant-tool" aria-label="AI">
       <header className="ai-assistant-head">
@@ -1379,14 +1519,19 @@ export function AiAssistantPanel({
           <strong title={activeSessionTitle}>{activeSessionTitle}</strong>
           <Tooltip label={scopeDisplay}>
             <div className="ai-workspace-indicator" title={scopeDisplay}>
-              <Terminal className="ui-icon ai-scope-host-icon" aria-hidden="true" />
-              <span className="ai-scope-host">{hostDisplay}</span>
+              <div className="ai-workspace-row ai-workspace-remote-row">
+                <Terminal className="ui-icon ai-scope-host-icon" aria-hidden="true" />
+                <span className="ai-scope-host">{hostDisplay}</span>
+                <span className="ai-scope-colon" aria-hidden="true">:</span>
+                <FolderOpen className="ui-icon ai-scope-remote-icon" aria-hidden="true" />
+                <span className="ai-scope-remote" title={remoteFileDisplay}>{remoteFileDisplay}</span>
+              </div>
               {localWorkspace ? (
-                <>
-                  <span className="ai-scope-divider" aria-hidden="true">·</span>
+                <div className="ai-workspace-row ai-workspace-local-row">
+                  <span className="ai-scope-local-label">本机工作区：</span>
                   <FolderOpen className="ui-icon ai-scope-local-icon" aria-hidden="true" />
-                  <span className="ai-scope-local">{localFileDisplay}</span>
-                </>
+                  <span className="ai-scope-local" title={localFileDisplay}>{localFileDisplay}</span>
+                </div>
               ) : null}
             </div>
           </Tooltip>
@@ -1438,7 +1583,7 @@ export function AiAssistantPanel({
         className="ai-history-menu popover-content"
         desiredHeight={340}
         minHeight={96}
-        open={historyOpen}
+        open={active && historyOpen}
         role="menu"
         width={300}
         onOpenChange={setHistoryOpen}
@@ -1554,7 +1699,7 @@ export function AiAssistantPanel({
         className="ai-audit-menu popover-content"
         desiredHeight={360}
         minHeight={120}
-        open={auditOpen}
+        open={active && auditOpen}
         role="dialog"
         width={360}
         onOpenChange={setAuditOpen}
@@ -1641,7 +1786,7 @@ export function AiAssistantPanel({
       {!runtimeAvailable ? (
         <p className="ai-inline-notice">桌面端才能保存配置和调用模型。</p>
       ) : null}
-      {providerConfigs.length === 0 ? (
+      {providerConfigsLoaded && providerConfigs.length === 0 ? (
         <div className="ai-config-empty">
           <strong>还没有 AI 配置</strong>
           <span>添加配置名称、接入模式、API Key、请求地址和模型后即可开始对话。</span>
@@ -1657,8 +1802,8 @@ export function AiAssistantPanel({
           className="ai-message-list"
           aria-label="AI 对话"
           ref={messageListRef}
-          onScroll={handleMessageListScroll}
         >
+          <div className="ai-message-list-content" ref={messageListContentRef}>
           {messages.length === 0 ? (
             <div className="ai-welcome">
               <Terminal className="ui-icon" aria-hidden="true" />
@@ -1666,77 +1811,17 @@ export function AiAssistantPanel({
               <span>{agentModeDescription}</span>
             </div>
           ) : (
-            messages.map((message) => {
-              const showStatus =
-                Boolean(message.status) &&
-                message.status !== "complete" &&
-                message.status !== "streaming";
-              const contextsNode =
-                message.contexts.length > 0 ? (
-                  <div className="ai-message-contexts">
-                    {message.contexts.map((block) => (
-                      <button
-                        className={`ai-message-context ${block.kind === "image" ? "ai-message-context-image" : ""}`}
-                        key={block.id}
-                        title={block.title}
-                        type="button"
-                        onClick={() => void openAttachmentPreview(block, message.session_id)}
-                      >
-                        {block.kind === "image" && block.data_url ? (
-                          <img src={block.data_url} alt="" />
-                        ) : (
-                          <FileText className="ui-icon" aria-hidden="true" />
-                        )}
-                        <span>{block.title}</span>
-                      </button>
-                    ))}
-                  </div>
-                ) : null;
-              return (
-                <article className={`ai-message ${message.role}`} key={message.id}>
-                  {showStatus ? (
-                    <header>
-                      <span>{formatMessageStatus(message.status)}</span>
-                    </header>
-                  ) : null}
-                  {message.role === "user" ? (
-                    <div className="ai-message-bubble">
-                      {contextsNode}
-                      <div className="ai-message-content">
-                        {message.content
-                          ? renderMarkdownContent(message.content)
-                          : "..."}
-                      </div>
-                    </div>
-                  ) : (
-                    <>
-                      {contextsNode}
-                      <AiMessageTimeline
-                        message={message}
-                        isStreaming={streamState?.assistantMessageId === message.id}
-                        renderText={renderMarkdownContent}
-                        renderTool={renderToolCallCard}
-                      />
-                      {!agentModeEnabled ? renderCommandSuggestions(message) : null}
-                    </>
-                  )}
-                  <div className="ai-message-meta">
-                    <Tooltip label="复制">
-                      <button
-                        type="button"
-                        aria-label="复制消息"
-                        className="ai-message-meta-button"
-                        onClick={() => void copyMessage(message.content)}
-                      >
-                        <Copy className="ui-icon" aria-hidden="true" />
-                      </button>
-                    </Tooltip>
-                    <time>{formatMessageTime(message.created_at)}</time>
-                  </div>
-                </article>
-              );
-            })
+            messages.map((message) => (
+              <AiConversationMessage key={message.id} message={message}
+                isStreaming={streamState?.assistantMessageId === message.id}
+                ticking={active || streamState?.assistantMessageId !== message.id}
+                agentModeEnabled={agentModeEnabled} hasStream={Boolean(streamState)}
+                renderTool={renderToolCallCard} renderSuggestions={renderCommandSuggestions}
+                onCopy={copyMessage} onOpenAttachment={openAttachmentPreview}
+                onUndo={undoMessageFileChanges} />
+            ))
           )}
+          </div>
         </section>
         {messageListHasNewContent ? (
           <button
@@ -1913,6 +1998,9 @@ export function AiAssistantPanel({
                       api_key_touched: false,
                     })
                       .then((saved) => {
+                        aiProviderConfigsCache = providerConfigs.map((config) =>
+                          config.id === saved.id ? saved : config,
+                        );
                         setProviderConfigs((configs) =>
                           configs.map((config) => (config.id === saved.id ? saved : config)),
                         );
@@ -1985,9 +2073,9 @@ export function AiAssistantPanel({
         anchorRef={contextTriggerRef}
         ariaLabel="添加上下文"
         className="ai-context-menu popover-content"
-        desiredHeight={220}
+        desiredHeight={connection ? 258 : 220}
         minHeight={120}
-        open={contextMenuOpen}
+        open={active && contextMenuOpen}
         role="menu"
         side="top"
         width={204}
@@ -2034,6 +2122,18 @@ export function AiAssistantPanel({
           <FileText className="ui-icon" aria-hidden="true" />
           <span>{localWorkspace ? "更换本地工作区" : "选择本地工作区"}</span>
         </button>
+        {connection ? (
+          <button
+            className="ai-context-menu-item"
+            disabled={Boolean(streamState)}
+            role="menuitem"
+            type="button"
+            onClick={openRemoteWorkspaceDialog}
+          >
+            <FolderOpen className="ui-icon" aria-hidden="true" />
+            <span>{remoteWorkspacePath ? "更换 SSH 工作区" : "选择 SSH 工作区"}</span>
+          </button>
+        ) : null}
         <button
           className="ai-context-menu-item"
           disabled={!connection}
@@ -2075,8 +2175,85 @@ export function AiAssistantPanel({
         </button>
       </AnchoredSurfacePortal>
 
+      <Dialog.Root
+        open={active && remoteWorkspaceDialogOpen}
+        onOpenChange={(open) => {
+          setRemoteWorkspaceDialogOpen(open);
+          if (!open) {
+            setRemoteWorkspaceError(null);
+          }
+        }}
+      >
+        <Dialog.Portal>
+          <Dialog.Overlay className="dialog-backdrop ai-ssh-workspace-backdrop" />
+          <Dialog.Content
+            className="ai-ssh-workspace-dialog"
+            onInteractOutside={(event) => event.preventDefault()}
+            onPointerDownOutside={(event) => event.preventDefault()}
+          >
+            <form onSubmit={submitRemoteWorkspace}>
+              <header className="dialog-head">
+                <div className="dialog-title-group">
+                  <Dialog.Title>更换 SSH 工作区</Dialog.Title>
+                  <Dialog.Description className="dialog-subtitle">
+                    文件工具会在当前 SSH 主机的这个目录下工作。
+                  </Dialog.Description>
+                </div>
+                <Dialog.Close asChild>
+                  <button className="icon-button dialog-close-button" type="button" aria-label="关闭">
+                    <X className="ui-icon" aria-hidden="true" />
+                  </button>
+                </Dialog.Close>
+              </header>
+              <label className="ai-ssh-workspace-field">
+                <span>工作区路径</span>
+                <input
+                  autoFocus
+                  aria-describedby={remoteWorkspaceError ? "ai-ssh-workspace-error" : undefined}
+                  aria-invalid={Boolean(remoteWorkspaceError)}
+                  placeholder="例如 /home/user/project"
+                  spellCheck={false}
+                  value={remoteWorkspaceDraft}
+                  onChange={(event) => {
+                    setRemoteWorkspaceDraft(event.currentTarget.value);
+                    if (remoteWorkspaceError) {
+                      setRemoteWorkspaceError(null);
+                    }
+                  }}
+                />
+              </label>
+              {remoteWorkspaceError ? (
+                <p className="ai-ssh-workspace-error" id="ai-ssh-workspace-error" role="alert">
+                  {remoteWorkspaceError}
+                </p>
+              ) : null}
+              <footer className="ai-ssh-workspace-actions">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setRemoteWorkspacePath(null);
+                    if (connection?.id) {
+                      rememberAiSelection(selectedRemoteWorkspacesStorageKey, connection.id, "");
+                    }
+                    setRemoteWorkspaceError(null);
+                    setRemoteWorkspaceDialogOpen(false);
+                    setNotice("已恢复跟随当前终端目录。");
+                  }}
+                >
+                  跟随当前目录
+                </button>
+                <Dialog.Close asChild>
+                  <button type="button">取消</button>
+                </Dialog.Close>
+                <button className="primary-button" type="submit">保存</button>
+              </footer>
+            </form>
+          </Dialog.Content>
+        </Dialog.Portal>
+      </Dialog.Root>
+
       <ConfirmDialog
-        open={Boolean(pendingDeleteSession)}
+        open={active && Boolean(pendingDeleteSession) }
         title="删除 AI 会话"
         description={`确认删除“${pendingDeleteSession?.title || "该会话"}”吗？此操作不会影响终端。`}
         confirmLabel="删除"
@@ -2088,7 +2265,7 @@ export function AiAssistantPanel({
         }}
       />
       <ConfirmDialog
-        open={clearSessionOpen}
+        open={active && clearSessionOpen}
         title="清空当前 AI 会话"
         description="会删除当前会话内的消息记录，但保留会话入口。"
         confirmLabel="清空"
@@ -2096,7 +2273,7 @@ export function AiAssistantPanel({
         onOpenChange={setClearSessionOpen}
       />
       <ConfirmDialog
-        open={Boolean(pendingDangerousCommand)}
+        open={active && Boolean(pendingDangerousCommand) }
         title="确认发送危险命令"
         description={
           pendingDangerousCommand
@@ -2119,7 +2296,7 @@ export function AiAssistantPanel({
       />
       <AttachmentPreviewDialog
         attachment={previewAttachment}
-        open={Boolean(previewAttachment)}
+        open={active && Boolean(previewAttachment) }
         onOpenChange={(open) => {
           if (!open) {
             setPreviewAttachment(null);
@@ -2129,274 +2306,9 @@ export function AiAssistantPanel({
     </section>
   );
 
-  function renderToolCallCard(call: AiToolCallRecord, flowing = false) {
-    const pendingApproval = call.status === "pending_approval";
-    const pendingUserInput = call.name === "ask_user" && call.status === "pending_user_input";
-    const userInputOptions = call.options ?? [];
-    const selectedOptionId = selectedUserOptionIds[call.id] || "";
-    const answerDraft = userInputDrafts[call.id] ?? "";
-    const allowFreeText = call.allow_free_text !== false || userInputOptions.length === 0;
-    const pending = pendingApproval;
-    const deciding = decidingToolCallIds.includes(call.id);
-    const answering = answeringToolCallIds.includes(call.id);
-    const danger = pendingApproval || call.risk === "dangerous";
-    const ToolIcon =
-      call.name === "server_monitor"
-        ? Activity
-        : call.name === "read_terminal_output"
-          ? FileText
-          : call.name === "update_plan"
-            ? ListPlus
-            : call.name === "ask_user"
-              ? Bot
-              : call.name === "web_search"
-                ? Globe
-                : call.name === "web_fetch"
-                  ? BookOpen
-                : Terminal;
-    const expanded = expandedToolCallIds[call.id] ?? (pendingApproval || pendingUserInput);
-    const detailId = `ai-tool-detail-${call.id}`;
-    const answeredOption = call.answer?.option_id
-      ? userInputOptions.find((option) => option.id === call.answer?.option_id)
-      : null;
-    const answerSummary = call.answer?.cancelled
-      ? "用户取消了选择。"
-      : [
-          answeredOption?.label,
-          call.answer?.text?.trim() ? `补充：${call.answer.text.trim()}` : null,
-        ]
-          .filter(Boolean)
-          .join("；");
-    const outputMeta = [
-      call.exit_status !== null && call.exit_status !== undefined
-        ? `退出码 ${call.exit_status.toString()}`
-        : null,
-      call.duration_ms !== null && call.duration_ms !== undefined ? formatDuration(call.duration_ms) : null,
-      call.output_truncated ? "仅显示末尾" : null,
-      call.output_artifact_id ? "完整输出已保存" : null,
-    ].filter(Boolean);
-    return (
-      <article
-        className={`ai-tool-card ${expanded ? "expanded" : ""} ${danger ? "danger" : ""} ${flowing ? "flowing" : ""} ${
-          call.name === "update_plan" ? "plan" : call.name === "ask_user" ? "question" : ""
-        }`}
-        key={call.id}
-      >
-        <button
-          className="ai-tool-summary"
-          type="button"
-          aria-controls={detailId}
-          aria-expanded={expanded}
-          onClick={() =>
-            setExpandedToolCallIds((current) => ({ ...current, [call.id]: !expanded }))
-          }
-        >
-          <ToolIcon className="ui-icon" aria-hidden="true" />
-          <span className="ai-tool-label">{formatToolCallTitle(call.name)}</span>
-          <span className="ai-tool-summary-text">{formatToolCallSummary(call)}</span>
-          <span className={`ai-tool-status ${toolCallStatusTone(call)}`}>
-            {call.status === "running" ? (
-              <LoaderCircle className="ui-icon ai-tool-spinner" aria-hidden="true" />
-            ) : pendingApproval ? (
-              <ShieldAlert className="ui-icon" aria-hidden="true" />
-            ) : pendingUserInput ? (
-              <Clock3 className="ui-icon" aria-hidden="true" />
-            ) : null}
-            {formatToolCallStatus(call)}
-          </span>
-        </button>
-        {call.status === "running" && call.output && (call.name === "run_command" || call.name === "start_task") ? (
-          <pre className="ai-tool-live-output" aria-live="polite">
-            {tailByChars(call.output, 2_400)}
-          </pre>
-        ) : null}
-        {expanded ? (
-          <div className="ai-tool-detail" id={detailId}>
-            {call.name === "update_plan" ? (
-              <div className="ai-plan-content">
-                <strong>当前计划</strong>
-                <pre>{formatPlanOutput(call.output)}</pre>
-              </div>
-            ) : null}
-            {call.name === "ask_user" ? (
-              <div className="ai-question-content">
-                <strong>{pendingUserInput ? "需要你的选择" : call.answer ? "已记录回答" : "AI 提问"}</strong>
-                <p>{call.question || call.output || "AI 正在等待你的回答。"}</p>
-                {pendingUserInput ? (
-                  <>
-                    {userInputOptions.length > 0 ? (
-                      <div className="ai-user-options" role="radiogroup" aria-label="选择一个选项">
-                        {userInputOptions.map((option) => {
-                          const selected = selectedOptionId === option.id;
-                          return (
-                            <button
-                              aria-checked={selected}
-                              className={`ai-user-option ${selected ? "selected" : ""}`}
-                              key={option.id}
-                              role="radio"
-                              type="button"
-                              onClick={() =>
-                                setSelectedUserOptionIds((current) => ({ ...current, [call.id]: option.id }))
-                              }
-                            >
-                              <span>
-                                <strong>{option.label}</strong>
-                                {option.description ? <small>{option.description}</small> : null}
-                              </span>
-                              {selected ? <Check className="ui-icon" aria-hidden="true" /> : null}
-                            </button>
-                          );
-                        })}
-                      </div>
-                    ) : null}
-                    {allowFreeText ? (
-                      <textarea
-                        aria-label="补充回答"
-                        className="ai-user-answer-input"
-                        placeholder={userInputOptions.length > 0 ? "也可以补充说明（可选）" : "输入你的回答"}
-                        rows={2}
-                        value={answerDraft}
-                        onChange={(event) =>
-                          setUserInputDrafts((current) => ({ ...current, [call.id]: event.currentTarget.value }))
-                        }
-                      />
-                    ) : null}
-                    <div className="ai-tool-card-actions ai-user-answer-actions">
-                      <button
-                        className="ai-mini-button"
-                        disabled={answering || !streamState}
-                        type="button"
-                        onClick={() => void answerToolCall(call, true)}
-                      >
-                        <Ban className="ui-icon" aria-hidden="true" />
-                        <span>取消</span>
-                      </button>
-                      <button
-                        className="ai-mini-button active"
-                        disabled={answering || !streamState || (!selectedOptionId && !answerDraft.trim())}
-                        type="button"
-                        onClick={() => void answerToolCall(call)}
-                      >
-                        {answering ? <LoaderCircle className="ui-icon ai-tool-spinner" aria-hidden="true" /> : <Check className="ui-icon" aria-hidden="true" />}
-                        <span>提交</span>
-                      </button>
-                    </div>
-                  </>
-                ) : answerSummary ? (
-                  <small className="ai-tool-meta">{answerSummary}</small>
-                ) : null}
-              </div>
-            ) : null}
-            {(call.name === "run_command" || call.name === "start_task") && call.command ? <code>{call.command}</code> : null}
-            {pendingApproval && call.reasons.length > 0 ? <p>{call.reasons.join("；")}</p> : null}
-            {call.error ? <p>{call.error}</p> : null}
-            {call.output && call.name !== "ask_user" ? (
-              <div className="ai-tool-output">
-                <small className="ai-tool-meta">{["输出", ...outputMeta].join(" · ")}</small>
-                <pre>{call.output}</pre>
-              </div>
-            ) : outputMeta.length > 0 && call.status === "completed" ? (
-              <small className="ai-tool-meta">{["无输出", ...outputMeta].join(" · ")}</small>
-            ) : null}
-          </div>
-        ) : null}
-        {pending ? (
-          <div className="ai-tool-card-actions">
-            <button
-              className="ai-mini-button"
-              type="button"
-              disabled={deciding || !streamState}
-              onClick={() => void decideToolCall(call, false)}
-            >
-              <Ban className="ui-icon" aria-hidden="true" />
-              <span>拒绝</span>
-            </button>
-            <button
-              className="ai-mini-button danger"
-              type="button"
-              disabled={deciding || !streamState}
-              onClick={() => void decideToolCall(call, true)}
-            >
-              <Check className="ui-icon" aria-hidden="true" />
-              <span>执行</span>
-            </button>
-          </div>
-        ) : null}
-      </article>
-    );
-  }
 
-  function renderCommandSuggestions(message: AiChatMessage) {
-    const suggestions = extractCommandSuggestions(message.content);
-    if (suggestions.length === 0) {
-      return null;
-    }
-    return (
-      <div className="ai-command-suggestions ai-command-suggestions-compact">
-        {suggestions.map((suggestion, index) => (
-          <article
-            aria-label={`命令建议：${suggestion.command}`}
-            className={`ai-command-card ai-command-card-compact ${suggestion.risk === "dangerous" ? "danger" : ""}`}
-            key={`${message.id}-${index.toString()}`}
-          >
-            <div className="ai-command-card-main">
-              <code title={suggestion.command}>{suggestion.command}</code>
-              {suggestion.risk === "dangerous" ? (
-                <span
-                  className="ai-command-card-risk"
-                  title={suggestion.reasons.join("；") || "高风险命令"}
-                >
-                  <ShieldAlert className="ui-icon" aria-hidden="true" />
-                  高风险
-                </span>
-              ) : null}
-            </div>
-            <footer>
-              <Tooltip label="复制命令">
-                <button type="button" aria-label="复制命令" onClick={() => void copyCommand(suggestion.command)}>
-                  <Copy className="ui-icon" aria-hidden="true" />
-                </button>
-              </Tooltip>
-              <Tooltip label="插入到命令操作台">
-                <button
-                  type="button"
-                  aria-label="插入到命令操作台"
-                  onClick={() => {
-                    onInsertCommand(suggestion.command);
-                    setNotice("命令已插入命令操作台。");
-                  }}
-                >
-                  <CornerDownLeft className="ui-icon" aria-hidden="true" />
-                </button>
-              </Tooltip>
-              <Tooltip label="保存为命令片段">
-                <button
-                  type="button"
-                  aria-label="保存为命令片段"
-                  onClick={() => {
-                    onSaveCommand(suggestion.command);
-                    setNotice("已打开命令片段保存窗口。");
-                  }}
-                >
-                  <Save className="ui-icon" aria-hidden="true" />
-                </button>
-              </Tooltip>
-              <Tooltip label="发送到终端">
-                <button
-                  className="primary"
-                  type="button"
-                  aria-label="发送到终端"
-                  onClick={() => void requestSendCommand(suggestion.command)}
-                >
-                  <Play className="ui-icon" aria-hidden="true" />
-                </button>
-              </Tooltip>
-            </footer>
-          </article>
-        ))}
-      </div>
-    );
-  }
+
+
 }
 
 function buildContextBlock({
@@ -2611,6 +2523,98 @@ const knownShellCommands = new Set([
   "yarn",
   "zsh",
 ]);
+
+interface AiConversationMessageProps {
+  message: AiChatMessage;
+  isStreaming: boolean;
+  ticking: boolean;
+  agentModeEnabled: boolean;
+  hasStream: boolean;
+  renderTool: (call: AiToolCallRecord, flowing?: boolean) => ReactNode;
+  renderSuggestions: (message: AiChatMessage) => ReactNode;
+  onCopy: (content: string) => Promise<void>;
+  onOpenAttachment: (block: AiContextBlock, sessionId?: string) => Promise<void>;
+  onUndo: (message: AiChatMessage, summary: AiFileChangeSummary) => Promise<string | null>;
+}
+
+const AiConversationMessage = memo(function AiConversationMessage({
+  message, isStreaming, ticking, agentModeEnabled, hasStream, renderTool, renderSuggestions,
+  onCopy, onOpenAttachment, onUndo,
+}: AiConversationMessageProps) {
+  const showStatus =
+    Boolean(message.status) &&
+    message.status !== "complete" &&
+    message.status !== "streaming";
+  const contextsNode =
+    message.contexts.length > 0 ? (
+      <div className="ai-message-contexts">
+        {message.contexts.map((block) => (
+          <button
+            className={`ai-message-context ${block.kind === "image" ? "ai-message-context-image" : ""}`}
+            key={block.id}
+            title={block.title}
+            type="button"
+            onClick={() => void onOpenAttachment(block, message.session_id)}
+          >
+            {block.kind === "image" && block.data_url ? (
+              <img src={block.data_url} alt="" />
+            ) : (
+              <FileText className="ui-icon" aria-hidden="true" />
+            )}
+            <span>{block.title}</span>
+          </button>
+        ))}
+      </div>
+    ) : null;
+  return (
+    <article className={`ai-message ${message.role}`} key={message.id}>
+      {showStatus ? (
+        <header>
+          <span>{formatMessageStatus(message.status)}</span>
+        </header>
+      ) : null}
+      {message.role === "user" ? (
+        <div className="ai-message-bubble">
+          {contextsNode}
+          <div className="ai-message-content">
+            {message.content
+              ? renderMarkdownContent(message.content)
+              : "..."}
+          </div>
+        </div>
+      ) : (
+        <>
+          {contextsNode}
+          <AiMessageTimeline
+            message={message}
+            isStreaming={isStreaming}
+            ticking={ticking}
+            renderText={renderMarkdownContent}
+            renderTool={renderTool}
+          />
+          {!agentModeEnabled ? renderSuggestions(message) : null}
+          {message.file_changes?.map((summary) => (
+            <AiFileChangesSummary key={summary.checkpoint_id} summary={summary}
+              disabled={hasStream}
+              onUndo={(change) => onUndo(message, change)} />                      ))}
+        </>
+      )}
+      <div className="ai-message-meta">
+        <Tooltip label="复制">
+          <button
+            type="button"
+            aria-label="复制消息"
+            className="ai-message-meta-button"
+            onClick={() => void onCopy(message.content)}
+          >
+            <Copy className="ui-icon" aria-hidden="true" />
+          </button>
+        </Tooltip>
+        <time>{formatMessageTime(message.created_at)}</time>
+      </div>
+    </article>
+  );
+});
 
 function renderMarkdownContent(content: string) {
   const blocks = parseMarkdownBlocks(content);
@@ -3246,6 +3250,187 @@ function upsertToolCall(calls: AiToolCallRecord[], record: AiToolCallRecord) {
   return calls.some((call) => call.id === record.id)
     ? calls.map((call) => (call.id === record.id ? record : call))
     : [...calls, record];
+}
+
+function ensureAiScopeStreamListener(): Promise<void> {
+  if (!aiScopeStreamListener) {
+    const generation = ++aiScopeStreamListenerGeneration;
+    aiScopeStreamListener = listenAiChatStream(handleAiScopeStreamEvent)
+      .then((unlisten) => {
+        if (generation !== aiScopeStreamListenerGeneration) {
+          unlisten();
+          return;
+        }
+        aiScopeStreamUnlisten = unlisten;
+      })
+      .catch((error) => {
+        aiScopeStreamListener = null;
+        throw error;
+      });
+  }
+  return aiScopeStreamListener;
+}
+
+// Vite 热更新会重新执行这个模块。如果旧的 Tauri 监听没有解除，
+// 同一个流事件会被旧模块和新模块各消费一次，文本就会按监听器数量重复追加。
+// 生产环境没有 import.meta.hot，这段只负责开发期清理，不改变正常运行时行为。
+if (import.meta.hot) {
+  import.meta.hot.dispose(() => {
+    aiScopeStreamListenerGeneration += 1;
+    aiScopeStreamUnlisten?.();
+    aiScopeStreamUnlisten = null;
+    aiScopeStreamListener = null;
+  });
+}
+
+function handleAiScopeStreamEvent(event: AiChatStreamEvent) {
+  const effects: Array<[string, AiAssistantScopeEffect]> = [];
+  updateEveryAiScopeState((key, state) => {
+    const result = applyAiStreamEventToScope(state, event);
+    if (result.effect) {
+      effects.push([key, result.effect]);
+    }
+    return result.state;
+  });
+  effects.forEach(([key, effect]) => emitAiScopeEffect(key, effect));
+}
+
+function mapMessageById(
+  messages: AiChatMessage[],
+  messageId: string,
+  update: (message: AiChatMessage) => AiChatMessage,
+) {
+  let changed = false;
+  const next = messages.map((message) => {
+    if (message.id !== messageId) {
+      return message;
+    }
+    changed = true;
+    return update(message);
+  });
+  return changed ? next : messages;
+}
+
+function applyAiStreamEventToScope(
+  state: AiAssistantScopeState,
+  event: AiChatStreamEvent,
+): { state: AiAssistantScopeState; effect: AiAssistantScopeEffect | null } {
+  const unchanged = { state, effect: null };
+  const withMessages = (
+    messages: AiChatMessage[],
+    effect: AiAssistantScopeEffect | null = null,
+  ) => (messages === state.messages ? unchanged : { state: { ...state, messages }, effect });
+
+  if (event.kind === "file_changes" && event.file_changes && state.activeSessionId === event.session_id) {
+    const summaries = event.file_changes;
+    return withMessages(applyFileChangeSummaries(state.messages, event.session_id, summaries));
+  }
+  if (event.kind === "tool_output") {
+    const output = event.tool_output;
+    if (!output || !output.delta) {
+      return unchanged;
+    }
+    return withMessages(
+      mapMessageById(state.messages, event.message_id, (message) => ({
+        ...message,
+        tool_calls: message.tool_calls.map((call) =>
+          call.id === output.tool_call_id
+            ? {
+                ...call,
+                output: tailByChars(
+                  `${call.status === "completed" ? "" : call.output}${output.delta}`,
+                  12_000,
+                ),
+                status: call.status === "pending_approval" ? call.status : "running",
+              }
+            : call,
+        ),
+      })),
+    );
+  }
+  if (event.kind === "background_task") {
+    const update = event.background_task;
+    if (!update) {
+      return unchanged;
+    }
+    const status =
+      update.status === "succeeded"
+        ? "completed"
+        : update.status === "cancelled"
+          ? "cancelled"
+          : update.status === "running"
+            ? "running"
+            : "failed";
+    return withMessages(
+      mapMessageById(state.messages, event.message_id, (message) => ({
+        ...message,
+        tool_calls: message.tool_calls.map((call) =>
+          call.id === update.tool_call_id
+            ? {
+                ...call,
+                status,
+                output: update.output_preview || call.output,
+                output_artifact_id: update.output_artifact_id || call.output_artifact_id,
+                exit_status: update.exit_status ?? call.exit_status,
+              }
+            : call,
+        ),
+      })),
+      update.status !== "running" ? { kind: "background_task", status: update.status } : null,
+    );
+  }
+  if (event.kind === "tool_call") {
+    const record = event.tool_call;
+    if (!record) {
+      return unchanged;
+    }
+    // 后台任务可能在主流已结束后才完成。只要消息 ID 对得上，仍要
+    // 接收最终的完整工具记录，不能再用当前 stream_id 把它丢掉。
+    return withMessages(
+      mapMessageById(state.messages, event.message_id, (message) => ({
+        ...(message.tool_calls.some((item) => item.id === record.id)
+          ? message
+          : finishThinkingBlock(message)),
+        tool_calls: upsertToolCall(message.tool_calls, record),
+      })),
+    );
+  }
+  if (!state.streamState || event.stream_id !== state.streamState.streamId) {
+    return unchanged;
+  }
+  if (event.kind === "chunk") {
+    const delta = event.delta || "";
+    return withMessages(
+      mapMessageById(state.messages, event.message_id, (message) => ({
+        ...finishThinkingBlock(message),
+        content: `${message.content}${delta}`,
+        status: "streaming",
+      })),
+    );
+  }
+  if (event.kind === "thinking") {
+    const delta = event.thinking_delta || "";
+    return withMessages(
+      mapMessageById(state.messages, event.message_id, (message) => ({
+        ...appendThinkingDelta(message, delta, event.thinking_update),
+        status: "streaming",
+      })),
+    );
+  }
+  if (event.kind === "finished" || event.kind === "stopped" || event.kind === "error") {
+    const messages = mapMessageById(state.messages, event.message_id, (message) => ({
+      ...finishThinkingBlock(message),
+      commands: extractCommandSuggestions(event.content || message.content),
+      content: event.content ?? message.content,
+      status:
+        event.kind === "finished" ? "complete" : event.kind === "stopped" ? "stopped" : "error",
+    }));
+    return {
+      state: { ...state, messages, streamState: null },
+      effect: { kind: "stream_ended", status: event.kind, error: event.error ?? null },
+    };
+  }
+  return unchanged;
 }
 
 function formatToolCallTitle(name: string) {

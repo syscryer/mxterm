@@ -1,7 +1,5 @@
 import {
-  Activity,
   ArrowUp,
-  Bot,
   ChevronDown,
   ChevronUp,
   ChevronRight,
@@ -12,16 +10,12 @@ import {
   EyeOff,
   FilePlus,
   FileText,
-  Folder,
   FolderPlus,
   Info,
-  ListTree,
-  PanelRightClose,
   Pencil,
   RefreshCw,
   Trash2,
   Upload,
-  Wrench,
   X,
 } from "lucide-react";
 import * as ContextMenu from "@radix-ui/react-context-menu";
@@ -43,6 +37,7 @@ import type { ConnectionProfile } from "../connections/connectionTypes";
 import { remoteFileList, remoteFileMetadata } from "../../shared/tauri/commands";
 import { hasTauriRuntime } from "../../shared/tauri/runtime";
 import { Tooltip } from "../../shared/ui/Tooltip";
+import { ToolPanelTabs, defaultToolPanelTools, type ToolPanelTool } from "../../shared/ui/ToolPanelTabs";
 import { RemoteFileIcon } from "./RemoteFileIcon";
 import { RemoteFileInfoTooltip, type RemoteFileInfoState } from "./RemoteFileInfoTooltip";
 import {
@@ -55,7 +50,7 @@ import {
 } from "./remoteFilePaths";
 import type { RemoteFileEntry, RemoteFileEntryMetadata } from "./remoteFileTypes";
 
-export type RemoteFileTool = "files" | "monitor" | "commands" | "tools" | "ai";
+export type RemoteFileTool = ToolPanelTool;
 
 export interface RemoteFileUploadItem {
   file: File;
@@ -171,7 +166,7 @@ const defaultRemotePath = "/";
 const loadingIndicatorDelayMs = 180;
 const remoteFileInfoDelayMs = 2000;
 const remoteFileInfoTooltipId = "remote-file-info-tooltip";
-const defaultRemoteFileTools: RemoteFileTool[] = ["files", "monitor", "commands", "tools", "ai"];
+
 
 interface RemoteFilePanelStateSnapshot {
   activeDirectoryPath: string;
@@ -261,7 +256,7 @@ function RemoteFilePanelComponent({
   const directoryEntriesRef = useRef<Record<string, RemoteFileEntry[]>>(initialState?.directoryEntries || {});
   const lastConnectionIdRef = useRef(connectionId);
   const mountedRef = useRef(true);
-  const visibleTools = availableTools?.length ? availableTools : defaultRemoteFileTools;
+  const visibleTools = availableTools?.length ? availableTools : defaultToolPanelTools;
   const effectiveActiveTool = visibleTools.includes(activeTool) ? activeTool : visibleTools[0] || "commands";
   const filePanelRenderKey = `${stateKey || connectionId || "preview"}:${effectiveActiveTool}:${currentPath}`;
   const [readyFilePanelRenderKey, setReadyFilePanelRenderKey] = useState("");
@@ -439,7 +434,7 @@ function RemoteFilePanelComponent({
 
   return (
     <aside className={`tool-pane ${active ? "" : "is-hidden"}`} aria-label="右侧工具面板" aria-hidden={!active}>
-      <FilePanelTabs
+      <ToolPanelTabs
         activeTool={effectiveActiveTool}
         availableTools={visibleTools}
         onToolChange={onToolChange}
@@ -1267,66 +1262,6 @@ function areRemoteFilePanelPropsEqual(previous: RemoteFilePanelProps, next: Remo
     return previous.connection?.id === next.connection?.id && previous.stateKey === next.stateKey;
   }
   return false;
-}
-
-function FilePanelTabs({
-  activeTool,
-  availableTools,
-  onToolChange,
-  onToggleRightPane,
-}: {
-  activeTool: RemoteFileTool;
-  availableTools: RemoteFileTool[];
-  onToolChange?: (tool: RemoteFileTool) => void;
-  onToggleRightPane?: () => void;
-}) {
-  return (
-    <nav className="tool-tabs" aria-label="工具标签">
-      {availableTools.includes("files") ? (
-        <button className={activeTool === "files" ? "active" : ""} type="button" onClick={() => onToolChange?.("files")}>
-          <Folder className="ui-icon" aria-hidden="true" />
-          文件
-        </button>
-      ) : null}
-      {availableTools.includes("monitor") ? (
-        <button className={activeTool === "monitor" ? "active" : ""} type="button" onClick={() => onToolChange?.("monitor")}>
-          <Activity className="ui-icon" aria-hidden="true" />
-          监控
-        </button>
-      ) : null}
-      {availableTools.includes("commands") ? (
-        <button className={activeTool === "commands" ? "active" : ""} type="button" onClick={() => onToolChange?.("commands")}>
-          <ListTree className="ui-icon" aria-hidden="true" />
-          命令
-        </button>
-      ) : null}
-      {availableTools.includes("tools") ? (
-        <button className={activeTool === "tools" ? "active" : ""} type="button" onClick={() => onToolChange?.("tools")}>
-          <Wrench className="ui-icon" aria-hidden="true" />
-          工具
-        </button>
-      ) : null}
-      {availableTools.includes("ai") ? (
-        <button className={activeTool === "ai" ? "active" : ""} type="button" onClick={() => onToolChange?.("ai")}>
-          <Bot className="ui-icon" aria-hidden="true" />
-          AI
-        </button>
-      ) : null}
-      {onToggleRightPane ? (
-        <Tooltip label="收起右侧面板">
-          <button
-            className="right-collapse-button"
-            type="button"
-            aria-label="收起右侧面板"
-            aria-expanded
-            onClick={onToggleRightPane}
-          >
-            <PanelRightClose className="ui-icon" aria-hidden="true" />
-          </button>
-        </Tooltip>
-      ) : null}
-    </nav>
-  );
 }
 
 function FilePanelShell({

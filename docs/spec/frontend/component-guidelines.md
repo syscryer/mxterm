@@ -558,6 +558,14 @@ Ant Design, Mantine, or similar libraries just to fix one modal or button.
 
 ## Performance Boundaries
 
+- Memoized connection panes and rows must receive stable event handlers that
+  invoke the latest committed workspace state. Terminal-only updates must not
+  rebuild unrelated connection menus or hidden home lists; selection changes
+  update the affected rows. Use `useEventCallback` for event handlers, never for
+  functions whose result is read during render.
+- Retained workspace panels must expose their visibility to portaled controls.
+  Hidden panels close menus and confirmation overlays without discarding their
+  conversation or input state. Shared selects consume `PanelVisibilityContext`.
 - Tauri release startup should keep the native window hidden until the remembered
   size/position and startup theme tokens have been applied. `main.tsx` should
   run lightweight startup work before rendering and before showing the window;

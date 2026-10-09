@@ -1,5 +1,6 @@
 import { ChevronDown } from "lucide-react";
-import { memo, useId, useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import { memo, useId, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { latestStreamTextLine } from "./streamText";
 
 interface StreamTextDisclosureProps {
   label: string;
@@ -25,43 +26,48 @@ export const StreamTextDisclosure = memo(function StreamTextDisclosure({
   const expandedFollowBottomRef = useRef(true);
   // The collapsed row shows only the latest non-empty reasoning line.
   // The complete stream remains available in the expanded panel.
-  const preview = streaming
-    ? text
-        .replace(/\r\n?/gu, "\n")
-        .split("\n")
-        .map((line) => line.trim())
-        .reverse()
-        .find((line) => line.length > 0) || ""
-    : "";
+  const preview = useMemo(() => streaming ? latestStreamTextLine(text) : "", [text, streaming]);
 
   useLayoutEffect(() => {
     const viewport = viewportRef.current;
     const content = textRef.current;
     if (!viewport || !content) return;
+    let frame: number | null = null;
     const follow = () => {
-      viewport.scrollLeft = viewport.scrollWidth;
+      if (frame !== null) return;
+      frame = requestAnimationFrame(() => {
+        frame = null;
+        viewport.scrollLeft = viewport.scrollWidth;
+      });
     };
     follow();
-    if (typeof ResizeObserver === "undefined") return;
-    const observer = new ResizeObserver(follow);
-    observer.observe(viewport);
-    observer.observe(content);
-    return () => observer.disconnect();
+    const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(follow);
+    observer?.observe(viewport);
+    observer?.observe(content);
+    return () => {
+      observer?.disconnect();
+      if (frame !== null) cancelAnimationFrame(frame);
+    };
   }, [preview, expanded, streaming]);
 
   useLayoutEffect(() => {
     const content = expandedContentRef.current;
     if (!content || !expanded) return;
+    let frame: number | null = null;
     const follow = () => {
-      if (streaming && expandedFollowBottomRef.current) {
-        content.scrollTop = content.scrollHeight;
-      }
+      if (frame !== null) return;
+      frame = requestAnimationFrame(() => {
+        frame = null;
+        if (streaming && expandedFollowBottomRef.current) content.scrollTop = content.scrollHeight;
+      });
     };
     follow();
-    if (typeof ResizeObserver === "undefined") return;
-    const observer = new ResizeObserver(follow);
-    observer.observe(content);
-    return () => observer.disconnect();
+    const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(follow);
+    observer?.observe(content);
+    return () => {
+      observer?.disconnect();
+      if (frame !== null) cancelAnimationFrame(frame);
+    };
   }, [expanded, streaming, text]);
 
   const handleToggle = () => {

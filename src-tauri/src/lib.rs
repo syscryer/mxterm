@@ -243,6 +243,7 @@ pub fn run() {
             ai_assistant::ai_chat_stream_start,
             ai_audit::ai_audit_list,
             ai_assistant::ai_chat_stream_stop,
+            ai_assistant::ai_file_changes_undo,
             ai_assistant::ai_chat_tool_decision,
             ai_assistant::ai_chat_tool_answer,
             ai_assistant::ai_command_assess,

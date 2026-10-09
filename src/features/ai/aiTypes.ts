@@ -9,6 +9,7 @@ export type AiChatStreamKind =
   | "tool_call"
   | "tool_output"
   | "background_task"
+  | "file_changes"
   | "finished"
   | "error"
   | "stopped";
@@ -118,6 +119,8 @@ export interface AiCommandAssessment {
 export interface AiToolCallRecord {
   id: string;
   name: "run_command" | "server_monitor" | "read_terminal_output" | string;
+  arguments?: string | null;
+  file_activity?: AiFileActivity | null;
   command?: string | null;
   status: AiToolCallStatus | string;
   risk?: AiCommandRisk | null;
@@ -140,6 +143,37 @@ export interface AiToolCallRecord {
   options?: AiUserOption[];
   allow_free_text?: boolean;
   answer?: AiUserAnswer | null;
+}
+
+export interface AiFileActivity {
+  path: string;
+  operation: string;
+  destination?: string | null;
+  added_lines?: number | null;
+  removed_lines?: number | null;
+}
+
+export interface AiFileChangeEntry {
+  path: string;
+  target: "local" | "ssh" | string;
+  added_lines: number;
+  removed_lines: number;
+}
+
+export interface AiFileChangeSummary {
+  checkpoint_id: string;
+  message_id: string;
+  status: "applied" | "partial" | "reverted";
+  files: AiFileChangeEntry[];
+  added_lines: number;
+  removed_lines: number;
+  remaining_changes: number;
+}
+
+export interface AiFileChangesUndoResult {
+  summary: AiFileChangeSummary;
+  reverted_changes: number;
+  error?: string | null;
 }
 
 export interface AiUserOption {
@@ -170,6 +204,7 @@ export interface AiChatMessage {
   contexts: AiContextBlock[];
   commands: AiCommandSuggestion[];
   tool_calls: AiToolCallRecord[];
+  file_changes?: AiFileChangeSummary[];
   status: "complete" | "streaming" | "error" | "stopped" | string;
   created_at: string;
   updated_at: string;
@@ -247,6 +282,7 @@ export interface AiChatStreamEvent {
   tool_call?: AiToolCallRecord | null;
   tool_output?: AiToolOutputEvent | null;
   background_task?: AiBackgroundTaskEvent | null;
+  file_changes?: AiFileChangeSummary[] | null;
 }
 
 export interface AiToolOutputEvent {

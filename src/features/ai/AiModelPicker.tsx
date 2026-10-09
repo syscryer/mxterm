@@ -18,6 +18,7 @@ import { createPortal } from "react-dom";
 
 import type { AiProviderConfig, AiProviderModelOption } from "./aiTypes";
 import { aiProviderModelsList } from "../../shared/tauri/commands";
+import { usePanelVisible } from "../../shared/ui/panelVisibility";
 
 const MENU_WIDTH = 200;
 const SUBMENU_WIDTH = 224;
@@ -74,6 +75,8 @@ export function AiModelPicker({
   const providerRowRects = useRef<Map<string, DOMRect>>(new Map());
   const providerRowRefs = useRef<Map<string, HTMLButtonElement>>(new Map());
   const [open, setOpen] = useState(false);
+  const visible = usePanelVisible();
+  useEffect(() => { if (!visible) setOpen(false); }, [visible]);
   const [position, setPosition] = useState<MenuPosition | null>(null);
   const [activeProviderId, setActiveProviderId] = useState<string | null>(null);
   const [modelCache, setModelCache] = useState<Record<string, ModelListState>>({});
@@ -313,7 +316,7 @@ export function AiModelPicker({
         <ChevronDown className="ui-icon" aria-hidden="true" />
       </button>
 
-      {open && position
+      {visible && open && position
         ? createPortal(
             <DismissableLayerBranch asChild>
               <div
@@ -410,7 +413,7 @@ export function AiModelPicker({
           )
         : null}
 
-      {open && activeProvider && submenuPosition
+      {visible && open && activeProvider && submenuPosition
         ? createPortal(
             <DismissableLayerBranch asChild>
               <div

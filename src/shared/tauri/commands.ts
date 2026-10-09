@@ -31,6 +31,7 @@ import type {
 } from "../../features/connections/connectionTransferTypes";
 import type {
   AiAttachmentReadResponse,
+  AiFileChangesUndoResult,
   AiChatSession,
   AiChatSessionSummary,
   AiChatStreamStartRequest,
@@ -386,6 +387,12 @@ export function aiChatStreamStop(streamId: string) {
     request: {
       stream_id: streamId,
     },
+  });
+}
+
+export function aiFileChangesUndo(sessionId: string, messageId: string, checkpointId: string) {
+  return invoke<AiFileChangesUndoResult>("ai_file_changes_undo", {
+    request: { session_id: sessionId, message_id: messageId, checkpoint_id: checkpointId },
   });
 }
 

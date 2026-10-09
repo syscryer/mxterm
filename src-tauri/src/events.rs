@@ -98,4 +98,5 @@ pub struct AiChatStreamEvent {
     pub tool_call: Option<crate::ai_assistant::AiToolCallRecord>,
     pub tool_output: Option<AiToolOutputEvent>,
     pub background_task: Option<AiBackgroundTaskEvent>,
+    pub file_changes: Option<Vec<crate::ai_agent::file_history::AiFileChangeSummary>>,
 }

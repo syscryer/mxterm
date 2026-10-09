@@ -6392,6 +6392,18 @@ enablecredsspsupport:i:1</textarea>
       <p>建议执行 <code>du -sh /var/lib/docker/*</code>，确认最大的目录后再处理。</p>
     </div>
 
+    <section id="fileChangePrototype" style="margin:0 12px 12px;border:1px solid var(--mx-line);border-radius:8px;background:var(--mx-panel)">
+      <div style="display:flex;align-items:center;padding:8px;gap:8px">
+        <button id="fileChangeDisclosure" type="button" aria-expanded="false" aria-controls="fileChangeList" style="border:0;background:transparent;color:var(--mx-text);flex:1;text-align:left">› 2 个文件已更改 <span style="color:var(--mx-success)">+12</span> <span style="color:var(--mx-danger)">−3</span></button>
+        <button id="fileChangeUndo" type="button" style="border:0;background:transparent;color:var(--mx-muted)">↶ 撤销</button>
+      </div>
+      <ul id="fileChangeList" hidden style="padding:0 16px 8px 32px;margin:0;color:var(--mx-muted)"><li>main.ts　src/　+9 −2</li><li>settings.ts　src/　+3 −1</li></ul>
+      <p id="fileChangeStatus" role="status" hidden style="margin:0;padding:8px 12px;color:var(--mx-muted)"></p>
+      <dialog id="fileChangeConfirm" style="border:1px solid var(--mx-line);border-radius:8px;background:var(--mx-panel);color:var(--mx-text)">
+        <h3>撤销本轮文件修改？</h3><p>恢复这 2 个文件修改前的内容，对话记录保留。</p>
+        <form method="dialog"><button value="cancel">取消</button><button value="undo">撤销修改</button></form>
+      </dialog>
+    </section>
     <div class="ai-context-preview-composer">
       <div class="ai-context-preview-selection" id="aiContextPreviewSelection" hidden></div>
       <textarea class="ai-context-preview-input" aria-label="输入问题" placeholder="输入问题，例如：解释这段报错，或生成排查命令"></textarea>
@@ -6438,6 +6450,22 @@ enablecredsspsupport:i:1</textarea>
 
   <script>
     const aiContextPreview = document.getElementById("aiContextPreview");
+    const fileChangeDisclosure = document.getElementById("fileChangeDisclosure");
+    const fileChangeList = document.getElementById("fileChangeList");
+    const fileChangeUndo = document.getElementById("fileChangeUndo");
+    const fileChangeConfirm = document.getElementById("fileChangeConfirm");
+    fileChangeDisclosure.addEventListener("click", () => {
+      fileChangeList.hidden = !fileChangeList.hidden;
+      fileChangeDisclosure.setAttribute("aria-expanded", String(!fileChangeList.hidden));
+    });
+    fileChangeUndo.addEventListener("click", () => fileChangeConfirm.showModal());
+    fileChangeConfirm.addEventListener("close", () => {
+      if (fileChangeConfirm.returnValue !== "undo") return;
+      fileChangeUndo.hidden = true;
+      const status = document.getElementById("fileChangeStatus");
+      status.textContent = "本轮修改已撤销（原型演示）";
+      status.hidden = false;
+    });
     const aiContextPreviewClose = document.getElementById("aiContextPreviewClose");
     const aiContextPreviewPlus = document.getElementById("aiContextPreviewPlus");
     const aiContextPreviewMenu = document.getElementById("aiContextPreviewMenu");

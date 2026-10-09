@@ -1,5 +1,6 @@
 import {
   lazy,
+  memo,
   Suspense,
   useCallback,
   useEffect,
@@ -93,6 +94,7 @@ import {
 } from "../connections/connectionStepPresentation";
 import { connectionInfoFromVncProfile } from "../connections/vncConnectionInfo";
 import { createMiddleClickCloseHandler } from "../../shared/ui/tabEvents";
+import { useEventCallback } from "../../shared/ui/useEventCallback";
 // RemoteFileEditor 内部静态 import 了 monaco-editor（主体约 4MB）及其 5 个 worker
 // （合计约 10MB）。用 React.lazy 延迟到真正打开远程文件编辑标签时才加载，
 // 避免在应用启动时解析 monaco 导致 release 构建下首屏卡顿和全局卡顿。
@@ -105,7 +107,7 @@ const loadMonitorPanel = () => import("../monitor/MonitorPanel");
 const loadSettingsView = () => import("../settings/SettingsView");
 const loadDockerToolPanel = () => import("../tools/DockerToolPanel");
 const loadCommandLibraryPanel = () => import("../commands/CommandLibraryPanel");
-const loadAiAssistantPanel = () => import("../ai/AiAssistantPanel");
+const loadAiAssistantPanel = () => import("../ai/AiAssistantPanelHost");
 const loadVncViewerSurface = () => import("./VncViewerSurface");
 const loadTerminalPanel = () => import("../terminal/TerminalPanel");
 
@@ -183,9 +185,9 @@ const CommandLibraryPanel = lazy(async () => {
   const module = await loadCommandLibraryPanel();
   return { default: module.CommandLibraryPanel };
 });
-const AiAssistantPanel = lazy(async () => {
+const AiAssistantPanelHost = lazy(async () => {
   const module = await loadAiAssistantPanel();
-  return { default: module.AiAssistantPanel };
+  return { default: module.AiAssistantPanelHost };
 });
 const VncViewerSurface = lazy(async () => {
   const module = await loadVncViewerSurface();
@@ -226,6 +228,7 @@ const WORKSPACE_IDLE_PREWARM_BATCHES: Array<{
 ];
 import type { RemoteFileEditorTab } from "../editor/remoteFileEditorTypes";
 import { RemoteFileIcon } from "../files/RemoteFileIcon";
+import { defaultToolPanelTools } from "../../shared/ui/ToolPanelTabs";
 import type { RemoteFileTool, RemoteFileUploadItem } from "../files/RemoteFilePanel";
 import { RemoteFileTransferPanel } from "../files/RemoteFileTransferPanel";
 import {
@@ -2106,10 +2109,16 @@ export function WorkspaceShell() {
     },
     [aiAssistantStateScopeKey],
   );
-  const shouldShowAiAssistantPanel = showWorkspaceToolPane && rightTool === "ai";
+  const shouldShowAiAssistantPanel = showWorkspaceToolPane && !showingRdp && !showingVnc && rightTool === "ai";
   const shouldRenderAiAssistantPanel =
     aiAssistantPanelLoaded || shouldShowAiAssistantPanel;
   const activeAiTerminalTitle = activeAiTerminalTab?.title || null;
+  const openAiScopeKeys = useMemo(() => [
+    "local:default",
+    ...localTerminalTabs.map((tab) => "local:" + tab.id),
+    ...terminalTabs.map((tab) => "ssh:" + tab.id),
+    ...connections.map((connection) => "connection:" + connection.id),
+  ], [localTerminalTabs, terminalTabs, connections]);
   const aiSendMessageShortcutBinding = resolveShortcutBindingById(
     settings.shortcuts.bindings,
     aiSendMessageShortcutActionId,
@@ -2325,28 +2334,54 @@ export function WorkspaceShell() {
   }, [shouldShowAiAssistantPanel]);
 
   const aiAssistantPanelNode = shouldRenderAiAssistantPanel ? (
-    <Suspense fallback={<p className="file-panel-empty">正在加载 AI 面板...</p>}>
-      <AiAssistantPanel
-        active={activeView === "workspace" && showWorkspaceToolPane && !rightPaneCollapsed && rightTool === "ai"}
-        stateScopeKey={aiAssistantStateScopeKey}
-        commandDraft={commandSenderInput}
-        connection={activeAiConnection}
-        connections={connections}
-        contextRequestKey={aiContextRequestKey}
-        initialContexts={aiInitialContexts}
-        recentCommands={commandHistoryEntries}
-        recentTerminalOutput={activeAiRecentTerminalOutput}
-        sendShortcutBinding={aiSendMessageShortcutBinding}
-        terminalDirectory={activeAiTerminalDirectory}
-        terminalSessionId={activeAiTerminalTab?.sessionId ?? null}
-        terminalTitle={activeAiTerminalTitle}
-        onInsertCommand={insertAiCommandToSender}
-        onOpenSettings={() => openSettingsSection("ai")}
-        onSaveCommand={saveAiCommandAsSnippet}
-        onSendCommand={sendAiCommandToTerminal}
+    <Suspense fallback={<aside className="tool-pane" hidden={!shouldShowAiAssistantPanel}>
+      <p className="file-panel-empty">正在加载 AI 面板...</p>
+    </aside>}>
+      <AiAssistantPanelHost
+        openScopeKeys={openAiScopeKeys}
+        availableTools={showingLocalTerminal ? ["commands", "ai"] : defaultToolPanelTools}
+        onToolChange={setRightTool}
+        panelProps={{
+          active: activeView === "workspace" && shouldShowAiAssistantPanel && !rightPaneCollapsed,
+          stateScopeKey: aiAssistantStateScopeKey,
+          commandDraft: commandSenderInput,
+          connection: activeAiConnection,
+          connections,
+          contextRequestKey: aiContextRequestKey,
+          initialContexts: aiInitialContexts,
+          recentCommands: commandHistoryEntries,
+          recentTerminalOutput: activeAiRecentTerminalOutput,
+          sendShortcutBinding: aiSendMessageShortcutBinding,
+          terminalDirectory: activeAiTerminalDirectory,
+          terminalSessionId: activeAiTerminalTab?.sessionId ?? null,
+          terminalTitle: activeAiTerminalTitle,
+          onInsertCommand: insertAiCommandToSender,
+          onOpenSettings: () => openSettingsSection("ai"),
+          onSaveCommand: saveAiCommandAsSnippet,
+          onSendCommand: sendAiCommandToTerminal,
+        }}
       />
     </Suspense>
   ) : null;
+
+  const connectionPaneActions = {
+    onConnect: useEventCallback(openConnectionSession),
+    onCreate: useEventCallback(createConnection),
+    onDelete: useEventCallback(deleteConnection),
+    onDuplicate: useEventCallback(duplicateConnection),
+    onEdit: useEventCallback(editConnection),
+    onMoveConnectionToGroup: useEventCallback(moveConnectionToGroup),
+    onOpen: useEventCallback(openTerminal),
+    onOpenSearch: useEventCallback(() => setConnectionSearchOpen(true)),
+    onOpenSettings: useEventCallback(() => openSettingsSection()),
+    onPreloadCreate: useEventCallback(preloadCreateConnectionDialog),
+    onRefresh: useEventCallback(reload),
+    onSelect: useEventCallback(selectConnection),
+    onToggleFavorite: useEventCallback(toggleConnectionFavorite),
+  };
+  const createHomeConnection = useEventCallback(() => createConnection());
+  const exportHomeConnections = useEventCallback(() => setConnectionTransferMode("export"));
+  const importHomeConnections = useEventCallback(() => setConnectionTransferMode("import"));
 
   useLayoutEffect(() => {
     const body = document.body;
@@ -8857,23 +8892,11 @@ export function WorkspaceShell() {
 
       <main className="workspace-shell" ref={workspaceShellRef} hidden={activeView === "settings"}>
         <ConnectionPane
+          {...connectionPaneActions}
           connections={connections}
           error={error}
           loading={loading}
-          onConnect={openConnectionSession}
-          onCreate={createConnection}
-          onDelete={deleteConnection}
-          onDuplicate={duplicateConnection}
-          onEdit={editConnection}
           onGroupCatalogChange={setConnectionGroupCatalog}
-          onMoveConnectionToGroup={moveConnectionToGroup}
-          onOpen={openTerminal}
-          onOpenSearch={() => setConnectionSearchOpen(true)}
-          onOpenSettings={() => openSettingsSection()}
-          onPreloadCreate={preloadCreateConnectionDialog}
-          onRefresh={reload}
-          onSelect={selectConnection}
-          onToggleFavorite={toggleConnectionFavorite}
           recentConnectionLimit={settings.basic.recentConnectionLimit}
           selectedId={activeConnectionSelectionId}
         />
@@ -8900,14 +8923,14 @@ export function WorkspaceShell() {
             error={error}
             groups={connectionGroupCatalog}
             loading={loading}
-            onConnect={openConnectionSession}
-            onCreateConnection={() => createConnection()}
-            onDelete={deleteConnection}
-            onEdit={editConnection}
-            onExportConnections={() => setConnectionTransferMode("export")}
-            onImportConnections={() => setConnectionTransferMode("import")}
-            onPreloadCreateConnection={preloadCreateConnectionDialog}
-            onRefresh={reload}
+            onConnect={connectionPaneActions.onConnect}
+            onCreateConnection={createHomeConnection}
+            onDelete={connectionPaneActions.onDelete}
+            onEdit={connectionPaneActions.onEdit}
+            onExportConnections={exportHomeConnections}
+            onImportConnections={importHomeConnections}
+            onPreloadCreateConnection={connectionPaneActions.onPreloadCreate}
+            onRefresh={connectionPaneActions.onRefresh}
             hidden={!showingHome}
           />
 
@@ -9661,7 +9684,10 @@ export function WorkspaceShell() {
           />
         ) : null}
 
-        {showWorkspaceToolPane ? (
+        <div className="workspace-tool-panel-stack" hidden={!showWorkspaceToolPane}>
+          {aiAssistantPanelNode}
+          <div className="workspace-tool-panel-content" hidden={shouldShowAiAssistantPanel}>
+          {showWorkspaceToolPane ? (
           <Suspense
             fallback={
               <aside className="tool-pane" aria-label="右侧工具面板">
@@ -9701,12 +9727,11 @@ export function WorkspaceShell() {
               />
             ) : showingLocalTerminal ? (
               <RemoteFilePanel
-                active={!rightPaneCollapsed}
+                active={!rightPaneCollapsed && rightTool !== "ai"}
                 activeTool={rightTool}
                 availableTools={["commands", "ai"]}
                 connection={null}
                 commandPanel={renderCommandLibraryPanel()}
-                aiPanel={aiAssistantPanelNode}
                 onToolChange={setRightTool}
               />
             ) : (
@@ -9718,7 +9743,7 @@ export function WorkspaceShell() {
 
                     return (
                       <RemoteFilePanel
-                        active={panel.active}
+                        active={panel.active && rightTool !== "ai"}
                         activeTool={rightTool}
                         availableTools={undefined}
                         connection={panelConnection}
@@ -9734,7 +9759,6 @@ export function WorkspaceShell() {
                             </Suspense>
                           ) : null
                         }
-                        aiPanel={panel.active ? aiAssistantPanelNode : null}
                         commandPanel={panel.active && rightTool === "commands" ? renderCommandLibraryPanel() : null}
                         toolsPanel={
                           panel.renderDockerTools ? (
@@ -9783,14 +9807,13 @@ export function WorkspaceShell() {
                   })
                 ) : (
                   <RemoteFilePanel
-                    active={!rightPaneCollapsed}
+                    active={!rightPaneCollapsed && rightTool !== "ai"}
                     activeTool={rightTool}
                     availableTools={undefined}
                     connection={remoteFileConnection}
                     locateRequest={remoteFileLocateRequest}
                     refreshRequest={remoteFileRefreshRequest}
                     nativeDropTargetPath={nativeFileDropTargetPath}
-                    aiPanel={aiAssistantPanelNode}
                     onToolChange={setRightTool}
                     resolveTerminalPath={
                       activeConnectedTerminalTab
@@ -9803,7 +9826,9 @@ export function WorkspaceShell() {
               </div>
             )}
           </Suspense>
-        ) : null}
+          ) : null}
+          </div>
+        </div>
 
         {dialogOpen && LoadedConnectionDialog ? (
           <LoadedConnectionDialog
@@ -11811,7 +11836,9 @@ function RemoteFilePropertiesTable({ metadata }: { metadata: RemoteFileEntryMeta
   );
 }
 
-function ConnectionHome({
+const ConnectionHome = memo(ConnectionHomeComponent);
+
+function ConnectionHomeComponent({
   connections,
   error,
   groups,

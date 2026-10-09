@@ -15,17 +15,21 @@ use tokio::task::JoinHandle;
 use tokio::time::{sleep, timeout, Duration};
 use uuid::Uuid;
 
+use crate::ai_agent::file_history::{
+    AiFileChangeSummary, AiFileChangesUndoRequest, AiFileChangesUndoResult,
+};
 #[cfg(test)]
 use crate::ai_agent::TOOL_RUN_COMMAND;
 use crate::ai_agent::{
     self, AgentRun, PendingApprovals, PendingUserInputs, PreparedAgent, TOOL_STATUS_CANCELLED,
-    TOOL_STATUS_PENDING_APPROVAL, TOOL_STATUS_PENDING_USER_INPUT, TOOL_STATUS_RUNNING,
+    TOOL_STATUS_COMPLETED, TOOL_STATUS_PENDING_APPROVAL, TOOL_STATUS_PENDING_USER_INPUT,
+    TOOL_STATUS_RUNNING,
 };
 use crate::app_error::AppError;
 use crate::events::{
     AiBackgroundTaskEvent, AiChatStreamEvent, AiToolOutputEvent, AI_CHAT_STREAM_EVENT,
 };
-use crate::remote_exec_pool::RemoteExecSessionPool;
+use crate::remote_exec_pool::{RemoteExecRetry, RemoteExecSessionPool};
 use crate::ssh_config::resolve_saved_connection;
 use crate::storage_repository::StorageRepository;
 use crate::storage_vault::{SecretKind, SecretReference, VAULT_SERVICE};
@@ -233,11 +237,25 @@ pub struct AiUserAnswer {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct AiFileActivity {
+    pub path: String,
+    pub operation: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub destination: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub added_lines: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub removed_lines: Option<usize>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct AiToolCallRecord {
     pub id: String,
     pub name: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub arguments: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file_activity: Option<AiFileActivity>,
     #[serde(default)]
     pub command: Option<String>,
     pub status: String,
@@ -289,6 +307,7 @@ impl AiToolCallRecord {
             id: id.to_string(),
             name: name.to_string(),
             arguments: None,
+            file_activity: None,
             command: None,
             status: TOOL_STATUS_RUNNING.to_string(),
             risk: None,
@@ -329,6 +348,7 @@ pub struct AiChatMessage {
     pub contexts: Vec<AiContextBlock>,
     pub commands: Vec<AiCommandSuggestion>,
     pub tool_calls: Vec<AiToolCallRecord>,
+    pub file_changes: Vec<AiFileChangeSummary>,
     pub status: String,
     pub created_at: String,
     pub updated_at: String,
@@ -480,6 +500,7 @@ pub struct AiChatStreamManager {
     exec_pool: RemoteExecSessionPool,
     tasks: Arc<StdMutex<HashMap<String, Arc<ai_agent::BackgroundTask>>>>,
     workspace_states: Arc<AsyncMutex<HashMap<String, Arc<AsyncMutex<ai_agent::WorkspaceState>>>>>,
+    operation_lock: Arc<AsyncMutex<()>>,
 }
 
 struct AiChatStreamHandle {
@@ -539,6 +560,7 @@ impl StreamEmitter {
             tool_call: None,
             tool_output: None,
             background_task: None,
+            file_changes: None,
         }
     }
 
@@ -564,6 +586,13 @@ impl StreamEmitter {
         self.emit(AiChatStreamEvent {
             tool_call: Some(record),
             ..self.event("tool_call")
+        });
+    }
+
+    pub(crate) fn file_changes(&self, summaries: Vec<AiFileChangeSummary>) {
+        self.emit(AiChatStreamEvent {
+            file_changes: Some(summaries),
+            ..self.event("file_changes")
         });
     }
 
@@ -632,6 +661,7 @@ impl Default for AiChatStreamManager {
             exec_pool: RemoteExecSessionPool::default(),
             tasks: Arc::new(StdMutex::new(HashMap::new())),
             workspace_states: Arc::new(AsyncMutex::new(HashMap::new())),
+            operation_lock: Arc::new(AsyncMutex::new(())),
         }
     }
 }
@@ -644,7 +674,7 @@ impl AiChatStreamManager {
         }
     }
 
-    async fn start(&self, app: AppHandle, prepared: PreparedAiStream) -> Result<(), AppError> {
+    async fn start(&self, app: AppHandle, mut prepared: PreparedAiStream) -> Result<(), AppError> {
         let stream_id = prepared.response.stream_id.clone();
         let session_id = prepared.response.session_id.clone();
         let message_id = prepared.response.assistant_message_id.clone();
@@ -656,6 +686,18 @@ impl AiChatStreamManager {
             message_id: message_id.clone(),
             active,
         };
+        // Resolve the implicit SSH `~` to an absolute home directory before
+        // file tools validate paths or build their workspace cache key.
+        if let Some(agent) = prepared.agent.as_mut() {
+            if let Err(error) = self.ensure_remote_workspace(&app, agent).await {
+                let message = user_visible_ai_error(&error);
+                let _ =
+                    update_assistant_message(&app, &session_id, &message_id, "", "", "error", &[]);
+                emitter.failed(String::new(), message);
+                return Ok(());
+            }
+        }
+
         let content = Arc::new(StdMutex::new(String::new()));
         let thinking = Arc::new(StdMutex::new(String::new()));
         let tool_calls = Arc::new(StdMutex::new(Vec::new()));
@@ -687,12 +729,34 @@ impl AiChatStreamManager {
             }
         };
         if should_hydrate_workspace_state {
-            if let Ok(Some(state_json)) =
+            let restored =
                 crate::storage_sqlite::get_ai_workspace_state(&app, &session_id, &workspace_scope)
-            {
-                if let Ok(restored) = serde_json::from_str::<ai_agent::WorkspaceState>(&state_json)
-                {
-                    *task_workspace_state.lock().await = restored;
+                    .and_then(|json| {
+                        json.map(|json| {
+                            serde_json::from_str::<ai_agent::WorkspaceState>(&json).map_err(
+                                |error| {
+                                    AppError::new(
+                                        "ai_file_history_invalid",
+                                        "读取文件修改记录失败，已停止 Agent。",
+                                        error,
+                                        true,
+                                    )
+                                },
+                            )
+                        })
+                        .transpose()
+                    });
+            match restored {
+                Ok(Some(restored)) => *task_workspace_state.lock().await = restored,
+                Ok(None) => {}
+                Err(error) => {
+                    self.workspace_states
+                        .lock()
+                        .await
+                        .remove(&workspace_cache_key);
+                    update_assistant_message(&app, &session_id, &message_id, "", "", "error", &[])?;
+                    emitter.failed(String::new(), user_visible_ai_error(&error));
+                    return Ok(());
                 }
             }
         }
@@ -981,6 +1045,45 @@ impl AiChatStreamManager {
             handle.stopped.store(true, Ordering::SeqCst);
         }
     }
+
+    async fn ensure_remote_workspace(
+        &self,
+        app: &AppHandle,
+        agent: &mut PreparedAgent,
+    ) -> Result<(), AppError> {
+        if agent.config.is_none() || agent.working_directory.is_some() {
+            return Ok(());
+        }
+
+        let config = agent.config.clone().ok_or_else(|| {
+            AppError::new(
+                "ai_agent_connection_missing",
+                "当前 Agent 没有绑定 SSH 连接。",
+                "remote connection missing",
+                true,
+            )
+        })?;
+        let output = self
+            .exec_pool
+            .exec(
+                app,
+                &config,
+                r#"printf '%s\n' "$HOME""#,
+                RemoteExecRetry::ReconnectOnce,
+            )
+            .await?;
+        if output.exit_status != Some(0) {
+            return Err(AppError::new(
+                "ai_remote_home_unavailable",
+                "无法获取 SSH 主机的默认家目录。",
+                String::from_utf8_lossy(&output.stderr),
+                true,
+            ));
+        }
+
+        agent.working_directory = Some(parse_remote_home_directory(&output.stdout)?);
+        Ok(())
+    }
 }
 
 #[tauri::command]
@@ -1091,7 +1194,16 @@ pub fn ai_chat_session_get(
     request: AiChatSessionIdRequest,
 ) -> Result<AiChatSession, AppError> {
     let repository = StorageRepository::open_app(&app)?;
-    get_chat_session(&repository, &request.session_id)
+    let mut session = get_chat_session(&repository, &request.session_id)?;
+    let summaries = ai_agent::file_history::persisted_summaries(&app, &request.session_id)?;
+    for message in &mut session.messages {
+        message.file_changes = summaries
+            .iter()
+            .filter(|summary| summary.message_id == message.id)
+            .cloned()
+            .collect();
+    }
+    Ok(session)
 }
 
 #[tauri::command]
@@ -1161,11 +1273,12 @@ pub fn ai_chat_attachment_read(
 }
 
 #[tauri::command]
-pub fn ai_chat_session_delete(
+pub async fn ai_chat_session_delete(
     app: AppHandle,
     manager: State<'_, AiChatStreamManager>,
     request: AiChatSessionIdRequest,
 ) -> Result<(), AppError> {
+    let _operation = manager.operation_lock.lock().await;
     let repository = StorageRepository::open_app(&app)?;
     let session_id = require_non_empty(
         &request.session_id,
@@ -1187,11 +1300,12 @@ pub fn ai_chat_session_delete(
 }
 
 #[tauri::command]
-pub fn ai_chat_session_clear(
+pub async fn ai_chat_session_clear(
     app: AppHandle,
     manager: State<'_, AiChatStreamManager>,
     request: AiChatSessionIdRequest,
 ) -> Result<AiChatSession, AppError> {
+    let _operation = manager.operation_lock.lock().await;
     let repository = StorageRepository::open_app(&app)?;
     let session_id = require_non_empty(
         &request.session_id,
@@ -1230,6 +1344,7 @@ pub async fn ai_chat_stream_start(
     manager: State<'_, AiChatStreamManager>,
     request: AiChatStreamStartRequest,
 ) -> Result<AiChatStreamStartResponse, AppError> {
+    let _operation = manager.operation_lock.lock().await;
     let prepared = prepare_stream(&app, request)?;
     let response = prepared.response.clone();
     manager.start(app, prepared).await?;
@@ -1243,6 +1358,146 @@ pub async fn ai_chat_stream_stop(
     request: AiChatStreamStopRequest,
 ) -> Result<(), AppError> {
     manager.stop(&app, request).await
+}
+
+#[tauri::command]
+pub async fn ai_file_changes_undo(
+    app: AppHandle,
+    manager: State<'_, AiChatStreamManager>,
+    request: AiFileChangesUndoRequest,
+) -> Result<AiFileChangesUndoResult, AppError> {
+    let _operation = manager.operation_lock.lock().await;
+    {
+        let repository = StorageRepository::open_app(&app)?;
+        ensure_chat_session_exists(&repository, &request.session_id)?;
+        let message = repository
+            .sqlite_connection()
+            .query_row(
+                "SELECT role FROM ai_chat_messages WHERE session_id = ?1 AND id = ?2",
+                params![request.session_id, request.message_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(sqlite_ai_error)?;
+        if message.as_deref() != Some("assistant") {
+            return Err(AppError::new(
+                "ai_file_history_invalid",
+                "该回复不属于此会话。",
+                "message ownership mismatch",
+                true,
+            ));
+        }
+    }
+    if manager
+        .streams
+        .lock()
+        .await
+        .values()
+        .any(|handle| handle.session_id == request.session_id)
+    {
+        return Err(AppError::new(
+            "ai_session_busy",
+            "请先停止当前 Agent，再撤销文件修改。",
+            "session has active stream",
+            true,
+        ));
+    }
+    for (scope, json) in crate::storage_sqlite::list_ai_workspace_states(&app, &request.session_id)?
+    {
+        let key = format!("{}\n{scope}", request.session_id);
+        let state = {
+            let mut states = manager.workspace_states.lock().await;
+            if let Some(state) = states.get(&key) {
+                state.clone()
+            } else {
+                let restored =
+                    serde_json::from_str::<ai_agent::WorkspaceState>(&json).map_err(|error| {
+                        AppError::new(
+                            "ai_file_history_invalid",
+                            "读取文件修改记录失败。",
+                            error,
+                            true,
+                        )
+                    })?;
+                let state = Arc::new(AsyncMutex::new(restored));
+                states.insert(key, state.clone());
+                state
+            }
+        };
+        let mut state = state.lock().await;
+        if state.file_change_summaries().iter().any(|summary| {
+            summary.checkpoint_id == request.checkpoint_id
+                && summary.message_id == request.message_id
+        }) {
+            let mut audit =
+                AiToolCallRecord::new(&Uuid::new_v4().to_string(), "undo_file_changes", 0);
+            audit.command = Some(request.checkpoint_id.clone());
+            audit.created_at_ms = ai_agent::now_millis();
+            audit.approval_decision = Some("approved".into());
+            crate::ai_audit::append(&app, &request.session_id, &request.message_id, &audit)?;
+            let result = ai_agent::file_history::undo(
+                &app,
+                &manager.exec_pool,
+                &mut state,
+                &request,
+                &scope,
+            )
+            .await;
+            audit.finished_at_ms = Some(ai_agent::now_millis());
+            audit.status = if matches!(&result, Ok(value) if value.error.is_none()) {
+                "completed"
+            } else {
+                "failed"
+            }
+            .into();
+            audit.output = match &result {
+                Ok(value) => format!(
+                    "已撤销 {} 个文件变更；剩余 {} 个。",
+                    value.reverted_changes, value.summary.remaining_changes
+                ),
+                Err(error) => error.message.clone(),
+            };
+            audit.error = match &result {
+                Ok(value) => value.error.clone(),
+                Err(error) => Some(error.message.clone()),
+            };
+            let audit_result =
+                crate::ai_audit::append(&app, &request.session_id, &request.message_id, &audit);
+            return match result {
+                Ok(mut result) => {
+                    if let Err(error) = audit_result {
+                        result.error = Some(format!(
+                            "{}撤销结果的审计记录保存失败：{}",
+                            result
+                                .error
+                                .map(|message| format!("{message}\n"))
+                                .unwrap_or_default(),
+                            error.message
+                        ));
+                    }
+                    StreamEmitter {
+                        app: app.clone(),
+                        stream_id: String::new(),
+                        session_id: request.session_id.clone(),
+                        message_id: request.message_id.clone(),
+                        active: Arc::new(AtomicBool::new(false)),
+                    }
+                    .file_changes(state.file_change_summaries());
+                    Ok(result)
+                }
+                Err(error) => {
+                    audit_result?;
+                    Err(error)
+                }
+            };
+        }
+    }
+    Err(AppError::new(
+        "ai_file_history_invalid",
+        "该回复的文件修改记录不存在。",
+        "checkpoint not found in session",
+        true,
+    ))
 }
 
 #[tauri::command]
@@ -1540,6 +1795,27 @@ fn prepare_agent(app: &AppHandle, request: AiAgentRequest) -> Result<PreparedAge
     Ok(agent)
 }
 
+fn parse_remote_home_directory(stdout: &[u8]) -> Result<String, AppError> {
+    let value = std::str::from_utf8(stdout).map_err(|error| {
+        AppError::new(
+            "ai_remote_home_invalid",
+            "SSH 主机返回的家目录不是有效文本。",
+            error,
+            true,
+        )
+    })?;
+    let home = value.trim();
+    if home.is_empty() || !home.starts_with('/') || home.contains('\0') || home.contains('\n') {
+        return Err(AppError::new(
+            "ai_remote_home_invalid",
+            "SSH 主机返回的家目录不是有效的绝对路径。",
+            home,
+            true,
+        ));
+    }
+    Ok(home.to_string())
+}
+
 fn tail_chars_owned(value: &str, max_chars: usize) -> String {
     let total = value.chars().count();
     if total <= max_chars {
@@ -1744,6 +2020,11 @@ pub(crate) fn apply_openai_reasoning_fields(body: &mut Value, level: Option<&str
         body["reasoning_effort"] = json!(effort);
         body["reasoning"] = json!({ "effort": effort });
     }
+}
+
+fn should_split_minimax_reasoning(config: &StoredAiProviderConfig) -> bool {
+    config.endpoint.to_ascii_lowercase().contains("minimax")
+        || config.model.to_ascii_lowercase().contains("minimax")
 }
 
 pub(crate) fn apply_anthropic_reasoning_fields(
@@ -2532,6 +2813,23 @@ fn insert_chat_message(
     Ok(())
 }
 
+// Early versions marked previews as pending even though no approval receiver
+// existed. Correct only those historical preview records; mutations keep their
+// real approval state and no completion timestamp is invented.
+fn normalize_legacy_file_previews(calls: &mut [AiToolCallRecord]) -> usize {
+    let mut corrected = 0;
+    for call in calls {
+        if matches!(call.name.as_str(), "preview_patch" | "preview_file_change")
+            && call.status == TOOL_STATUS_PENDING_APPROVAL
+        {
+            call.status = TOOL_STATUS_COMPLETED.into();
+            call.approval_required = false;
+            corrected += 1;
+        }
+    }
+    corrected
+}
+
 fn list_chat_messages(
     repository: &StorageRepository,
     session_id: &str,
@@ -2553,6 +2851,19 @@ fn list_chat_messages(
         let contexts_json: String = row.get(4).map_err(sqlite_ai_error)?;
         let commands_json: String = row.get(5).map_err(sqlite_ai_error)?;
         let tool_calls_json: String = row.get(9).map_err(sqlite_ai_error)?;
+        let mut tool_calls: Vec<AiToolCallRecord> = serde_json::from_str(&tool_calls_json)
+            .map_err(|error| {
+                AppError::new(
+                    "ai_tool_history_invalid",
+                    "无法读取会话中的工具调用记录。",
+                    error,
+                    true,
+                )
+            })?;
+        let corrected = normalize_legacy_file_previews(&mut tool_calls);
+        if corrected > 0 {
+            eprintln!("[ai-history] corrected {corrected} legacy preview approval states");
+        }
         let thinking: String = row.get(10).map_err(sqlite_ai_error)?;
         messages.push(AiChatMessage {
             id: row.get(0).map_err(sqlite_ai_error)?,
@@ -2562,7 +2873,8 @@ fn list_chat_messages(
             thinking,
             contexts: serde_json::from_str(&contexts_json).unwrap_or_default(),
             commands: serde_json::from_str(&commands_json).unwrap_or_default(),
-            tool_calls: serde_json::from_str(&tool_calls_json).unwrap_or_default(),
+            tool_calls,
+            file_changes: Vec::new(),
             status: row.get(6).map_err(sqlite_ai_error)?,
             created_at: row.get(7).map_err(sqlite_ai_error)?,
             updated_at: row.get(8).map_err(sqlite_ai_error)?,
@@ -3019,6 +3331,9 @@ where
         "messages": messages,
     });
     apply_openai_reasoning_fields(&mut body, reasoning_level);
+    if should_split_minimax_reasoning(config) {
+        body["reasoning_split"] = json!(true);
+    }
     let response = client
         .post(endpoint)
         .bearer_auth(api_key)
@@ -4631,6 +4946,72 @@ mod tests {
     use crate::storage_vault::{InMemorySecretStore, SecretStore};
 
     #[test]
+    fn legacy_preview_migration_preserves_real_approvals_and_metadata() {
+        let mut calls: Vec<AiToolCallRecord> = [
+            "preview_patch",
+            "preview_file_change",
+            "apply_patch",
+            "apply_file_change",
+            "run_command",
+        ]
+        .iter()
+        .map(|name| {
+            let mut call = AiToolCallRecord::new(name, name, 0);
+            call.status = TOOL_STATUS_PENDING_APPROVAL.into();
+            call.approval_required = true;
+            call
+        })
+        .collect();
+        assert_eq!(normalize_legacy_file_previews(&mut calls), 2);
+        for call in &calls[..2] {
+            assert_eq!(call.status, TOOL_STATUS_COMPLETED);
+            assert!(!call.approval_required);
+            assert!(call.finished_at_ms.is_none());
+        }
+        for call in &calls[2..] {
+            assert_eq!(call.status, TOOL_STATUS_PENDING_APPROVAL);
+            assert!(call.approval_required);
+        }
+        assert_eq!(normalize_legacy_file_previews(&mut calls), 0);
+        calls[0].file_activity = Some(AiFileActivity {
+            path: "/tmp/demo.txt".into(),
+            operation: "create".into(),
+            destination: None,
+            added_lines: Some(2),
+            removed_lines: Some(0),
+        });
+        let decoded: Vec<AiToolCallRecord> =
+            serde_json::from_str(&serde_json::to_string(&calls).unwrap()).unwrap();
+        assert_eq!(
+            decoded[0].file_activity.as_ref().unwrap().added_lines,
+            Some(2)
+        );
+        let legacy: AiToolCallRecord =
+            serde_json::from_str(r#"{"id":"old","name":"read_file","status":"completed"}"#)
+                .unwrap();
+        assert!(legacy.file_activity.is_none());
+    }
+
+    #[test]
+    fn remote_home_directory_requires_absolute_path() {
+        assert_eq!(
+            parse_remote_home_directory(b"/home/demo\n").unwrap(),
+            "/home/demo"
+        );
+        for value in [
+            b"".as_slice(),
+            b"~\n",
+            b"relative\n",
+            b"/home/demo\nextra\n",
+        ] {
+            assert_eq!(
+                parse_remote_home_directory(value).unwrap_err().code,
+                "ai_remote_home_invalid"
+            );
+        }
+    }
+
+    #[test]
     fn reasoning_level_validation_accepts_interface_values() {
         assert_eq!(validate_reasoning_level(None).unwrap(), None);
         assert_eq!(validate_reasoning_level(Some("")).unwrap(), None);
@@ -4747,6 +5128,20 @@ mod tests {
         apply_openai_reasoning_fields(&mut body, Some("enabled"));
         assert_eq!(body["reasoning_effort"], "high");
         assert_eq!(body["thinking"]["type"], "enabled");
+    }
+
+    #[test]
+    fn minimax_reasoning_uses_separate_stream_field() {
+        let mut config = stored_config_with_thinking(None);
+        config.endpoint = "https://api.minimax.io/v1/chat/completions".to_string();
+        config.model = "MiniMax-M3.1-Flash-Preview".to_string();
+        assert!(should_split_minimax_reasoning(&config));
+
+        config.endpoint = "https://proxy.example.test/v1/chat/completions".to_string();
+        assert!(should_split_minimax_reasoning(&config));
+
+        config.model = "generic-model".to_string();
+        assert!(!should_split_minimax_reasoning(&config));
     }
 
     #[test]

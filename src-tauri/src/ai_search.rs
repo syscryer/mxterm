@@ -430,21 +430,13 @@ pub(crate) fn remote_command(
     options: &SearchOptions,
 ) -> Result<String, AppError> {
     validate_options(tool, options)?;
-    if !root.starts_with('/') || root.contains('\0') {
-        return Err(search_error("远程搜索目录必须是绝对路径", root));
-    }
-    let requested = options.path.as_deref().unwrap_or(".");
-    if requested.contains('\0') {
-        return Err(search_error("搜索路径无效", "NUL in path"));
-    }
-    let requested = if requested.starts_with('/') {
-        requested.to_string()
-    } else {
-        format!("{}/{requested}", root.trim_end_matches('/'))
-    };
+    let requested = crate::ai_workspace::resolve_remote_workspace_path(
+        Some(root),
+        options.path.as_deref().unwrap_or("."),
+    )?;
     let mut command = format!(
-        "root=$(realpath -- {}) || exit 2\nscope=$(realpath -- {}) || exit 2\nif [ \"$root\" != / ]; then case \"$scope\" in \"$root\"|\"$root\"/*) ;; *) printf '%s\\n' 'search path outside workspace' >&2; exit 2;; esac; fi\nif [ -d \"$scope\" ]; then cd -- \"$scope\" || exit 2; input=.; else cd -- \"$(dirname -- \"$scope\")\" || exit 2; input=\"./$(basename -- \"$scope\")\"; fi\nif command -v rg >/dev/null 2>&1; then rg --hidden --color never --no-config --no-ignore-parent --no-ignore-global --no-require-git --encoding utf-8 --crlf --glob '!**/.git/**' --glob '!**/.mxterm-agent-backups/**' --glob {} ",
-        quote_posix_shell(root), quote_posix_shell(&requested), quote_posix_shell(&options.pattern)
+        "scope=$(realpath -- {}) || exit 2\nif [ -d \"$scope\" ]; then cd -- \"$scope\" || exit 2; input=.; else cd -- \"$(dirname -- \"$scope\")\" || exit 2; input=\"./$(basename -- \"$scope\")\"; fi\nif command -v rg >/dev/null 2>&1; then rg --hidden --color never --no-config --no-ignore-parent --no-ignore-global --no-require-git --encoding utf-8 --crlf --glob '!**/.git/**' --glob '!**/.mxterm-agent-backups/**' --glob {} ",
+        quote_posix_shell(&requested), quote_posix_shell(&options.pattern)
     );
     if options.include_ignored {
         command.push_str("--no-ignore ");
@@ -475,8 +467,11 @@ pub(crate) fn remote_command(
     Ok(command)
 }
 
-pub(crate) fn remote_read_command(root: &str, base: &str, relative: &str) -> String {
-    format!("root=$(realpath -- {}) || exit 2\nfile=$(realpath -- {}) || exit 2\nif [ \"$root\" != / ]; then case \"$file\" in \"$root\"/*) ;; *) printf '%s\\n' 'search file outside workspace' >&2; exit 2;; esac; fi\ncat -- \"$file\"", quote_posix_shell(root), quote_posix_shell(&format!("{base}/{relative}")))
+pub(crate) fn remote_read_command(base: &str, relative: &str) -> String {
+    format!(
+        "file=$(realpath -- {}) || exit 2\ncat -- \"$file\"",
+        quote_posix_shell(&format!("{base}/{relative}"))
+    )
 }
 
 pub(crate) fn check_remote_output(
@@ -653,6 +648,38 @@ mod tests {
     }
 
     #[test]
+    fn local_search_can_use_absolute_and_parent_paths_outside_cwd() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().join("project");
+        let outside = directory.path().join("sibling");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(outside.join("one.rs"), "external match\n").unwrap();
+        let stopped = AtomicBool::new(false);
+        let options = SearchOptions {
+            path: Some(outside.to_string_lossy().into_owned()),
+            pattern: "**/*.rs".into(),
+            ..SearchOptions::default()
+        };
+        let glob = search_local(&root, "glob", &options, &stopped).unwrap();
+        assert_eq!(
+            glob.page("glob", &options, "local", Vec::new()).entries[0].path,
+            "one.rs"
+        );
+        let options = SearchOptions {
+            path: Some("../sibling".into()),
+            query: Some("external match".into()),
+            ..options
+        };
+        let grep = search_local(&root, "grep", &options, &stopped).unwrap();
+        assert_eq!(
+            grep.page("grep", &options, "local", Vec::new())
+                .total_matches,
+            1
+        );
+    }
+
+    #[test]
     fn rg_json_counts_match_events_for_count_modes() {
         let events = [
             serde_json::json!({"type":"begin","data":{"path":{"text":"./main.rs"}}}),
@@ -700,5 +727,30 @@ mod tests {
         assert!(command.contains("--multiline --multiline-dotall"));
         assert!(command.contains("--before-context 2 --after-context 3"));
         assert!(command.contains("/srv/app"));
+    }
+
+    #[test]
+    fn remote_search_and_fallback_read_do_not_depend_on_default_cwd() {
+        let options = SearchOptions {
+            path: Some("/var/log/service".into()),
+            query: Some("error".into()),
+            ..SearchOptions::default()
+        };
+        for tool in ["glob", "grep"] {
+            let command = remote_command("/missing/default/cwd", tool, &options).unwrap();
+            assert!(command.contains("realpath -- '/var/log/service'"));
+            assert!(!command.contains("/missing/default/cwd"));
+            assert!(!command.contains("outside workspace"));
+        }
+        let read = remote_read_command("/var/log/service", "one's.log");
+        assert!(read.contains("one'\\''s.log"));
+        assert!(!read.contains("root="));
+        let options = SearchOptions {
+            path: Some("../sibling".into()),
+            ..options
+        };
+        assert!(remote_command("/srv/project", "glob", &options)
+            .unwrap()
+            .contains("'/srv/project/../sibling'"));
     }
 }

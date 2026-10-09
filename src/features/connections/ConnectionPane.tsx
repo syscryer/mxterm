@@ -2,6 +2,7 @@ import * as ContextMenu from "@radix-ui/react-context-menu";
 import * as Dialog from "@radix-ui/react-dialog";
 import {
   FormEvent,
+  memo,
   useEffect,
   useMemo,
   useState,
@@ -30,6 +31,7 @@ import {
 
 import { ConfirmDialog } from "../../shared/ui/ConfirmDialog";
 import { Tooltip } from "../../shared/ui/Tooltip";
+import { useEventCallback } from "../../shared/ui/useEventCallback";
 import { ConnectionSystemLogo } from "./ConnectionSystemLogo";
 import type { ConnectionProfile } from "./connectionTypes";
 import { connectionTimestampOf, sortConnectionsByRecent } from "./connectionSearch";
@@ -104,7 +106,9 @@ const expandedFolderStorageKey = "mxterm.connectionExpandedFolders.v1";
 const groupPalette = ["#64748b", "#2563eb", "#4f7d63", "#c47c2c", "#8b5cf6", "#d14d72"];
 const connectionDragDataType = "application/x-mxterm-connection-id";
 
-export function ConnectionPane({
+export const ConnectionPane = memo(ConnectionPaneComponent);
+
+function ConnectionPaneComponent({
   connections,
   error,
   loading,
@@ -250,6 +254,16 @@ export function ConnectionPane({
     };
   }, [mouseDrag]);
 
+  const rowActions = {
+    selectQuickConnection: useEventCallback(selectQuickConnection),
+    selectTreeConnection: useEventCallback(selectTreeConnection),
+    connectQuickConnection: useEventCallback(connectQuickConnection),
+    requestDeleteConnection: useEventCallback(requestDeleteConnection),
+    finishConnectionDrag: useEventCallback(finishConnectionDrag),
+    beginConnectionDrag: useEventCallback(beginConnectionDrag),
+    beginMouseConnectionDrag: useEventCallback(beginMouseConnectionDrag),
+  };
+
   return (
     <>
       <aside className="connection-pane app-sidebar" aria-label="连接仓库">
@@ -269,15 +283,15 @@ export function ConnectionPane({
                 onDuplicate={onDuplicate}
                 onEdit={onEdit}
                 onOpen={onOpen}
-                onSelect={selectQuickConnection}
+                onSelect={rowActions.selectQuickConnection}
                 onToggleFavorite={onToggleFavorite}
                 onCreateConnection={() => onCreate()}
                 onCreateGroup={() => beginCreateGroup(null)}
-                onConnect={connectQuickConnection}
-                onDeleteConnection={requestDeleteConnection}
-                onConnectionDragEnd={finishConnectionDrag}
-                onConnectionDragStart={beginConnectionDrag}
-                onMouseConnectionDragStart={beginMouseConnectionDrag}
+                onConnect={rowActions.connectQuickConnection}
+                onDeleteConnection={rowActions.requestDeleteConnection}
+                onConnectionDragEnd={rowActions.finishConnectionDrag}
+                onConnectionDragStart={rowActions.beginConnectionDrag}
+                onMouseConnectionDragStart={rowActions.beginMouseConnectionDrag}
                 onToggle={() => toggleFolder(folder.id)}
                 selectedId={quickSelectedId}
               />
@@ -340,15 +354,15 @@ export function ConnectionPane({
                 connection={connection}
                 key={connection.id}
                 dragging={connection.id === draggingConnectionId}
-                onDelete={requestDeleteConnection}
-                onDragEnd={finishConnectionDrag}
-                onDragStart={beginConnectionDrag}
-                onMouseDragStart={beginMouseConnectionDrag}
+                onDelete={rowActions.requestDeleteConnection}
+                onDragEnd={rowActions.finishConnectionDrag}
+                onDragStart={rowActions.beginConnectionDrag}
+                onMouseDragStart={rowActions.beginMouseConnectionDrag}
                 onConnect={onConnect}
                 onDuplicate={onDuplicate}
                 onEdit={onEdit}
                 onOpen={onOpen}
-                onSelect={selectTreeConnection}
+                onSelect={rowActions.selectTreeConnection}
                 onToggleFavorite={onToggleFavorite}
                 selected={connection.id === selectedId}
               />
@@ -515,15 +529,15 @@ export function ConnectionPane({
         onDuplicate={onDuplicate}
         onEdit={onEdit}
         onOpen={onOpen}
-        onSelect={selectTreeConnection}
+        onSelect={rowActions.selectTreeConnection}
         onToggleFavorite={onToggleFavorite}
         onCreateConnection={() => onCreate(normalizeGroupName(group.name))}
         onCreateGroup={() => beginCreateGroup(group.id)}
         onConnect={onConnect}
-        onDeleteConnection={requestDeleteConnection}
-        onConnectionDragEnd={finishConnectionDrag}
-        onConnectionDragStart={beginConnectionDrag}
-        onMouseConnectionDragStart={beginMouseConnectionDrag}
+        onDeleteConnection={rowActions.requestDeleteConnection}
+        onConnectionDragEnd={rowActions.finishConnectionDrag}
+        onConnectionDragStart={rowActions.beginConnectionDrag}
+        onMouseConnectionDragStart={rowActions.beginMouseConnectionDrag}
         onDragLeave={clearDropTarget}
         onDragOver={(event) => activateDropTarget(event, `group-${group.id}`)}
         onDropConnection={(connectionId) => assignConnectionToGroup(connectionId, group.id)}
@@ -947,7 +961,9 @@ function TreeFolder({
   }
 }
 
-function ConnectionTreeLeaf({
+const ConnectionTreeLeaf = memo(ConnectionTreeLeafComponent);
+
+function ConnectionTreeLeafComponent({
   connection,
   dragging = false,
   nested = false,

@@ -12552,6 +12552,31 @@ body.vnc-runner-window-body {
   display: none;
 }
 
+/* AI views live outside the per-terminal file panel so switching tabs preserves
+   their DOM and scroll positions without retaining inactive file-tree rows. */
+.workspace-tool-panel-stack,
+.workspace-tool-panel-content {
+  min-width: 0;
+  min-height: 0;
+  display: grid;
+  overflow: hidden;
+}
+
+.workspace-tool-panel-stack {
+  grid-column: 3;
+}
+
+.workspace-tool-panel-stack > *,
+.workspace-tool-panel-content > .tool-pane {
+  grid-area: 1 / 1;
+}
+
+.workspace-tool-panel-stack[hidden],
+.workspace-tool-panel-content[hidden],
+.workspace-tool-panel-stack > .tool-pane[hidden] {
+  display: none;
+}
+
 .tool-tabs {
   flex: 0 0 34px;
   min-height: 34px;
@@ -13974,11 +13999,15 @@ body.vnc-runner-window-body {
   flex: 1 1 0;
   min-width: 0;
   min-height: 0;
+  overflow: auto;
+  padding: 10px;
+}
+
+.ai-message-list-content {
+  min-width: 0;
   display: grid;
   align-content: start;
   gap: 10px;
-  overflow: auto;
-  padding: 10px;
 }
 
 .ai-new-content-button {
@@ -14616,6 +14645,92 @@ body.vnc-runner-window-body {
   white-space: nowrap;
 }
 
+.ai-tool-card.file-activity .ai-tool-label {
+  color: var(--mx-subtle);
+  font-weight: 400;
+}
+
+.ai-file-name {
+  min-width: 0;
+  max-width: 42%;
+  flex: 0 1 auto;
+  overflow: hidden;
+  color: var(--mx-muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ai-file-directory {
+  min-width: 0;
+  flex: 1 1 0;
+  overflow: hidden;
+  color: var(--mx-subtle);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ai-file-counts {
+  flex: 0 0 auto;
+  display: inline-flex;
+  gap: 6px;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+}
+
+.ai-file-added { color: var(--mx-success); }
+.ai-file-removed { color: var(--mx-danger); }
+
+.ai-file-changes {
+  margin-top: 12px;
+  border: 1px solid var(--mx-line);
+  border-radius: 8px;
+  background: var(--mx-panel);
+  overflow: hidden;
+}
+.ai-file-changes-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 8px;
+  min-height: 36px;
+}
+.ai-file-changes-disclosure,
+.ai-file-changes-undo {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px;
+  border: 0;
+  background: transparent;
+  color: var(--mx-text);
+  font-weight: 400;
+  white-space: nowrap;
+  box-shadow: none;
+}
+.ai-file-changes-disclosure { flex: 1; min-width: 0; justify-content: flex-start; flex-wrap: wrap; }
+.ai-file-changes-disclosure > .ui-icon { color: var(--mx-muted); transition: transform 120ms ease; }
+.ai-file-changes-disclosure[aria-expanded="true"] > .ui-icon { transform: rotate(90deg); }
+.ai-file-changes-undo:hover:not(:disabled),
+.ai-file-changes-disclosure:hover { background: var(--mx-active); }
+.ai-file-changes-status,
+.ai-file-changes-target { color: var(--mx-muted); font-size: 11px; white-space: nowrap; }
+.ai-file-changes-list { margin: 0; padding: 4px 12px 8px; list-style: none; border-top: 1px solid var(--mx-line); }
+.ai-file-changes-list li { display: flex; align-items: center; gap: 6px; padding: 6px 0; min-width: 0; }
+.ai-file-changes-list li > .ui-icon { flex-shrink: 0; color: var(--mx-muted); }
+.ai-file-changes-list .ai-file-directory { flex: 1; min-width: 0; }
+.ai-file-changes-error { margin: 0; padding: 8px 12px; color: var(--mx-danger); font-size: 12px; overflow-wrap: anywhere; }
+@media (prefers-reduced-motion: reduce) {
+  .ai-file-changes-disclosure > .ui-icon { transition: none; }
+}
+.ai-file-path { overflow-wrap: anywhere; }
+
+.ai-tool-card.file-activity .ai-tool-status {
+  border: 0;
+  border-radius: 0;
+  padding: 0;
+  background: transparent;
+}
+
 .ai-tool-status {
   flex: 0 0 auto;
   border: 1px solid var(--mx-line);
@@ -14893,12 +15008,18 @@ body.vnc-runner-window-body {
 .ai-workspace-indicator {
   min-width: 0;
   max-width: min(100%, 520px);
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
+  display: grid;
+  gap: 2px;
   color: var(--mx-muted);
   font-size: 11px;
   line-height: 1.2;
+}
+
+.ai-workspace-row {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 4px;
 }
 
 .ai-workspace-indicator .ui-icon {
@@ -14911,16 +15032,21 @@ body.vnc-runner-window-body {
   color: var(--mx-muted);
 }
 
+.ai-workspace-indicator .ai-scope-remote-icon {
+  color: var(--mx-primary);
+}
+
 .ai-workspace-indicator .ai-scope-local-icon {
   color: var(--mx-primary);
 }
 
-.ai-workspace-indicator .ai-scope-divider {
+.ai-workspace-indicator .ai-scope-colon {
   flex: 0 0 auto;
   color: var(--mx-subtle);
 }
 
 .ai-workspace-indicator .ai-scope-host,
+.ai-workspace-indicator .ai-scope-remote,
 .ai-workspace-indicator .ai-scope-local {
   min-width: 0;
   overflow: hidden;
@@ -14930,11 +15056,21 @@ body.vnc-runner-window-body {
 
 .ai-workspace-indicator .ai-scope-host {
   flex: 0 1 auto;
-  max-width: 42%;
+  max-width: 60%;
+}
+
+.ai-workspace-indicator .ai-scope-remote {
+  flex: 1 1 auto;
 }
 
 .ai-workspace-indicator .ai-scope-local {
   flex: 1 1 auto;
+}
+
+.ai-workspace-indicator .ai-scope-local-label {
+  flex: 0 0 auto;
+  color: var(--mx-subtle);
+  white-space: nowrap;
 }
 
 .ai-workspace-indicator span {
@@ -14947,7 +15083,7 @@ body.vnc-runner-window-body {
   }
 
   .ai-workspace-indicator .ai-scope-host {
-    max-width: 36%;
+    max-width: 54%;
   }
 }
 
@@ -15673,7 +15809,19 @@ body.vnc-runner-window-body {
 
 .ai-context-menu-item:hover:not(:disabled) {
   color: var(--mx-primary);
-  background: color-mix(in srgb, var(--mx-primary) 9%, transparent);
+  background: color-mix(in srgb, var(--mx-primary) 7%, var(--mx-panel-soft));
+}
+
+.ai-context-menu-item:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--mx-primary) 54%, transparent);
+  outline-offset: -2px;
+}
+
+.ai-context-menu-item > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .ai-context-menu-item:disabled {
@@ -15686,6 +15834,98 @@ body.vnc-runner-window-body {
   width: 15px;
   height: 15px;
   flex: 0 0 auto;
+}
+
+.ai-ssh-workspace-dialog {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  z-index: 23;
+  width: min(420px, calc(100vw - 32px));
+  max-height: calc(100vh - 48px);
+  border: 1px solid var(--mx-line);
+  border-radius: 8px;
+  overflow: hidden;
+  transform: translate(-50%, -50%);
+  outline: none;
+  background: var(--mx-material-panel);
+  box-shadow: var(--mx-glass-shadow);
+  color: var(--mx-text);
+}
+
+.ai-ssh-workspace-dialog form {
+  display: grid;
+  gap: 16px;
+  padding: 16px;
+}
+
+.ai-ssh-workspace-dialog .dialog-head {
+  align-items: flex-start;
+}
+
+.ai-ssh-workspace-field {
+  display: grid;
+  gap: 6px;
+  color: var(--mx-muted);
+  font-size: 12px;
+}
+
+.ai-ssh-workspace-field input {
+  width: 100%;
+  min-height: 34px;
+  box-sizing: border-box;
+  border: 1px solid var(--mx-line);
+  border-radius: 6px;
+  padding: 7px 9px;
+  color: var(--mx-text);
+  background: var(--mx-panel-soft);
+  font: inherit;
+  outline: none;
+}
+
+.ai-ssh-workspace-field input:focus {
+  border-color: color-mix(in srgb, var(--mx-primary) 58%, var(--mx-line));
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--mx-primary) 12%, transparent);
+}
+
+.ai-ssh-workspace-field input[aria-invalid="true"] {
+  border-color: color-mix(in srgb, var(--mx-danger) 58%, var(--mx-line));
+}
+
+.ai-ssh-workspace-error {
+  margin: -8px 0 0;
+  color: var(--mx-danger);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.ai-ssh-workspace-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.ai-ssh-workspace-actions button {
+  min-height: 30px;
+  border: 1px solid var(--mx-line);
+  border-radius: 6px;
+  padding: 0 10px;
+  color: var(--mx-muted);
+  background: var(--mx-panel-soft);
+  font: inherit;
+  font-size: 12px;
+}
+
+.ai-ssh-workspace-actions button:hover:not(:disabled) {
+  color: var(--mx-text);
+  border-color: var(--mx-line-strong);
+  background: color-mix(in srgb, var(--mx-primary) 6%, var(--mx-panel-soft));
+}
+
+.ai-ssh-workspace-actions .primary-button {
+  border-color: color-mix(in srgb, var(--mx-primary) 65%, var(--mx-line));
+  color: var(--mx-primary-contrast, var(--mx-panel));
+  background: var(--mx-primary);
 }
 
 .ai-compose .ai-mini-button:disabled,

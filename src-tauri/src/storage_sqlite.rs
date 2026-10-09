@@ -700,6 +700,21 @@ pub fn delete_ai_workspace_states(app: &AppHandle, session_id: &str) -> Result<(
     Ok(())
 }
 
+pub fn list_ai_workspace_states(
+    app: &AppHandle,
+    session_id: &str,
+) -> Result<Vec<(String, String)>, AppError> {
+    let connection = open_ai_task_connection(app)?;
+    let mut statement = connection.prepare(
+        "SELECT scope_key, state_json FROM ai_agent_workspace_states WHERE session_id = ?1 ORDER BY scope_key"
+    ).map_err(sqlite_query_error)?;
+    let rows = statement
+        .query_map(params![session_id], |row| Ok((row.get(0)?, row.get(1)?)))
+        .map_err(sqlite_query_error)?;
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(sqlite_query_error)
+}
+
 pub fn mark_running_ai_tasks_interrupted(app: &AppHandle) -> Result<usize, AppError> {
     let connection = open_ai_task_connection(app)?;
     let now = format!("{}", crate::ai_agent::now_millis());

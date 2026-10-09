@@ -2876,16 +2876,24 @@ ai_provider_config_delete(app: AppHandle, request: AiProviderConfigIdRequest) ->
 ai_provider_config_reveal_api_key(app: AppHandle, request: AiProviderConfigIdRequest) -> Result<RevealedAiProviderApiKey, AppError>
 ai_chat_session_list(app: AppHandle) -> Result<Vec<AiChatSessionSummary>, AppError>
 ai_chat_session_get(app: AppHandle, request: AiChatSessionIdRequest) -> Result<AiChatSession, AppError>
-ai_chat_session_delete(app: AppHandle, request: AiChatSessionIdRequest) -> Result<(), AppError>
-ai_chat_session_clear(app: AppHandle, request: AiChatSessionIdRequest) -> Result<AiChatSession, AppError>
+ai_chat_session_delete(app: AppHandle, manager: State<AiChatStreamManager>, request: AiChatSessionIdRequest) -> Result<(), AppError>
+ai_chat_session_clear(app: AppHandle, manager: State<AiChatStreamManager>, request: AiChatSessionIdRequest) -> Result<AiChatSession, AppError>
 ai_chat_stream_start(app: AppHandle, manager: State<AiChatStreamManager>, request: AiChatStreamStartRequest) -> Result<AiChatStreamStartResponse, AppError>
 ai_chat_stream_stop(app: AppHandle, manager: State<AiChatStreamManager>, request: AiChatStreamStopRequest) -> Result<(), AppError>
+ai_file_changes_undo(app: AppHandle, manager: State<AiChatStreamManager>, request: AiFileChangesUndoRequest) -> Result<AiFileChangesUndoResult, AppError>
 ai_chat_tool_decision(manager: State<AiChatStreamManager>, request: AiChatToolDecisionRequest) -> Result<(), AppError>
 ai_chat_tool_answer(manager: State<AiChatStreamManager>, request: AiChatToolAnswerRequest) -> Result<(), AppError>
 ai_command_assess(request: AiCommandAssessRequest) -> Result<AiCommandAssessment, AppError>
 ```
 
 Agent-mode payloads:
+
+File-change history payloads:
+
+- `AiFileChangesUndoRequest { session_id, message_id, checkpoint_id }` identifies a recorded assistant reply; it does not accept arbitrary file paths or a replacement target host.
+- `AiFileChangeSummary { checkpoint_id, message_id, status, files, added_lines, removed_lines, remaining_changes }`; status is `applied`, `partial`, or `reverted`.
+- `AiFileChangesUndoResult { summary, reverted_changes, error }`; an error can accompany real partial progress, which must remain visible and persisted.
+- `AiChatMessage.file_changes` and stream event `kind = "file_changes"` return authoritative checkpoint summaries. A stale persisted message status does not establish a live stream; the backend checks the active stream manager before undo.
 
 ```rust
 AiChatStreamStartRequest { ..., agent: Option<AiAgentRequest>, reasoning_level: Option<String>, model: Option<String>, host_scope: Option<String> }
@@ -2950,6 +2958,7 @@ const AI_CHAT_STREAM_EVENT: &str = "ai:chat_stream";
 - SSE reading must buffer raw bytes and decode only complete SSE events. Do not decode each network chunk with lossy UTF-8 conversion, because providers can split multibyte Chinese or emoji characters across chunks.
 - Provider request and HTTP error raw messages must redact or suppress bodies that contain sensitive-looking fields such as `authorization`, `x-api-key`, `api_key`, bearer tokens, passwords, or `sk-` keys.
 - Agent mode ("执行命令") is opt-in per request: only a request with `agent` set may send provider `tools`. Requests without `agent` keep the plain chat path and must not execute anything.
+- Agent workspaces provide the default cwd and project context, not filesystem confinement. Local and SSH file tools resolve relative paths against the corresponding workspace and accept absolute paths outside it. Host/user permissions, target isolation, mode approvals, CAS, backup ownership and audit remain authoritative. SSH falls back to the login user's resolved home when no terminal cwd or override is available.
 - `ai_chat_stream_start` must resolve the agent connection through `resolve_saved_connection(app, connection_id, None)` before inserting chat rows, so non-SSH profiles or connections without saved credentials fail fast without leaving orphan messages.
 - Agent tools are fixed in `ai_agent.rs`: `run_command { command, timeout_seconds? }`, `server_monitor {}`, and `read_terminal_output { max_chars? }`. `read_terminal_output` only returns the snapshot sent with the request; it must not claim to be live.
 - `run_command` and `server_monitor` execute through the stream manager's own `RemoteExecSessionPool` (a background SSH exec channel), never by writing into the user's interactive terminal. When `working_directory` is known the script is prefixed with `cd <dir> || exit 1`; `~` and `~/...` keep home expansion while the rest of the path is POSIX-quoted.
